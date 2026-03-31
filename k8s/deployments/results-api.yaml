@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: results-api
+  namespace: genetics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: results-api
+  template:
+    metadata:
+      labels:
+        app: results-api
+    spec:
+      serviceAccountName: genetics-suite
+      containers:
+      - name: results-api
+        image: ${REGISTRY}/genetics-results-api:latest
+        ports:
+        - containerPort: 4000
+        env:
+        - name: DEPLOY_ENV
+          value: "prod"
+        - name: REQUIRE_AUTH
+          value: "true"
+        - name: INTERNAL_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: internal-api-secret
+        - name: CHAT_BACKEND_URL
+          value: "http://chat-backend.genetics.svc.cluster.local:8000/chat"
+        - name: LOG_SOURCE
+          value: "${LOG_SOURCE}"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 4000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: results-api
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+  selector:
+    app: results-api

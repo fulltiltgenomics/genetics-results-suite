@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-gateway-config
+  namespace: genetics
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      access_log /dev/stdout;
+      resolver kube-dns.kube-system.svc.cluster.local valid=10s;
+
+      server {
+        listen 8080;
+
+        # health check
+        location = /healthz {
+          return 200 'ok';
+          add_header Content-Type text/plain;
+        }
+
+        # oauth2-proxy endpoints (login, callback, sign_out)
+        location /oauth2/ {
+          proxy_pass http://oauth2-proxy.genetics.svc.cluster.local:4180;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # internal auth check subrequest
+        location = /oauth2/auth {
+          internal;
+          proxy_pass http://oauth2-proxy.genetics.svc.cluster.local:4180;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Content-Length "";
+          proxy_pass_request_body off;
+        }
+
+        # redirect to Google login when unauthenticated
+        location @oauth2_login {
+          return 302 https://$host/oauth2/start?rd=$request_uri;
+        }
+
+        # MCP server (streamable HTTP) — no oauth, uses its own bearer token auth
+        # exact match for /mcp to avoid nginx's auto-redirect to /mcp/
+        location = /mcp {
+          proxy_pass http://mcp-server.genetics.svc.cluster.local:8080/mcp;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 300s;
+          proxy_buffering off;
+          proxy_cache off;
+          proxy_set_header Connection '';
+          proxy_http_version 1.1;
+          chunked_transfer_encoding off;
+        }
+
+        # results API — bearer token bypass (backend validates the token)
+        location @api_bearer {
+          internal;
+          proxy_set_header X-Goog-Authenticated-User-Email "";
+          proxy_set_header X-Internal-MCP-Call "";
+          proxy_pass http://results-api.genetics.svc.cluster.local:4000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 300s;
+          proxy_connect_timeout 300s;
+          proxy_send_timeout 300s;
+        }
+
+        # results API
+        location /api/ {
+          # bearer token requests bypass oauth2, backend handles auth
+          if ($http_authorization ~* "^Bearer ") {
+            error_page 418 = @api_bearer;
+            return 418;
+          }
+
+          auth_request /oauth2/auth;
+          auth_request_set $email $upstream_http_x_auth_request_email;
+          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
+          proxy_set_header X-Internal-MCP-Call "";
+          error_page 401 = @oauth2_login;
+
+          proxy_pass http://results-api.genetics.svc.cluster.local:4000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 300s;
+          proxy_connect_timeout 300s;
+          proxy_send_timeout 300s;
+        }
+
+        # chat backend
+        location /chat/ {
+          auth_request /oauth2/auth;
+          auth_request_set $email $upstream_http_x_auth_request_email;
+          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
+          proxy_set_header X-Internal-MCP-Call "";
+          error_page 401 = @oauth2_login;
+
+          client_max_body_size 50M;
+          proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 300s;
+          proxy_connect_timeout 300s;
+          proxy_send_timeout 300s;
+          # SSE streaming support
+          proxy_buffering off;
+          proxy_cache off;
+          proxy_set_header Connection '';
+          proxy_http_version 1.1;
+          chunked_transfer_encoding off;
+        }
+
+        # frontend
+        location / {
+          auth_request /oauth2/auth;
+          auth_request_set $email $upstream_http_x_auth_request_email;
+          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
+          proxy_set_header X-Internal-MCP-Call "";
+          error_page 401 = @oauth2_login;
+
+          proxy_pass http://frontend.genetics.svc.cluster.local:3000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-gateway
+  namespace: genetics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-gateway
+  template:
+    metadata:
+      labels:
+        app: auth-gateway
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: auth-gateway-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-gateway
+  namespace: genetics
+  annotations:
+    cloud.google.com/backend-config: '{"default": "auth-gateway-hc-config"}'
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: auth-gateway

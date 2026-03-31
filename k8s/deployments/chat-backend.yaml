@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+  namespace: genetics
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: chat-backend
+  template:
+    metadata:
+      labels:
+        app: chat-backend
+    spec:
+      serviceAccountName: genetics-suite
+      containers:
+      - name: chat-backend
+        image: ${REGISTRY}/genetics-mcp-server:latest
+        command: ["uvicorn", "genetics_mcp_server.chat_api:app", "--host", "0.0.0.0", "--port", "8000"]
+        ports:
+        - containerPort: 8000
+        env:
+        - name: GENETICS_API_URL
+          value: "http://results-api.genetics.svc.cluster.local:4000/api"
+        - name: BIGQUERY_API_URL
+          value: "http://db-api.genetics.svc.cluster.local:8080"
+        - name: REQUIRE_AUTH
+          value: "true"
+        - name: INTERNAL_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: internal-api-secret
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: anthropic-api-key
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: openai-api-key
+              optional: true
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: tavily-api-key
+              optional: true
+        - name: PERPLEXITY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: perplexity-api-key
+              optional: true
+        - name: LLM_CONFIG_DB
+          value: "/data/llm_config.db"
+        - name: CHAT_HISTORY_DB
+          value: "/data/chat_history.db"
+        - name: ATTACHMENT_STORAGE_PATH
+          value: "/data/attachments"
+        - name: EXTERNAL_MCP_SERVERS
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: external-mcp-servers
+              optional: true
+        - name: EXTERNAL_MCP_EXCLUDE_TOOLS
+          value: "get_juha_colocalization_by_variant,get_juha_credible_sets_by_gene,get_juha_credible_sets_by_region,get_juha_credible_sets_by_variant,get_juha_gene_disease_associations,get_juha_qtls_by_gene"
+        # - name: RAG_MCP_SERVER
+        #   value: "http://rag-service.genetics.svc.cluster.local:8000"
+        - name: LOG_LEVEL
+          value: "INFO"
+        volumeMounts:
+        - name: chat-data
+          mountPath: /data
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+      volumes:
+      - name: chat-data
+        persistentVolumeClaim:
+          claimName: chat-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-backend
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    app: chat-backend

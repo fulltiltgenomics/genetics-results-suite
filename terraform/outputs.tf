@@ -1,0 +1,55 @@
+output "project_id" {
+  description = "GCP project ID"
+  value       = var.project_id
+}
+
+output "region" {
+  description = "GCP region"
+  value       = var.region
+}
+
+output "zone" {
+  description = "GCP zone for the GKE cluster"
+  value       = var.zone
+}
+
+output "cluster_endpoint" {
+  description = "GKE cluster endpoint"
+  value       = google_container_cluster.primary.endpoint
+  sensitive   = true
+}
+
+output "cluster_name" {
+  description = "GKE cluster name"
+  value       = google_container_cluster.primary.name
+}
+
+output "service_account_email" {
+  description = "GCP service account for workload identity"
+  value       = var.manage_iam ? google_service_account.genetics_suite[0].email : null
+}
+
+output "domain" {
+  description = "Primary domain name"
+  value       = var.domains[0]
+}
+
+output "static_ip_name" {
+  description = "Name of the reserved global static IP"
+  value       = var.static_ip_name
+}
+
+output "static_ip" {
+  description = "Reserved static IP address"
+  value       = data.google_compute_global_address.static_ip.address
+}
+
+output "kubectl_command" {
+  description = "Command to configure kubectl"
+  value       = "gcloud container clusters get-credentials ${google_container_cluster.primary.name} --zone ${var.zone} --project ${var.project_id}"
+}
+
+output "snapshot_policy_name" {
+  description = "Name of the snapshot schedule policy for chat-data disk"
+  value       = google_compute_resource_policy.chat_data_snapshots.name
+}
