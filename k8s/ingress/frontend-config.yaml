@@ -1,0 +1,9 @@
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: https-redirect
+  namespace: genetics
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: "308"

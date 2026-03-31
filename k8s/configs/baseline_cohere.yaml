@@ -1,0 +1,23 @@
+name: baseline_cohere
+description: "Cohere embeddings, no reranking"
+
+embedding:
+  provider: cohere
+  model: embed-english-v3.0
+
+reranking:
+  enabled: false
+
+chunking:
+  strategy: section_aware
+  chunk_size: 1000
+  chunk_overlap: 200
+  respect_sections: true
+  keep_tables_atomic: true
+
+retrieval:
+  top_k: 10
+
+llm:
+  model: claude-sonnet-4-20250514
+  max_tokens: 2048

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-api
+  namespace: genetics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-api
+  template:
+    metadata:
+      labels:
+        app: db-api
+    spec:
+      serviceAccountName: genetics-suite
+      containers:
+      - name: db-api
+        image: ${REGISTRY}/genetics-results-db:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PROJECT_ID
+          value: "${GCP_PROJECT}"
+        - name: DATASET_ID
+          value: "genetics_results"
+        - name: MAX_ROWS
+          value: "10000"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-api
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: db-api

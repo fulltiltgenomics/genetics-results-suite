@@ -1,0 +1,162 @@
+# default deny all ingress in the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: genetics
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# frontend: allow from load balancer (GKE health checks + external traffic)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-frontend
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  ingress:
+  - ports:
+    - port: 3000
+  policyTypes:
+  - Ingress
+---
+# results-api: allow from load balancer, chat-backend, and mcp-server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-results-api
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: results-api
+  ingress:
+  - ports:
+    - port: 4000
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chat-backend
+    - podSelector:
+        matchLabels:
+          app: mcp-server
+    ports:
+    - port: 4000
+  policyTypes:
+  - Ingress
+---
+# chat-backend: allow from load balancer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-chat-backend
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  ingress:
+  - ports:
+    - port: 8000
+  policyTypes:
+  - Ingress
+---
+# mcp-server: allow from load balancer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-server
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-server
+  ingress:
+  - ports:
+    - port: 8080
+  policyTypes:
+  - Ingress
+---
+# auth-gateway: allow from load balancer and health checks
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-auth-gateway
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: auth-gateway
+  ingress:
+  - ports:
+    - port: 8080
+  policyTypes:
+  - Ingress
+---
+# oauth2-proxy: allow from auth-gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-oauth2-proxy
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    ports:
+    - port: 4180
+  policyTypes:
+  - Ingress
+---
+# db-api: only allow from chat-backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-db-api
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: db-api
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chat-backend
+    ports:
+    - port: 8080
+  policyTypes:
+  - Ingress
+---
+# rag-service: only allow from mcp-server and chat-backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-rag-service
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-service
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: mcp-server
+    - podSelector:
+        matchLabels:
+          app: chat-backend
+    ports:
+    - port: 8000
+  policyTypes:
+  - Ingress

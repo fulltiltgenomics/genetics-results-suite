@@ -1,0 +1,12 @@
+project_id           = "your-gcp-project-id"
+region               = "europe-west1"
+zone                 = "europe-west1-b"
+cluster_name         = "finngenie"
+namespace            = "genetics"
+manage_iam           = true
+node_service_account = "some-account@somewhere.gserviceaccount.com"
+static_ip_name       = "finngenie-ip"
+domains              = ["finngenie.finngen.fi", "finngenie.fi"]
+machine_type         = "e2-standard-4"
+min_node_count       = 1
+max_node_count       = 3
