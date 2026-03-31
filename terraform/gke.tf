@@ -22,16 +22,9 @@ resource "google_container_cluster" "primary" {
     }
   }
 
-  # enable network policy
-  network_policy {
-    enabled  = true
-    provider = "CALICO"
-  }
+  datapath_provider = "ADVANCED_DATAPATH"
 
   addons_config {
-    network_policy_config {
-      disabled = false
-    }
     http_load_balancing {
       disabled = false
     }
