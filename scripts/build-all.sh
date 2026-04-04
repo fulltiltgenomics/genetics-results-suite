@@ -6,13 +6,14 @@ if [ -z "${REGISTRY:-}" ]; then
   exit 1
 fi
 GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
+RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
 # branch overrides
 FRONTEND_BRANCH="${FRONTEND_BRANCH:-llm}"
 RESULTS_API_BRANCH="${RESULTS_API_BRANCH:-master}"
 MCP_SERVER_BRANCH="${MCP_SERVER_BRANCH:-master}"
 DB_API_BRANCH="${DB_API_BRANCH:-master}"
-RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-master}"
+RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
@@ -27,7 +28,8 @@ clone_repo genetics-results-browser "${FRONTEND_BRANCH}"
 clone_repo genetics-results-api "${RESULTS_API_BRANCH}"
 clone_repo genetics-mcp-server "${MCP_SERVER_BRANCH}"
 clone_repo genetics-results-db "${DB_API_BRANCH}"
-clone_repo genetics-rag-service "${RAG_SERVICE_BRANCH}"
+echo "--- Cloning genetics-rag-service (branch: ${RAG_SERVICE_BRANCH})"
+git clone --depth 1 --branch "${RAG_SERVICE_BRANCH}" "${RAG_SERVICE_ORG}/genetics-rag-service.git" "${WORK_DIR}/genetics-rag-service"
 
 # tag includes date + short SHA from each repo's HEAD
 tag_for() {

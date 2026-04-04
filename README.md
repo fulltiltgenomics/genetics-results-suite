@@ -1,7 +1,5 @@
 # Genetics Results Suite - Kubernetes Deployment
 
-*REPOSITORY WIP*
-
 Terraform/Kubernetes deployment for the genetics results suite.
 
 ## Architecture
@@ -34,9 +32,11 @@ export GCP_REGION="europe-west1"
 export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 ```
 
-## Quick Start
+## Setup
 
-### 0. Create a bucket for terraform
+### 0. Create a bucket for terraform and a terraform service account
+
+Create a bucket:
 
 ```
 gcloud storage buckets create gs://genetics-results-terraform \
@@ -47,6 +47,33 @@ gcloud storage buckets create gs://genetics-results-terraform \
 
 Or set a different bucket name in [terraform/main.tf](terraform/main.tf)
 
+Create a service account:
+
+```
+gcloud iam service-accounts create terraform \
+  --display-name="Terraform"
+```
+
+Add editor role to it (or granular ones) and give serviceAccountTokenCreator role:
+
+```
+gcloud projects add-iam-policy-binding $GCP_PROJECT \
+--member="serviceAccount:terraform@$GCP_PROJECT.iam.gserviceaccount.com" \
+--role="roles/editor"
+
+# change you@your.org
+gcloud iam service-accounts add-iam-policy-binding \
+terraform@$GCP_PROJECT.iam.gserviceaccount.com \
+--member="user:you@your.org" \
+--role="roles/iam.serviceAccountTokenCreator"
+```
+
+Impersonate the service account:
+
+```
+gcloud auth application-default login --impersonate-service-account=terraform@$GCP_PROJECT.iam.gserviceaccount.com
+```
+
 ### 1. Initial infrastructure setup
 
 ```bash
@@ -56,12 +83,46 @@ terraform init
 terraform apply                               # review the plan before confirming
 ```
 
+If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
+
+```bash
+NODE_SA=$(gcloud container node-pools describe $(terraform output -raw cluster_name)-pool \
+  --cluster=$(terraform output -raw cluster_name) \
+  --zone=$(terraform output -raw zone) \
+  --project=$(terraform output -raw project_id) \
+  --format='value(config.serviceAccount)')
+gcloud projects add-iam-policy-binding $(terraform output -raw project_id) \
+  --member="serviceAccount:${NODE_SA}" \
+  --role="roles/artifactregistry.reader"
+```
+
+Configure kubectl to connect to the new cluster:
+
+```bash
+eval "$(terraform output -raw kubectl_command)"
+```
+
+Install kubectl credential plugin - e.g.:
+
+```bash
+sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+sudo apt-get update && sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+```
+
+Go back to root dir:
+
+```bash
+cd ..
+```
+
 ### 2. Set up OAuth credentials
 
 Create Google OAuth credentials for oauth2-proxy:
 
 1. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials?project=$GCP_PROJECT)
-2. Create an **OAuth 2.0 Client ID** (Web application)
+2. Create an **OAuth client ID** (Web application)
 3. Add authorized JavaScript origin(s): `https://your-domain.example.com`
 4. Add authorized redirect URI(s): `https://your-domain.example.com/oauth2/callback`
 
@@ -74,21 +135,30 @@ export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
 export COHERE_API_KEY="..."              # optional, for rag-service embeddings
-export MCP_API_KEY="$(openssl rand -hex 32)"  # optional, comma-separated for multiple keys
-# INTERNAL_API_SECRET is auto-generated if not set
+export MCP_API_KEY="$(openssl rand -hex 32)"  # optional for bearer token MCP and API access, comma-separated for multiple keys
+# INTERNAL_API_SECRET for results API is auto-generated if not set
 
 ./scripts/create-secrets.sh
 ```
 
-oauth2-proxy credentials:
+oauth2-proxy credentials (get YOUR_CLIENT_ID and YOUR_CLIENT_SECRET from the credentials created in step 2):
+
 ```bash
 kubectl create secret generic oauth2-proxy-secrets -n genetics \
   --from-literal=client-id='YOUR_CLIENT_ID' \
   --from-literal=client-secret='YOUR_CLIENT_SECRET' \
-  --from-literal=cookie-secret='$(openssl rand -base64 32 | head -c 32)'
+  --from-literal=cookie-secret="$(openssl rand -base64 32 | head -c 32)"
 ```
 
 ### 4. Build and push Docker images
+
+Authenticate docker:
+
+```bash
+gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev
+```
+
+Build and push images:
 
 ```bash
 ./scripts/build-all.sh

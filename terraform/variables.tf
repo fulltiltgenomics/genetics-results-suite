@@ -62,6 +62,23 @@ variable "max_node_count" {
   default     = 3
 }
 
+variable "config_profile" {
+  description = "Data profile for results-api (daly or finngen)"
+  type        = string
+  default     = "daly"
+
+  validation {
+    condition     = contains(["daly", "finngen"], var.config_profile)
+    error_message = "config_profile must be 'daly' or 'finngen'."
+  }
+}
+
+variable "oauth_email_domain" {
+  description = "Email domain allowed for OAuth2 login (e.g. broadinstitute.org)"
+  type        = string
+  default     = "broadinstitute.org"
+}
+
 variable "snapshot_retention_days" {
   description = "Number of days to retain chat-data disk snapshots"
   type        = number
