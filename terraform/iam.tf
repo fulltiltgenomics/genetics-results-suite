@@ -22,6 +22,14 @@ resource "google_project_iam_member" "bq_job_user" {
   member  = "serviceAccount:${google_service_account.genetics_suite[0].email}"
 }
 
+# Artifact Registry: pull Docker images
+resource "google_project_iam_member" "artifact_registry_reader" {
+  count   = var.manage_iam ? 1 : 0
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.genetics_suite[0].email}"
+}
+
 # GCS: read objects
 resource "google_project_iam_member" "storage_viewer" {
   count   = var.manage_iam ? 1 : 0

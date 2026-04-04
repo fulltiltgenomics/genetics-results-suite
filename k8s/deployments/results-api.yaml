@@ -22,6 +22,8 @@ spec:
         env:
         - name: DEPLOY_ENV
           value: "prod"
+        - name: CONFIG_PROFILE
+          value: "${CONFIG_PROFILE}"
         - name: REQUIRE_AUTH
           value: "true"
         - name: INTERNAL_API_SECRET

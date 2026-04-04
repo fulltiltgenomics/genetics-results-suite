@@ -53,3 +53,18 @@ output "snapshot_policy_name" {
   description = "Name of the snapshot schedule policy for chat-data disk"
   value       = google_compute_resource_policy.chat_data_snapshots.name
 }
+
+output "oauth_email_domain" {
+  description = "Email domain allowed for OAuth2 login"
+  value       = var.oauth_email_domain
+}
+
+output "config_profile" {
+  description = "Data profile for results-api"
+  value       = var.config_profile
+}
+
+output "registry" {
+  description = "Artifact Registry URL for docker images"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker.repository_id}"
+}

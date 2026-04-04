@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}/.."
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
+ENABLE_RAG="${ENABLE_RAG:-false}"
 
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
@@ -30,6 +31,10 @@ export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
 export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
+TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
+export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
+TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
+export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 
 # apply kubernetes manifests
 echo "=== Applying Kubernetes manifests ==="
@@ -42,7 +47,13 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
 }
 
 # volumes
-kubectl apply -f volumes/
+for f in volumes/*.yaml; do
+  if [ "${ENABLE_RAG}" != "true" ] && [ "$(basename "$f")" = "pvc-rag-stores.yaml" ]; then
+    echo "Skipping rag-stores volume (ENABLE_RAG=${ENABLE_RAG})"
+    continue
+  fi
+  kubectl apply -f "$f"
+done
 
 # attach snapshot policy to chat-data PVC disk (idempotent)
 echo "=== Attaching snapshot policy to chat-data disk ==="
@@ -64,6 +75,9 @@ if [ -n "${SNAPSHOT_POLICY}" ]; then
   fi
 fi
 
+# configs
+kubectl apply -f configs/
+
 # ingress resources (substitute domain and static IP)
 for f in ingress/*.yaml; do
   envsubst '${DOMAIN} ${STATIC_IP_NAME}' < "$f" | kubectl apply -f -
@@ -74,13 +88,21 @@ kubectl apply -f network-policies/
 
 # deployments (substitute variables and image tags)
 for f in deployments/*.yaml; do
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE}' < "$f" | \
+  if [ "${ENABLE_RAG}" != "true" ] && [ "$(basename "$f")" = "rag-service.yaml" ]; then
+    echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
+    continue
+  fi
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
 echo ""
 echo "=== Checking rollout status ==="
-for deploy in frontend results-api db-api rag-service chat-backend mcp-server; do
+DEPLOYS="frontend results-api db-api chat-backend mcp-server"
+if [ "${ENABLE_RAG}" = "true" ]; then
+  DEPLOYS="${DEPLOYS} rag-service"
+fi
+for deploy in ${DEPLOYS}; do
   echo "Waiting for ${deploy}..."
   kubectl rollout status deployment/"${deploy}" -n "${NAMESPACE}" --timeout=300s || true
 done

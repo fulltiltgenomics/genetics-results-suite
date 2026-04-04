@@ -53,6 +53,7 @@ Internal only (ClusterIP + NetworkPolicy):
 │   ├── main.tf               # provider config, GCS backend
 │   ├── gke.tf                # GKE cluster and node pool
 │   ├── network.tf            # VPC, subnets, static IP, DNS
+│   ├── registry.tf           # Artifact Registry for Docker images
 │   ├── backups.tf            # daily disk snapshot schedule for chat-data PVC
 │   ├── iam.tf                # service accounts, Workload Identity
 │   ├── kubernetes.tf         # namespace, k8s service account
@@ -66,7 +67,7 @@ Internal only (ClusterIP + NetworkPolicy):
 
 ## Authentication
 
-- **oauth2-proxy** handles browser-based auth via Google OAuth, restricted to `@finngen.fi` accounts by default
+- **oauth2-proxy** handles browser-based auth via Google OAuth, restricted by `oauth_email_domain` terraform variable (default: `finngen.fi`)
 - **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying
 - **results-api** also accepts `Authorization: Bearer` tokens (Google Identity Tokens or internal shared secret)
 - **mcp-server** uses bearer token auth via `MCP_API_KEY` (not behind oauth2-proxy)
@@ -100,7 +101,7 @@ Internal only (ClusterIP + NetworkPolicy):
 
 ## Operational procedures
 
-- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time
+- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it)
 - **Single service update**: `./scripts/rollout.sh <service> <tag>` — updates one deployment image (requires `REGISTRY` env var)
 - **Build images**: `./scripts/build-all.sh` — builds and pushes all Docker images to Artifact Registry (requires `REGISTRY` env var)
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables
