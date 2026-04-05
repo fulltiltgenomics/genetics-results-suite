@@ -66,6 +66,18 @@ gcloud iam service-accounts add-iam-policy-binding \
 terraform@$GCP_PROJECT.iam.gserviceaccount.com \
 --member="user:you@your.org" \
 --role="roles/iam.serviceAccountTokenCreator"
+
+# When manage_iam=true, terraform creates a GSA, grants it project-level
+# roles, and binds the Workload Identity KSA→GSA relationship. These need
+# resourcemanager.projects.setIamPolicy and iam.serviceAccounts.setIamPolicy,
+# neither of which is in roles/editor. Grant them explicitly:
+gcloud projects add-iam-policy-binding $GCP_PROJECT \
+--member="serviceAccount:terraform@$GCP_PROJECT.iam.gserviceaccount.com" \
+--role="roles/resourcemanager.projectIamAdmin"
+
+gcloud projects add-iam-policy-binding $GCP_PROJECT \
+--member="serviceAccount:terraform@$GCP_PROJECT.iam.gserviceaccount.com" \
+--role="roles/iam.serviceAccountAdmin"
 ```
 
 Impersonate the service account:
