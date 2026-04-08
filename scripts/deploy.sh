@@ -92,7 +92,7 @@ for f in deployments/*.yaml; do
     echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
