@@ -41,6 +41,18 @@ spec:
           value: "http://chat-backend.genetics.svc.cluster.local:8000/chat"
         # - name: EXTERNAL_MCP_SERVERS
         #   value: "http://rag-service.genetics.svc.cluster.local:8000"
+        - name: ENABLE_SUBAGENTS
+          value: "false"
+        - name: SUBAGENT_MODEL
+          value: ""
+        - name: SUBAGENT_TIMEOUT
+          value: "120"
+        - name: SUBAGENT_ALLOWED_PATHS
+          value: ""
+        - name: ENABLE_SCRIPT_EXECUTION
+          value: "false"
+        - name: SUBAGENT_SCRIPT_TIMEOUT
+          value: "30"
         - name: LOG_LEVEL
           value: "INFO"
         readinessProbe:
