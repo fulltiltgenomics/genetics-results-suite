@@ -84,7 +84,7 @@ Internal only (ClusterIP + NetworkPolicy):
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
-- **Storage**: 10Gi PVC for chat-backend SQLite databases and file attachments; 50Gi PV/PVC for rag-service embedding stores
+- **Storage**: 10Gi PVC for chat-backend SQLite databases, file attachments, and tool result downloads; 50Gi PV/PVC for rag-service embedding stores
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: GCS bucket `genetics-results-terraform`
 
