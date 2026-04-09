@@ -103,5 +103,6 @@ Internal only (ClusterIP + NetworkPolicy):
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it)
 - **Single service update**: `./scripts/rollout.sh <service> <tag>` — updates one deployment image (requires `REGISTRY` env var)
-- **Build images**: `./scripts/build-all.sh` — builds and pushes all Docker images to Artifact Registry (requires `REGISTRY` env var)
+- **Build all images**: `./scripts/build-all.sh` — builds and pushes all Docker images to Artifact Registry (requires `REGISTRY` env var)
+- **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh)
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables
