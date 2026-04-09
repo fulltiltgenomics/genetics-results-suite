@@ -73,6 +73,24 @@ spec:
           value: "get_juha_colocalization_by_variant,get_juha_credible_sets_by_gene,get_juha_credible_sets_by_region,get_juha_credible_sets_by_variant,get_juha_gene_disease_associations,get_juha_qtls_by_gene"
         # - name: RAG_MCP_SERVER
         #   value: "http://rag-service.genetics.svc.cluster.local:8000"
+        - name: CHAT_PUBLIC_URL
+          value: "https://${DOMAIN}"
+        - name: DOWNLOAD_STORAGE_PATH
+          value: "/data/downloads"
+        - name: DOWNLOAD_TTL_SECONDS
+          value: "2592000"
+        - name: ENABLE_SUBAGENTS
+          value: "false"
+        - name: SUBAGENT_MODEL
+          value: ""
+        - name: SUBAGENT_TIMEOUT
+          value: "120"
+        - name: SUBAGENT_ALLOWED_PATHS
+          value: "/data"
+        - name: ENABLE_SCRIPT_EXECUTION
+          value: "false"
+        - name: SUBAGENT_SCRIPT_TIMEOUT
+          value: "30"
         - name: LOG_LEVEL
           value: "INFO"
         volumeMounts:
