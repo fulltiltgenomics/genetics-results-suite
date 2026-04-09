@@ -36,13 +36,15 @@ Internal only (ClusterIP + NetworkPolicy):
 ## Project structure
 
 ```
+├── configs/
+│   └── rag/                  # RAG experiment configs (not k8s manifests)
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── deployments/          # deployment manifests for all services
 │   ├── ingress/              # ingress, managed certs, backend/frontend configs
-│   ├── configs/              # service configuration files (e.g., RAG experiment configs)
+│   ├── configs/              # k8s config manifests (e.g., allowed emails)
 │   ├── network-policies/     # network isolation rules
-│   ├── secrets/              # non-sensitive secret templates (e.g., allowed emails)
+│   ├── secrets/              # non-sensitive secret templates
 │   └── volumes/              # persistent volume claims
 ├── scripts/
 │   ├── build-all.sh          # build and push all Docker images
