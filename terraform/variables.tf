@@ -84,3 +84,9 @@ variable "snapshot_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "enable_log_sinks" {
+  description = "Whether to create BigQuery log sinks (e.g. chat-backend logs to genetics_chat_logs)"
+  type        = bool
+  default     = false
+}
