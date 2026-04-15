@@ -25,7 +25,7 @@ spec:
         - name: DATASET_ID
           value: "genetics_results"
         - name: MAX_ROWS
-          value: "10000"
+          value: "100000"
         readinessProbe:
           httpGet:
             path: /health
