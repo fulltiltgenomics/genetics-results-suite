@@ -31,7 +31,7 @@ QUALITY CODING RULES
 
 1. Don't guess and do things which you are not certain about. Ask the user instead.
 2. Don't add or modify code unrelated to the specific request and context at the moment.
-3. Only use git when asked, and when using git, only stage changes and propose a commit message. Let the user review the changes and commit them.
+3. In interactive mode: only use git when asked, stage changes and propose a commit message for user review. In autonomous/orchestrator mode (e.g. ralph wiggum): commit after each completed task with a descriptive message.
 4. **Always** prior to finishing a task and considering it completed, revise all the changes and update Project Specification files.
 5. When trying to fix any bug or error **ALWAYS** think carefully and analyze in detail what happened and WHY? Explain and confirm with user.
 
@@ -107,4 +107,19 @@ bd close <id>         # Complete work
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+# Feature Planning Workflow
+
+When the user requests a new feature:
+
+1. **Create epic**: `bd create "Feature: <name>" -d "<description>" -t epic -p 2`
+2. **Explore alternatives**: invoke the architecture-explorer agent with the feature description — it proposes 3 architecture alternatives with max reasoning effort
+3. **User selects alternative**: present the 3 alternatives and wait for the user's choice
+4. **Create subtasks**: break the selected alternative into ultrafocused subtasks under the epic
+   - each subtask has a single responsibility and small scope
+   - each is independently implementable with minimal context needed
+   - include specific files to modify in the description
+   - `bd create "subtask title" -d "details" -t subtask --parent <epic-id>`
+5. **Set dependencies**: `bd link <blocker-id> <blocked-id> --type blocks` for ordered work
+6. **Execute**: work through subtasks via `bd ready`, updating status as you go
 <!-- END BEADS INTEGRATION -->
