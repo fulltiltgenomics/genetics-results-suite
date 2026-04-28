@@ -18,3 +18,8 @@ k8s/secrets/oauth2-allowed-emails.yaml
 
 # OS
 .DS_Store
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
