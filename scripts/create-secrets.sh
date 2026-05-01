@@ -10,6 +10,7 @@ set -euo pipefail
 #   MCP_API_KEY           - bearer token for MCP server auth (optional)
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
+#   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (auto-generated if not set)
 #
 # oauth2-proxy secrets are created separately — see README.md
@@ -34,6 +35,7 @@ kubectl create secret generic genetics-secrets \
   --from-literal=mcp-api-key="${MCP_API_KEY:-}" \
   --from-literal=cohere-api-key="${COHERE_API_KEY}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
+  --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
   --dry-run=client -o yaml | kubectl apply -f -
 

@@ -41,6 +41,14 @@ spec:
           value: "http://chat-backend.genetics.svc.cluster.local:8000/chat"
         # - name: EXTERNAL_MCP_SERVERS
         #   value: "http://rag-service.genetics.svc.cluster.local:8000"
+        - name: ENABLE_ADMIN_PAGE
+          value: "true"
+        - name: ADMIN_USERS
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: admin-users
+              optional: true
         - name: ENABLE_SUBAGENTS
           value: "false"
         - name: SUBAGENT_MODEL
