@@ -77,6 +77,14 @@ spec:
           value: "/data/downloads"
         - name: DOWNLOAD_TTL_SECONDS
           value: "2592000"
+        - name: ENABLE_ADMIN_PAGE
+          value: "true"
+        - name: ADMIN_USERS
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: admin-users
+              optional: true
         - name: ENABLE_SUBAGENTS
           value: "false"
         - name: SUBAGENT_MODEL
