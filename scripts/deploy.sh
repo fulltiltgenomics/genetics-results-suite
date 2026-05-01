@@ -6,14 +6,20 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
+SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # apply terraform
-echo "=== Applying Terraform ==="
 cd "${ROOT_DIR}/terraform"
-terraform init
-terraform apply -auto-approve
+if [ "${SKIP_TERRAFORM}" = "true" ]; then
+  echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
+  terraform init -input=false > /dev/null
+else
+  echo "=== Applying Terraform ==="
+  terraform init
+  terraform apply -auto-approve
+fi
 
 # configure kubectl
 echo "=== Configuring kubectl ==="
