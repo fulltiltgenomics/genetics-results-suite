@@ -70,11 +70,13 @@ This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full 
 ### Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+bd ready --json              # Find available work
+bd show <id> --json          # View issue details
+bd update <id> --claim --json  # Claim work
+bd close <id> --json         # Complete work
 ```
+
+**IMPORTANT**: Always use `--json` flag with ALL `bd` commands for structured, parseable output.
 
 ### Rules
 
@@ -110,16 +112,24 @@ bd close <id>         # Complete work
 
 # Feature Planning Workflow
 
-When the user requests a new feature:
+**MANDATORY**: This workflow MUST be followed for EVERY feature request, no exceptions. Do NOT skip steps or start coding without completing the planning phase. If the user asks for a feature and you begin writing code without first creating an epic, exploring alternatives, and getting user approval, you are violating this rule.
 
-1. **Create epic**: `bd create "Feature: <name>" -d "<description>" -t epic -p 2`
+**Steps (execute in strict order):**
+
+1. **Create epic**: `bd create --title="Feature: <name>" --description="<description>" --type=epic --priority=2 --json`
 2. **Explore alternatives**: invoke the architecture-explorer agent with the feature description — it proposes 3 architecture alternatives with max reasoning effort
-3. **User selects alternative**: present the 3 alternatives and wait for the user's choice
+3. **User selects alternative**: present the 3 alternatives and STOP. Wait for the user's explicit choice before proceeding. Do NOT assume a choice or continue without user input.
 4. **Create subtasks**: break the selected alternative into ultrafocused subtasks under the epic
    - each subtask has a single responsibility and small scope
    - each is independently implementable with minimal context needed
    - include specific files to modify in the description
-   - `bd create "subtask title" -d "details" -t subtask --parent <epic-id>`
-5. **Set dependencies**: `bd link <blocker-id> <blocked-id> --type blocks` for ordered work
-6. **Execute**: work through subtasks via `bd ready`, updating status as you go
+   - `bd create --title="subtask title" --description="details" --type=subtask --parent=<epic-id> --json`
+5. **Set dependencies**: `bd dep add <issue> <depends-on> --json` for ordered work
+6. **Execute**: work through subtasks via `bd ready --json`, claiming with `bd update <id> --claim --json`, closing with `bd close <id> --json`
+
+**NEVER**:
+- Start coding a feature without creating an epic first
+- Skip the architecture exploration step
+- Proceed past step 3 without explicit user selection
+- Create subtasks without `--parent` linking them to the epic
 <!-- END BEADS INTEGRATION -->
