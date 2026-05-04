@@ -14,7 +14,20 @@ data:
     }
 
     http {
-      access_log /dev/stdout;
+      # redact token= query parameter from access logs to prevent credential leakage
+      map $request_uri $sanitized_request_uri {
+        "~^(?<path>[^?]*)\?token=[^&]*$"                       "$path?token=[REDACTED]";
+        "~^(?<path>[^?]*)\?token=[^&]*&(?<rest>.*)$"           "$path?token=[REDACTED]&$rest";
+        "~^(?<path>[^?]*)\?(?<pre>.*?)&token=[^&]*(?<post>.*)$" "$path?$pre&token=[REDACTED]$post";
+        default                                                 $request_uri;
+      }
+
+      log_format redacted '$remote_addr - $remote_user [$time_local] '
+                          '"$request_method $sanitized_request_uri $server_protocol" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent"';
+
+      access_log /dev/stdout redacted;
       resolver kube-dns.kube-system.svc.cluster.local valid=10s;
 
       server {
