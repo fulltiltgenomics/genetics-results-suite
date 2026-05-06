@@ -70,7 +70,7 @@ spec:
               key: external-mcp-servers
               optional: true
         - name: EXTERNAL_MCP_EXCLUDE_TOOLS
-          value: "get_juha_colocalization_by_variant,get_juha_credible_sets_by_gene,get_juha_credible_sets_by_region,get_juha_credible_sets_by_variant,get_juha_gene_disease_associations,get_juha_qtls_by_gene"
+          value: "aou_gene_burden_phewas,aou_phenotype_top_genes,aou_phenotype_top_variants,aou_search_phenotypes,aou_variant_phewas"
         # - name: RAG_MCP_SERVER
         #   value: "http://rag-service.genetics.svc.cluster.local:8000"
         - name: DOWNLOAD_STORAGE_PATH
