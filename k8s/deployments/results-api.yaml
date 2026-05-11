@@ -35,6 +35,13 @@ spec:
           value: "http://chat-backend.genetics.svc.cluster.local:8000/chat"
         - name: LOG_SOURCE
           value: "${LOG_SOURCE}"
+        - name: DATASETS_CONFIG_PATH
+          value: "/app/configs/datasets.yaml"
+        volumeMounts:
+        - name: datasets-config
+          mountPath: /app/configs/datasets.yaml
+          subPath: datasets.yaml
+          readOnly: true
         readinessProbe:
           httpGet:
             path: /healthz
@@ -54,6 +61,10 @@ spec:
           limits:
             cpu: "2"
             memory: "4Gi"
+      volumes:
+      - name: datasets-config
+        configMap:
+          name: datasets-config
 ---
 apiVersion: v1
 kind: Service

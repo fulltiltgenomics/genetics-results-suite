@@ -84,6 +84,11 @@ fi
 # configs
 kubectl apply -f configs/
 
+# datasets ConfigMap (single source of truth for dataset definitions)
+kubectl create configmap datasets-config \
+  --from-file=datasets.yaml="${ROOT_DIR}/configs/datasets.yaml" \
+  -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
 # ingress resources (substitute domain and static IP)
 for f in ingress/*.yaml; do
   envsubst '${DOMAIN} ${STATIC_IP_NAME}' < "$f" | kubectl apply -f -
