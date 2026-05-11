@@ -26,6 +26,13 @@ spec:
           value: "genetics_results"
         - name: MAX_ROWS
           value: "100000"
+        - name: DATASETS_CONFIG_PATH
+          value: "/app/configs/datasets.yaml"
+        volumeMounts:
+        - name: datasets-config
+          mountPath: /app/configs/datasets.yaml
+          subPath: datasets.yaml
+          readOnly: true
         readinessProbe:
           httpGet:
             path: /health
@@ -45,6 +52,10 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
+      volumes:
+      - name: datasets-config
+        configMap:
+          name: datasets-config
 ---
 apiVersion: v1
 kind: Service
