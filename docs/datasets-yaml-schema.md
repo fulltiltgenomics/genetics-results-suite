@@ -1,0 +1,264 @@
+# datasets.yaml Schema Reference
+
+Canonical schema for `configs/datasets.yaml` -- the single source of truth for dataset
+and resource definitions consumed by all services in the genetics results platform.
+
+## Top-level structure
+
+```yaml
+# shared across all profiles
+resources: { ... }
+tables: { ... }
+dataset_to_resource_rules: [ ... ]
+
+# per-profile
+profiles:
+  finngen: { ... }
+  daly: { ... }
+```
+
+## Section: `resources`
+
+Profile-independent metadata for each resource (data source). Used by db-api to expose
+human-readable labels, descriptions, and aliases so LLM agents can map user intent to
+the correct `resource` filter value.
+
+```yaml
+resources:
+  <resource_id>:          # string, lowercase, matches `resource` column in BQ views
+    label: string         # required -- human-readable display name
+    description: string   # required -- one-line description of the resource
+    aliases: [string]     # optional (default []) -- alternate names users might use
+```
+
+### Collection resources
+
+Some resources represent large collections of sub-studies (e.g. eQTL Catalogue with
+hundreds of QTD* datasets). These are declared with extra fields:
+
+```yaml
+resources:
+  eqtl_catalogue:
+    label: "eQTL Catalogue"
+    description: "..."
+    aliases: []
+    collection: true                # flags this as a collection resource
+    collection_id_prefix: "qtd"     # lowercase prefix pattern for dataset IDs
+    collection_data_types: ["eQTL", "sQTL"]  # data types in the collection
+```
+
+**Consumer**: db-api (`_RESOURCE_METADATA`, `_COLLECTION_RESOURCE_PREFIXES`)
+
+## Section: `tables`
+
+Profile-independent metadata for BigQuery view tables. Contains descriptions,
+column descriptions, example queries, and categorical column configuration.
+
+```yaml
+tables:
+  <table_name>:                    # e.g. "credible_sets_v"
+    description: string            # required -- table-level description
+
+    columns:                       # optional -- per-column descriptions
+      <column_name>: string        # description text; overrides BQ field descriptions
+
+    examples:                      # optional -- example SQL queries for agents
+      - description: string        # what the query demonstrates
+        sql: string                # the SQL query text
+
+    categorical_columns:           # optional -- low-cardinality columns exposed in /schema
+      <column_name>: string | null
+        # null: flat list of distinct values
+        # string: values depend on this parent column (e.g. "resource")
+```
+
+### Field details for `tables.<table>.categorical_columns`
+
+The value for each categorical column entry controls how distinct values are fetched:
+
+| Value  | Meaning |
+|--------|---------|
+| `null` | Independent -- all distinct values returned as a flat list |
+| `"resource"` | Dependent -- distinct values grouped by the named parent column |
+
+Example: `dataset: "resource"` means the allowed dataset values differ per resource.
+
+**Consumer**: db-api (`_TABLE_DESCRIPTIONS`, `_COLUMN_DESCRIPTIONS`, `_TABLE_EXAMPLES`, `_CATEGORICAL_COLUMNS`)
+
+## Section: `dataset_to_resource_rules`
+
+Ordered list of pattern-based rules mapping the `dataset` column values in BigQuery
+tables to `resource` identifiers. Used to generate SQL `CASE/WHEN` expressions in
+BigQuery views, and by the results-api for Python-side mapping.
+
+Rules are evaluated top-to-bottom; the first matching rule wins. A fallback rule
+with `pattern: "*"` should be last.
+
+```yaml
+dataset_to_resource_rules:
+  - pattern: string        # required -- SQL LIKE pattern (% for wildcard) or "*" for fallback
+    resource: string|null  # required -- resource_id to assign, or null when using transform
+    transform: string      # optional -- transformation to apply (only "lowercase" supported)
+    comment: string        # optional -- explains why the rule exists
+```
+
+### Pattern semantics
+
+| Pattern | SQL equivalent | Matches |
+|---------|---------------|---------|
+| `"FinnGen%MVP_UKBB%"` | `dataset LIKE 'FinnGen%MVP_UKBB%'` | FinnGen_R13_MVP_UKBB, FinnGen_R13_MVP_UKBB_labs |
+| `"FinnGen%UKBB%"` | `dataset LIKE 'FinnGen%UKBB%'` | FinnGen_R13_UKBB, FinnGen_R13_UKBB_labs |
+| `"FinnGen%"` | `dataset LIKE 'FinnGen%'` | All other FinnGen datasets |
+| `"genebass"` | `dataset = 'genebass'` | Exact match |
+| `"*"` + `transform: "lowercase"` | `ELSE LOWER(dataset)` | Fallback: lowercased dataset name becomes resource |
+
+**Order matters**: more specific patterns must come before broader ones (e.g.
+`FinnGen%MVP_UKBB%` before `FinnGen%`).
+
+Different views may use different subsets of these rules. The `applies_to` field
+(optional) restricts a rule to specific views:
+
+```yaml
+  - pattern: "genebass"
+    resource: "genebass"
+    applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
+```
+
+When `applies_to` is omitted, the rule applies to all views that use resource mapping.
+
+### Design note: version is not part of mapping rules
+
+The mapping rules resolve dataset→resource only. The API's Python-side consumer also
+needs a `(resource, version)` tuple, but version is always resolved from the profile's
+dataset registry (`profiles.<profile>.datasets.<id>.version`), not from the mapping
+rules. This keeps the rules focused on SQL view generation and resource lookup.
+
+**Consumer**: db SQL view generation script, results-api dataset-to-resource mapper
+
+## Section: `profiles`
+
+Per-deployment-profile configuration. Each profile has its own dataset registry and
+GCS bucket paths. The two current profiles are `finngen` (internal FinnGen access) and
+`daly` (Broad-hosted copy with different bucket paths).
+
+```yaml
+profiles:
+  <profile_name>:
+    datasets:
+      <dataset_id>:              # stable identifier referenced by product configs
+        resource: string         # required -- resource_id (must exist in `resources`)
+        version: string          # required -- human-readable version label
+        description: string      # required -- dataset description surfaced to API users
+        author: string           # required -- study author / consortium
+        publication_date: string # required -- YYYY-MM-DD or "NA"
+        data_type: string        # required -- see enum below
+        trait_type: string|null  # required -- see enum below; null for non-association data
+
+        # optional fields
+        metadata_file: string|null       # GCS path to per-phenotype metadata (null if none)
+        metadata_harmonizer: string|null # harmonizer type name, or null
+        n_samples: integer               # total sample size
+        n_cases: integer                 # case count (binary traits)
+        n_controls: integer              # control count (binary traits)
+        n_phenotypes: integer            # number of phenotypes
+        pseudo_credible_sets: boolean    # true if credible sets are pseudo (not fine-mapped)
+        collection: boolean              # true if this is a collection of sub-studies
+        subdataset_id_field: string      # field identifying sub-studies (when collection=true)
+        qtl_types: [string]              # QTL types in collection (e.g. ["eQTL", "sQTL"])
+        phenotypes:                      # inline phenotype list (small fixed-phenotype datasets)
+          - phenotype_code: string
+            phenotype_string: string
+            n_cases: integer
+            n_controls: integer
+            n_samples: integer
+```
+
+### `data_type` enum
+
+| Value | Description |
+|-------|-------------|
+| `gwas` | Genome-wide association study |
+| `eqtl` | Expression QTL |
+| `pqtl` | Protein QTL |
+| `sqtl` | Splicing QTL |
+| `caqtl` | Chromatin accessibility QTL |
+| `metaboqtl` | Metabolomics QTL |
+| `mixed` | Multiple QTL types (collections) |
+| `exome` | Exome variant-level results |
+| `gene_based` | Gene-level burden test results |
+| `expression` | Gene/protein expression levels |
+| `chromatin_peaks` | Chromatin accessibility peaks |
+| `gene_disease` | Gene-disease associations |
+
+### `trait_type` enum
+
+| Value | Description |
+|-------|-------------|
+| `binary` | Case/control phenotypes |
+| `quantitative` | Continuous phenotypes |
+| `mixed` | Both binary and quantitative |
+| `null` | Non-association data (expression, chromatin_peaks, gene_disease) |
+
+### Profile differences
+
+The finngen and daly profiles share identical dataset definitions and descriptions.
+They differ only in `metadata_file` GCS paths, which point to different buckets:
+
+- **finngen**: `gs://finngen-commons/results_api_data/...`
+- **daly**: `gs://daly-genetics-results/...`
+
+When `metadata_file` is `null`, the entry is identical across profiles.
+
+**Consumer**: results-api (`datasets` registry, dataset-to-resource mapping)
+
+## How each service consumes the config
+
+### genetics-results-api (results-api)
+
+Reads `profiles.<active_profile>.datasets` to build:
+1. The **dataset registry** dict keyed by `dataset_id` -- used for the `/datasets` endpoint
+   and by product configs (credible_sets, coloc, summary_stats) that reference datasets
+2. The **dataset-to-resource mapping** -- currently in `common.py` as `dataset_to_resource`,
+   used to group datasets under resources for the API
+
+The active profile is selected via `CONFIG_PROFILE` env var.
+
+### genetics-results-db (db-api)
+
+Reads profile-independent sections:
+1. `resources` -> builds `_RESOURCE_METADATA` dict
+2. `tables` -> builds `_TABLE_DESCRIPTIONS`, `_COLUMN_DESCRIPTIONS`, `_TABLE_EXAMPLES`, `_CATEGORICAL_COLUMNS`
+
+Does not currently use the per-profile datasets section directly.
+
+### SQL view generation (build-time)
+
+A generation script reads `dataset_to_resource_rules` to produce `CASE/WHEN` SQL
+fragments used in BigQuery view definitions (`schemas/*.sql`).
+
+## Relationship between resources and datasets
+
+```
+resource (1) <------- (*) dataset
+   |                       |
+   |  shared metadata:     |  per-profile:
+   |  - label              |  - version
+   |  - description        |  - description
+   |  - aliases            |  - metadata_file (GCS path)
+   |                       |  - author, publication_date, etc.
+   |
+   +-- used in BQ views as the `resource` column
+   +-- derived from `dataset` column via mapping rules
+```
+
+A **resource** is a data source (e.g. "finngen", "ukbb"). Multiple **datasets** can
+belong to the same resource (e.g. `finngen_gwas`, `finngen_pqtl`, `finngen_eqtl` all
+map to resource `finngen`). The `dataset_to_resource_rules` define how raw dataset
+column values in BigQuery are mapped to resource identifiers in SQL views.
+
+### Resource ID reconciliation note
+
+Some BigQuery tables use versioned resource IDs (e.g. `bipex2`, `schema2`) while the
+API dataset registry references unversioned IDs (e.g. `bipex`, `schema`). When
+populating the real `datasets.yaml`, these must be reconciled so that mapping rules,
+resource definitions, and dataset entries all use consistent identifiers.
