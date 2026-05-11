@@ -262,3 +262,34 @@ Some BigQuery tables use versioned resource IDs (e.g. `bipex2`, `schema2`) while
 API dataset registry references unversioned IDs (e.g. `bipex`, `schema`). When
 populating the real `datasets.yaml`, these must be reconciled so that mapping rules,
 resource definitions, and dataset entries all use consistent identifiers.
+
+## Dev environment
+
+Each service repo (genetics-results-api, genetics-results-db) runs independently in
+its own tmux window during local development. To keep them in sync with the canonical
+`configs/datasets.yaml` from the suite repo:
+
+**Syncing the config**
+
+From the suite repo root, run:
+
+```bash
+./scripts/sync-datasets.sh
+```
+
+This copies `configs/datasets.yaml` to `../genetics-results-db/configs/datasets.yaml`
+and `../genetics-results-api/configs/datasets.yaml`, creating the `configs/` directories
+if needed.
+
+**How services load the config**
+
+Each service reads datasets.yaml from the path in the `DATASETS_CONFIG_PATH` env var,
+defaulting to `./configs/datasets.yaml` when unset.
+
+**Committed local copy**
+
+The local copy of datasets.yaml should be committed to each service repo as a
+known-good snapshot. This simplifies onboarding (clone and run, no extra sync step)
+and lets CI compare the committed copy against the suite repo's canonical version to
+detect drift. The deploy pipeline always delivers the canonical version at deploy time,
+so a stale local copy only affects local dev.
