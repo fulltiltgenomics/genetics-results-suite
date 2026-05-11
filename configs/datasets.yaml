@@ -1,0 +1,1564 @@
+# datasets.yaml — single source of truth for dataset and resource definitions
+# See docs/datasets-yaml-schema.md for field documentation.
+
+# ---------------------------------------------------------------------------
+# Resources: profile-independent metadata for data sources
+# Used by db-api to build _RESOURCE_METADATA for agent-facing /schema endpoint
+# ---------------------------------------------------------------------------
+resources:
+  finngen:
+    label: "FinnGen"
+    description: "FinnGen study — GWAS, eQTL, pQTL, caQTL results from Finnish biobank data"
+    aliases: ["FinnGen"]
+
+  finngen_ukbb:
+    label: "FinnGen+UKB"
+    description: "FinnGen + UK Biobank GWAS meta-analysis"
+    aliases: ["finngen ukbb", "finngen uk biobank"]
+
+  finngen_mvp_ukbb:
+    label: "FinnGen+MVP+UKB"
+    description: "FinnGen + Million Veteran Program + UK Biobank GWAS meta-analysis"
+    aliases: ["finngen mvp", "finngen mvp ukbb"]
+
+  open_targets:
+    label: "Open Targets Genetics"
+    description: "Open Targets GWAS summary statistics and fine-mapping"
+    aliases: ["open targets", "OT", "OTG"]
+
+  ukbb:
+    label: "UK Biobank"
+    description: "UK Biobank pQTL and GWAS results"
+    aliases: ["uk biobank", "UKB", "UKBB"]
+
+  bipex2:
+    label: "BipEx2"
+    description: "Bipolar Exome Sequencing study v2 — gene burden results for bipolar disorder"
+    aliases: ["bipex", "BipEx", "bipolar exome"]
+
+  schema2:
+    label: "SCHEMA2"
+    description: "Schizophrenia Exome Meta-analysis v2 — gene burden results for schizophrenia"
+    aliases: ["schema", "SCHEMA", "schizophrenia exome"]
+
+  genebass:
+    label: "Genebass"
+    description: "Gene burden results and EWAS exome variant results from UK Biobank"
+    aliases: ["gene bass", "uk biobank exome", "UKB exome"]
+
+  ibd_exome_2026:
+    label: "IBD Exome 2026"
+    description: "IBD (inflammatory bowel disease) exome sequencing project gene burden and variant analysis"
+    aliases: ["ibd exome", "IBD"]
+
+  finnliver:
+    label: "FinnLiver"
+    description: "FinnLiver liver eQTL study"
+    aliases: ["finn liver", "liver eQTL"]
+
+  generisk:
+    label: "GeneRisk"
+    description: "GeneRisk metabolome GWAS study"
+    aliases: []
+
+  interval:
+    label: "INTERVAL"
+    description: "INTERVAL pQTL study"
+    aliases: []
+
+  # collection resource
+  eqtl_catalogue:
+    label: "eQTL Catalogue"
+    description: >-
+      eQTL Catalogue datasets — hundreds of tissue/cell-type QTL studies.
+      Dataset IDs follow the pattern QTDNNNNNN (e.g. QTD000001).
+      Use the list_datasets tool to browse available eQTL Catalogue datasets.
+    aliases: []
+    collection: true
+    collection_id_prefix: "qtd"
+    collection_data_types: ["eQTL", "sQTL"]
+
+  # resources not in db _RESOURCE_METADATA but referenced by API datasets
+  ukbb_finucane:
+    label: "UKB Finucane"
+    description: "UK Biobank GWAS of 119 traits (Kanai et al. 2021)"
+    aliases: []
+
+  finngen_nmr:
+    label: "FinnGen NMR"
+    description: "FinnGen Nightingale NMR metabolomics QTLs"
+    aliases: ["finngen nmr", "NMR"]
+
+  gtex:
+    label: "GTEx"
+    description: "Genotype-Tissue Expression project — gene expression across human tissues"
+    aliases: ["GTEx"]
+
+  hpa:
+    label: "Human Protein Atlas"
+    description: "Human Protein Atlas protein expression across tissues and cell types"
+    aliases: ["HPA"]
+
+  gencc:
+    label: "GenCC"
+    description: "Gene Curation Coalition gene-disease validity classifications"
+    aliases: ["GenCC"]
+
+  monarch:
+    label: "Monarch Initiative"
+    description: "Monarch Initiative causal gene-to-disease associations"
+    aliases: ["Monarch"]
+
+  pgc:
+    label: "PGC"
+    description: "Psychiatric Genomics Consortium GWAS studies"
+    aliases: ["PGC"]
+
+# ---------------------------------------------------------------------------
+# Tables: profile-independent BigQuery view metadata
+# Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
+# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS
+# ---------------------------------------------------------------------------
+tables:
+  credible_sets_v:
+    description: >-
+      Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
+      Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
+
+    columns:
+      dataset: "Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2)"
+      data_type: "Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL"
+      trait: "Trait/phenotype name"
+      trait_original: "Original trait name in the respective dataset, e.g. phenotype code"
+      cell_type: "Cell type or tissue context (for QTL data)"
+      chr: "Chromosome number"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative (effect) allele"
+      mlog10p: "-log10(p-value). Higher = more significant. 7.30103 = genome-wide significance (p-value 5e-8)"
+      beta: "Effect size estimate (log-OR for binary traits)"
+      se: "Standard error of beta"
+      pip: "Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal"
+      cs_id: "Credible set identifier — groups variants in the same causal signal"
+      cs_size: "Number of variants in this credible set"
+      cs_min_r2: "Minimum pairwise LD r² within the credible set"
+      aaf: "Alternative allele frequency. Prefer maf column for minor allele frequency"
+      most_severe: "Most severe VEP-predicted variant consequence"
+      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23"
+      maf: "Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf"
+      resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    examples:
+      - description: "Fine-mapped variants for a gene from FinnGen with high PIP"
+        sql: >-
+          SELECT trait, variant, pip, mlog10p, beta
+          FROM credible_sets_v
+          WHERE gene_most_severe = 'PCSK9' AND resource = 'finngen' AND pip > 0.1
+          ORDER BY pip DESC
+
+      - description: "Credible sets for a phenotype across resources"
+        sql: >-
+          SELECT resource, dataset, variant, pip, mlog10p
+          FROM credible_sets_v
+          WHERE trait = 'T2D' AND pip > 0.5
+          ORDER BY pip DESC LIMIT 50
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      data_type: "resource"
+      most_severe: null
+
+  colocalization_v:
+    description: >-
+      Colocalization analysis results (coloc.susie) between pairs of studies.
+      PP_H4_abf indicates shared causal variant probability.
+
+    columns:
+      dataset1: "Study 1 dataset name"
+      dataset2: "Study 2 dataset name"
+      data_type1: "Study 1 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL)"
+      data_type2: "Study 2 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL)"
+      trait1: "Trait/phenotype name for study 1"
+      trait1_original: "Original trait name for study 1, e.g. phenotype code"
+      trait2: "Trait/phenotype name for study 2"
+      trait2_original: "Original trait name for study 2, e.g. phenotype code"
+      cell_type1: "Cell/tissue context for trait 1"
+      cell_type2: "Cell/tissue context for trait 2"
+      cs1_id: "Credible set ID for trait 1"
+      cs2_id: "Credible set ID for trait 2"
+      hit1: "Variant that coloc predicted to be the most likely causal variant in trait 1 (chr:pos:ref:alt)"
+      hit2: "Variant that coloc predicted to be the most likely causal variant in trait 2 (chr:pos:ref:alt)"
+      hit1_beta: "Effect size for lead variant in trait 1"
+      hit1_mlog10p: "-log10(p) for lead variant in trait 1"
+      hit2_beta: "Effect size for lead variant in trait 2"
+      hit2_mlog10p: "-log10(p) for lead variant in trait 2"
+      chr: "Chromosome number, chromosome X is 23"
+      region_start_min: "Start of the analyzed region (GRCh38)"
+      region_end_max: "End of the analyzed region (GRCh38)"
+      PP_H0_abf: "Posterior probability neither trait has association in the region"
+      PP_H1_abf: "Posterior probability only trait 1 has association"
+      PP_H2_abf: "Posterior probability only trait 2 has association"
+      PP_H3_abf: "Posterior probability both traits associate via DIFFERENT causal variants"
+      PP_H4_abf: "Posterior probability both traits associate and share the SAME causal variant. Generally >0.8 suggests colocalization"
+      nsnps: "Number of SNPs in the region in both credible sets"
+      nsnps1: "SNPs in the region for trait 1"
+      nsnps2: "SNPs in the region for trait 2"
+      cs1_log10bf: "log10 Bayes factor for credible set 1"
+      cs2_log10bf: "log10 Bayes factor for credible set 2"
+      clpp: "Causal posterior probability"
+      clpa: "Causal posterior agreement"
+      cs1_size: "Number of variants in credible set 1"
+      cs2_size: "Number of variants in credible set 2"
+      cs_overlap: "Number of variants shared between both credible sets"
+      topInOverlap: "Whether the maximum PIP variant was in overlap of regions or not, for both traits, e.g. 1,1 or 0,0"
+      resource1: "Data source for study 1 (lowercase)"
+      resource2: "Data source for study 2 (lowercase)"
+
+    examples:
+      - description: "Find GWAS-eQTL colocalizations for a gene"
+        sql: >-
+          SELECT trait1, trait2, cell_type2, PP_H4_abf, hit1, dataset2
+          FROM colocalization_v
+          WHERE trait2 = 'PCSK9' AND data_type2 = 'eQTL' AND PP_H4_abf > 0.8
+          ORDER BY PP_H4_abf DESC
+
+    categorical_columns:
+      resource1: null
+      resource2: null
+      dataset1: "resource1"
+      dataset2: "resource2"
+      data_type1: "resource1"
+      data_type2: "resource2"
+
+  coloc_credsets_v:
+    description: >-
+      Individual credible set variants in colocalized credible sets.
+      Join with colocalization_v on cs1_id/cs2_id for full colocalization context.
+
+    columns:
+      dataset: "Study/release name"
+      data_type: "Association type (GWAS, eQTL, pQTL, etc.)"
+      trait: "Trait/phenotype name"
+      trait_original: "Original trait name in the respective dataset, e.g. phenotype code"
+      cell_type: "Cell/tissue context"
+      chr: "Chromosome number, chromosome X is 23"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative (effect) allele"
+      mlog10p: "-log10(p-value)"
+      beta: "Effect size estimate (log-OR for binary traits)"
+      se: "Standard error of beta"
+      pip: "Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal"
+      cs_id: "Credible set identifier (matches cs1_id or cs2_id in colocalization_v)"
+      variant: "Variant identifier as chr:pos:ref:alt"
+      resource: "Data source identifier (lowercase)"
+
+    examples:
+      - description: "Get variants in a colocalization credible set"
+        sql: >-
+          SELECT variant, pip, mlog10p, beta
+          FROM coloc_credsets_v
+          WHERE cs_id = 'cs_id_here'
+          ORDER BY pip DESC
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      data_type: "resource"
+
+  exome_variant_results_v:
+    description: >-
+      Single-variant exome association results (e.g. Genebass/UK Biobank exomes).
+
+    columns:
+      dataset: "Study name (e.g. genebass)"
+      chr: "Chromosome number, chromosome X is 23"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative (effect) allele"
+      gene: "Gene symbol (e.g. PCSK9)"
+      annotation: "Variant annotation filter (e.g. pLoF, missense, synonymous, LC)"
+      mlog10p: "-log10(p-value) for the single-variant association. Higher = more significant"
+      beta: "Effect size estimate (log-OR for binary traits)"
+      se: "Standard error of beta"
+      af_overall: "Overall alternative allele frequency"
+      af_cases: "Alternative allele frequency in cases"
+      af_controls: "Alternative allele frequency in controls"
+      ac: "Alternative allele count"
+      an: "Alternative allele number (total alleles genotyped)"
+      heritability: "SNP heritability estimate for the trait"
+      trait: "Trait/phenotype name"
+      variant: "Variant identifier as chr:pos:ref:alt"
+      resource: "Data source identifier (lowercase)"
+
+    examples:
+      - description: "Significant exome variant associations for a gene"
+        sql: >-
+          SELECT gene, variant, annotation, mlog10p, beta, trait
+          FROM exome_variant_results_v
+          WHERE gene = 'PCSK9' AND mlog10p > 3
+          ORDER BY mlog10p DESC
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      annotation: "resource"
+
+  gene_burden_results_v:
+    description: >-
+      Gene-level burden test results from exome sequencing studies
+      (e.g. BipEx2, SCHEMA2, Genebass, IBD exome).
+
+    columns:
+      dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome_2026)"
+      trait: "Trait/phenotype name"
+      gene: "Gene symbol (e.g. PCSK9)"
+      gene_id: "Ensembl gene ID (e.g. ENSG00000169174)"
+      chr: "Chromosome number, chromosome X is 23"
+      gene_start_pos: "Gene start position (GRCh38)"
+      gene_end_pos: "Gene end position (GRCh38)"
+      annotation: "Variant annotation filter used in burden test (e.g. pLoF, missense, PTV)"
+      mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
+      beta: "Effect size estimate from burden test"
+      se: "Standard error of beta"
+      total_variants: "Total qualifying variants in the gene"
+      total_variants_pheno: "Qualifying variants with phenotype data"
+      n_cases: "Number of cases in the analysis"
+      n_controls: "Number of controls in the analysis"
+      description: "Human-readable trait/phenotype description"
+      coding_description: "Coded trait description"
+      category: "Trait category grouping"
+      resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
+
+    examples:
+      - description: "Significant gene burden results from BipEx2 bipolar exome study"
+        sql: >-
+          SELECT gene, annotation, mlog10p_burden, beta, n_cases, n_controls, description
+          FROM gene_burden_results_v
+          WHERE resource = 'bipex2' AND mlog10p_burden > 3
+          ORDER BY mlog10p_burden DESC LIMIT 20
+
+      - description: "Compare burden results for a gene across all exome studies"
+        sql: >-
+          SELECT resource, dataset, annotation, mlog10p_burden, beta, description
+          FROM gene_burden_results_v
+          WHERE gene = 'PCSK9'
+          ORDER BY mlog10p_burden DESC
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      annotation: "resource"
+
+# ---------------------------------------------------------------------------
+# Dataset-to-resource mapping rules
+# Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views
+# and for Python-side mapping in results-api.
+# ---------------------------------------------------------------------------
+dataset_to_resource_rules:
+  # credible_sets_v, colocalization_v, coloc_credsets_v patterns
+  - pattern: "FinnGen%MVP_UKBB%"
+    resource: "finngen_mvp_ukbb"
+    comment: "meta-analysis datasets including MVP"
+
+  - pattern: "FinnGen%UKBB%"
+    resource: "finngen_ukbb"
+    comment: "FinnGen + UK Biobank meta-analysis (without MVP)"
+
+  - pattern: "FinnGen%"
+    resource: "finngen"
+    comment: "all other FinnGen datasets"
+
+  - pattern: "UKB%"
+    resource: "ukbb"
+    comment: "UK Biobank datasets"
+
+  - pattern: "Open_Targets%"
+    resource: "open_targets"
+    comment: "Open Targets datasets (versioned names)"
+
+  # exome/burden-only exact match
+  - pattern: "genebass"
+    resource: "genebass"
+    applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
+    comment: "exact match for exome/burden views"
+
+  # fallback: lowercase the dataset name
+  - pattern: "*"
+    resource: null
+    transform: "lowercase"
+    comment: "default — dataset name lowercased becomes resource"
+
+# ---------------------------------------------------------------------------
+# Profiles: per-deployment dataset registries
+# ---------------------------------------------------------------------------
+profiles:
+  finngen:
+    datasets:
+      # --- GWAS ---
+      finngen_gwas:
+        resource: finngen
+        version: "R13"
+        description: >-
+          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 500,186 Finnish biobank participants.
+        author: "FinnGen Consortium"
+        publication_date: "2025-09-12"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_kanta:
+        resource: finngen
+        version: "2025-03"
+        description: >-
+          FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
+          standard medical care throughout Finland (covering public and private health care providers)
+          and centralised to the KANTA register.
+          The data from the Kanta register includes all basic laboratory tests used in medical care
+          as well as a number of less common laboratory results. Laboratory data are available for more
+          than 400,000 FinnGen participants.
+          The first Kanta laboratory results are from 2014, with comprehensive results available from 2018 onwards.
+          Included in the results are all available labs with >=1000 individuals (n=383).
+          FinnGen's experts carried out extensive quality control of the laboratory values before introducing
+          the new data into FinnGen.
+          In addition, the data have been harmonised and adapted to international standards (OMOP) to facilitate
+          the straightforward use of the data in research.
+          GWAS phenotypes are the median of lab values for an individual (quantitative labs) or ever positive (binary labs).
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/Kanta_metadata_202503.tsv"
+        metadata_harmonizer: finngen_kanta
+
+      finngen_drugs:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen R12 drug-purchase GWAS. These summary stats have been generated with the average
+          number of drug purchases (ATC codes) as phenotypes. For each ATC code, the quantitative
+          phenotype is the average number of purchases per year of follow-up with zero purchases
+          included as 0.5 purchases, followed by rank-based inverse normal transformation.
+          459,554 individuals were included in the analysis. We required 15 years of drug registry
+          data (born before 1996 and alive in 2010) for individuals to be included in the analysis.
+          ATC codes with more than 500,000 purchases in total in the dataset were chosen as basis
+          of the list of phenotypes to analyze. Nearly identical ATC codes (> 90% overlap) were removed,
+          and the resulting list was manually expert-curated to combine some ATC codes and add some with
+          slightly less than 500,000 purchases. The GWAS analysis was done in the same way as FinnGen R12
+          core analysis for quantitative phenotypes, except age^2 and age*sex were included as additional
+          covariates. Each file is named by the analyzed ATC code, or combination of codes.
+          ATC_TOTAL_IRN is all ATC codes combined or the average number of all drug purchases per year.
+          ATC_NON_J01_TOTAL_IRN is all ATC codes except J01 (antibacterials). The results have been
+          filtered by AF 0.001 and INFO score 0.6 to remove rare variant false positives.
+        author: "FinnGen Consortium"
+        publication_date: "2024-10-01"
+        data_type: gwas
+        trait_type: quantitative
+        n_samples: 459553
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_drugs_pheno.json"
+        metadata_harmonizer: finngen_drugs
+
+      finngen_mvp_ukbb:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
+          These genetic association results represent a multi-way meta analysis
+          (using standard inverse variance weighting).
+          This current release contains aligned disease endpoints/phecodes from
+          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
+          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_mvp_ukbb_labs:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (lab measurements).
+          These genetic association results represent a multi-way meta analysis
+          (using standard inverse variance weighting).
+          This current release contains aligned lab measurements from
+          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
+          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: quantitative
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_labs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_ukbb:
+        resource: finngen_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + UK Biobank meta-analysis (disease endpoints).
+          These genetic association results are from the FinnGen study meta-analyzed
+          (inverse variance weighting) with 936 matching disease endpoints
+          (matching based on ICD-10 definitions of endpoints) from the pan-UKBB study
+          (https://pan.ukbb.broadinstitute.org/).
+          European subset of the pan ukbb study was used.
+          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
+          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_ukbb_labs:
+        resource: finngen_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + UK Biobank meta-analysis (lab measurements).
+          These genetic association results are from the FinnGen study meta-analyzed
+          (inverse variance weighting) with 48 lab measurements from the pan-UKBB study
+          (https://pan.ukbb.broadinstitute.org/).
+          European subset of the pan ukbb study was used.
+          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
+          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: quantitative
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_labs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      # --- QTL ---
+      finngen_pqtl:
+        resource: finngen
+        version: "batch1-4"
+        description: >-
+          FinnGen Olink pQTL. Plasma protein levels measured by Olink Explore 3072 (batches 1-3)
+          and Olink Explore HT (batch 4). Unrelated samples were used in analysis.
+          Sample size is 3,561. The samples were collected from blood donors who were heterozygous
+          or homozygous carriers of specific genetic variants of interest.
+        author: "FinnGen Consortium"
+        publication_date: "2025-01-01"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 3561
+        metadata_file: null
+        metadata_harmonizer: null
+
+      ukbb_pqtl:
+        resource: ukbb
+        version: "PPP"
+        description: >-
+          UK Biobank Pharma Proteomics Project (UKB-PPP) pQTL. Plasma protein levels measured
+          by Olink Explore 3072. Sample size is 42,853.
+        author: "UKB-PPP (FinnGen analysis)"
+        publication_date: "2024-04-12"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 42853
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_eqtl:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen single-cell RNA-seq eQTL. Cell-type-resolved expression QTLs from snRNAseq
+          batches 1-5. Sample size is 1,108. Available predicted cell types: l1.B, l1.CD4_T,
+          l1.CD8_T, l1.DC, l1.Mono, l1.NK, l1.PBMC, l1.other, l1.other_T, l2.B_intermediate,
+          l2.B_memory, l2.B_naive, l2.CD14_Mono, l2.CD16_Mono, l2.CD4_CTL, l2.CD4_Naive,
+          l2.CD4_TCM, l2.CD4_TEM, l2.CD8_Naive, l2.CD8_TEM, l2.HSPC, l2.ILC, l2.MAIT, l2.NK,
+          l2.NK_CD56bright, l2.Plasmablast, l2.Platelet, l2.Treg, l2.cDC2, l2.dnT, l2.gdT,
+          l2.pDC. Cell types were predicted based on GEX using the reference PBMC dataset from
+          Hao et al. (2020) (http://dx.doi.org/10.1016/j.cell.2021.04.048). Citation: Kanai, M.
+          et al.: Population-scale multiome immune cell atlas reveals complex disease drivers
+          (https://doi.org/10.1101/2025.11.25.25340489).
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: eqtl
+        trait_type: quantitative
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_caqtl:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen ATAC-seq caQTL. Cell-type-resolved chromatin accessibility QTLs from snRNAseq
+          batches 1-5. Sample size is 1,108. Available predicted cell types: l1.B, l1.CD4_T,
+          l1.CD8_T, l1.DC, l1.Mono, l1.NK, l1.PBMC, l1.other, l1.other_T, l2.B_intermediate,
+          l2.B_memory, l2.B_naive, l2.CD14_Mono, l2.CD16_Mono, l2.CD4_CTL, l2.CD4_Naive,
+          l2.CD4_TCM, l2.CD4_TEM, l2.CD8_Naive, l2.CD8_TEM, l2.HSPC, l2.ILC, l2.MAIT, l2.NK,
+          l2.NK_CD56bright, l2.Plasmablast, l2.Platelet, l2.Treg, l2.cDC2, l2.dnT, l2.gdT,
+          l2.pDC. Cell types were predicted based on GEX using the reference PBMC dataset from
+          Hao et al. (2020) (http://dx.doi.org/10.1016/j.cell.2021.04.048). Citation: Kanai, M.
+          et al.: Population-scale multiome immune cell atlas reveals complex disease drivers
+          (https://doi.org/10.1101/2025.11.25.25340489).
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: caqtl
+        trait_type: quantitative
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- collection ---
+      eqtl_catalogue:
+        resource: eqtl_catalogue
+        version: "R7"
+        description: >-
+          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies across
+          many tissues, cell types, and conditions. Each sub-study is identified by a QTD
+          identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
+          results. Full summary stats are not available for the eQTL Catalogue.
+        author: "eQTL Catalogue"
+        publication_date: "2024-06-01"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL", "pQTL"]
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_harmonizer: eqtl_catalogue
+        collection: true
+        subdataset_id_field: phenotype_code
+
+      # --- Open Targets ---
+      open_targets:
+        resource: open_targets
+        version: "25.12"
+        description: >-
+          Open Targets Genetics Portal (release 25.12). GWAS studies from the GWAS Catalog,
+          Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
+          SuSiE fine-mapped results from Open Targets.
+        author: "Open Targets"
+        publication_date: "2025-12-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202512/ot_2512_data_studies.json"
+        metadata_harmonizer: open_targets
+
+      # --- coloc-only datasets ---
+      finngen_gwas_r12:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen R12 core GWAS. Used as colocalization partner for certain datasets;
+          R13 is the current release for other analyses.
+        author: "FinnGen Consortium"
+        publication_date: "2024-05-24"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_nmr:
+        resource: finngen
+        version: "NA"
+        description: >-
+          Nightingale nuclear magnetic resonance (NMR) metabolomics QTLs in plasma.
+          250 metabolites in 34,218 samples from THL biobank.
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-13"
+        data_type: metaboqtl
+        trait_type: quantitative
+        n_samples: 34218
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_somascan:
+        resource: finngen
+        version: "batch1-2"
+        description: >-
+          FinnGen SomaScan proteomics pQTL. Plasma protein levels measured by the SomaScan 7K
+          platform. Unrelated samples were used in analysis. Sample size is 1,000.
+        author: "FinnGen Consortium"
+        publication_date: "2023-10-11"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 1000
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finnliver:
+        resource: finnliver
+        version: "NA"
+        description: "FinnLiver liver tissue eQTL/sQTL. 131 Finnish individuals."
+        author: "FinnLiver"
+        publication_date: "2022-07-01"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL"]
+        n_samples: 131
+        metadata_file: null
+        metadata_harmonizer: null
+
+      generisk:
+        resource: generisk
+        version: "NA"
+        description: >-
+          GeneRisk lipid metabolome GWAS. 186 lipid species QTLs, SuSiE fine-mapping
+          of Widen et al. (2020), 7,632 Finnish samples
+        author: "GeneRisk"
+        publication_date: "2022-02-07"
+        data_type: gwas
+        trait_type: mixed
+        n_samples: 7632
+        n_phenotypes: 186
+        metadata_file: null
+        metadata_harmonizer: null
+
+      interval:
+        resource: interval
+        version: "NA"
+        description: >-
+          INTERVAL study pQTL. 3,622 plasma proteins in 3,301 samples on a SomaScan assay.
+          Publication: https://pmc.ncbi.nlm.nih.gov/articles/PMC6697541/
+        author: "INTERVAL"
+        publication_date: "2018-06-06"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 3301
+        metadata_file: null
+        metadata_harmonizer: null
+
+      ukbb_finucane:
+        resource: ukbb_finucane
+        version: "NA"
+        description: >-
+          UK Biobank GWAS of 119 traits.
+          Publication: https://www.medrxiv.org/content/10.1101/2021.09.03.21262975v1
+        author: "Masahiro Kanai"
+        publication_date: "2021-09-05"
+        data_type: gwas
+        trait_type: mixed
+        n_samples: 361194
+        n_phenotypes: 119
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- exome / gene-based ---
+      genebass_exome:
+        resource: genebass
+        version: "NA"
+        description: >-
+          GeneBass exome sequencing variant-level results. Rare variant association testing
+          from exome sequencing of 394,841 UK Biobank participants. Results include
+          per-variant burden test statistics across phenotypes and functional annotations.
+        author: "Genebass"
+        publication_date: "2022-09-14"
+        data_type: exome
+        trait_type: mixed
+        n_samples: 394841
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/genebass_pheno_results.txt.bgz"
+        metadata_harmonizer: genebass
+
+      genebass_gene_based:
+        resource: genebass
+        version: "NA"
+        description: >-
+          GeneBass gene-level burden test results. Aggregated gene-level rare variant
+          association results from whole-exome sequencing of 394,841 UK Biobank participants.
+        author: "Genebass"
+        publication_date: "2022-09-14"
+        data_type: gene_based
+        trait_type: mixed
+        n_samples: 394841
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/genebass_pheno_results.txt.bgz"
+        metadata_harmonizer: genebass
+
+      schema_gene_based:
+        resource: schema2
+        version: "v2"
+        description: >-
+          SCHEMA consortium gene-level burden test results. Rare variant association
+          testing for schizophrenia from exome sequencing of 87,959 cases and 150,587 controls.
+        author: "SCHEMA Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
+
+      bipex_gene_based:
+        resource: bipex2
+        version: "v2"
+        description: >-
+          BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
+          testing for bipolar disorder from exome sequencing of 64,435 cases and 168,101 controls.
+        author: "Bipolar Exomes"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536
+
+      ibd_ibd_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 564576
+        n_cases: 86213
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 86213
+            n_controls: 478363
+            n_samples: 564576
+
+      ibd_uc_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 511111
+        n_cases: 32748
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 32748
+            n_controls: 478363
+            n_samples: 511111
+
+      ibd_cd_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 522494
+        n_cases: 44131
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 44131
+            n_controls: 478363
+            n_samples: 522494
+
+      # --- expression ---
+      gtex_expression:
+        resource: gtex
+        version: "v10"
+        description: "GTEx v10 median TPM gene expression across 54 human tissues from 948 post-mortem donors."
+        author: "GTEx Consortium"
+        publication_date: "2024-11-04"
+        data_type: expression
+        trait_type: null
+        n_samples: 948
+        metadata_file: null
+        metadata_harmonizer: null
+
+      hpa_expression:
+        resource: hpa
+        version: "v24.1"
+        description: >-
+          Human Protein Atlas v24.1 immunohistochemistry-based protein expression across
+          human tissues and cell types.
+        author: "Human Protein Atlas"
+        publication_date: "2024-11-18"
+        data_type: expression
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- chromatin peaks ---
+      finngen_chromatin_peaks:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen single-cell ATAC-seq peak-to-gene associations. Links chromatin
+          accessibility peaks to target genes across immune cell types.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: chromatin_peaks
+        trait_type: null
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- gene-disease ---
+      gencc:
+        resource: gencc
+        version: "2025-11-13"
+        description: >-
+          GenCC (Gene Curation Coalition) gene-disease validity classifications. Curated
+          submissions from ClinGen, DECIPHER, Genomics England PanelApp, and other panels.
+        author: "GenCC"
+        publication_date: "2025-11-13"
+        data_type: gene_disease
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      monarch:
+        resource: monarch
+        version: "2025-12-07"
+        description: >-
+          Monarch Initiative causal gene-to-disease associations. Integrated Mendelian
+          disease-gene relationships from OMIM, Orphanet, and other sources.
+        author: "Monarch Initiative"
+        publication_date: "2025-12-07"
+        data_type: gene_disease
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- external summary statistics ---
+      pgc_scz:
+        resource: pgc
+        version: "wave3"
+        description: >-
+          PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
+          schizophrenia from the Psychiatric Genomics Consortium including up to 161,405
+          European and Asian ancestry participants (67,390 cases and 94,015 controls).
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 67390
+            n_controls: 94015
+            n_samples: 161405
+
+  daly:
+    datasets:
+      # --- GWAS ---
+      finngen_gwas:
+        resource: finngen
+        version: "R13"
+        description: >-
+          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 500,186 Finnish biobank participants.
+        author: "FinnGen Consortium"
+        publication_date: "2025-09-12"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_kanta:
+        resource: finngen
+        version: "2025-03"
+        description: >-
+          FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
+          standard medical care throughout Finland (covering public and private health care providers)
+          and centralised to the KANTA register.
+          The data from the Kanta register includes all basic laboratory tests used in medical care
+          as well as a number of less common laboratory results. Laboratory data are available for more
+          than 400,000 FinnGen participants.
+          The first Kanta laboratory results are from 2014, with comprehensive results available from 2018 onwards.
+          Included in the results are all available labs with >=1000 individuals (n=383).
+          FinnGen's experts carried out extensive quality control of the laboratory values before introducing
+          the new data into FinnGen.
+          In addition, the data have been harmonised and adapted to international standards (OMOP) to facilitate
+          the straightforward use of the data in research.
+          GWAS phenotypes are the median of lab values for an individual (quantitative labs) or ever positive (binary labs).
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/mapping_files/Kanta_metadata_202503.tsv"
+        metadata_harmonizer: finngen_kanta
+
+      finngen_drugs:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen R12 drug-purchase GWAS. These summary stats have been generated with the average
+          number of drug purchases (ATC codes) as phenotypes. For each ATC code, the quantitative
+          phenotype is the average number of purchases per year of follow-up with zero purchases
+          included as 0.5 purchases, followed by rank-based inverse normal transformation.
+          459,554 individuals were included in the analysis. We required 15 years of drug registry
+          data (born before 1996 and alive in 2010) for individuals to be included in the analysis.
+          ATC codes with more than 500,000 purchases in total in the dataset were chosen as basis
+          of the list of phenotypes to analyze. Nearly identical ATC codes (> 90% overlap) were removed,
+          and the resulting list was manually expert-curated to combine some ATC codes and add some with
+          slightly less than 500,000 purchases. The GWAS analysis was done in the same way as FinnGen R12
+          core analysis for quantitative phenotypes, except age^2 and age*sex were included as additional
+          covariates. Each file is named by the analyzed ATC code, or combination of codes.
+          ATC_TOTAL_IRN is all ATC codes combined or the average number of all drug purchases per year.
+          ATC_NON_J01_TOTAL_IRN is all ATC codes except J01 (antibacterials). The results have been
+          filtered by AF 0.001 and INFO score 0.6 to remove rare variant false positives.
+        author: "FinnGen Consortium"
+        publication_date: "2024-10-01"
+        data_type: gwas
+        trait_type: quantitative
+        n_samples: 459553
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r12_drugs_pheno.json"
+        metadata_harmonizer: finngen_drugs
+
+      finngen_mvp_ukbb:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
+          These genetic association results represent a multi-way meta analysis
+          (using standard inverse variance weighting).
+          This current release contains aligned disease endpoints/phecodes from
+          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
+          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_mvp_ukbb_labs:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (lab measurements).
+          These genetic association results represent a multi-way meta analysis
+          (using standard inverse variance weighting).
+          This current release contains aligned lab measurements from
+          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
+          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: quantitative
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_labs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_ukbb:
+        resource: finngen_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + UK Biobank meta-analysis (disease endpoints).
+          These genetic association results are from the FinnGen study meta-analyzed
+          (inverse variance weighting) with 936 matching disease endpoints
+          (matching based on ICD-10 definitions of endpoints) from the pan-UKBB study
+          (https://pan.ukbb.broadinstitute.org/).
+          European subset of the pan ukbb study was used.
+          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
+          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      finngen_ukbb_labs:
+        resource: finngen_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + UK Biobank meta-analysis (lab measurements).
+          These genetic association results are from the FinnGen study meta-analyzed
+          (inverse variance weighting) with 48 lab measurements from the pan-UKBB study
+          (https://pan.ukbb.broadinstitute.org/).
+          European subset of the pan ukbb study was used.
+          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
+          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: quantitative
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_ukbb_labs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      # --- QTL ---
+      finngen_pqtl:
+        resource: finngen
+        version: "batch1-4"
+        description: >-
+          FinnGen Olink pQTL. Plasma protein levels measured by Olink Explore 3072 (batches 1-3)
+          and Olink Explore HT (batch 4). Unrelated samples were used in analysis.
+          Sample size is 3,561. The samples were collected from blood donors who were heterozygous
+          or homozygous carriers of specific genetic variants of interest.
+        author: "FinnGen Consortium"
+        publication_date: "2025-01-01"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 3561
+        metadata_file: null
+        metadata_harmonizer: null
+
+      ukbb_pqtl:
+        resource: ukbb
+        version: "PPP"
+        description: >-
+          UK Biobank Pharma Proteomics Project (UKB-PPP) pQTL. Plasma protein levels measured
+          by Olink Explore 3072. Sample size is 42,853.
+        author: "UKB-PPP (FinnGen analysis)"
+        publication_date: "2024-04-12"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 42853
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_eqtl:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen single-cell RNA-seq eQTL. Cell-type-resolved expression QTLs from snRNAseq
+          batches 1-5. Sample size is 1,108. Available predicted cell types: l1.B, l1.CD4_T,
+          l1.CD8_T, l1.DC, l1.Mono, l1.NK, l1.PBMC, l1.other, l1.other_T, l2.B_intermediate,
+          l2.B_memory, l2.B_naive, l2.CD14_Mono, l2.CD16_Mono, l2.CD4_CTL, l2.CD4_Naive,
+          l2.CD4_TCM, l2.CD4_TEM, l2.CD8_Naive, l2.CD8_TEM, l2.HSPC, l2.ILC, l2.MAIT, l2.NK,
+          l2.NK_CD56bright, l2.Plasmablast, l2.Platelet, l2.Treg, l2.cDC2, l2.dnT, l2.gdT,
+          l2.pDC. Cell types were predicted based on GEX using the reference PBMC dataset from
+          Hao et al. (2020) (http://dx.doi.org/10.1016/j.cell.2021.04.048). Citation: Kanai, M.
+          et al.: Population-scale multiome immune cell atlas reveals complex disease drivers
+          (https://doi.org/10.1101/2025.11.25.25340489).
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: eqtl
+        trait_type: quantitative
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_caqtl:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen ATAC-seq caQTL. Cell-type-resolved chromatin accessibility QTLs from snRNAseq
+          batches 1-5. Sample size is 1,108. Available predicted cell types: l1.B, l1.CD4_T,
+          l1.CD8_T, l1.DC, l1.Mono, l1.NK, l1.PBMC, l1.other, l1.other_T, l2.B_intermediate,
+          l2.B_memory, l2.B_naive, l2.CD14_Mono, l2.CD16_Mono, l2.CD4_CTL, l2.CD4_Naive,
+          l2.CD4_TCM, l2.CD4_TEM, l2.CD8_Naive, l2.CD8_TEM, l2.HSPC, l2.ILC, l2.MAIT, l2.NK,
+          l2.NK_CD56bright, l2.Plasmablast, l2.Platelet, l2.Treg, l2.cDC2, l2.dnT, l2.gdT,
+          l2.pDC. Cell types were predicted based on GEX using the reference PBMC dataset from
+          Hao et al. (2020) (http://dx.doi.org/10.1016/j.cell.2021.04.048). Citation: Kanai, M.
+          et al.: Population-scale multiome immune cell atlas reveals complex disease drivers
+          (https://doi.org/10.1101/2025.11.25.25340489).
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: caqtl
+        trait_type: quantitative
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- collection ---
+      eqtl_catalogue:
+        resource: eqtl_catalogue
+        version: "R7"
+        description: >-
+          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies across
+          many tissues, cell types, and conditions. Each sub-study is identified by a QTD
+          identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
+          results. Full summary stats are not available for the eQTL Catalogue.
+        author: "eQTL Catalogue"
+        publication_date: "2024-06-01"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL", "pQTL"]
+        metadata_file: "gs://daly-genetics-results/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_harmonizer: eqtl_catalogue
+        collection: true
+        subdataset_id_field: phenotype_code
+
+      # --- Open Targets ---
+      open_targets:
+        resource: open_targets
+        version: "25.12"
+        description: >-
+          Open Targets Genetics Portal (release 25.12). GWAS studies from the GWAS Catalog,
+          Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
+          SuSiE fine-mapped results from Open Targets.
+        author: "Open Targets"
+        publication_date: "2025-12-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202512/ot_2512_data_studies.json"
+        metadata_harmonizer: open_targets
+
+      # --- coloc-only datasets ---
+      finngen_gwas_r12:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen R12 core GWAS. Used as colocalization partner for certain datasets;
+          R13 is the current release for other analyses.
+        author: "FinnGen Consortium"
+        publication_date: "2024-05-24"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r12_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_nmr:
+        resource: finngen
+        version: "NA"
+        description: >-
+          Nightingale nuclear magnetic resonance (NMR) metabolomics QTLs in plasma.
+          250 metabolites in 34,218 samples from THL biobank.
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-13"
+        data_type: metaboqtl
+        trait_type: quantitative
+        n_samples: 34218
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_somascan:
+        resource: finngen
+        version: "batch1-2"
+        description: >-
+          FinnGen SomaScan proteomics pQTL. Plasma protein levels measured by the SomaScan 7K
+          platform. Unrelated samples were used in analysis. Sample size is 1,000.
+        author: "FinnGen Consortium"
+        publication_date: "2023-10-11"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 1000
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finnliver:
+        resource: finnliver
+        version: "NA"
+        description: "FinnLiver liver tissue eQTL/sQTL. 131 Finnish individuals."
+        author: "FinnLiver"
+        publication_date: "2022-07-01"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL"]
+        n_samples: 131
+        metadata_file: null
+        metadata_harmonizer: null
+
+      generisk:
+        resource: generisk
+        version: "NA"
+        description: >-
+          GeneRisk lipid metabolome GWAS. 186 lipid species QTLs, SuSiE fine-mapping
+          of Widen et al. (2020), 7,632 Finnish samples
+        author: "GeneRisk"
+        publication_date: "2022-02-07"
+        data_type: gwas
+        trait_type: mixed
+        n_samples: 7632
+        n_phenotypes: 186
+        metadata_file: null
+        metadata_harmonizer: null
+
+      interval:
+        resource: interval
+        version: "NA"
+        description: >-
+          INTERVAL study pQTL. 3,622 plasma proteins in 3,301 samples on a SomaScan assay.
+          Publication: https://pmc.ncbi.nlm.nih.gov/articles/PMC6697541/
+        author: "INTERVAL"
+        publication_date: "2018-06-06"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 3301
+        metadata_file: null
+        metadata_harmonizer: null
+
+      ukbb_finucane:
+        resource: ukbb_finucane
+        version: "NA"
+        description: >-
+          UK Biobank GWAS of 119 traits.
+          Publication: https://www.medrxiv.org/content/10.1101/2021.09.03.21262975v1
+        author: "Masahiro Kanai"
+        publication_date: "2021-09-05"
+        data_type: gwas
+        trait_type: mixed
+        n_samples: 361194
+        n_phenotypes: 119
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- exome / gene-based ---
+      genebass_exome:
+        resource: genebass
+        version: "NA"
+        description: >-
+          GeneBass exome sequencing variant-level results. Rare variant association testing
+          from exome sequencing of 394,841 UK Biobank participants. Results include
+          per-variant burden test statistics across phenotypes and functional annotations.
+        author: "Genebass"
+        publication_date: "2022-09-14"
+        data_type: exome
+        trait_type: mixed
+        n_samples: 394841
+        metadata_file: "gs://daly-genetics-results/mapping_files/genebass_pheno_results.txt.bgz"
+        metadata_harmonizer: genebass
+
+      genebass_gene_based:
+        resource: genebass
+        version: "NA"
+        description: >-
+          GeneBass gene-level burden test results. Aggregated gene-level rare variant
+          association results from whole-exome sequencing of 394,841 UK Biobank participants.
+        author: "Genebass"
+        publication_date: "2022-09-14"
+        data_type: gene_based
+        trait_type: mixed
+        n_samples: 394841
+        metadata_file: "gs://daly-genetics-results/mapping_files/genebass_pheno_results.txt.bgz"
+        metadata_harmonizer: genebass
+
+      schema_gene_based:
+        resource: schema2
+        version: "v2"
+        description: >-
+          SCHEMA consortium gene-level burden test results. Rare variant association
+          testing for schizophrenia from exome sequencing of 87,959 cases and 150,587 controls.
+        author: "SCHEMA Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
+
+      bipex_gene_based:
+        resource: bipex2
+        version: "v2"
+        description: >-
+          BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
+          testing for bipolar disorder from exome sequencing of 64,435 cases and 168,101 controls.
+        author: "Bipolar Exomes"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536
+
+      ibd_ibd_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 564576
+        n_cases: 86213
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 86213
+            n_controls: 478363
+            n_samples: 564576
+
+      ibd_uc_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 511111
+        n_cases: 32748
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 32748
+            n_controls: 478363
+            n_samples: 511111
+
+      ibd_cd_gene_based:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
+          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
+          and Crohn's disease (CD).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 522494
+        n_cases: 44131
+        n_controls: 478363
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 44131
+            n_controls: 478363
+            n_samples: 522494
+
+      # --- expression ---
+      gtex_expression:
+        resource: gtex
+        version: "v10"
+        description: "GTEx v10 median TPM gene expression across 54 human tissues from 948 post-mortem donors."
+        author: "GTEx Consortium"
+        publication_date: "2024-11-04"
+        data_type: expression
+        trait_type: null
+        n_samples: 948
+        metadata_file: null
+        metadata_harmonizer: null
+
+      hpa_expression:
+        resource: hpa
+        version: "v24.1"
+        description: >-
+          Human Protein Atlas v24.1 immunohistochemistry-based protein expression across
+          human tissues and cell types.
+        author: "Human Protein Atlas"
+        publication_date: "2024-11-18"
+        data_type: expression
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- chromatin peaks ---
+      finngen_chromatin_peaks:
+        resource: finngen
+        version: "batch1-5"
+        description: >-
+          FinnGen single-cell ATAC-seq peak-to-gene associations. Links chromatin
+          accessibility peaks to target genes across immune cell types.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-15"
+        data_type: chromatin_peaks
+        trait_type: null
+        n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- gene-disease ---
+      gencc:
+        resource: gencc
+        version: "2025-11-13"
+        description: >-
+          GenCC (Gene Curation Coalition) gene-disease validity classifications. Curated
+          submissions from ClinGen, DECIPHER, Genomics England PanelApp, and other panels.
+        author: "GenCC"
+        publication_date: "2025-11-13"
+        data_type: gene_disease
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      monarch:
+        resource: monarch
+        version: "2025-12-07"
+        description: >-
+          Monarch Initiative causal gene-to-disease associations. Integrated Mendelian
+          disease-gene relationships from OMIM, Orphanet, and other sources.
+        author: "Monarch Initiative"
+        publication_date: "2025-12-07"
+        data_type: gene_disease
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- external summary statistics ---
+      pgc_scz:
+        resource: pgc
+        version: "wave3"
+        description: >-
+          PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
+          schizophrenia from the Psychiatric Genomics Consortium including up to 161,405
+          European and Asian ancestry participants (67,390 cases and 94,015 controls).
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 67390
+            n_controls: 94015
+            n_samples: 161405

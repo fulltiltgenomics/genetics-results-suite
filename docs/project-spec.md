@@ -38,6 +38,7 @@ Internal only (ClusterIP + NetworkPolicy):
 ```
 ├── configs/
 │   ├── rag/                  # RAG experiment configs (not k8s manifests)
+│   ├── datasets.yaml              # canonical dataset/resource definitions (single source of truth)
 │   └── datasets-schema-example.yaml  # YAML schema reference with example datasets
 ├── k8s/
 │   ├── namespace.yaml
@@ -51,7 +52,8 @@ Internal only (ClusterIP + NetworkPolicy):
 │   ├── build-all.sh          # build and push all Docker images
 │   ├── create-secrets.sh     # create k8s secrets from env vars
 │   ├── deploy.sh             # full deploy (terraform + k8s)
-│   └── rollout.sh            # single-service image update
+│   ├── rollout.sh            # single-service image update
+│   └── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
 ├── terraform/
 │   ├── main.tf               # provider config, GCS backend
 │   ├── gke.tf                # GKE cluster and node pool
