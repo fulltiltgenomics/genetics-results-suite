@@ -361,22 +361,27 @@ dataset_to_resource_rules:
   # credible_sets_v, colocalization_v, coloc_credsets_v patterns
   - pattern: "FinnGen%MVP_UKBB%"
     resource: "finngen_mvp_ukbb"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "meta-analysis datasets including MVP"
 
   - pattern: "FinnGen%UKBB%"
     resource: "finngen_ukbb"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "FinnGen + UK Biobank meta-analysis (without MVP)"
 
   - pattern: "FinnGen%"
     resource: "finngen"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "all other FinnGen datasets"
 
   - pattern: "UKB%"
     resource: "ukbb"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "UK Biobank datasets"
 
   - pattern: "Open_Targets%"
     resource: "open_targets"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "Open Targets datasets (versioned names)"
 
   # exome/burden-only exact match
