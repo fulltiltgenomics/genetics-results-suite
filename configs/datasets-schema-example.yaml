@@ -1,0 +1,330 @@
+# datasets.yaml — schema example with representative entries
+# This is NOT the full data file; see datasets.yaml for all definitions.
+# See docs/datasets-yaml-schema.md for field documentation.
+
+# ---------------------------------------------------------------------------
+# Resources: profile-independent metadata for data sources
+# Used by db-api to build _RESOURCE_METADATA for agent-facing /schema endpoint
+# ---------------------------------------------------------------------------
+resources:
+  finngen:
+    label: "FinnGen"
+    description: "FinnGen study — GWAS, eQTL, pQTL, caQTL results from Finnish biobank data"
+    aliases: ["FinnGen"]
+
+  finngen_mvp_ukbb:
+    label: "FinnGen+MVP+UKB"
+    description: "FinnGen + Million Veteran Program + UK Biobank GWAS meta-analysis"
+    aliases: ["finngen mvp", "finngen mvp ukbb"]
+
+  genebass:
+    label: "Genebass"
+    description: "Gene burden results and EWAS exome variant results from UK Biobank"
+    aliases: ["gene bass", "uk biobank exome", "UKB exome"]
+
+  # collection resource — large number of sub-study IDs following a pattern
+  eqtl_catalogue:
+    label: "eQTL Catalogue"
+    description: >-
+      eQTL Catalogue datasets — hundreds of tissue/cell-type QTL studies.
+      Dataset IDs follow the pattern QTDNNNNNN (e.g. QTD000001).
+    aliases: []
+    collection: true
+    collection_id_prefix: "qtd"
+    collection_data_types: ["eQTL", "sQTL"]
+
+# ---------------------------------------------------------------------------
+# Tables: profile-independent BigQuery view metadata
+# Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
+# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS
+# ---------------------------------------------------------------------------
+tables:
+  credible_sets_v:
+    description: >-
+      Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
+      Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
+
+    columns:
+      dataset: "Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2)"
+      data_type: "Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL"
+      trait: "Trait/phenotype name"
+      pip: "Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal"
+      cs_id: "Credible set identifier — groups variants in the same causal signal"
+      variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23"
+      mlog10p: "-log10(p-value). Higher = more significant. 7.30103 = genome-wide significance (p-value 5e-8)"
+      resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    examples:
+      - description: "Fine-mapped variants for a gene from FinnGen with high PIP"
+        sql: >-
+          SELECT trait, variant, pip, mlog10p, beta
+          FROM credible_sets_v
+          WHERE gene_most_severe = 'PCSK9' AND resource = 'finngen' AND pip > 0.1
+          ORDER BY pip DESC
+
+      - description: "Credible sets for a phenotype across resources"
+        sql: >-
+          SELECT resource, dataset, variant, pip, mlog10p
+          FROM credible_sets_v
+          WHERE trait = 'T2D' AND pip > 0.5
+          ORDER BY pip DESC LIMIT 50
+
+    categorical_columns:
+      resource: null          # flat list of distinct values
+      dataset: "resource"     # values depend on resource
+      data_type: "resource"   # values depend on resource
+      most_severe: null       # flat list
+
+  gene_burden_results_v:
+    description: >-
+      Gene-level burden test results from exome sequencing studies
+      (e.g. BipEx2, SCHEMA2, Genebass, IBD exome).
+
+    columns:
+      dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome_2026)"
+      gene: "Gene symbol (e.g. PCSK9)"
+      annotation: "Variant annotation filter used in burden test (e.g. pLoF, missense, PTV)"
+      mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
+      resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
+
+    examples:
+      - description: "Significant gene burden results from BipEx2 bipolar exome study"
+        sql: >-
+          SELECT gene, annotation, mlog10p_burden, beta, n_cases, n_controls, description
+          FROM gene_burden_results_v
+          WHERE resource = 'bipex2' AND mlog10p_burden > 3
+          ORDER BY mlog10p_burden DESC LIMIT 20
+
+      - description: "Compare burden results for a gene across all exome studies"
+        sql: >-
+          SELECT resource, dataset, annotation, mlog10p_burden, beta, description
+          FROM gene_burden_results_v
+          WHERE gene = 'PCSK9'
+          ORDER BY mlog10p_burden DESC
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      annotation: "resource"
+
+  colocalization_v:
+    description: >-
+      Colocalization results between pairs of traits/datasets.
+      Each row represents a colocalization test between two signals,
+      with posterior probabilities for shared causal variants.
+
+    columns:
+      dataset1: "First dataset in the colocalization pair"
+      dataset2: "Second dataset in the colocalization pair"
+      resource1: "Resource identifier for the first dataset"
+      resource2: "Resource identifier for the second dataset"
+      clpp: "Colocalization posterior probability — probability that both signals share a causal variant"
+      cs_id1: "Credible set identifier for the first signal"
+      cs_id2: "Credible set identifier for the second signal"
+
+    examples:
+      - description: "Colocalization between FinnGen GWAS and eQTL for a gene"
+        sql: >-
+          SELECT resource1, resource2, dataset1, dataset2, trait1, trait2, clpp
+          FROM colocalization_v
+          WHERE gene = 'PCSK9' AND clpp > 0.5
+          ORDER BY clpp DESC
+
+    categorical_columns:
+      resource1: null
+      resource2: null
+      dataset1: "resource1"
+      dataset2: "resource2"
+
+# ---------------------------------------------------------------------------
+# Dataset-to-resource mapping rules
+# Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views
+# and for Python-side mapping in results-api.
+# ---------------------------------------------------------------------------
+dataset_to_resource_rules:
+  # order matters: more specific patterns first
+  - pattern: "FinnGen%MVP_UKBB%"
+    resource: "finngen_mvp_ukbb"
+    comment: "meta-analysis datasets including MVP"
+
+  - pattern: "FinnGen%UKBB%"
+    resource: "finngen_ukbb"
+    comment: "FinnGen + UK Biobank meta-analysis (without MVP)"
+
+  - pattern: "FinnGen%"
+    resource: "finngen"
+    comment: "all other FinnGen datasets"
+
+  - pattern: "UKB%"
+    resource: "ukbb"
+    comment: "UK Biobank datasets"
+
+  - pattern: "Open_Targets%"
+    resource: "open_targets"
+    comment: "Open Targets datasets (versioned names)"
+
+  - pattern: "genebass"
+    resource: "genebass"
+    applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
+    comment: "exact match for exome/burden views"
+
+  # fallback: lowercase the dataset name
+  - pattern: "*"
+    resource: null
+    transform: "lowercase"
+    comment: "default — dataset name lowercased becomes resource"
+
+# ---------------------------------------------------------------------------
+# Profiles: per-deployment dataset registries
+# ---------------------------------------------------------------------------
+profiles:
+  finngen:
+    datasets:
+      # --- GWAS ---
+      finngen_gwas:
+        resource: finngen
+        version: "R13"
+        description: >-
+          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 500,186 Finnish biobank participants.
+        author: "FinnGen Consortium"
+        publication_date: "2025-09-12"
+        data_type: gwas
+        trait_type: binary
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_mvp_ukbb:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
+          Multi-way meta analysis using standard inverse variance weighting.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      # --- QTL ---
+      finngen_pqtl:
+        resource: finngen
+        version: "batch1-4"
+        description: >-
+          FinnGen Olink pQTL. Plasma protein levels measured by Olink Explore 3072.
+          Sample size is 3,561.
+        author: "FinnGen Consortium"
+        publication_date: "2025-01-01"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 3561
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- collection dataset ---
+      eqtl_catalogue:
+        resource: eqtl_catalogue
+        version: "R7"
+        description: >-
+          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies
+          across many tissues, cell types, and conditions.
+        author: "eQTL Catalogue"
+        publication_date: "2024-06-01"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL", "pQTL"]
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_harmonizer: eqtl_catalogue
+        collection: true
+        subdataset_id_field: phenotype_code
+
+      # --- gene-based (with inline phenotypes) ---
+      bipex_gene_based:
+        resource: bipex
+        version: "v2"
+        description: >-
+          BipEx2 gene-level burden test results. Rare variant association testing
+          for bipolar disorder from exome sequencing.
+        author: "Bipolar Exomes"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536
+
+      # --- expression ---
+      gtex_expression:
+        resource: gtex
+        version: "v10"
+        description: "GTEx v10 median TPM gene expression across 54 human tissues from 948 post-mortem donors."
+        author: "GTEx Consortium"
+        publication_date: "2024-11-04"
+        data_type: expression
+        trait_type: null
+        n_samples: 948
+        metadata_file: null
+        metadata_harmonizer: null
+
+  daly:
+    # same dataset definitions as finngen but with different GCS bucket paths
+    datasets:
+      finngen_gwas:
+        resource: finngen
+        version: "R13"
+        description: >-
+          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 500,186 Finnish biobank participants.
+        author: "FinnGen Consortium"
+        publication_date: "2025-09-12"
+        data_type: gwas
+        trait_type: binary
+        # only difference from finngen profile: GCS bucket path
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_mvp_ukbb:
+        resource: finngen_mvp_ukbb
+        version: "R13"
+        description: >-
+          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
+          Multi-way meta analysis using standard inverse variance weighting.
+        author: "FinnGen Consortium"
+        publication_date: "2025-12-19"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      bipex_gene_based:
+        resource: bipex
+        version: "v2"
+        description: >-
+          BipEx2 gene-level burden test results. Rare variant association testing
+          for bipolar disorder from exome sequencing.
+        author: "Bipolar Exomes"
+        publication_date: "NA"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536

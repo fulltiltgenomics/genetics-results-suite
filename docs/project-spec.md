@@ -37,7 +37,8 @@ Internal only (ClusterIP + NetworkPolicy):
 
 ```
 ├── configs/
-│   └── rag/                  # RAG experiment configs (not k8s manifests)
+│   ├── rag/                  # RAG experiment configs (not k8s manifests)
+│   └── datasets-schema-example.yaml  # YAML schema reference with example datasets
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── deployments/          # deployment manifests for all services
@@ -63,6 +64,7 @@ Internal only (ClusterIP + NetworkPolicy):
 │   ├── outputs.tf            # output values
 │   └── terraform.tfvars      # variable values (not committed)
 └── docs/
+    ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── nginx-setup.md        # notes for local VM nginx setup
     └── project-spec.md       # this file
 ```
