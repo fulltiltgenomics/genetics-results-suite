@@ -114,6 +114,16 @@ resources:
     description: "Psychiatric Genomics Consortium GWAS studies"
     aliases: ["PGC"]
 
+  bip:
+    label: "BIP"
+    description: "Bipolar disorder multi-ancestry GWAS meta-analysis (2024)"
+    aliases: ["bipolar disorder", "BIP"]
+
+  gp2:
+    label: "GP2"
+    description: "GP2 (Global Parkinson's Genetics Program) European ancestry GWAS"
+    aliases: ["GP2", "Parkinsons", "Parkinson's disease"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -270,10 +280,13 @@ tables:
 
   exome_variant_results_v:
     description: >-
-      Single-variant exome association results (e.g. Genebass/UK Biobank exomes).
+      Single-variant exome association results from multiple resources with different
+      significance thresholds. Genebass contains variants filtered to p < 1e-4.
+      IBD exome (ibd_exome_2026) contains only exome-wide significant variants
+      (p < 3e-7 after conditional analysis) and LD-curated remaining variants (p < 5e-6).
 
     columns:
-      dataset: "Study name (e.g. genebass)"
+      dataset: "Study name (e.g. genebass, IBD_exome_2026)"
       chr: "Chromosome number, chromosome X is 23"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
@@ -289,6 +302,8 @@ tables:
       ac: "Alternative allele count"
       an: "Alternative allele number (total alleles genotyped)"
       heritability: "SNP heritability estimate for the trait"
+      n_cases: "Number of cases in the analysis (available for IBD exome, null for genebass)"
+      n_controls: "Number of controls in the analysis (available for IBD exome, null for genebass)"
       trait: "Trait/phenotype name"
       variant: "Variant identifier as chr:pos:ref:alt"
       resource: "Data source identifier (lowercase)"
@@ -299,6 +314,13 @@ tables:
           SELECT gene, variant, annotation, mlog10p, beta, trait
           FROM exome_variant_results_v
           WHERE gene = 'PCSK9' AND mlog10p > 3
+          ORDER BY mlog10p DESC
+
+      - description: "IBD exome significant variant associations for a gene"
+        sql: >-
+          SELECT gene, variant, annotation, mlog10p, beta, trait, n_cases, n_controls
+          FROM exome_variant_results_v
+          WHERE gene = 'NOD2' AND resource = 'ibd_exome_2026'
           ORDER BY mlog10p DESC
 
     categorical_columns:
@@ -384,11 +406,16 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "Open Targets datasets (versioned names)"
 
-  # exome/burden-only exact match
+  # exome/burden-only exact matches
   - pattern: "genebass"
     resource: "genebass"
     applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
     comment: "exact match for exome/burden views"
+
+  - pattern: "IBD_exome_2026"
+    resource: "ibd_exome_2026"
+    applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
+    comment: "IBD exome variant and gene burden results"
 
   # fallback: lowercase the dataset name
   - pattern: "*"
@@ -758,8 +785,9 @@ profiles:
         version: "NA"
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
-          from exome sequencing of 394,841 UK Biobank participants. Results include
-          per-variant burden test statistics across phenotypes and functional annotations.
+          from exome sequencing of 394,841 UK Biobank participants. Results are filtered
+          to p < 1e-4. Results include per-variant burden test statistics across phenotypes
+          and functional annotations.
         author: "Genebass"
         publication_date: "2022-09-14"
         data_type: exome
@@ -767,6 +795,39 @@ profiles:
         n_samples: 394841
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
+
+      ibd_exome:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Single-variant exome association results for
+          inflammatory bowel disease (IBD), ulcerative colitis (UC) and Crohn's disease (CD).
+          Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
+          and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
+          than genebass (p < 1e-4).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: exome
+        trait_type: binary
+        n_phenotypes: 3
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 86213
+            n_controls: 478363
+            n_samples: 564576
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 32748
+            n_controls: 478363
+            n_samples: 511111
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 44131
+            n_controls: 478363
+            n_samples: 522494
 
       genebass_gene_based:
         resource: genebass
@@ -826,7 +887,7 @@ profiles:
             n_controls: 168101
             n_samples: 232536
 
-      ibd_ibd_gene_based:
+      ibd_gene_based:
         resource: ibd_exome_2026
         version: "2026"
         description: >-
@@ -837,9 +898,8 @@ profiles:
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
+        n_phenotypes: 3
         n_samples: 564576
-        n_cases: 86213
-        n_controls: 478363
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -848,47 +908,11 @@ profiles:
             n_cases: 86213
             n_controls: 478363
             n_samples: 564576
-
-      ibd_uc_gene_based:
-        resource: ibd_exome_2026
-        version: "2026"
-        description: >-
-          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
-          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
-          and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
-        publication_date: "NA"
-        data_type: gene_based
-        trait_type: binary
-        n_samples: 511111
-        n_cases: 32748
-        n_controls: 478363
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
           - phenotype_code: "UC"
             phenotype_string: "Ulcerative colitis"
             n_cases: 32748
             n_controls: 478363
             n_samples: 511111
-
-      ibd_cd_gene_based:
-        resource: ibd_exome_2026
-        version: "2026"
-        description: >-
-          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
-          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
-          and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
-        publication_date: "NA"
-        data_type: gene_based
-        trait_type: binary
-        n_samples: 522494
-        n_cases: 44131
-        n_controls: 478363
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
           - phenotype_code: "CD"
             phenotype_string: "Crohn's disease"
             n_cases: 44131
@@ -975,6 +999,9 @@ profiles:
         publication_date: "NA"
         data_type: gwas
         trait_type: binary
+        n_samples: 161405
+        n_cases: 67390
+        n_controls: 94015
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -983,6 +1010,50 @@ profiles:
             n_cases: 67390
             n_controls: 94015
             n_samples: 161405
+
+      bip_gwas:
+        resource: bip
+        version: "2024"
+        description: >-
+          Bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
+          67,948 cases and 867,710 controls.
+        author: "BIP Consortium"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_samples: 935658
+        n_cases: 67948
+        n_controls: 867710
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 67948
+            n_controls: 867710
+            n_samples: 935658
+
+      gp2_pd:
+        resource: gp2
+        version: "2025"
+        description: >-
+          GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
+          Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
+        author: "GP2"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_samples: 1809941
+        n_cases: 63555
+        n_controls: 1746386
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "PD"
+            phenotype_string: "Parkinson's disease"
+            n_cases: 63555
+            n_controls: 1746386
+            n_samples: 1809941
 
   daly:
     datasets:
@@ -1342,8 +1413,9 @@ profiles:
         version: "NA"
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
-          from exome sequencing of 394,841 UK Biobank participants. Results include
-          per-variant burden test statistics across phenotypes and functional annotations.
+          from exome sequencing of 394,841 UK Biobank participants. Results are filtered
+          to p < 1e-4. Results include per-variant burden test statistics across phenotypes
+          and functional annotations.
         author: "Genebass"
         publication_date: "2022-09-14"
         data_type: exome
@@ -1351,6 +1423,39 @@ profiles:
         n_samples: 394841
         metadata_file: "gs://daly-genetics-results/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
+
+      ibd_exome:
+        resource: ibd_exome_2026
+        version: "2026"
+        description: >-
+          2026 IBD exome analysis results. Single-variant exome association results for
+          inflammatory bowel disease (IBD), ulcerative colitis (UC) and Crohn's disease (CD).
+          Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
+          and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
+          than genebass (p < 1e-4).
+        author: "IBD Exome Consortium"
+        publication_date: "NA"
+        data_type: exome
+        trait_type: binary
+        n_phenotypes: 3
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 86213
+            n_controls: 478363
+            n_samples: 564576
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 32748
+            n_controls: 478363
+            n_samples: 511111
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 44131
+            n_controls: 478363
+            n_samples: 522494
 
       genebass_gene_based:
         resource: genebass
@@ -1410,7 +1515,7 @@ profiles:
             n_controls: 168101
             n_samples: 232536
 
-      ibd_ibd_gene_based:
+      ibd_gene_based:
         resource: ibd_exome_2026
         version: "2026"
         description: >-
@@ -1421,9 +1526,8 @@ profiles:
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
+        n_phenotypes: 3
         n_samples: 564576
-        n_cases: 86213
-        n_controls: 478363
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1432,47 +1536,11 @@ profiles:
             n_cases: 86213
             n_controls: 478363
             n_samples: 564576
-
-      ibd_uc_gene_based:
-        resource: ibd_exome_2026
-        version: "2026"
-        description: >-
-          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
-          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
-          and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
-        publication_date: "NA"
-        data_type: gene_based
-        trait_type: binary
-        n_samples: 511111
-        n_cases: 32748
-        n_controls: 478363
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
           - phenotype_code: "UC"
             phenotype_string: "Ulcerative colitis"
             n_cases: 32748
             n_controls: 478363
             n_samples: 511111
-
-      ibd_cd_gene_based:
-        resource: ibd_exome_2026
-        version: "2026"
-        description: >-
-          2026 IBD exome analysis results. Gene-level burden test results. Rare variant
-          association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
-          and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
-        publication_date: "NA"
-        data_type: gene_based
-        trait_type: binary
-        n_samples: 522494
-        n_cases: 44131
-        n_controls: 478363
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
           - phenotype_code: "CD"
             phenotype_string: "Crohn's disease"
             n_cases: 44131
@@ -1559,6 +1627,9 @@ profiles:
         publication_date: "NA"
         data_type: gwas
         trait_type: binary
+        n_samples: 161405
+        n_cases: 67390
+        n_controls: 94015
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1567,3 +1638,47 @@ profiles:
             n_cases: 67390
             n_controls: 94015
             n_samples: 161405
+
+      bip_gwas:
+        resource: bip
+        version: "2024"
+        description: >-
+          Bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
+          67,948 cases and 867,710 controls.
+        author: "BIP Consortium"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_samples: 935658
+        n_cases: 67948
+        n_controls: 867710
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 67948
+            n_controls: 867710
+            n_samples: 935658
+
+      gp2_pd:
+        resource: gp2
+        version: "2025"
+        description: >-
+          GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
+          Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
+        author: "GP2"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_samples: 1809941
+        n_cases: 63555
+        n_controls: 1746386
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "PD"
+            phenotype_string: "Parkinson's disease"
+            n_cases: 63555
+            n_controls: 1746386
+            n_samples: 1809941
