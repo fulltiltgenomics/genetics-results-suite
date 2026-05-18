@@ -46,6 +46,11 @@ resources:
     description: "Gene burden results and EWAS exome variant results from UK Biobank"
     aliases: ["gene bass", "uk biobank exome", "UKB exome"]
 
+  ibd_gwas:
+    label: "IBD GWAS"
+    description: "IBD (inflammatory bowel disease) GWAS meta-analysis (European, East Asian, South Asian)"
+    aliases: ["IBD GWAS", "IIBDGC"]
+
   ibd_exome_2026:
     label: "IBD Exome 2026"
     description: "IBD (inflammatory bowel disease) exome sequencing project gene burden and variant analysis"
@@ -1055,7 +1060,39 @@ profiles:
             n_controls: 1746386
             n_samples: 1809941
 
+      ibd_gwas:
+        resource: ibd_gwas
+        version: "2024"
+        description: >-
+          IBD GWAS meta-analysis across European, East Asian, and South Asian
+          ancestry cohorts from the International IBD Genetics Consortium (IIBDGC).
+          Includes IBD, Crohn's disease (CD), and ulcerative colitis (UC).
+        author: "IIBDGC"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 3
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 125992
+            n_controls: 1262229
+            n_samples: 1388221
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 57673
+            n_controls: 1286025
+            n_samples: 1343698
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 59734
+            n_controls: 1260866
+            n_samples: 1320600
+
   daly:
+    datasets:
     datasets:
       # --- GWAS ---
       finngen_gwas:
@@ -1682,3 +1719,34 @@ profiles:
             n_cases: 63555
             n_controls: 1746386
             n_samples: 1809941
+
+      ibd_gwas:
+        resource: ibd_gwas
+        version: "2024"
+        description: >-
+          IBD GWAS meta-analysis across European, East Asian, and South Asian
+          ancestry cohorts from the International IBD Genetics Consortium (IIBDGC).
+          Includes IBD, Crohn's disease (CD), and ulcerative colitis (UC).
+        author: "IIBDGC"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 3
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "IBD"
+            phenotype_string: "Inflammatory bowel disease"
+            n_cases: 125992
+            n_controls: 1262229
+            n_samples: 1388221
+          - phenotype_code: "UC"
+            phenotype_string: "Ulcerative colitis"
+            n_cases: 57673
+            n_controls: 1286025
+            n_samples: 1343698
+          - phenotype_code: "CD"
+            phenotype_string: "Crohn's disease"
+            n_cases: 59734
+            n_controls: 1260866
+            n_samples: 1320600
