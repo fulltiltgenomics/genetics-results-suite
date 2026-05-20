@@ -42,6 +42,13 @@ export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 
+# LLM model: Opus for daly, Sonnet for finngen
+if [ "${CONFIG_PROFILE}" = "daly" ]; then
+  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-7}"
+else
+  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-sonnet-4-6}"
+fi
+
 # apply kubernetes manifests
 echo "=== Applying Kubernetes manifests ==="
 cd "${ROOT_DIR}/k8s"
@@ -103,7 +110,7 @@ for f in deployments/*.yaml; do
     echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
