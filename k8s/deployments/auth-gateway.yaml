@@ -120,8 +120,8 @@ data:
           proxy_send_timeout 300s;
         }
 
-        # chat backend
-        location /chat/ {
+        # chat backend API (only /chat/v1/ paths, not frontend /chat/:sessionId routes)
+        location /chat/v1/ {
           auth_request /oauth2/auth;
           auth_request_set $email $upstream_http_x_auth_request_email;
           proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
