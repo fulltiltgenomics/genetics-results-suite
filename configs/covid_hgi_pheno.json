@@ -1,0 +1,26 @@
+[
+    {
+        "phenocode": "COVID_A2",
+        "phenostring": "Very severe respiratory confirmed covid vs. population",
+        "num_cases": 18152,
+        "num_controls": 1145546
+    },
+    {
+        "phenocode": "COVID_B1",
+        "phenostring": "Hospitalized covid vs. not hospitalized covid",
+        "num_cases": 16512,
+        "num_controls": 71321
+    },
+    {
+        "phenocode": "COVID_B2",
+        "phenostring": "Hospitalized covid vs. population",
+        "num_cases": 44986,
+        "num_controls": 2356386
+    },
+    {
+        "phenocode": "COVID_C2",
+        "phenostring": "Covid vs. population",
+        "num_cases": 159840,
+        "num_controls": 2782977
+    }
+]
