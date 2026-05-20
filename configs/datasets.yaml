@@ -114,6 +114,11 @@ resources:
     description: "Monarch Initiative causal gene-to-disease associations"
     aliases: ["Monarch"]
 
+  covid_hgi:
+    label: "COVID-19 HGI"
+    description: "COVID-19 Host Genetics Initiative GWAS"
+    aliases: ["COVID-19 HGI", "COVID HGI", "covid"]
+
   pgc:
     label: "PGC"
     description: "Psychiatric Genomics Consortium GWAS studies"
@@ -421,6 +426,11 @@ dataset_to_resource_rules:
     resource: "ibd_exome_2026"
     applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
     comment: "IBD exome variant and gene burden results"
+
+  - pattern: "COVID19_HGI%"
+    resource: "covid_hgi"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "COVID-19 Host Genetics Initiative"
 
   # fallback: lowercase the dataset name
   - pattern: "*"
@@ -1062,7 +1072,7 @@ profiles:
 
       ibd_gwas:
         resource: ibd_gwas
-        version: "2024"
+        version: "2026"
         description: >-
           IBD GWAS meta-analysis across European, East Asian, and South Asian
           ancestry cohorts from the International IBD Genetics Consortium (IIBDGC).
@@ -1072,8 +1082,8 @@ profiles:
         data_type: gwas
         trait_type: binary
         n_phenotypes: 3
-        metadata_file: null
-        metadata_harmonizer: null
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/ibd_gwas_pheno.json"
+        metadata_harmonizer: finngen_r13
         phenotypes:
           - phenotype_code: "IBD"
             phenotype_string: "Inflammatory bowel disease"
@@ -1090,6 +1100,23 @@ profiles:
             n_cases: 59734
             n_controls: 1260866
             n_samples: 1320600
+
+      covid_hgi:
+        resource: covid_hgi
+        version: "R7"
+        description: >-
+          COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
+          Includes very severe respiratory COVID (A2), hospitalized vs. not hospitalized (B1),
+          hospitalized vs. population (B2), and COVID vs. population (C2).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "COVID-19 Host Genetics Initiative"
+        publication_date: "2022-04-03"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 4
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/covid_hgi_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
 
   daly:
     datasets:
@@ -1722,7 +1749,7 @@ profiles:
 
       ibd_gwas:
         resource: ibd_gwas
-        version: "2024"
+        version: "2026"
         description: >-
           IBD GWAS meta-analysis across European, East Asian, and South Asian
           ancestry cohorts from the International IBD Genetics Consortium (IIBDGC).
@@ -1732,8 +1759,8 @@ profiles:
         data_type: gwas
         trait_type: binary
         n_phenotypes: 3
-        metadata_file: null
-        metadata_harmonizer: null
+        metadata_file: "gs://daly-genetics-results/mapping_files/ibd_gwas_pheno.json"
+        metadata_harmonizer: finngen_r13
         phenotypes:
           - phenotype_code: "IBD"
             phenotype_string: "Inflammatory bowel disease"
@@ -1750,3 +1777,20 @@ profiles:
             n_cases: 59734
             n_controls: 1260866
             n_samples: 1320600
+
+      covid_hgi:
+        resource: covid_hgi
+        version: "R7"
+        description: >-
+          COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
+          Includes very severe respiratory COVID (A2), hospitalized vs. not hospitalized (B1),
+          hospitalized vs. population (B2), and COVID vs. population (C2).
+          For these data there are pseudo credible sets, no formal fine-mapping results.
+        author: "COVID-19 Host Genetics Initiative"
+        publication_date: "2022-04-03"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 4
+        metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
