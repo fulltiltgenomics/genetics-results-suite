@@ -57,6 +57,8 @@ spec:
               name: genetics-secrets
               key: perplexity-api-key
               optional: true
+        - name: DEFAULT_MODEL
+          value: "${DEFAULT_MODEL}"
         - name: LLM_CONFIG_DB
           value: "/data/llm_config.db"
         - name: CHAT_HISTORY_DB
