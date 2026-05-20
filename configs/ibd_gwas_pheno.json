@@ -1,0 +1,20 @@
+[
+    {
+        "phenocode": "IBD",
+        "phenostring": "Inflammatory bowel disease",
+        "num_cases": 125992,
+        "num_controls": 1262229
+    },
+    {
+        "phenocode": "UC",
+        "phenostring": "Ulcerative colitis",
+        "num_cases": 57673,
+        "num_controls": 1286025
+    },
+    {
+        "phenocode": "CD",
+        "phenostring": "Crohn's disease",
+        "num_cases": 59734,
+        "num_controls": 1260866
+    }
+]
