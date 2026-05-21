@@ -15,6 +15,7 @@ MCP_SERVER_BRANCH="${MCP_SERVER_BRANCH:-master}"
 DB_API_BRANCH="${DB_API_BRANCH:-master}"
 RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
@@ -70,6 +71,11 @@ build_and_push genetics-results-db "${WORK_DIR}/genetics-results-db" "${TAG}"
 # RAG service
 TAG=$(tag_for "${WORK_DIR}/genetics-rag-service")
 build_and_push genetics-rag-service "${WORK_DIR}/genetics-rag-service" "${TAG}"
+
+# monitor (local, no clone needed)
+MONITOR_DIR="${SCRIPT_DIR}/monitor"
+TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+build_and_push monitor "${MONITOR_DIR}" "${TAG}"
 
 echo ""
 echo "All images built and pushed."
