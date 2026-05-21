@@ -10,14 +10,24 @@ SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
-# apply terraform
+# determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
+PROFILE="${CONFIG_PROFILE:-$(grep -E '^\s*config_profile\s*=' terraform.tfvars 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
+if [ ! -f "${BACKEND_FILE}" ]; then
+  echo "ERROR: Backend config not found: ${BACKEND_FILE}"
+  echo "Expected one of: daly.tfbackend, finngen.tfbackend"
+  exit 1
+fi
+echo "Using backend config: ${PROFILE}.tfbackend"
+
+# apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
-  terraform init -input=false > /dev/null
+  terraform init -input=false -backend-config="${BACKEND_FILE}" -reconfigure > /dev/null
 else
   echo "=== Applying Terraform ==="
-  terraform init
+  terraform init -backend-config="${BACKEND_FILE}" -reconfigure
   terraform apply -auto-approve
 fi
 

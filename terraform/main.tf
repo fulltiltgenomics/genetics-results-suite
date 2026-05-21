@@ -12,10 +12,9 @@ terraform {
     }
   }
 
-  backend "gcs" {
-    bucket = "genetics-results-terraform-daly"
-    prefix = "genetics-results-suite"
-  }
+  # backend config is selected per profile via -backend-config flag
+  # see daly.tfbackend and finngen.tfbackend
+  backend "gcs" {}
 }
 
 provider "google" {

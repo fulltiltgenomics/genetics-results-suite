@@ -100,7 +100,7 @@ The YAML defines two exome dataset resources with different filtering levels: `g
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
 - **Storage**: 10Gi PVC for chat-backend SQLite databases, file attachments, and tool result downloads; 50Gi PV/PVC for rag-service embedding stores
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
-- **Terraform state**: GCS bucket `genetics-results-terraform`
+- **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
 
 ## Monitoring
 
