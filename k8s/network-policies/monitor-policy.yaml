@@ -1,0 +1,59 @@
+# results-api: allow ingress from monitor
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-results-api-from-monitor
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: results-api
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitor
+    ports:
+    - port: 4000
+  policyTypes:
+  - Ingress
+---
+# chat-backend: allow ingress from monitor
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-chat-backend-from-monitor
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitor
+    ports:
+    - port: 8000
+  policyTypes:
+  - Ingress
+---
+# frontend: allow ingress from monitor
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-frontend-from-monitor
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitor
+    ports:
+    - port: 3000
+  policyTypes:
+  - Ingress

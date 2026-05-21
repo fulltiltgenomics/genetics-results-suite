@@ -12,6 +12,7 @@ set -euo pipefail
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (auto-generated if not set)
+#   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
 #
 # oauth2-proxy secrets are created separately — see README.md
 
@@ -37,6 +38,7 @@ kubectl create secret generic genetics-secrets \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
+  --from-literal=slack-webhook-url="${SLACK_WEBHOOK_URL:-}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "genetics-secrets created/updated."
