@@ -120,6 +120,21 @@ data:
           proxy_send_timeout 300s;
         }
 
+        # chat backend status endpoint
+        location = /status {
+          auth_request /oauth2/auth;
+          auth_request_set $email $upstream_http_x_auth_request_email;
+          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
+          proxy_set_header X-Internal-MCP-Call "";
+          error_page 401 = @oauth2_login;
+
+          proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
         # chat backend API (only /chat/v1/ paths, not frontend /chat/:sessionId routes)
         location /chat/v1/ {
           auth_request /oauth2/auth;
