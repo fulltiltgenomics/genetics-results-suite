@@ -30,6 +30,14 @@ resource "google_project_iam_member" "artifact_registry_reader" {
   member  = "serviceAccount:${google_service_account.genetics_suite[0].email}"
 }
 
+# Cloud Logging: read logs for monitoring
+resource "google_project_iam_member" "logging_viewer" {
+  count   = var.manage_iam ? 1 : 0
+  project = var.project_id
+  role    = "roles/logging.viewer"
+  member  = "serviceAccount:${google_service_account.genetics_suite[0].email}"
+}
+
 # GCS: read objects
 resource "google_project_iam_member" "storage_viewer" {
   count   = var.manage_iam ? 1 : 0
