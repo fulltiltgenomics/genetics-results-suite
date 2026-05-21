@@ -34,6 +34,11 @@ output "domain" {
   value       = var.domains[0]
 }
 
+output "domains" {
+  description = "All domain names (comma-separated)"
+  value       = join(",", var.domains)
+}
+
 output "static_ip_name" {
   description = "Name of the reserved global static IP"
   value       = var.static_ip_name
