@@ -13,7 +13,7 @@ terraform {
   }
 
   backend "gcs" {
-    bucket = "genetics-results-terraform"
+    bucket = "genetics-results-terraform-daly"
     prefix = "genetics-results-suite"
   }
 }

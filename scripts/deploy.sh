@@ -115,11 +115,19 @@ for f in deployments/*.yaml; do
 done
 
 echo ""
-echo "=== Checking rollout status ==="
-DEPLOYS="frontend results-api db-api chat-backend mcp-server"
+echo "=== Forcing rollout restarts ==="
+# Always restart so pods pick up: (a) freshly-built :latest images,
+# (b) ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload).
+DEPLOYS="frontend results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"
 fi
+for deploy in ${DEPLOYS}; do
+  kubectl rollout restart deployment/"${deploy}" -n "${NAMESPACE}"
+done
+
+echo ""
+echo "=== Checking rollout status ==="
 for deploy in ${DEPLOYS}; do
   echo "Waiting for ${deploy}..."
   kubectl rollout status deployment/"${deploy}" -n "${NAMESPACE}" --timeout=300s || true

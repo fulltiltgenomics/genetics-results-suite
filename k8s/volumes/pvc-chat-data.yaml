@@ -7,7 +7,6 @@ spec:
   storageClassName: standard-rwo
   accessModes:
     - ReadWriteOnce
-  volumeName: chat-data-restored-pv
   resources:
     requests:
       storage: 10Gi
