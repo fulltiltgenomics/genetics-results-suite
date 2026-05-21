@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: monitor
+  namespace: genetics
+spec:
+  schedule: "0 */8 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: monitor
+        spec:
+          serviceAccountName: genetics-suite
+          restartPolicy: OnFailure
+          containers:
+          - name: monitor
+            image: ${REGISTRY}/monitor:latest
+            env:
+            - name: DATASETS_CONFIG_PATH
+              value: "/app/configs/datasets.yaml"
+            - name: CONFIG_PROFILE
+              value: "${CONFIG_PROFILE}"
+            - name: GCP_PROJECT
+              value: "${GCP_PROJECT}"
+            - name: BQ_DATASET
+              value: "genetics"
+            - name: K8S_NAMESPACE
+              value: "genetics"
+            - name: INTERNAL_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: genetics-secrets
+                  key: internal-api-secret
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: genetics-secrets
+                  key: slack-webhook-url
+            volumeMounts:
+            - name: datasets-config
+              mountPath: /app/configs/datasets.yaml
+              subPath: datasets.yaml
+              readOnly: true
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "256Mi"
+              limits:
+                cpu: "500m"
+                memory: "512Mi"
+          volumes:
+          - name: datasets-config
+            configMap:
+              name: datasets-config
