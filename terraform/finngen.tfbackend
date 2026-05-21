@@ -1,0 +1,2 @@
+bucket = "genetics-results-terraform"
+prefix = "genetics-results-suite"
