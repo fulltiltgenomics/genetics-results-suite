@@ -32,6 +32,7 @@ Internal only (ClusterIP + NetworkPolicy):
 | mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
 | db-api | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only) |
+| monitor | — (scripts/monitor/) | — | CronJob: health checks, BQ summary, log alerts → Slack |
 
 ## Project structure
 
@@ -53,7 +54,15 @@ Internal only (ClusterIP + NetworkPolicy):
 │   ├── create-secrets.sh     # create k8s secrets from env vars
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
-│   └── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   └── monitor/              # monitoring CronJob (Python)
+│       ├── Dockerfile
+│       ├── requirements.txt
+│       ├── main.py            # CLI entrypoint (--health, --bq-summary, --alerts, --all)
+│       ├── health.py          # service liveness + dataset accessibility checks
+│       ├── bq_summary.py      # BigQuery view row counts and resource coverage
+│       ├── alerter.py         # Cloud Logging alerter with SQLite dedup
+│       └── slack.py           # Slack webhook helper
 ├── terraform/
 │   ├── main.tf               # provider config, GCS backend
 │   ├── gke.tf                # GKE cluster and node pool
@@ -104,9 +113,44 @@ The YAML defines two exome dataset resources with different filtering levels: `g
 
 ## Monitoring
 
+### Metrics (Prometheus)
+
 - **Google Managed Prometheus** is enabled on the GKE cluster, collecting system and workload metrics
 - Metrics are stored in Cloud Monitoring (Monarch) and queryable via PromQL in Cloud Monitoring or Grafana
 - Access metrics via GCP Console → Monitoring → Metrics Explorer (PromQL tab) or by deploying a Grafana instance
+
+### Monitor CronJob
+
+A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hours, schedule `0 */8 * * *`) and sends results to Slack. Deployed as a Kubernetes CronJob in the `genetics` namespace.
+
+**What it checks:**
+
+- **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, and frontend `/`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
+- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`) for row counts and distinct resources. Compares actual resources against expected resources derived from `datasets.yaml` and `dataset_to_resource_rules`, reporting missing or unexpected resources.
+- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 8h). Groups by container, deduplicates, and only reports new alerts.
+
+**Deduplication:** The alerter normalizes log messages (stripping timestamps, UUIDs, IPs, request IDs) and hashes `container|normalized_message` into a dedup key. Seen keys are stored in a SQLite database (`/tmp/monitor.db` by default) with a 24-hour TTL. Expired entries are cleaned up at the start of each run.
+
+**Slack notifications:** Results are formatted as Slack Block Kit messages (headers, sections with status icons, dividers) and posted via an incoming webhook (`SLACK_WEBHOOK_URL` from `genetics-secrets`). Human-readable output is also printed to stdout.
+
+**Configuration (env vars):**
+
+| Variable | Source | Default | Description |
+|----------|--------|---------|-------------|
+| `GCP_PROJECT` | CronJob manifest | — | GCP project for BQ and Logging clients |
+| `CONFIG_PROFILE` | CronJob manifest | `finngen` | Active dataset profile |
+| `BQ_DATASET` | CronJob manifest | `genetics` | BigQuery dataset name |
+| `DATASETS_CONFIG_PATH` | CronJob manifest | `/app/configs/datasets.yaml` | Path to datasets config |
+| `INTERNAL_API_SECRET` | `genetics-secrets` | — | Bearer token for results-api |
+| `SLACK_WEBHOOK_URL` | `genetics-secrets` | — | Slack incoming webhook URL |
+| `K8S_NAMESPACE` | CronJob manifest | `genetics` | Namespace for log queries |
+| `ALERT_LOOKBACK_HOURS` | — | `8` | How far back to query logs |
+| `ALERT_DEDUP_TTL_HOURS` | — | `24` | How long to suppress duplicate alerts |
+| `MONITOR_DB_PATH` | — | `/tmp/monitor.db` | SQLite dedup database path |
+
+**Manual trigger:** `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
+
+**Network policies:** `k8s/network-policies/monitor-policy.yaml` allows the monitor pod (label `app: monitor`) to reach results-api (4000), chat-backend (8000), and frontend (3000). The service account has `roles/logging.viewer` for Cloud Logging access (configured in `terraform/iam.tf`).
 
 ## Security
 
@@ -128,4 +172,7 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 - **Single service update**: `./scripts/rollout.sh <service> <tag>` — updates one deployment image (requires `REGISTRY` env var)
 - **Build all images**: `./scripts/build-all.sh` — builds and pushes all Docker images to Artifact Registry (requires `REGISTRY` env var)
 - **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh)
-- **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables
+- **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor)
+- **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
+- **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
+- **Manual monitor run**: `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
