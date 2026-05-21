@@ -40,10 +40,12 @@ eval "$(terraform output -raw kubectl_command)"
 TF_PROJECT_ID=$(terraform output -raw project_id)
 TF_REGION=$(terraform output -raw region)
 TF_DOMAIN=$(terraform output -raw domain)
+TF_DOMAINS=$(terraform output -raw domains)
 TF_STATIC_IP_NAME=$(terraform output -raw static_ip_name)
 export GCP_PROJECT="${GCP_PROJECT:-${TF_PROJECT_ID}}"
 export GCP_REGION="${GCP_REGION:-${TF_REGION}}"
 export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
+DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
 export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
@@ -106,10 +108,60 @@ kubectl create configmap datasets-config \
   --from-file=datasets.yaml="${ROOT_DIR}/configs/datasets.yaml" \
   -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
-# ingress resources (substitute domain and static IP)
+# ingress resources
+# managed-certs and ingress are generated to support multiple domains;
+# other ingress files (backend-configs, frontend-config) are applied as-is
 for f in ingress/*.yaml; do
-  envsubst '${DOMAIN} ${STATIC_IP_NAME}' < "$f" | kubectl apply -f -
+  case "$(basename "$f")" in
+    managed-certs.yaml|ingress.yaml) continue ;;
+    *) kubectl apply -f "$f" ;;
+  esac
 done
+
+# build managed certificate and ingress with all domains
+IFS=',' read -ra DOMAIN_LIST <<< "${DOMAINS}"
+
+generate_cert() {
+  echo "apiVersion: networking.gke.io/v1"
+  echo "kind: ManagedCertificate"
+  echo "metadata:"
+  echo "  name: managed-cert"
+  echo "  namespace: ${NAMESPACE}"
+  echo "spec:"
+  echo "  domains:"
+  for d in "${DOMAIN_LIST[@]}"; do
+    echo "    - ${d}"
+  done
+}
+generate_cert | kubectl apply -f -
+
+generate_ingress() {
+  echo "apiVersion: networking.k8s.io/v1"
+  echo "kind: Ingress"
+  echo "metadata:"
+  echo "  name: genetics-suite"
+  echo "  namespace: ${NAMESPACE}"
+  echo "  annotations:"
+  echo "    networking.gke.io/v1beta1.FrontendConfig: \"https-redirect\""
+  echo "    kubernetes.io/ingress.global-static-ip-name: ${STATIC_IP_NAME}"
+  echo "    networking.gke.io/managed-certificates: \"managed-cert\""
+  echo "    kubernetes.io/ingress.allow-http: \"true\""
+  echo "spec:"
+  echo "  rules:"
+  for d in "${DOMAIN_LIST[@]}"; do
+    echo "  - host: ${d}"
+    echo "    http:"
+    echo "      paths:"
+    echo "      - path: /*"
+    echo "        pathType: ImplementationSpecific"
+    echo "        backend:"
+    echo "          service:"
+    echo "            name: auth-gateway"
+    echo "            port:"
+    echo "              number: 8080"
+  done
+}
+generate_ingress | kubectl apply -f -
 
 # network policies
 kubectl apply -f network-policies/
