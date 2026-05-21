@@ -54,11 +54,11 @@ export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 
-# LLM model: Opus for daly, Sonnet for finngen
+# LLM model
 if [ "${CONFIG_PROFILE}" = "daly" ]; then
   export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-7}"
 else
-  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-sonnet-4-6}"
+  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-7}"
 fi
 
 # apply kubernetes manifests
