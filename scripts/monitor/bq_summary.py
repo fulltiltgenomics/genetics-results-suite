@@ -86,12 +86,13 @@ class BigQuerySummary:
     def _get_expected_resources(self) -> dict[str, set[str]]:
         """Derive expected resources per view from profile datasets and mapping rules.
 
-        For each dataset in the active profile, find which views its resource
-        should appear in by checking the dataset_to_resource_rules applies_to
-        fields. The fallback rule (pattern "*") means any resource that doesn't
-        match an explicit rule still appears in whatever views it's relevant to,
-        so we use the profile dataset's resource directly and determine applicable
-        views from the rules that produce that resource.
+        Only resources with explicit dataset_to_resource_rules entries (with
+        applies_to) are expected in BQ views. Datasets that fall through to
+        the wildcard rule (e.g. external summary stats) are not expected —
+        having a gwas data_type doesn't mean the data was fine-mapped into BQ.
+
+        Datasets with pseudo_credible_sets are excluded from colocalization
+        and coloc_credsets views since they lack formal fine-mapping.
         """
         expected: dict[str, set[str]] = {v: set() for v in VIEWS}
 
@@ -103,8 +104,7 @@ class BigQuerySummary:
 
         rules = self.config.get("dataset_to_resource_rules", [])
 
-        # build a map: resource -> set of views it can appear in
-        # from explicit rules (non-wildcard)
+        # build a map: resource -> set of views from explicit (non-wildcard) rules
         resource_to_views: dict[str, set[str]] = {}
         for rule in rules:
             resource = rule.get("resource")
@@ -112,28 +112,26 @@ class BigQuerySummary:
             if resource and applies_to:
                 resource_to_views.setdefault(resource, set()).update(applies_to)
 
-        # for each dataset in the profile, determine which views its resource belongs to
+        # coloc views that pseudo_credible_sets datasets should be excluded from
+        coloc_views = {"colocalization_v", "coloc_credsets_v"}
+
+        # collect which resources have pseudo_credible_sets
+        pseudo_resources: set[str] = set()
+        for ds_config in datasets.values():
+            if ds_config.get("pseudo_credible_sets"):
+                r = ds_config.get("resource")
+                if r:
+                    pseudo_resources.add(r)
+
         for ds_config in datasets.values():
             resource = ds_config.get("resource")
-            if not resource:
+            if not resource or resource not in resource_to_views:
                 continue
 
-            if resource in resource_to_views:
-                for view in resource_to_views[resource]:
-                    expected[view].add(resource)
-            else:
-                # fallback rule — resource appears via lowercased dataset name
-                # these resources appear in credible_sets_v/colocalization_v/coloc_credsets_v
-                # (the default views for fine-mapping data) unless data_type indicates otherwise
-                data_type = ds_config.get("data_type", "")
-                if data_type == "exome":
-                    expected["exome_variant_results_v"].add(resource)
-                elif data_type == "gene_based":
-                    expected["gene_burden_results_v"].add(resource)
-                elif data_type in ("gwas", "eqtl", "pqtl", "sqtl", "caqtl", "metaboqtl", "mixed"):
-                    for v in ("credible_sets_v", "colocalization_v", "coloc_credsets_v"):
-                        expected[v].add(resource)
-                # expression, gene_disease, chromatin_peaks are not in BQ views
+            for view in resource_to_views[resource]:
+                if resource in pseudo_resources and view in coloc_views:
+                    continue
+                expected[view].add(resource)
 
         return expected
 
