@@ -19,6 +19,9 @@ k8s/secrets/oauth2-allowed-emails.yaml
 # OS
 .DS_Store
 
+# Python
+__pycache__/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
