@@ -1,8 +1,9 @@
 """BigQuery data summary module for monitoring.
 
-Queries BQ views for row counts and resource coverage, then compares
-actual resources against expected resources derived from the results-api
-/api/v1/datasets endpoint (which knows which products each dataset supports).
+Queries BQ views for row counts and resource coverage. Uses a hybrid approach
+for expected resources:
+- credible_sets, exome, gene_based: config-driven (dataset_to_resource_rules)
+- colocalization: API-driven (results-api knows actual coloc pairs)
 """
 
 import logging
@@ -10,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 
 import requests
+import yaml
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
 
@@ -23,8 +25,14 @@ VIEWS = [
     "gene_burden_results_v",
 ]
 
-# colocalization views use resource1/resource2 instead of resource
-_COLOC_VIEWS = {"colocalization_v"}
+# colocalization_v uses resource1/resource2 instead of resource
+_DUAL_RESOURCE_VIEWS = {"colocalization_v"}
+
+# views where expected resources come from config rules
+_CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v"}
+
+# views where expected resources come from the API's colocalization products
+_COLOC_VIEWS = {"colocalization_v", "coloc_credsets_v"}
 
 
 @dataclass
@@ -51,15 +59,6 @@ class ViewSummary:
         }
 
 
-    # API product key -> BQ views that product's resource should appear in
-_PRODUCT_TO_VIEWS: dict[str, list[str]] = {
-    "credible_sets": ["credible_sets_v"],
-    "colocalization": ["colocalization_v", "coloc_credsets_v"],
-    "exome_results": ["exome_variant_results_v"],
-    "gene_based_results": ["gene_burden_results_v"],
-}
-
-
 class BigQuerySummary:
     """Queries BQ views and compares actual vs expected resource coverage."""
 
@@ -67,26 +66,71 @@ class BigQuerySummary:
         self,
         project: str | None = None,
         bq_dataset: str | None = None,
+        config_path: str | None = None,
+        profile: str | None = None,
         results_api_url: str | None = None,
         api_secret: str | None = None,
     ):
         self.project = project or os.environ["GCP_PROJECT"]
         self.bq_dataset = bq_dataset or os.environ.get("BQ_DATASET", "genetics_results")
+        self.config_path = config_path or os.environ.get(
+            "DATASETS_CONFIG_PATH", "configs/datasets.yaml"
+        )
+        self.profile = profile or os.environ.get("CONFIG_PROFILE", "daly")
         self.results_api_url = (
             results_api_url
             or os.environ.get("RESULTS_API_URL", "http://results-api.genetics.svc.cluster.local:4000")
         )
         self.api_secret = api_secret or os.environ.get("INTERNAL_API_SECRET", "")
         self.client = bigquery.Client(project=self.project)
+        self._config: dict | None = None
 
-    def _get_expected_resources(self) -> dict[str, set[str]]:
-        """Derive expected resources per view from the results-api.
+    @property
+    def config(self) -> dict:
+        if self._config is None:
+            try:
+                with open(self.config_path) as f:
+                    self._config = yaml.safe_load(f)
+            except Exception as e:
+                logger.error("failed to load datasets config: %s", e)
+                self._config = {}
+        return self._config
 
-        Calls /api/v1/datasets to get each dataset's products (credible_sets,
-        colocalization, exome_results, gene_based_results) and maps the
-        dataset's resource to the corresponding BQ views.
-        """
+    def _get_config_expected(self) -> dict[str, set[str]]:
+        """Expected resources for credible_sets, exome, gene_based views
+        from explicit dataset_to_resource_rules entries."""
         expected: dict[str, set[str]] = {v: set() for v in VIEWS}
+
+        profile_data = self.config.get("profiles", {}).get(self.profile, {})
+        datasets = profile_data.get("datasets", {})
+        rules = self.config.get("dataset_to_resource_rules", [])
+
+        # resource -> views from explicit (non-wildcard) rules
+        resource_to_views: dict[str, set[str]] = {}
+        for rule in rules:
+            resource = rule.get("resource")
+            applies_to = rule.get("applies_to", [])
+            if resource and applies_to:
+                resource_to_views.setdefault(resource, set()).update(applies_to)
+
+        # only add resources that are in the active profile AND have explicit rules
+        profile_resources = {
+            ds.get("resource") for ds in datasets.values() if ds.get("resource")
+        }
+
+        for resource in profile_resources:
+            if resource not in resource_to_views:
+                continue
+            for view in resource_to_views[resource]:
+                if view in _CONFIG_VIEWS:
+                    expected[view].add(resource)
+
+        return expected
+
+    def _get_coloc_expected(self) -> dict[str, set[str]]:
+        """Expected resources for colocalization views from the API's
+        dataset products (the API knows actual coloc pairs)."""
+        expected: dict[str, set[str]] = {v: set() for v in _COLOC_VIEWS}
 
         try:
             headers = {}
@@ -100,21 +144,53 @@ class BigQuerySummary:
             resp.raise_for_status()
             api_datasets = resp.json()
         except Exception as e:
-            logger.warning("could not fetch datasets from API, skipping expected resource comparison: %s", e)
+            logger.warning("could not fetch datasets from API for coloc expectations: %s", e)
             return expected
 
         for ds in api_datasets:
             resource = ds.get("resource")
             products = ds.get("products", {})
-            if not resource or not products:
-                continue
-
-            for product_key, views in _PRODUCT_TO_VIEWS.items():
-                if product_key in products:
-                    for view in views:
-                        expected[view].add(resource)
+            if resource and "colocalization" in products:
+                for view in _COLOC_VIEWS:
+                    expected[view].add(resource)
 
         return expected
+
+    def _get_expected_resources(self) -> dict[str, set[str]]:
+        """Combine config-based and API-based expectations."""
+        expected = self._get_config_expected()
+        coloc_expected = self._get_coloc_expected()
+        for view, resources in coloc_expected.items():
+            expected[view] = resources
+        return expected
+
+    def _get_collection_prefixes(self) -> list[str]:
+        """Get collection_id_prefix values from resources config (e.g. 'qtd')."""
+        prefixes = []
+        for res_config in self.config.get("resources", {}).values():
+            prefix = res_config.get("collection_id_prefix")
+            if prefix:
+                prefixes.append(prefix)
+        return prefixes
+
+    def _count_top_level_resources(self, resources: set[str]) -> int:
+        """Count resources, collapsing collection sub-resources into one.
+        E.g. qtd000001..qtd000700 count as 1 (eqtl_catalogue)."""
+        prefixes = self._get_collection_prefixes()
+        if not prefixes:
+            return len(resources)
+
+        top_level = set()
+        for r in resources:
+            collapsed = False
+            for prefix in prefixes:
+                if r.startswith(prefix):
+                    top_level.add(f"{prefix}*")
+                    collapsed = True
+                    break
+            if not collapsed:
+                top_level.add(r)
+        return len(top_level)
 
     def _query_view(self, view: str) -> ViewSummary:
         """Query a single BQ view for row count and distinct resources."""
@@ -122,7 +198,7 @@ class BigQuerySummary:
         full_view = f"`{self.project}.{self.bq_dataset}.{view}`"
 
         try:
-            if view in _COLOC_VIEWS:
+            if view in _DUAL_RESOURCE_VIEWS:
                 count_sql = f"SELECT COUNT(*) AS row_count FROM {full_view}"
                 resource_sql = (
                     f"SELECT DISTINCT r FROM ("
@@ -131,28 +207,20 @@ class BigQuerySummary:
                     f"  SELECT resource2 AS r FROM {full_view}"
                     f")"
                 )
-
-                count_result = self.client.query(count_sql).result()
-                for row in count_result:
-                    summary.row_count = row.row_count
-
-                resource_result = self.client.query(resource_sql).result()
-                for row in resource_result:
-                    if row.r:
-                        summary.actual_resources.add(row.r)
             else:
                 count_sql = f"SELECT COUNT(*) AS row_count FROM {full_view}"
-                resource_sql = f"SELECT DISTINCT resource FROM {full_view} WHERE resource IS NOT NULL"
+                resource_sql = f"SELECT DISTINCT resource AS r FROM {full_view} WHERE resource IS NOT NULL"
 
-                count_result = self.client.query(count_sql).result()
-                for row in count_result:
-                    summary.row_count = row.row_count
+            count_result = self.client.query(count_sql).result()
+            for row in count_result:
+                summary.row_count = row.row_count
 
-                resource_result = self.client.query(resource_sql).result()
-                for row in resource_result:
-                    summary.actual_resources.add(row.resource)
+            resource_result = self.client.query(resource_sql).result()
+            for row in resource_result:
+                if row.r:
+                    summary.actual_resources.add(row.r)
 
-            summary.resource_count = len(summary.actual_resources)
+            summary.resource_count = self._count_top_level_resources(summary.actual_resources)
 
         except NotFound:
             summary.error = f"view {view} does not exist"
@@ -172,7 +240,7 @@ class BigQuerySummary:
             summary = self._query_view(view)
             summary.expected_resources = expected_by_view.get(view, set())
             summary.missing_resources = summary.expected_resources - summary.actual_resources
-            summary.unexpected_resources = summary.actual_resources - summary.expected_resources
+            # don't flag unexpected — many legitimate resources exist via wildcard rules
             results.append(summary.to_dict())
 
         return results
