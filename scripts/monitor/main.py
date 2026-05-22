@@ -168,37 +168,25 @@ def _print_alerts(results: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module runners (each tolerates initialization failures)
+# Module runners
 # ---------------------------------------------------------------------------
 
-def _run_health() -> list | None:
-    try:
-        from monitor.health import HealthChecker
-        checker = HealthChecker()
-        return checker.run_all()
-    except Exception as exc:
-        logger.warning("health check module unavailable: %s", exc)
-        return None
+def _run_health() -> list:
+    from monitor.health import HealthChecker
+    checker = HealthChecker()
+    return checker.run_all()
 
 
-def _run_bq_summary() -> list[dict] | None:
-    try:
-        from monitor.bq_summary import BigQuerySummary
-        summary = BigQuerySummary()
-        return summary.run()
-    except Exception as exc:
-        logger.warning("bq summary module unavailable: %s", exc)
-        return None
+def _run_bq_summary() -> list[dict]:
+    from monitor.bq_summary import BigQuerySummary
+    summary = BigQuerySummary()
+    return summary.run()
 
 
-def _run_alerts() -> list | None:
-    try:
-        from monitor.alerter import LogAlerter
-        alerter = LogAlerter()
-        return alerter.check()
-    except Exception as exc:
-        logger.warning("alerter module unavailable: %s", exc)
-        return None
+def _run_alerts() -> list:
+    from monitor.alerter import LogAlerter
+    alerter = LogAlerter()
+    return alerter.check()
 
 
 # ---------------------------------------------------------------------------
