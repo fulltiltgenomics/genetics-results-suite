@@ -245,6 +245,17 @@ def main() -> int:
     if alert_results is not None:
         _print_alerts(alert_results)
 
+    # detect failures
+    has_failure = False
+    if health_results is not None:
+        has_failure = has_failure or any(r.status == "fail" for r in health_results)
+    if bq_results is not None:
+        has_failure = has_failure or any(
+            v.get("error") or v.get("missing_resources") for v in bq_results
+        )
+    if alert_results is not None:
+        has_failure = has_failure or any(sa.alerts for sa in alert_results)
+
     # build Slack blocks
     slack_blocks: list[dict] = []
     if health_results is not None:
@@ -256,6 +267,15 @@ def main() -> int:
     if alert_results is not None:
         slack_blocks.extend(_format_alert_blocks(alert_results))
 
+    if has_failure:
+        alert_user = os.environ.get("SLACK_ALERT_USER_ID")
+        if alert_user:
+            slack_blocks.append({"type": "divider"})
+            slack_blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"<@{alert_user}> issues detected"},
+            })
+
     # send to Slack if webhook is configured
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
     if webhook_url and slack_blocks:
@@ -263,20 +283,6 @@ def main() -> int:
         send_slack_message(webhook_url, slack_blocks)
     elif not webhook_url:
         logger.info("SLACK_WEBHOOK_URL not set, skipping slack notification")
-
-    # determine exit code: 1 if any failures detected
-    has_failure = False
-
-    if health_results is not None:
-        has_failure = has_failure or any(r.status == "fail" for r in health_results)
-
-    if bq_results is not None:
-        has_failure = has_failure or any(
-            v.get("error") or v.get("missing_resources") for v in bq_results
-        )
-
-    if alert_results is not None:
-        has_failure = has_failure or any(sa.alerts for sa in alert_results)
 
     return 1 if has_failure else 0
 

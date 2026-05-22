@@ -38,6 +38,46 @@ spec:
   policyTypes:
   - Ingress
 ---
+# mcp-server: allow ingress from monitor
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-server-from-monitor
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-server
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitor
+    ports:
+    - port: 8080
+  policyTypes:
+  - Ingress
+---
+# db-api: allow ingress from monitor
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-db-api-from-monitor
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: db-api
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitor
+    ports:
+    - port: 8080
+  policyTypes:
+  - Ingress
+---
 # frontend: allow ingress from monitor
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -41,6 +41,8 @@ spec:
                 secretKeyRef:
                   name: genetics-secrets
                   key: slack-webhook-url
+            - name: SLACK_ALERT_USER_ID
+              value: "${SLACK_ALERT_USER_ID}"
             - name: MONITOR_DB_PATH
               value: "/data/monitor.db"
             volumeMounts:
