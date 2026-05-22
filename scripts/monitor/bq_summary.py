@@ -10,7 +10,6 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-import requests
 import yaml
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
@@ -28,11 +27,11 @@ VIEWS = [
 # colocalization_v uses resource1/resource2 instead of resource
 _DUAL_RESOURCE_VIEWS = {"colocalization_v"}
 
-# views where expected resources come from config rules
-_CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v"}
-
-# views where expected resources come from the API's colocalization products
-_COLOC_VIEWS = {"colocalization_v", "coloc_credsets_v"}
+# views where we compare expected vs actual resources (config-driven)
+# coloc views are excluded: resource names in BQ don't map 1:1 to API
+# resources (e.g. eqtl_catalogue -> qtd*, ukbb_finucane -> ukbb), and
+# coloc integrity follows from credible sets being correct
+_CHECKED_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v"}
 
 
 @dataclass
@@ -68,8 +67,6 @@ class BigQuerySummary:
         bq_dataset: str | None = None,
         config_path: str | None = None,
         profile: str | None = None,
-        results_api_url: str | None = None,
-        api_secret: str | None = None,
     ):
         self.project = project or os.environ["GCP_PROJECT"]
         self.bq_dataset = bq_dataset or os.environ.get("BQ_DATASET", "genetics_results")
@@ -77,11 +74,6 @@ class BigQuerySummary:
             "DATASETS_CONFIG_PATH", "configs/datasets.yaml"
         )
         self.profile = profile or os.environ.get("CONFIG_PROFILE", "daly")
-        self.results_api_url = (
-            results_api_url
-            or os.environ.get("RESULTS_API_URL", "http://results-api.genetics.svc.cluster.local:4000")
-        )
-        self.api_secret = api_secret or os.environ.get("INTERNAL_API_SECRET", "")
         self.client = bigquery.Client(project=self.project)
         self._config: dict | None = None
 
@@ -122,47 +114,14 @@ class BigQuerySummary:
             if resource not in resource_to_views:
                 continue
             for view in resource_to_views[resource]:
-                if view in _CONFIG_VIEWS:
-                    expected[view].add(resource)
-
-        return expected
-
-    def _get_coloc_expected(self) -> dict[str, set[str]]:
-        """Expected resources for colocalization views from the API's
-        dataset products (the API knows actual coloc pairs)."""
-        expected: dict[str, set[str]] = {v: set() for v in _COLOC_VIEWS}
-
-        try:
-            headers = {}
-            if self.api_secret:
-                headers["Authorization"] = f"Bearer {self.api_secret}"
-            resp = requests.get(
-                f"{self.results_api_url}/api/v1/datasets",
-                headers=headers,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            api_datasets = resp.json()
-        except Exception as e:
-            logger.warning("could not fetch datasets from API for coloc expectations: %s", e)
-            return expected
-
-        for ds in api_datasets:
-            resource = ds.get("resource")
-            products = ds.get("products", {})
-            if resource and "colocalization" in products:
-                for view in _COLOC_VIEWS:
+                if view in _CHECKED_VIEWS:
                     expected[view].add(resource)
 
         return expected
 
     def _get_expected_resources(self) -> dict[str, set[str]]:
-        """Combine config-based and API-based expectations."""
-        expected = self._get_config_expected()
-        coloc_expected = self._get_coloc_expected()
-        for view, resources in coloc_expected.items():
-            expected[view] = resources
-        return expected
+        """Get expected resources for checked views."""
+        return self._get_config_expected()
 
     def _get_collection_prefixes(self) -> list[str]:
         """Get collection_id_prefix values from resources config (e.g. 'qtd')."""
