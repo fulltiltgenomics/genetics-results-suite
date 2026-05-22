@@ -125,32 +125,34 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 
 **What it checks:**
 
-- **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, and frontend `/`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
-- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`) for row counts and distinct resources. Compares actual resources against expected resources derived from `datasets.yaml` and `dataset_to_resource_rules`, reporting missing or unexpected resources.
-- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 8h). Groups by container, deduplicates, and only reports new alerts.
+- **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
+- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`) for row counts and distinct resources. For credible_sets/exome/gene_based views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
+- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 8h). Groups by container, deduplicates via SQLite, and only reports new alerts.
 
-**Deduplication:** The alerter normalizes log messages (stripping timestamps, UUIDs, IPs, request IDs) and hashes `container|normalized_message` into a dedup key. Seen keys are stored in a SQLite database (`/tmp/monitor.db` by default) with a 24-hour TTL. Expired entries are cleaned up at the start of each run.
+**Deduplication:** The alerter normalizes log messages (stripping timestamps, UUIDs, IPs, request IDs) and hashes `container|normalized_message` into a dedup key. Seen keys are stored in a SQLite database on a PVC (`/data/monitor.db`) with a 24-hour TTL. Expired entries are cleaned up at the start of each run.
 
-**Slack notifications:** Results are formatted as Slack Block Kit messages (headers, sections with status icons, dividers) and posted via an incoming webhook (`SLACK_WEBHOOK_URL` from `genetics-secrets`). Human-readable output is also printed to stdout.
+**Slack notifications:** Results are formatted as Slack Block Kit messages with deployment flag emoji (Finnish flag for finngen, US flag for daly). When failures or alerts are detected, the configured user is @mentioned for notification. Posted via incoming webhook (`SLACK_WEBHOOK_URL` from `genetics-secrets`). Human-readable output is also printed to stdout.
 
 **Configuration (env vars):**
 
 | Variable | Source | Default | Description |
 |----------|--------|---------|-------------|
-| `GCP_PROJECT` | CronJob manifest | — | GCP project for BQ and Logging clients |
-| `CONFIG_PROFILE` | CronJob manifest | `finngen` | Active dataset profile |
-| `BQ_DATASET` | CronJob manifest | `genetics` | BigQuery dataset name |
+| `GCP_PROJECT` | CronJob manifest (envsubst) | — | GCP project for BQ and Logging clients |
+| `CONFIG_PROFILE` | CronJob manifest (envsubst) | `finngen` | Active dataset profile (also selects flag emoji) |
+| `BQ_DATASET` | CronJob manifest (envsubst) | `genetics_results` | BigQuery dataset name |
+| `SLACK_ALERT_USER_ID` | CronJob manifest (envsubst) | — | Slack member ID to @mention on failures |
 | `DATASETS_CONFIG_PATH` | CronJob manifest | `/app/configs/datasets.yaml` | Path to datasets config |
 | `INTERNAL_API_SECRET` | `genetics-secrets` | — | Bearer token for results-api |
 | `SLACK_WEBHOOK_URL` | `genetics-secrets` | — | Slack incoming webhook URL |
 | `K8S_NAMESPACE` | CronJob manifest | `genetics` | Namespace for log queries |
+| `MONITOR_DB_PATH` | CronJob manifest | `/data/monitor.db` | SQLite dedup database path (on PVC) |
+| `RESULTS_API_URL` | — | `http://results-api....:4000` | Override results-api URL |
 | `ALERT_LOOKBACK_HOURS` | — | `8` | How far back to query logs |
 | `ALERT_DEDUP_TTL_HOURS` | — | `24` | How long to suppress duplicate alerts |
-| `MONITOR_DB_PATH` | — | `/tmp/monitor.db` | SQLite dedup database path |
 
-**Manual trigger:** `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
+**Manual trigger:** `kubectl create job --from=cronjob/monitor monitor-$(date +%s) -n genetics`
 
-**Network policies:** `k8s/network-policies/monitor-policy.yaml` allows the monitor pod (label `app: monitor`) to reach results-api (4000), chat-backend (8000), and frontend (3000). The service account has `roles/logging.viewer` for Cloud Logging access (configured in `terraform/iam.tf`).
+**Network policies:** `k8s/network-policies/monitor-policy.yaml` allows the monitor pod (label `app: monitor`) to reach results-api (4000), chat-backend (8000), frontend (3000), mcp-server (8080), and db-api (8080). The service account has `roles/logging.viewer` for Cloud Logging access (configured in `terraform/iam.tf`).
 
 ## Security
 
