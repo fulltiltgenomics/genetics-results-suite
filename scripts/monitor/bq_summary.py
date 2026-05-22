@@ -1,14 +1,15 @@
 """BigQuery data summary module for monitoring.
 
 Queries BQ views for row counts and resource coverage, then compares
-actual resources against expected resources derived from datasets.yaml.
+actual resources against expected resources derived from the results-api
+/api/v1/datasets endpoint (which knows which products each dataset supports).
 """
 
 import logging
 import os
 from dataclasses import dataclass, field
 
-import yaml
+import requests
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
 
@@ -50,6 +51,15 @@ class ViewSummary:
         }
 
 
+    # API product key -> BQ views that product's resource should appear in
+_PRODUCT_TO_VIEWS: dict[str, list[str]] = {
+    "credible_sets": ["credible_sets_v"],
+    "colocalization": ["colocalization_v", "coloc_credsets_v"],
+    "exome_results": ["exome_variant_results_v"],
+    "gene_based_results": ["gene_burden_results_v"],
+}
+
+
 class BigQuerySummary:
     """Queries BQ views and compares actual vs expected resource coverage."""
 
@@ -57,81 +67,52 @@ class BigQuerySummary:
         self,
         project: str | None = None,
         bq_dataset: str | None = None,
-        config_path: str | None = None,
-        profile: str | None = None,
+        results_api_url: str | None = None,
+        api_secret: str | None = None,
     ):
         self.project = project or os.environ["GCP_PROJECT"]
         self.bq_dataset = bq_dataset or os.environ.get("BQ_DATASET", "genetics_results")
-        self.config_path = config_path or os.environ.get(
-            "DATASETS_CONFIG_PATH", "configs/datasets.yaml"
+        self.results_api_url = (
+            results_api_url
+            or os.environ.get("RESULTS_API_URL", "http://results-api.genetics.svc.cluster.local:4000")
         )
-        self.profile = profile or os.environ.get("CONFIG_PROFILE", "daly")
+        self.api_secret = api_secret or os.environ.get("INTERNAL_API_SECRET", "")
         self.client = bigquery.Client(project=self.project)
-        self._config = None
-
-    @property
-    def config(self) -> dict:
-        if self._config is None:
-            self._config = self._load_config()
-        return self._config
-
-    def _load_config(self) -> dict:
-        try:
-            with open(self.config_path) as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            logger.error("failed to load datasets config from %s: %s", self.config_path, e)
-            return {}
 
     def _get_expected_resources(self) -> dict[str, set[str]]:
-        """Derive expected resources per view from profile datasets and mapping rules.
+        """Derive expected resources per view from the results-api.
 
-        Only resources with explicit dataset_to_resource_rules entries (with
-        applies_to) are expected in BQ views. Datasets that fall through to
-        the wildcard rule (e.g. external summary stats) are not expected —
-        having a gwas data_type doesn't mean the data was fine-mapped into BQ.
-
-        Datasets with pseudo_credible_sets are excluded from colocalization
-        and coloc_credsets views since they lack formal fine-mapping.
+        Calls /api/v1/datasets to get each dataset's products (credible_sets,
+        colocalization, exome_results, gene_based_results) and maps the
+        dataset's resource to the corresponding BQ views.
         """
         expected: dict[str, set[str]] = {v: set() for v in VIEWS}
 
-        profile_data = self.config.get("profiles", {}).get(self.profile, {})
-        datasets = profile_data.get("datasets", {})
-        if not datasets:
-            logger.warning("no datasets found for profile %s", self.profile)
+        try:
+            headers = {}
+            if self.api_secret:
+                headers["Authorization"] = f"Bearer {self.api_secret}"
+            resp = requests.get(
+                f"{self.results_api_url}/api/v1/datasets",
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            api_datasets = resp.json()
+        except Exception as e:
+            logger.warning("could not fetch datasets from API, skipping expected resource comparison: %s", e)
             return expected
 
-        rules = self.config.get("dataset_to_resource_rules", [])
-
-        # build a map: resource -> set of views from explicit (non-wildcard) rules
-        resource_to_views: dict[str, set[str]] = {}
-        for rule in rules:
-            resource = rule.get("resource")
-            applies_to = rule.get("applies_to", [])
-            if resource and applies_to:
-                resource_to_views.setdefault(resource, set()).update(applies_to)
-
-        # coloc views that pseudo_credible_sets datasets should be excluded from
-        coloc_views = {"colocalization_v", "coloc_credsets_v"}
-
-        # collect which resources have pseudo_credible_sets
-        pseudo_resources: set[str] = set()
-        for ds_config in datasets.values():
-            if ds_config.get("pseudo_credible_sets"):
-                r = ds_config.get("resource")
-                if r:
-                    pseudo_resources.add(r)
-
-        for ds_config in datasets.values():
-            resource = ds_config.get("resource")
-            if not resource or resource not in resource_to_views:
+        for ds in api_datasets:
+            resource = ds.get("resource")
+            products = ds.get("products", {})
+            if not resource or not products:
                 continue
 
-            for view in resource_to_views[resource]:
-                if resource in pseudo_resources and view in coloc_views:
-                    continue
-                expected[view].add(resource)
+            for product_key, views in _PRODUCT_TO_VIEWS.items():
+                if product_key in products:
+                    for view in views:
+                        expected[view].add(resource)
 
         return expected
 
