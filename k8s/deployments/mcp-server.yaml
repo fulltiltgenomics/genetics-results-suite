@@ -64,12 +64,14 @@ spec:
         - name: LOG_LEVEL
           value: "INFO"
         readinessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
         livenessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: 8080
           initialDelaySeconds: 20
           periodSeconds: 30
