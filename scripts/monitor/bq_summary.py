@@ -61,7 +61,7 @@ class BigQuerySummary:
         profile: str | None = None,
     ):
         self.project = project or os.environ["GCP_PROJECT"]
-        self.bq_dataset = bq_dataset or os.environ.get("BQ_DATASET", "genetics")
+        self.bq_dataset = bq_dataset or os.environ.get("BQ_DATASET", "genetics_results")
         self.config_path = config_path or os.environ.get(
             "DATASETS_CONFIG_PATH", "configs/datasets.yaml"
         )

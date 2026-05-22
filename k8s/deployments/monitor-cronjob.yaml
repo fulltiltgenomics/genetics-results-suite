@@ -28,7 +28,7 @@ spec:
             - name: GCP_PROJECT
               value: "${GCP_PROJECT}"
             - name: BQ_DATASET
-              value: "genetics"
+              value: "${BQ_DATASET}"
             - name: K8S_NAMESPACE
               value: "genetics"
             - name: INTERNAL_API_SECRET
