@@ -16,6 +16,8 @@ spec:
             app: monitor
         spec:
           serviceAccountName: genetics-suite
+          securityContext:
+            fsGroup: 1000
           restartPolicy: OnFailure
           containers:
           - name: monitor
