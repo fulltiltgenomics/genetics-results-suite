@@ -127,6 +127,28 @@ class BigQuerySummary:
                 normalized.add(r)
         return normalized
 
+    def _map_to_bq_resource(self, api_resource: str) -> str:
+        """Map an API resource name to its BQ resource name.
+
+        The BQ views use CASE/WHEN with SQL LIKE patterns from
+        dataset_to_resource_rules. An API resource like 'ukbb_finucane'
+        matches 'UKB%' (case-insensitive) and becomes 'ukbb' in BQ.
+        Collection resources (eqtl_catalogue) stay as-is since they're
+        handled by _normalize_resources on the BQ side.
+        """
+        rules = self.config.get("dataset_to_resource_rules", [])
+        for rule in rules:
+            pattern = rule.get("pattern", "")
+            resource = rule.get("resource")
+            if not resource or pattern == "*":
+                continue
+            # convert SQL LIKE pattern to a prefix check (all patterns use trailing %)
+            if pattern.endswith("%"):
+                prefix = pattern[:-1].lower()
+                if api_resource.lower().startswith(prefix):
+                    return resource
+        return api_resource
+
     def _get_config_expected(self) -> dict[str, set[str]]:
         """Expected resources for credible_sets, exome, gene_based views
         from explicit dataset_to_resource_rules entries."""
@@ -180,8 +202,10 @@ class BigQuerySummary:
             resource = ds.get("resource")
             products = ds.get("products", {})
             if resource and "colocalization" in products:
+                # map API resource to BQ resource (e.g. ukbb_finucane -> ukbb)
+                bq_resource = self._map_to_bq_resource(resource)
                 for view in _API_VIEWS:
-                    expected[view].add(resource)
+                    expected[view].add(bq_resource)
 
         return expected
 
