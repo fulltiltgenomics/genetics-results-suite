@@ -41,11 +41,15 @@ spec:
                 secretKeyRef:
                   name: genetics-secrets
                   key: slack-webhook-url
+            - name: MONITOR_DB_PATH
+              value: "/data/monitor.db"
             volumeMounts:
             - name: datasets-config
               mountPath: /app/configs/datasets.yaml
               subPath: datasets.yaml
               readOnly: true
+            - name: monitor-data
+              mountPath: /data
             resources:
               requests:
                 cpu: "100m"
@@ -57,3 +61,6 @@ spec:
           - name: datasets-config
             configMap:
               name: datasets-config
+          - name: monitor-data
+            persistentVolumeClaim:
+              claimName: monitor-data
