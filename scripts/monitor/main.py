@@ -39,8 +39,10 @@ def _format_health_blocks(results: list) -> list[dict]:
         icon = ":large_green_circle:" if all_ok else ":red_circle:"
 
         lines = [f"{icon} *{service}* — {len(checks)} checks, {len(failed)} failed"]
-        for c in failed:
+        for c in failed[:15]:
             lines.append(f"    :red_circle: `{c.check}` — {c.error or 'unknown error'}")
+        if len(failed) > 15:
+            lines.append(f"    _...and {len(failed) - 15} more_")
 
         blocks.append({
             "type": "section",
