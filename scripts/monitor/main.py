@@ -245,14 +245,10 @@ def main() -> int:
     if alert_results is not None:
         _print_alerts(alert_results)
 
-    # detect failures
+    # detect failures that warrant @mention (health and alerts only, not BQ)
     has_failure = False
     if health_results is not None:
         has_failure = has_failure or any(r.status == "fail" for r in health_results)
-    if bq_results is not None:
-        has_failure = has_failure or any(
-            v.get("error") or v.get("missing_resources") for v in bq_results
-        )
     if alert_results is not None:
         has_failure = has_failure or any(sa.alerts for sa in alert_results)
 
