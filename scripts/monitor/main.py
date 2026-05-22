@@ -22,10 +22,18 @@ logger = logging.getLogger("monitor")
 # Slack block formatting helpers
 # ---------------------------------------------------------------------------
 
+_PROFILE_FLAGS = {"finngen": "\U0001f1eb\U0001f1ee", "daly": "\U0001f1fa\U0001f1f8"}
+
+
+def _flag() -> str:
+    profile = os.environ.get("CONFIG_PROFILE", "")
+    return _PROFILE_FLAGS.get(profile, "")
+
+
 def _format_health_blocks(results: list) -> list[dict]:
     """Format CheckResult list into Slack blocks."""
     blocks: list[dict] = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Health Checks"}},
+        {"type": "header", "text": {"type": "plain_text", "text": f"{_flag()} Health"}},
     ]
 
     # group by service
@@ -55,7 +63,7 @@ def _format_health_blocks(results: list) -> list[dict]:
 def _format_bq_blocks(results: list[dict]) -> list[dict]:
     """Format BigQuerySummary results (list of dicts) into Slack blocks."""
     blocks: list[dict] = [
-        {"type": "header", "text": {"type": "plain_text", "text": "BigQuery Data Summary"}},
+        {"type": "header", "text": {"type": "plain_text", "text": f"{_flag()} BigQuery"}},
     ]
 
     lines = []
@@ -83,7 +91,7 @@ def _format_bq_blocks(results: list[dict]) -> list[dict]:
 def _format_alert_blocks(results: list) -> list[dict]:
     """Format ServiceAlerts list into Slack blocks."""
     blocks: list[dict] = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Log Alerts (new)"}},
+        {"type": "header", "text": {"type": "plain_text", "text": f"{_flag()} Alerts"}},
     ]
 
     if not results:
