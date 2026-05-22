@@ -59,6 +59,12 @@ class HealthChecker:
             frontend_url
             or os.environ.get("FRONTEND_URL", "http://frontend.genetics.svc.cluster.local:3000")
         )
+        self.mcp_server_url = os.environ.get(
+            "MCP_SERVER_URL", "http://mcp-server.genetics.svc.cluster.local:8080"
+        )
+        self.db_api_url = os.environ.get(
+            "DB_API_URL", "http://db-api.genetics.svc.cluster.local:8080"
+        )
         self.api_secret = api_secret or os.environ.get("INTERNAL_API_SECRET", "")
         self.datasets_config_path = (
             datasets_config_path
@@ -87,6 +93,8 @@ class HealthChecker:
             ("results-api", f"{self.results_api_url}/healthz"),
             ("chat-backend", f"{self.chat_backend_url}/healthz"),
             ("frontend", f"{self.frontend_url}/"),
+            ("mcp-server", f"{self.mcp_server_url}/healthz"),
+            ("db-api", f"{self.db_api_url}/health"),
         ]
         results = []
         for service, url in checks:
