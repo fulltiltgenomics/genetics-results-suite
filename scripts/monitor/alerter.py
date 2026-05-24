@@ -34,6 +34,18 @@ _NORMALIZE_PATTERNS = [
     re.compile(r"request[_-]?id[=: ]+\S+", re.I),  # request ID key-value pairs
 ]
 
+# (container, message regex) pairs whose log entries should be dropped before alerting.
+# oauth2-proxy logs probing traffic at WARNING which would otherwise spam Slack.
+_IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("oauth2-proxy", re.compile(r"Invalid redirect provided")),
+    ("oauth2-proxy", re.compile(r"Invalid redirect generated")),
+    ("mcp-server", re.compile(r"Authentication via query parameter token")),
+]
+
+
+def _should_ignore(container: str, message: str) -> bool:
+    return any(c == container and p.search(message) for c, p in _IGNORE_PATTERNS)
+
 
 def _normalize_message(msg: str) -> str:
     """Strip volatile tokens so semantically identical messages produce the same hash."""
@@ -121,6 +133,9 @@ class LogAlerter:
                 message = payload
             else:
                 message = str(payload)
+
+            if _should_ignore(container, message):
+                continue
 
             entries.append({
                 "container": container,
