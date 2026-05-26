@@ -292,17 +292,17 @@ tables:
     description: >-
       Single-variant exome association results from multiple resources with different
       significance thresholds. Genebass contains variants filtered to p < 1e-4.
-      IBD exome (ibd_exome_2026) contains only exome-wide significant variants
-      (p < 3e-7 after conditional analysis) and LD-curated remaining variants (p < 5e-6).
+      IBD exome (ibd_exome_2026) contains variants filtered to mlog10p > 4.
+      SCHEMA2 contains exome variant results for schizophrenia filtered to mlog10p > 4.
 
     columns:
-      dataset: "Study name (e.g. genebass, IBD_exome_2026)"
+      dataset: "Study name (e.g. genebass, IBD_exome, SCHEMA2)"
       chr: "Chromosome number, chromosome X is 23"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
       alt: "Alternative (effect) allele"
       gene: "Gene symbol (e.g. PCSK9)"
-      annotation: "Variant annotation filter (e.g. pLoF, missense, synonymous, LC)"
+      annotation: "Variant annotation filter (e.g. pLoF, missense, synonymous, splice_region_variant)"
       mlog10p: "-log10(p-value) for the single-variant association. Higher = more significant"
       beta: "Effect size estimate (log-OR for binary traits)"
       se: "Standard error of beta"
@@ -311,10 +311,10 @@ tables:
       af_controls: "Alternative allele frequency in controls"
       ac: "Alternative allele count"
       an: "Alternative allele number (total alleles genotyped)"
-      heritability: "SNP heritability estimate for the trait"
-      n_cases: "Number of cases in the analysis (available for IBD exome, null for genebass)"
-      n_controls: "Number of controls in the analysis (available for IBD exome, null for genebass)"
+      n_cases: "Number of cases in the analysis (may be NA)"
+      n_controls: "Number of controls in the analysis (may be NA)"
       trait: "Trait/phenotype name"
+      trait_original: "Original trait name in the respective dataset"
       variant: "Variant identifier as chr:pos:ref:alt"
       resource: "Data source identifier (lowercase)"
 
@@ -344,14 +344,14 @@ tables:
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome).
 
     columns:
-      dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome_2026)"
+      dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome)"
       trait: "Trait/phenotype name"
       gene: "Gene symbol (e.g. PCSK9)"
       gene_id: "Ensembl gene ID (e.g. ENSG00000169174)"
       chr: "Chromosome number, chromosome X is 23"
       gene_start_pos: "Gene start position (GRCh38)"
       gene_end_pos: "Gene end position (GRCh38)"
-      annotation: "Variant annotation filter used in burden test (e.g. pLoF, missense, PTV)"
+      annotation: "Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous)"
       mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
       beta: "Effect size estimate from burden test"
       se: "Standard error of beta"
@@ -359,22 +359,21 @@ tables:
       total_variants_pheno: "Qualifying variants with phenotype data"
       n_cases: "Number of cases in the analysis"
       n_controls: "Number of controls in the analysis"
-      description: "Human-readable trait/phenotype description"
-      coding_description: "Coded trait description"
-      category: "Trait category grouping"
+      trait_original: "Original trait name in the respective dataset"
+      flags: "Quality or analysis flags (NA if none)"
       resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
 
     examples:
       - description: "Significant gene burden results from BipEx2 bipolar exome study"
         sql: >-
-          SELECT gene, annotation, mlog10p_burden, beta, n_cases, n_controls, description
+          SELECT gene, annotation, mlog10p_burden, beta, n_cases, n_controls
           FROM gene_burden_results_v
           WHERE resource = 'bipex2' AND mlog10p_burden > 3
           ORDER BY mlog10p_burden DESC LIMIT 20
 
       - description: "Compare burden results for a gene across all exome studies"
         sql: >-
-          SELECT resource, dataset, annotation, mlog10p_burden, beta, description
+          SELECT resource, dataset, annotation, mlog10p_burden, beta
           FROM gene_burden_results_v
           WHERE gene = 'PCSK9'
           ORDER BY mlog10p_burden DESC
@@ -422,7 +421,7 @@ dataset_to_resource_rules:
     applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
     comment: "exact match for exome/burden views"
 
-  - pattern: "IBD_exome_2026"
+  - pattern: "IBD_exome"
     resource: "ibd_exome_2026"
     applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
     comment: "IBD exome variant and gene burden results"
@@ -843,6 +842,29 @@ profiles:
             n_cases: 44131
             n_controls: 478363
             n_samples: 522494
+
+      schema_exome:
+        resource: schema2
+        version: "v2"
+        description: >-
+          SCHEMA consortium exome variant-level results. Single-variant rare variant
+          association results for schizophrenia from exome sequencing of 87,959 cases
+          and 150,587 controls. Results filtered to mlog10p > 4.
+        author: "SCHEMA Consortium"
+        publication_date: "NA"
+        data_type: exome
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
 
       genebass_gene_based:
         resource: genebass
@@ -1520,6 +1542,29 @@ profiles:
             n_cases: 44131
             n_controls: 478363
             n_samples: 522494
+
+      schema_exome:
+        resource: schema2
+        version: "v2"
+        description: >-
+          SCHEMA consortium exome variant-level results. Single-variant rare variant
+          association results for schizophrenia from exome sequencing of 87,959 cases
+          and 150,587 controls. Results filtered to mlog10p > 4.
+        author: "SCHEMA Consortium"
+        publication_date: "NA"
+        data_type: exome
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
 
       genebass_gene_based:
         resource: genebass
