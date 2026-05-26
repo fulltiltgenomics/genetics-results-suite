@@ -134,6 +134,11 @@ resources:
     description: "GP2 (Global Parkinson's Genetics Program) European ancestry GWAS"
     aliases: ["GP2", "Parkinsons", "Parkinson's disease"]
 
+  decode:
+    label: "deCODE"
+    description: "deCODE Genetics — allele-specific methylation QTL (ASM-QTL) results"
+    aliases: ["deCODE", "decode genetics"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -383,6 +388,61 @@ tables:
       dataset: "resource"
       annotation: "resource"
 
+  asm_qtl_v:
+    description: >-
+      Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics.
+      Contains associations between sequence variants and CpG methylation rates
+      (CpG units) or methylation depleted sequence (MDS) methylation rates.
+
+    columns:
+      dataset: "Source dataset (deCODE_asmQTL_CpG, deCODE_asmQTL_MDS)"
+      chr: "Chromosome number"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      rsid: "dbSNP rsID"
+      beta: "Effect size (SD units) of the variant on methylation rates"
+      se: "Standard error of beta"
+      mlog10p: "-log10(p-value). Higher = more significant"
+      af: "Allele frequency"
+      most_severe: "Most severe VEP-predicted variant consequence"
+      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      target_start: "Start position of the methylation target (CpG unit or MDS)"
+      target_end: "End position of the methylation target (CpG unit or MDS)"
+      ref_methylrate: "Average methylation rate on reference haplotype"
+      alt_methylrate: "Average methylation rate on alternative haplotype"
+      n_haplotypes: "Number of informative haplotypes used in analysis"
+      variant_rank: "primary = most significant variant, secondary = most significant on major allele of primary"
+      ld_count: "Number of variants in high LD (r2>0.8) with this variant"
+      vartype: "Variant type (SNV, SV, etc.)"
+      variant: "Variant identifier as chr:pos:ref:alt"
+      maf: "Minor allele frequency = LEAST(af, 1-af)"
+      resource: "Data source identifier (lowercase)"
+
+    examples:
+      - description: "ASM-QTL associations for variants near a gene"
+        sql: >-
+          SELECT variant, rsid, mlog10p, beta, target_start, target_end,
+                 ref_methylrate, alt_methylrate, variant_rank
+          FROM asm_qtl_v
+          WHERE gene_most_severe = 'PCSK9'
+          ORDER BY mlog10p DESC LIMIT 20
+
+      - description: "Primary ASM-QTL associations with large methylation differences"
+        sql: >-
+          SELECT variant, rsid, gene_most_severe, mlog10p,
+                 ref_methylrate, alt_methylrate, dataset
+          FROM asm_qtl_v
+          WHERE variant_rank = 'primary'
+            AND ABS(ref_methylrate - alt_methylrate) > 0.2
+          ORDER BY mlog10p DESC LIMIT 50
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      variant_rank: null
+      vartype: null
+
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
 # Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views
@@ -414,6 +474,12 @@ dataset_to_resource_rules:
     resource: "open_targets"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "Open Targets datasets (versioned names)"
+
+  # asm_qtl_v patterns
+  - pattern: "deCODE%"
+    resource: "decode"
+    applies_to: ["asm_qtl_v"]
+    comment: "deCODE ASM-QTL datasets"
 
   # exome/burden-only exact matches
   - pattern: "genebass"
@@ -657,6 +723,35 @@ profiles:
         data_type: caqtl
         trait_type: quantitative
         n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- ASM-QTL ---
+      decode_asmqtl_cpg:
+        resource: decode
+        version: "v1"
+        description: >-
+          deCODE CpG methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          sequence variants associated with 5-mCpG rates of individual CpG units.
+          Based on whole-genome bisulfite sequencing of Icelandic samples.
+        author: "deCODE Genetics"
+        publication_date: "2024-07-24"
+        data_type: asmqtl
+        trait_type: quantitative
+        metadata_file: null
+        metadata_harmonizer: null
+
+      decode_asmqtl_mds:
+        resource: decode
+        version: "v1"
+        description: >-
+          deCODE MDS methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          sequence variants associated with 5-mCpG rates of methylation depleted sequences (MDSs).
+          Based on whole-genome bisulfite sequencing of Icelandic samples.
+        author: "deCODE Genetics"
+        publication_date: "2024-07-24"
+        data_type: asmqtl
+        trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
 
@@ -1357,6 +1452,35 @@ profiles:
         data_type: caqtl
         trait_type: quantitative
         n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- ASM-QTL ---
+      decode_asmqtl_cpg:
+        resource: decode
+        version: "v1"
+        description: >-
+          deCODE CpG methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          sequence variants associated with 5-mCpG rates of individual CpG units.
+          Based on whole-genome bisulfite sequencing of Icelandic samples.
+        author: "deCODE Genetics"
+        publication_date: "2024-07-24"
+        data_type: asmqtl
+        trait_type: quantitative
+        metadata_file: null
+        metadata_harmonizer: null
+
+      decode_asmqtl_mds:
+        resource: decode
+        version: "v1"
+        description: >-
+          deCODE MDS methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          sequence variants associated with 5-mCpG rates of methylation depleted sequences (MDSs).
+          Based on whole-genome bisulfite sequencing of Icelandic samples.
+        author: "deCODE Genetics"
+        publication_date: "2024-07-24"
+        data_type: asmqtl
+        trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
 
