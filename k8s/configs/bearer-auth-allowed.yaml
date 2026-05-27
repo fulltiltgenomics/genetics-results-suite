@@ -5,4 +5,4 @@ metadata:
   namespace: genetics
 data:
   ALLOWED_EMAILS: ""
-  ALLOWED_EMAIL_DOMAINS: "finngen.fi"
+  ALLOWED_EMAIL_DOMAINS: "${OAUTH_EMAIL_DOMAIN}"

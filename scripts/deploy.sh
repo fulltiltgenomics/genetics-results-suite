@@ -101,8 +101,10 @@ if [ -n "${SNAPSHOT_POLICY}" ]; then
   fi
 fi
 
-# configs
-kubectl apply -f configs/
+# configs (envsubst for profile-aware values like OAUTH_EMAIL_DOMAIN)
+for f in configs/*.yaml; do
+  envsubst '${OAUTH_EMAIL_DOMAIN}' < "$f" | kubectl apply -f -
+done
 
 # datasets ConfigMap (single source of truth for dataset definitions)
 kubectl create configmap datasets-config \
