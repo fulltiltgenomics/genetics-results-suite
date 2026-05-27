@@ -385,9 +385,14 @@ tables:
 
   asm_qtl_v:
     description: >-
-      Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics.
-      Contains associations between sequence variants and CpG methylation rates
-      (CpG units) or methylation depleted sequence (MDS) methylation rates.
+      Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics
+      (Stefansson et al. 2024, doi:10.1038/s41588-024-01851-2), based on Oxford
+      Nanopore whole-genome sequencing of 7,179 Icelandic samples. Contains
+      associations between sequence variants and CpG methylation rates (CpG units,
+      Data-S1) or methylation depleted sequence (MDS) methylation rates (Data-S3).
+      Only primary and secondary signals released (see variant_rank); Bonferroni-
+      significant at ~1e-12 (CpG) and ~1e-10 (MDS), MAF > 1e-4, imputation INFO > 0.9,
+      variant within 100 kb of the methylation target.
 
     columns:
       dataset: "Source dataset (deCODE_asmQTL_CpG, deCODE_asmQTL_MDS)"
@@ -736,9 +741,13 @@ profiles:
         resource: decode
         version: "v1"
         description: >-
-          deCODE CpG methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          deCODE CpG methylation ASM-QTL (Data-S1 from Stefansson et al. 2024,
+          doi:10.1038/s41588-024-01851-2). Allele-specific methylation QTLs identifying
           sequence variants associated with 5-mCpG rates of individual CpG units.
-          Based on whole-genome bisulfite sequencing of Icelandic samples.
+          Based on Oxford Nanopore whole-genome sequencing of Icelandic samples (n=7,179).
+          Filters: variant within 100 kb of CpG unit; MAF > 1e-4; imputation INFO > 0.9;
+          Bonferroni-significant at P < 0.05/3.4e10 (~1e-12). Only primary and
+          secondary signals released (see variant_rank).
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
@@ -750,9 +759,13 @@ profiles:
         resource: decode
         version: "v1"
         description: >-
-          deCODE MDS methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          deCODE MDS methylation ASM-QTL (Data-S3 from Stefansson et al. 2024,
+          doi:10.1038/s41588-024-01851-2). Allele-specific methylation QTLs identifying
           sequence variants associated with 5-mCpG rates of methylation depleted sequences (MDSs).
-          Based on whole-genome bisulfite sequencing of Icelandic samples.
+          Based on Oxford Nanopore whole-genome sequencing of Icelandic samples (n=7,179).
+          Filters: variant within 100 kb of MDS; MAF > 1e-4; imputation INFO > 0.9;
+          Bonferroni-significant at P < 0.05/4.5e8 (~1e-10). Only primary and
+          secondary signals released (see variant_rank).
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
@@ -924,6 +937,7 @@ profiles:
         data_type: exome
         trait_type: binary
         n_phenotypes: 3
+        n_samples: 564576
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1475,9 +1489,13 @@ profiles:
         resource: decode
         version: "v1"
         description: >-
-          deCODE CpG methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          deCODE CpG methylation ASM-QTL (Data-S1 from Stefansson et al. 2024,
+          doi:10.1038/s41588-024-01851-2). Allele-specific methylation QTLs identifying
           sequence variants associated with 5-mCpG rates of individual CpG units.
-          Based on whole-genome bisulfite sequencing of Icelandic samples.
+          Based on Oxford Nanopore whole-genome sequencing of Icelandic samples (n=7,179).
+          Filters: variant within 100 kb of CpG unit; MAF > 1e-4; imputation INFO > 0.9;
+          Bonferroni-significant at P < 0.05/3.4e10 (~1e-12). Only primary and
+          secondary signals released (see variant_rank).
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
@@ -1489,9 +1507,13 @@ profiles:
         resource: decode
         version: "v1"
         description: >-
-          deCODE MDS methylation ASM-QTL. Allele-specific methylation QTLs identifying
+          deCODE MDS methylation ASM-QTL (Data-S3 from Stefansson et al. 2024,
+          doi:10.1038/s41588-024-01851-2). Allele-specific methylation QTLs identifying
           sequence variants associated with 5-mCpG rates of methylation depleted sequences (MDSs).
-          Based on whole-genome bisulfite sequencing of Icelandic samples.
+          Based on Oxford Nanopore whole-genome sequencing of Icelandic samples (n=7,179).
+          Filters: variant within 100 kb of MDS; MAF > 1e-4; imputation INFO > 0.9;
+          Bonferroni-significant at P < 0.05/4.5e8 (~1e-10). Only primary and
+          secondary signals released (see variant_rank).
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
@@ -1663,6 +1685,7 @@ profiles:
         data_type: exome
         trait_type: binary
         n_phenotypes: 3
+        n_samples: 564576
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
