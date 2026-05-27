@@ -497,6 +497,16 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "COVID-19 Host Genetics Initiative"
 
+  - pattern: "PGC"
+    resource: "pgc"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "PGC SCZ/BIP meta-analyses"
+
+  - pattern: "GP2"
+    resource: "gp2"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "GP2 Parkinson's GWAS"
+
   # fallback: lowercase the dataset name
   - pattern: "*"
     resource: null
@@ -1223,15 +1233,48 @@ profiles:
         version: "R7"
         description: >-
           COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
-          Includes very severe respiratory COVID (A2), hospitalized vs. not hospitalized (B1),
-          hospitalized vs. population (B2), and COVID vs. population (C2).
-          For these data there are pseudo credible sets, no formal fine-mapping results.
+          Phenotypes: very severe respiratory (A2), hospitalized vs. not hospitalized (B1),
+          hospitalized vs. population (B2), COVID vs. population (C2).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "COVID-19 Host Genetics Initiative"
-        publication_date: "2022-04-03"
+        publication_date: "2026-05-26"
         data_type: gwas
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/covid_hgi_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      pgc_meta:
+        resource: pgc
+        version: "2024"
+        description: >-
+          PGC GWAS meta-analyses — Schizophrenia wave 3 (SCZ) and Bipolar disorder 2024 (BIP).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "2026-05-26"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 2
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/pgc_meta_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      gp2_meta:
+        resource: gp2
+        version: "EUR"
+        description: >-
+          GP2 (Global Parkinson's Genetics Program) European-ancestry Parkinson's disease GWAS.
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Global Parkinson's Genetics Program"
+        publication_date: "2026-05-26"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 1
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/gp2_meta_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
@@ -1952,14 +1995,47 @@ profiles:
         version: "R7"
         description: >-
           COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
-          Includes very severe respiratory COVID (A2), hospitalized vs. not hospitalized (B1),
-          hospitalized vs. population (B2), and COVID vs. population (C2).
-          For these data there are pseudo credible sets, no formal fine-mapping results.
+          Phenotypes: very severe respiratory (A2), hospitalized vs. not hospitalized (B1),
+          hospitalized vs. population (B2), COVID vs. population (C2).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "COVID-19 Host Genetics Initiative"
-        publication_date: "2022-04-03"
+        publication_date: "2026-05-26"
         data_type: gwas
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      pgc_meta:
+        resource: pgc
+        version: "2024"
+        description: >-
+          PGC GWAS meta-analyses — Schizophrenia wave 3 (SCZ) and Bipolar disorder 2024 (BIP).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "2026-05-26"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 2
+        metadata_file: "gs://daly-genetics-results/mapping_files/pgc_meta_pheno.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
+
+      gp2_meta:
+        resource: gp2
+        version: "EUR"
+        description: >-
+          GP2 (Global Parkinson's Genetics Program) European-ancestry Parkinson's disease GWAS.
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Global Parkinson's Genetics Program"
+        publication_date: "2026-05-26"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 1
+        metadata_file: "gs://daly-genetics-results/mapping_files/gp2_meta_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
