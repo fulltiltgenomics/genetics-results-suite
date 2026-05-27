@@ -124,11 +124,6 @@ resources:
     description: "Psychiatric Genomics Consortium GWAS studies"
     aliases: ["PGC"]
 
-  bip:
-    label: "BIP"
-    description: "Bipolar disorder multi-ancestry GWAS meta-analysis (2024)"
-    aliases: ["bipolar disorder", "BIP"]
-
   gp2:
     label: "GP2"
     description: "GP2 (Global Parkinson's Genetics Program) European ancestry GWAS"
@@ -1137,6 +1132,8 @@ profiles:
           PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
           schizophrenia from the Psychiatric Genomics Consortium including up to 161,405
           European and Asian ancestry participants (67,390 cases and 94,015 controls).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
@@ -1146,6 +1143,7 @@ profiles:
         n_controls: 94015
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "SCZ"
             phenotype_string: "Schizophrenia"
@@ -1153,13 +1151,15 @@ profiles:
             n_controls: 94015
             n_samples: 161405
 
-      bip_gwas:
-        resource: bip
+      pgc_bip:
+        resource: pgc
         version: "2024"
         description: >-
-          Bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
+          PGC bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
           67,948 cases and 867,710 controls.
-        author: "BIP Consortium"
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
         trait_type: binary
@@ -1168,6 +1168,7 @@ profiles:
         n_controls: 867710
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "BIP"
             phenotype_string: "Bipolar disorder"
@@ -1181,6 +1182,8 @@ profiles:
         description: >-
           GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
           Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "GP2"
         publication_date: "NA"
         data_type: gwas
@@ -1190,6 +1193,7 @@ profiles:
         n_controls: 1746386
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "PD"
             phenotype_string: "Parkinson's disease"
@@ -1243,38 +1247,6 @@ profiles:
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/covid_hgi_pheno.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      pgc_meta:
-        resource: pgc
-        version: "2024"
-        description: >-
-          PGC GWAS meta-analyses — Schizophrenia wave 3 (SCZ) and Bipolar disorder 2024 (BIP).
-          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
-          Bundled with other external GWAS in the shared ext/ collected file.
-        author: "Psychiatric Genomics Consortium"
-        publication_date: "2026-05-26"
-        data_type: gwas
-        trait_type: binary
-        n_phenotypes: 2
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/pgc_meta_pheno.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      gp2_meta:
-        resource: gp2
-        version: "EUR"
-        description: >-
-          GP2 (Global Parkinson's Genetics Program) European-ancestry Parkinson's disease GWAS.
-          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
-          Bundled with other external GWAS in the shared ext/ collected file.
-        author: "Global Parkinson's Genetics Program"
-        publication_date: "2026-05-26"
-        data_type: gwas
-        trait_type: binary
-        n_phenotypes: 1
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/gp2_meta_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
@@ -1899,6 +1871,8 @@ profiles:
           PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
           schizophrenia from the Psychiatric Genomics Consortium including up to 161,405
           European and Asian ancestry participants (67,390 cases and 94,015 controls).
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
@@ -1908,6 +1882,7 @@ profiles:
         n_controls: 94015
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "SCZ"
             phenotype_string: "Schizophrenia"
@@ -1915,13 +1890,15 @@ profiles:
             n_controls: 94015
             n_samples: 161405
 
-      bip_gwas:
-        resource: bip
+      pgc_bip:
+        resource: pgc
         version: "2024"
         description: >-
-          Bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
+          PGC bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
           67,948 cases and 867,710 controls.
-        author: "BIP Consortium"
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
+        author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
         trait_type: binary
@@ -1930,6 +1907,7 @@ profiles:
         n_controls: 867710
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "BIP"
             phenotype_string: "Bipolar disorder"
@@ -1943,6 +1921,8 @@ profiles:
         description: >-
           GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
           Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
+          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
+          Bundled with other external GWAS in the shared ext/ collected file.
         author: "GP2"
         publication_date: "NA"
         data_type: gwas
@@ -1952,6 +1932,7 @@ profiles:
         n_controls: 1746386
         metadata_file: null
         metadata_harmonizer: null
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "PD"
             phenotype_string: "Parkinson's disease"
@@ -2005,37 +1986,5 @@ profiles:
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      pgc_meta:
-        resource: pgc
-        version: "2024"
-        description: >-
-          PGC GWAS meta-analyses — Schizophrenia wave 3 (SCZ) and Bipolar disorder 2024 (BIP).
-          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
-          Bundled with other external GWAS in the shared ext/ collected file.
-        author: "Psychiatric Genomics Consortium"
-        publication_date: "2026-05-26"
-        data_type: gwas
-        trait_type: binary
-        n_phenotypes: 2
-        metadata_file: "gs://daly-genetics-results/mapping_files/pgc_meta_pheno.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      gp2_meta:
-        resource: gp2
-        version: "EUR"
-        description: >-
-          GP2 (Global Parkinson's Genetics Program) European-ancestry Parkinson's disease GWAS.
-          Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
-          Bundled with other external GWAS in the shared ext/ collected file.
-        author: "Global Parkinson's Genetics Program"
-        publication_date: "2026-05-26"
-        data_type: gwas
-        trait_type: binary
-        n_phenotypes: 1
-        metadata_file: "gs://daly-genetics-results/mapping_files/gp2_meta_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
