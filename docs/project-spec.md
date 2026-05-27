@@ -92,6 +92,8 @@ The YAML defines two exome dataset resources with different filtering levels: `g
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
 
+External GWAS pseudo credible sets (COVID-19 HGI, PGC SCZ/BIP, GP2 Parkinson's) live in a single shared file `gs://<bucket>/credible_sets/ext/EXT_*_pseudo_credible_sets.*.tsv.gz` referenced by three datasets (`covid_hgi`, `pgc_meta`, `gp2_meta`). The `dataset_to_resource_rules` map `COVID19_HGI%`, `PGC`, and `GP2` to their respective resources. The results-api dedups range queries by combined-file path (one tabix per shared file) and uses a per-row resource filter so each resource only sees its own rows. IIBDGC (IBD/UC/CD) pseudo CS is planned but not yet produced.
+
 ## Authentication
 
 - **oauth2-proxy** handles browser-based auth via Google OAuth, restricted by `oauth_email_domain` terraform variable (default: `finngen.fi`)
