@@ -97,7 +97,8 @@ ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both Bi
 - **oauth2-proxy** handles browser-based auth via Google OAuth, restricted by `oauth_email_domain` terraform variable (default: `finngen.fi`)
 - **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying
 - **results-api** also accepts `Authorization: Bearer` tokens (Google Identity Tokens or internal shared secret)
-- **mcp-server** uses bearer token auth via `MCP_API_KEY` (not behind oauth2-proxy)
+- **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via three paths (parity with results-api): the `MCP_API_KEY` shared secret(s), Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list), and per-user API tokens issued via the chat API
+- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS` and `ALLOWED_EMAIL_DOMAINS` (used for Google Identity Token JWT validation in both results-api and mcp-server) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), consumed by both deployments via `envFrom: configMapRef` to prevent config drift
 - **db-api** is internal-only, protected by NetworkPolicy (no auth needed)
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
 - **External MCP servers**: chat-backend proxies tools from external MCP servers (gnomAD, Open Targets) configured via `EXTERNAL_MCP_SERVERS` secret; `EXTERNAL_MCP_EXCLUDE_TOOLS` excludes specific tools by name (comma-separated)
