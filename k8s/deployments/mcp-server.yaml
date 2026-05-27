@@ -20,6 +20,9 @@ spec:
         command: ["python", "-m", "genetics_mcp_server.mcp_server", "--transport", "streamable-http", "--port", "8080", "--host", "0.0.0.0"]
         ports:
         - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: bearer-auth-allowed
         env:
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"

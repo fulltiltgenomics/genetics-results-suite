@@ -19,6 +19,9 @@ spec:
         image: ${REGISTRY}/genetics-results-api:latest
         ports:
         - containerPort: 4000
+        envFrom:
+        - configMapRef:
+            name: bearer-auth-allowed
         env:
         - name: DEPLOY_ENV
           value: "prod"
