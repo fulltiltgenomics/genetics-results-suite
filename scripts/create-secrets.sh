@@ -11,7 +11,7 @@ set -euo pipefail
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
-#   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (auto-generated if not set)
+#   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (reused from the existing secret if not set, generated on first install)
 #   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
 #
 # oauth2-proxy secrets are created separately — see README.md
@@ -24,7 +24,14 @@ echo "Creating genetics-secrets in namespace ${NAMESPACE}..."
 : "${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}"
 : "${COHERE_API_KEY:?Set COHERE_API_KEY}"
 
-# auto-generate internal API secret if not provided
+# reuse the internal API secret to avoid breaking service-to-service auth for
+# already-running pods: an explicit env value wins, otherwise reuse the value
+# already in the cluster, otherwise generate a fresh one (first install).
+if [ -z "${INTERNAL_API_SECRET:-}" ]; then
+  INTERNAL_API_SECRET="$(kubectl get secret genetics-secrets \
+    --namespace="${NAMESPACE}" \
+    -o jsonpath='{.data.internal-api-secret}' 2>/dev/null | base64 -d || true)"
+fi
 INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(openssl rand -base64 32)}"
 
 kubectl create secret generic genetics-secrets \
