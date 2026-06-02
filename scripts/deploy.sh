@@ -57,9 +57,9 @@ export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 
 # LLM model
 if [ "${CONFIG_PROFILE}" = "daly" ]; then
-  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-7}"
+  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-8}"
 else
-  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-7}"
+  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-4-8}"
 fi
 
 # apply kubernetes manifests
