@@ -443,6 +443,59 @@ tables:
       variant_rank: null
       vartype: null
 
+  gene_annotations_v:
+    description: >-
+      Whole-universe gene annotations, one row per gene: HGNC core fields joined to
+      GENCODE GRCh38 coordinates, with full-lineage HGNC gene-group arrays
+      (gene_group_ids / gene_group_names contain the leaf group plus all of its
+      ancestor groups, so any group can be matched with `<id> IN UNNEST(gene_group_ids)`).
+      A reference table reached only via query_bigquery; primarily used to join gene
+      coordinates against the result views (e.g. colocalization_v) for cis/trans QTL
+      scans that cannot be done inside the API.
+
+    columns:
+      hgnc_id: "HGNC ID (e.g. HGNC:5)"
+      symbol: "HGNC approved gene symbol (e.g. PCSK9)"
+      name: "HGNC approved gene name"
+      prev_symbols: "Previous HGNC symbols, pipe-delimited"
+      alias_symbols: "Alias symbols, pipe-delimited"
+      ensembl_gene_id: "Ensembl gene ID (e.g. ENSG00000169174)"
+      ncbi_gene_id: "NCBI (Entrez) gene ID"
+      chr: "Chromosome number (GRCh38, chromosome X encoded as 23)"
+      gene_start: "Gene start position (GRCh38, GENCODE)"
+      gene_end: "Gene end position (GRCh38, GENCODE)"
+      strand: "Strand (+ or -)"
+      locus_type: "HGNC locus type (e.g. gene with protein product, pseudogene, RNA gene)"
+      gene_group_ids: "Full-lineage HGNC gene-group IDs (ARRAY<INT64>: leaf group plus all ancestors). Match a group with `<id> IN UNNEST(gene_group_ids)`"
+      gene_group_names: "Full-lineage HGNC gene-group names (ARRAY<STRING>: leaf group plus all ancestors)"
+      gencode_version: "GENCODE release used for coordinates"
+      hgnc_version: "HGNC complete-set version/date used"
+      download_date: "Date the source data was downloaded/built"
+      resource: "Data source identifier, constant 'hgnc'"
+
+    examples:
+      - description: "Enumerate genes in any HGNC gene group (here group 139) with their coordinates"
+        sql: >-
+          SELECT symbol, chr, gene_start, gene_end
+          FROM gene_annotations_v
+          WHERE 139 IN UNNEST(gene_group_ids)
+
+      - description: "Find cis pQTL colocalizations: gene joined to colocalization_v where the pQTL lead variant lies within 1Mb of the gene body"
+        sql: >-
+          SELECT a.symbol, a.chr, c.trait1, c.hit2, c.PP_H4_abf
+          FROM gene_annotations_v a
+          JOIN colocalization_v c
+            ON c.trait2 = a.symbol
+          WHERE c.data_type2 = 'pQTL'
+            AND SAFE_CAST(SPLIT(c.hit2, ':')[OFFSET(1)] AS INT64)
+                BETWEEN a.gene_start - 1000000 AND a.gene_end + 1000000
+          ORDER BY c.PP_H4_abf DESC
+
+    categorical_columns:
+      resource: null
+      locus_type: null
+      strand: null
+
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
 # Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views
