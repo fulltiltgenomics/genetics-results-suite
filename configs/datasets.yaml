@@ -453,6 +453,14 @@ tables:
       coordinates against the result views (e.g. colocalization_v) for cis/trans QTL
       scans that cannot be done inside the API.
 
+      Filtering tips: restrict to real genes with
+      `locus_type = 'gene with protein product'`; for GPCR-type questions exclude
+      olfactory receptors (they are GPCRs that dominate large families by count) with
+      `NOT ('Olfactory receptors' IN UNNEST(gene_group_names))`. When joining the
+      protein symbol in colocalization_v.trait2, note some pQTL datasets append
+      suffixes (e.g. 'ACP1.3858.5.1..1'), so match on
+      `SPLIT(c.trait2, '.')[OFFSET(0)]` and also require `c.chr = a.chr`.
+
     columns:
       hgnc_id: "HGNC ID (e.g. HGNC:5)"
       symbol: "HGNC approved gene symbol (e.g. PCSK9)"
@@ -474,22 +482,37 @@ tables:
       resource: "Data source identifier, constant 'hgnc'"
 
     examples:
-      - description: "Enumerate genes in any HGNC gene group (here group 139) with their coordinates"
+      - description: "Enumerate protein-coding genes in an HGNC gene group (here GPCRs, group 139), excluding olfactory receptors, with coordinates"
         sql: >-
           SELECT symbol, chr, gene_start, gene_end
           FROM gene_annotations_v
           WHERE 139 IN UNNEST(gene_group_ids)
+            AND locus_type = 'gene with protein product'
+            AND NOT ('Olfactory receptors' IN UNNEST(gene_group_names))
 
-      - description: "Find cis pQTL colocalizations: gene joined to colocalization_v where the pQTL lead variant lies within 1Mb of the gene body"
+      - description: "cis-pQTL colocalizations for a whole gene group (GPCRs): gene joined to colocalization_v where the pQTL (PP_H4>0.8) lead variant lies within 1Mb of the gene body. Matches the protein symbol allowing dataset suffixes and requires same-chromosome."
         sql: >-
-          SELECT a.symbol, a.chr, c.trait1, c.hit2, c.PP_H4_abf
-          FROM gene_annotations_v a
+          WITH gpcr AS (
+            SELECT symbol, chr, gene_start, gene_end
+            FROM gene_annotations_v
+            WHERE 139 IN UNNEST(gene_group_ids)
+              AND locus_type = 'gene with protein product'
+              AND NOT ('Olfactory receptors' IN UNNEST(gene_group_names))
+          )
+          SELECT a.symbol,
+                 COUNT(DISTINCT c.trait1_original) AS n_gwas_traits,
+                 COUNT(*) AS n_coloc_pairs,
+                 ROUND(MAX(c.PP_H4_abf), 3) AS max_pp_h4
+          FROM gpcr a
           JOIN colocalization_v c
-            ON c.trait2 = a.symbol
+            ON SPLIT(c.trait2, '.')[OFFSET(0)] = a.symbol
+           AND c.chr = a.chr
           WHERE c.data_type2 = 'pQTL'
+            AND c.PP_H4_abf > 0.8
             AND SAFE_CAST(SPLIT(c.hit2, ':')[OFFSET(1)] AS INT64)
                 BETWEEN a.gene_start - 1000000 AND a.gene_end + 1000000
-          ORDER BY c.PP_H4_abf DESC
+          GROUP BY a.symbol
+          ORDER BY n_gwas_traits DESC, a.symbol
 
     categorical_columns:
       resource: null
