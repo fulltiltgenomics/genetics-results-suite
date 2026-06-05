@@ -16,6 +16,11 @@ DB_API_BRANCH="${DB_API_BRANCH:-master}"
 RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
+APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+APP_NAME="${APP_NAME:-FinnGenie}"
+
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
@@ -53,7 +58,7 @@ build_and_push() {
 # frontend
 TAG=$(tag_for "${WORK_DIR}/genetics-results-browser")
 build_and_push genetics-results-browser "${WORK_DIR}/genetics-results-browser" "${TAG}" \
-  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen
+  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}"
 
 # results API
 TAG=$(tag_for "${WORK_DIR}/genetics-results-api")

@@ -59,6 +59,8 @@ spec:
               optional: true
         - name: DEFAULT_MODEL
           value: "${DEFAULT_MODEL}"
+        - name: APP_NAME
+          value: "${APP_NAME}"
         - name: LLM_CONFIG_DB
           value: "/data/llm_config.db"
         - name: CHAT_HISTORY_DB

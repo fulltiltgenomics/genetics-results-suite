@@ -69,6 +69,11 @@ output "config_profile" {
   value       = var.config_profile
 }
 
+output "app_name" {
+  description = "Product/brand name shown in the UI and the assistant persona"
+  value       = var.app_name
+}
+
 output "registry" {
   description = "Artifact Registry URL for docker images"
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker.repository_id}"

@@ -12,7 +12,14 @@ echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
-PROFILE="${CONFIG_PROFILE:-$(grep -E '^\s*config_profile\s*=' terraform.tfvars 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+if [ -n "${CONFIG_PROFILE:-}" ]; then
+  PROFILE="${CONFIG_PROFILE}"
+elif [ -f terraform.tfvars ]; then
+  PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')"
+else
+  echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
+  exit 1
+fi
 BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
 if [ ! -f "${BACKEND_FILE}" ]; then
   echo "ERROR: Backend config not found: ${BACKEND_FILE}"
@@ -54,6 +61,8 @@ TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
+TF_APP_NAME=$(terraform output -raw app_name)
+export APP_NAME="${APP_NAME:-${TF_APP_NAME}}"
 
 # LLM model
 if [ "${CONFIG_PROFILE}" = "daly" ]; then
@@ -175,7 +184,7 @@ for f in deployments/*.yaml; do
     echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL} ${SLACK_ALERT_USER_ID}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

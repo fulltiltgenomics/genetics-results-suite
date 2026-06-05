@@ -14,6 +14,12 @@ fi
 GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
 RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
+APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+APP_NAME="${APP_NAME:-FinnGenie}"
+
 # service → image name
 declare -A IMAGE_MAP=(
   [frontend]=genetics-results-browser
@@ -62,7 +68,7 @@ TAG="$(date +%Y%m%d).$(git -C "${WORK_DIR}/${IMAGE}" rev-parse --short HEAD)"
 BUILD_ARGS=()
 case "${SERVICE}" in
   frontend)
-    BUILD_ARGS+=(--build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen)
+    BUILD_ARGS+=(--build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}")
     ;;
   results-api)
     BUILD_ARGS+=(--build-arg DEPLOY_ENV=prod)

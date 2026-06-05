@@ -79,6 +79,12 @@ variable "oauth_email_domain" {
   default     = "broadinstitute.org"
 }
 
+variable "app_name" {
+  description = "Product/brand name shown in the UI and the assistant persona"
+  type        = string
+  default     = "FinnGenie"
+}
+
 variable "snapshot_retention_days" {
   description = "Number of days to retain chat-data disk snapshots"
   type        = number
