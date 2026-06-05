@@ -9,6 +9,7 @@ static_ip_name       = "finngenie-ip"
 domains              = ["finngenie.finngen.fi", "finngenie.fi"]
 config_profile       = "finngen"
 oauth_email_domain   = "finngen.fi"
+app_name             = "FinnGenie" # product/brand name shown in UI and assistant persona (e.g. "GeneGenie" for daly)
 machine_type         = "e2-standard-4"
 min_node_count       = 1
 max_node_count       = 3
