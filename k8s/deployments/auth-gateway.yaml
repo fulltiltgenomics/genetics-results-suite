@@ -37,6 +37,11 @@ data:
       server {
         listen 8080;
 
+        # redirect the old hostname to the new one, preserving path + query
+        if ($host = finngenie.broadinstitute.org) {
+          return 301 https://genegenie.broadinstitute.org$request_uri;
+        }
+
         # health check
         location = /healthz {
           return 200 'ok';
