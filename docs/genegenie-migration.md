@@ -23,14 +23,14 @@ OAuth client.
 
 ## Phase 1 — bring genegenie up alongside finngenie
 
-1. **DNS (Broad IT — external, longest lead time).** Request an A record
+1. **DNS (Broad IT — external, longest lead time).** ✅ Done — A record
    `genegenie.broadinstitute.org` → the **same static IP** as finngenie (one LB
    serves both; no new IP). Get the IP with:
    ```bash
    cd terraform && terraform output -raw static_ip
    ```
 
-2. **Add genegenie to the cert + ingress.** In the daly `terraform.tfvars`:
+2. **Add genegenie to the cert + ingress.** ✅ Done in the daly `terraform.tfvars`:
    ```hcl
    domains = ["finngenie.broadinstitute.org", "genegenie.broadinstitute.org"]
    ```
@@ -42,6 +42,13 @@ OAuth client.
    kubectl describe managedcertificate managed-cert -n genetics
    ```
 
+   ⚠️ **Ordering trap:** `deploy.sh` is a *full* deploy — it applies every
+   `k8s/deployments/*.yaml` (including `auth-gateway.yaml`) and restarts those
+   deployments, not just the cert/ingress. So the Phase 2 redirect must **not** be
+   present in `auth-gateway.yaml` when you run this Phase 1 deploy, or finngenie
+   would start redirecting to genegenie before genegenie's cert is `Active` —
+   breaking the redirect with a TLS error. Keep the redirect out until Phase 2.
+
 3. **OAuth redirect URI.** In the GCP project's APIs & Services → Credentials,
    edit the OAuth client used by oauth2-proxy and add
    `https://genegenie.broadinstitute.org/oauth2/callback` to Authorized redirect
@@ -52,20 +59,40 @@ After Phase 1, both hostnames serve the app identically.
 
 ## Phase 2 — make finngenie redirect to genegenie
 
+Only do this **after** the genegenie managed cert is `Active` (see Phase 1 step 2),
+otherwise the redirect lands on a host with an invalid cert.
+
 Keep `finngenie.broadinstitute.org` in the `domains` list so its cert stays valid
 and the redirect is served over HTTPS. Add a host-based 301 in the auth-gateway
 nginx config (`k8s/deployments/auth-gateway.yaml`, inside the `server { listen 8080; }`
-block), before the other location rules:
+block), right after `listen 8080;` and before the location rules:
 
 ```nginx
+# redirect the old hostname to the new one, preserving path + query
 if ($host = finngenie.broadinstitute.org) {
     return 301 https://genegenie.broadinstitute.org$request_uri;
 }
 ```
 
-Apply with:
+`$request_uri` is the full original path + query string, so every sub-URL is
+preserved — e.g. `finngenie.broadinstitute.org/chat/XXX?foo=bar` →
+`https://genegenie.broadinstitute.org/chat/XXX?foo=bar`. The `$host` guard means
+only finngenie requests redirect; GKE backend health checks (which hit `/healthz`
+with the node IP as Host) are unaffected.
+
+Apply it. Note `scripts/rollout.sh` only swaps container *images* and does not
+know about `auth-gateway` (an nginx pod driven by the `auth-gateway-config`
+ConfigMap), so apply the manifest and restart the pod to reload nginx:
 ```bash
-./scripts/rollout.sh auth-gateway
+kubectl apply -f k8s/deployments/auth-gateway.yaml -n genetics
+kubectl rollout restart deployment/auth-gateway -n genetics
+kubectl rollout status deployment/auth-gateway -n genetics
+```
+
+Verify the redirect (root + a sub-URL with query string both 301 to genegenie):
+```bash
+curl -sSI https://finngenie.broadinstitute.org/ | grep -i location
+curl -sSI "https://finngenie.broadinstitute.org/chat/XXX?foo=bar" | grep -i location
 ```
 
 The GKE Ingress cannot do host-rewrite redirects itself (FrontendConfig only does
