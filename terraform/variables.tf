@@ -85,6 +85,18 @@ variable "app_name" {
   default     = "FinnGenie"
 }
 
+variable "redirect_from_host" {
+  description = "Legacy hostname to 301-redirect away (empty = no redirect). Used to migrate an old domain to a new one; the auth-gateway serves the redirect."
+  type        = string
+  default     = ""
+}
+
+variable "redirect_to_host" {
+  description = "Destination hostname for the legacy redirect (path + query preserved). Required when redirect_from_host is set; must also be in domains so its cert is valid."
+  type        = string
+  default     = ""
+}
+
 variable "snapshot_retention_days" {
   description = "Number of days to retain chat-data disk snapshots"
   type        = number

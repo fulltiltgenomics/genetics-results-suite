@@ -42,12 +42,12 @@ OAuth client.
    kubectl describe managedcertificate managed-cert -n genetics
    ```
 
-   ⚠️ **Ordering trap:** `deploy.sh` is a *full* deploy — it applies every
-   `k8s/deployments/*.yaml` (including `auth-gateway.yaml`) and restarts those
-   deployments, not just the cert/ingress. So the Phase 2 redirect must **not** be
-   present in `auth-gateway.yaml` when you run this Phase 1 deploy, or finngenie
-   would start redirecting to genegenie before genegenie's cert is `Active` —
-   breaking the redirect with a TLS error. Keep the redirect out until Phase 2.
+   ⚠️ **Ordering:** `deploy.sh` is a *full* deploy — it also renders the Phase 2
+   redirect into `auth-gateway.yaml` whenever `redirect_from_host`/`redirect_to_host`
+   are set in `terraform.tfvars`. So during Phase 1, leave those two variables
+   **unset** (they default to `""`). Otherwise finngenie would start redirecting to
+   genegenie before genegenie's cert is `Active`, breaking the redirect with a TLS
+   error. Add them only in Phase 2, once the cert is `Active`.
 
 3. **OAuth redirect URI.** In the GCP project's APIs & Services → Credentials,
    edit the OAuth client used by oauth2-proxy and add
@@ -63,12 +63,19 @@ Only do this **after** the genegenie managed cert is `Active` (see Phase 1 step 
 otherwise the redirect lands on a host with an invalid cert.
 
 Keep `finngenie.broadinstitute.org` in the `domains` list so its cert stays valid
-and the redirect is served over HTTPS. Add a host-based 301 in the auth-gateway
-nginx config (`k8s/deployments/auth-gateway.yaml`, inside the `server { listen 8080; }`
-block), right after `listen 8080;` and before the location rules:
+and the redirect is served over HTTPS.
 
+The redirect is **profile-driven**, not hardcoded, so it never leaks into other
+deployments. Set the two hosts in the daly `terraform.tfvars`:
+```hcl
+redirect_from_host = "finngenie.broadinstitute.org"
+redirect_to_host   = "genegenie.broadinstitute.org"
+```
+`auth-gateway.yaml` carries a `${LEGACY_REDIRECT}` placeholder inside the
+`server { listen 8080; }` block. `deploy.sh` reads the two terraform outputs and
+renders this nginx snippet into it (and substitutes empty for any deployment that
+sets no redirect — the variables default to `""`):
 ```nginx
-# redirect the old hostname to the new one, preserving path + query
 if ($host = finngenie.broadinstitute.org) {
     return 301 https://genegenie.broadinstitute.org$request_uri;
 }
@@ -80,14 +87,23 @@ preserved — e.g. `finngenie.broadinstitute.org/chat/XXX?foo=bar` →
 only finngenie requests redirect; GKE backend health checks (which hit `/healthz`
 with the node IP as Host) are unaffected.
 
-Apply it. Note `scripts/rollout.sh` only swaps container *images* and does not
-know about `auth-gateway` (an nginx pod driven by the `auth-gateway-config`
-ConfigMap), so apply the manifest and restart the pod to reload nginx:
+Apply with a full deploy (it renders the placeholder via `envsubst`):
 ```bash
-kubectl apply -f k8s/deployments/auth-gateway.yaml -n genetics
+./scripts/deploy.sh
+```
+`scripts/rollout.sh` cannot be used here — it only swaps container *images* and
+does not know about `auth-gateway` (an nginx pod driven by a ConfigMap). For a
+config-only update without a full redeploy, render the placeholder and restart:
+```bash
+export LEGACY_REDIRECT='if ($host = finngenie.broadinstitute.org) {
+          return 301 https://genegenie.broadinstitute.org$request_uri;
+        }'
+envsubst '${LEGACY_REDIRECT}' < k8s/deployments/auth-gateway.yaml | kubectl apply -f -
 kubectl rollout restart deployment/auth-gateway -n genetics
 kubectl rollout status deployment/auth-gateway -n genetics
 ```
+(Plain `kubectl apply -f k8s/deployments/auth-gateway.yaml` no longer works on its
+own — like the other deployment manifests, it now contains an `envsubst` variable.)
 
 Verify the redirect (root + a sub-URL with query string both 301 to genegenie):
 ```bash
