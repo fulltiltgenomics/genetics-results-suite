@@ -63,6 +63,21 @@ TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 TF_APP_NAME=$(terraform output -raw app_name)
 export APP_NAME="${APP_NAME:-${TF_APP_NAME}}"
+TF_REDIRECT_FROM_HOST=$(terraform output -raw redirect_from_host 2>/dev/null || true)
+TF_REDIRECT_TO_HOST=$(terraform output -raw redirect_to_host 2>/dev/null || true)
+REDIRECT_FROM_HOST="${REDIRECT_FROM_HOST:-${TF_REDIRECT_FROM_HOST}}"
+REDIRECT_TO_HOST="${REDIRECT_TO_HOST:-${TF_REDIRECT_TO_HOST}}"
+
+# build the auth-gateway legacy-redirect nginx snippet (empty when not configured).
+# indentation in the continuation lines matches the surrounding server { } block.
+if [ -n "${REDIRECT_FROM_HOST}" ] && [ -n "${REDIRECT_TO_HOST}" ]; then
+  printf -v LEGACY_REDIRECT '# 301 the old hostname to the new one, preserving path + query\n        if ($host = %s) {\n          return 301 https://%s$request_uri;\n        }' \
+    "${REDIRECT_FROM_HOST}" "${REDIRECT_TO_HOST}"
+  echo "Legacy redirect: ${REDIRECT_FROM_HOST} -> ${REDIRECT_TO_HOST}"
+else
+  LEGACY_REDIRECT=""
+fi
+export LEGACY_REDIRECT
 
 # LLM model
 if [ "${CONFIG_PROFILE}" = "daly" ]; then
@@ -184,7 +199,7 @@ for f in deployments/*.yaml; do
     echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

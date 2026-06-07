@@ -37,10 +37,9 @@ data:
       server {
         listen 8080;
 
-        # redirect the old hostname to the new one, preserving path + query
-        if ($host = finngenie.broadinstitute.org) {
-          return 301 https://genegenie.broadinstitute.org$request_uri;
-        }
+        # legacy hostname redirect — rendered by deploy.sh from redirect_from_host/
+        # redirect_to_host (empty for deployments that set no redirect)
+        ${LEGACY_REDIRECT}
 
         # health check
         location = /healthz {

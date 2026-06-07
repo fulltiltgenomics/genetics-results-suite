@@ -74,6 +74,16 @@ output "app_name" {
   value       = var.app_name
 }
 
+output "redirect_from_host" {
+  description = "Legacy hostname that 301-redirects to redirect_to_host (empty = none)"
+  value       = var.redirect_from_host
+}
+
+output "redirect_to_host" {
+  description = "Destination hostname for the legacy redirect"
+  value       = var.redirect_to_host
+}
+
 output "registry" {
   description = "Artifact Registry URL for docker images"
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker.repository_id}"
