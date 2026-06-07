@@ -11,6 +11,7 @@ Usage:
 import argparse
 import logging
 import os
+import re
 import sys
 
 from monitor.slack import send_slack_message
@@ -252,12 +253,13 @@ def main() -> int:
         slack_blocks.extend(_format_alert_blocks(alert_results))
 
     if has_failure:
-        alert_user = os.environ.get("SLACK_ALERT_USER_ID")
-        if alert_user:
+        user_ids = [u for u in re.split(r"[,\s]+", os.environ.get("SLACK_ALERT_USER_ID", "")) if u]
+        if user_ids:
+            mentions = " ".join(f"<@{u}>" for u in user_ids)
             slack_blocks.append({"type": "divider"})
             slack_blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"<@{alert_user}> issues detected"},
+                "text": {"type": "mrkdwn", "text": f"{mentions} issues detected"},
             })
 
     # send to Slack if webhook is configured

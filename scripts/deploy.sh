@@ -8,6 +8,11 @@ NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
+# load deploy-time config that must stay out of version control (.env is gitignored)
+if [ -f "${ROOT_DIR}/.env" ]; then
+  set -a; . "${ROOT_DIR}/.env"; set +a
+fi
+
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection
@@ -63,6 +68,9 @@ TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 TF_APP_NAME=$(terraform output -raw app_name)
 export APP_NAME="${APP_NAME:-${TF_APP_NAME}}"
+# slack member id(s) to @mention on monitor failures; space/comma-separated for multiple.
+# kept out of version control — set via .env or the shell environment.
+export SLACK_ALERT_USER_ID="${SLACK_ALERT_USER_ID:-}"
 
 # LLM model
 if [ "${CONFIG_PROFILE}" = "daly" ]; then
