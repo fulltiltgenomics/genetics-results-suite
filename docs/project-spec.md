@@ -145,7 +145,7 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 | `GCP_PROJECT` | CronJob manifest (envsubst) | — | GCP project for BQ and Logging clients |
 | `CONFIG_PROFILE` | CronJob manifest (envsubst) | `finngen` | Active dataset profile (also selects flag emoji) |
 | `BQ_DATASET` | CronJob manifest (envsubst) | `genetics_results` | BigQuery dataset name |
-| `SLACK_ALERT_USER_ID` | CronJob manifest (envsubst) | — | Slack member ID to @mention on failures |
+| `SLACK_ALERT_USER_ID` | CronJob manifest (envsubst); exported by `deploy.sh` from `.env`/shell | — | Slack member ID(s) to @mention on failures; space/comma-separated for multiple users. Kept out of version control (`.env` is gitignored). |
 | `DATASETS_CONFIG_PATH` | CronJob manifest | `/app/configs/datasets.yaml` | Path to datasets config |
 | `INTERNAL_API_SECRET` | `genetics-secrets` | — | Bearer token for results-api |
 | `SLACK_WEBHOOK_URL` | `genetics-secrets` | — | Slack incoming webhook URL |
