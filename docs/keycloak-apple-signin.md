@@ -52,14 +52,18 @@ Point a DNS record for the host at the ingress static IP.
 ### 2. Apple Developer (Sign in with Apple)
 Requires a paid Apple Developer Program membership. In the portal:
 1. **Identifiers → App ID**: create one with the "Sign in with Apple" capability enabled.
-2. **Identifiers → Services ID**: create one (this string is the OAuth `client_id` =
+2. **Identifiers → Services ID** (switch the Identifiers list filter to "Services IDs" — it
+   defaults to App IDs): create one (this string is the OAuth `client_id` =
    `APPLE_SERVICES_ID`) and enable Sign in with Apple on it.
-3. On the Services ID, configure **Domains and Subdomains** = `<KEYCLOAK_HOST>` and
-   **Return URL** = `https://<KEYCLOAK_HOST>/realms/genetics/broker/apple/endpoint`
-   (confirm the exact callback path against the bundled extension's docs). Apple requires
-   **domain verification**: download `apple-developer-domain-association.txt` and serve it at
-   `https://<KEYCLOAK_HOST>/.well-known/apple-developer-domain-association.txt` until Apple
-   confirms (add a temporary nginx `location` in the auth-gateway Keycloak server block).
+3. On the **Services ID** (not the App ID), open **Sign in with Apple → Configure →
+   Web Authentication Configuration**: set **Primary App ID** = the App ID from step 1,
+   **Domains and Subdomains** = `<KEYCLOAK_HOST>`, **Return URLs** =
+   `https://<KEYCLOAK_HOST>/realms/genetics/broker/apple/endpoint` (confirm the exact callback
+   path against the bundled extension's docs) → **Save**. NOTE: the current Apple portal does
+   **not** do domain-verification for the web sign-in flow — there is no
+   `apple-developer-domain-association.txt` / Verify step here, just Domains + Return URLs. That
+   file only exists under the separate "Sign in with Apple for Email Communication" feature
+   (private-relay email *sending*), which this setup does not use.
 4. **Keys → new Key** with Sign in with Apple enabled; download the **.p8 once** (can't be
    re-downloaded). Note the **Key ID** and your **Team ID**.
 
