@@ -60,8 +60,13 @@ output "snapshot_policy_name" {
 }
 
 output "oauth_email_domain" {
-  description = "Email domain allowed for OAuth2 login"
+  description = "Email domain(s) allowed for OAuth2 login (comma-separated)"
   value       = var.oauth_email_domain
+}
+
+output "oauth_allowed_emails" {
+  description = "Specific email addresses allowed in addition to the domains (comma-separated)"
+  value       = var.oauth_allowed_emails
 }
 
 output "config_profile" {
