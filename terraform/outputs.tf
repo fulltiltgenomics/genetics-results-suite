@@ -74,6 +74,11 @@ output "config_profile" {
   value       = var.config_profile
 }
 
+output "keycloak_backup_bucket" {
+  description = "GCS bucket holding Keycloak Postgres backups"
+  value       = google_storage_bucket.keycloak_backups.name
+}
+
 output "app_name" {
   description = "Product/brand name shown in the UI and the assistant persona"
   value       = var.app_name
