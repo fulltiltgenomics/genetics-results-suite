@@ -5,7 +5,7 @@
 # Drop the verified extension JAR(s) into keycloak/providers/ before building. Recommended:
 # klausbetz/apple-identity-provider (generates the Apple client-secret JWT automatically).
 # Pin the version you vet; do not pull an unpinned latest.
-ARG KEYCLOAK_VERSION=26.1
+ARG KEYCLOAK_VERSION=26.5
 
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION} AS builder
 ENV KC_DB=postgres
