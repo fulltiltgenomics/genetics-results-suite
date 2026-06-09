@@ -109,6 +109,18 @@ variable "snapshot_retention_days" {
   default     = 14
 }
 
+variable "keycloak_backup_bucket_name" {
+  description = "GCS bucket for Keycloak Postgres pg_dump backups. Empty = derive as <project_id>-keycloak-backups."
+  type        = string
+  default     = ""
+}
+
+variable "keycloak_backup_retention_days" {
+  description = "Days to retain Keycloak Postgres backups in GCS before lifecycle deletion"
+  type        = number
+  default     = 14
+}
+
 variable "enable_log_sinks" {
   description = "Whether to create BigQuery log sinks (e.g. chat-backend logs to genetics_chat_logs)"
   type        = bool

@@ -183,6 +183,11 @@ data:
           proxy_set_header X-Forwarded-Proto $scheme;
         }
       }
+
+      # Keycloak identity broker server block, injected by deploy.sh only when the broker is
+      # enabled (daly); empty otherwise (e.g. finngen, which has no keycloak Service, so a
+      # static proxy_pass to it would break nginx startup). See KEYCLOAK_SERVER in deploy.sh.
+      ${KEYCLOAK_SERVER}
     }
 ---
 apiVersion: apps/v1

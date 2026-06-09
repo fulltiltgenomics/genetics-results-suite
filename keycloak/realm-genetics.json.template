@@ -1,0 +1,35 @@
+{
+  "_comment": "Keycloak realm import TEMPLATE for the genetics suite. deploy.sh renders the ${VAR} placeholders from .env into the keycloak-realm Secret (so no secrets are committed). The Apple IdP (keycloak/apple-idp.json.template) is injected automatically when APPLE_* is set in .env; until then the realm is Google-only. Imported only on first start (empty DB); later changes are made in the admin console. See docs/keycloak-apple-signin.md.",
+  "realm": "genetics",
+  "enabled": true,
+  "loginTheme": "keycloak",
+  "clients": [
+    {
+      "clientId": "oauth2-proxy",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "secret": "${OAUTH2_PROXY_CLIENT_SECRET}",
+      "redirectUris": ["https://${DOMAIN}/oauth2/callback"],
+      "webOrigins": ["https://${DOMAIN}"],
+      "attributes": { "post.logout.redirect.uris": "https://${DOMAIN}/*" },
+      "defaultClientScopes": ["openid", "email", "profile"]
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "providerId": "google",
+      "enabled": true,
+      "trustEmail": true,
+      "config": {
+        "clientId": "${GOOGLE_CLIENT_ID}",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+        "defaultScope": "openid email profile",
+        "syncMode": "IMPORT"
+      }
+    }${APPLE_IDP_ENTRY}
+  ]
+}

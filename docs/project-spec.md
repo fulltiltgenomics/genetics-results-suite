@@ -8,16 +8,21 @@ genetics-results-suite is the Terraform and Kubernetes deployment configuration 
 
 ```
 Internet → GKE Ingress (HTTPS, Google-managed certs)
+           ├── auth.<domain> → auth-gateway → keycloak (identity broker, login UI + OIDC)
            └── /*  → auth-gateway (nginx, port 8080)
-                     ├── /oauth2/*  → oauth2-proxy (Google OAuth login, port 4180)
+                     ├── /oauth2/*  → oauth2-proxy (OIDC → Keycloak, port 4180)
                      ├── /api/*     → results-api  (FastAPI, port 4000) — oauth2 or bearer token
                      ├── /chat/*    → chat-backend  (FastAPI, port 8000)
                      ├── /mcp/*     → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
 
+Login flow: oauth2-proxy → Keycloak (genetics realm) → Google or Apple IdP.
+
 Internal only (ClusterIP + NetworkPolicy):
-  ├── db-api      (BigQuery proxy, port 8080) — only accessible from chat-backend
-  └── rag-service (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
+  ├── db-api            (BigQuery proxy, port 8080) — only accessible from chat-backend
+  ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
+  ├── keycloak          (identity broker, port 8080) — reached via auth.<domain>
+  └── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
 ```
 
 ## Services
@@ -25,8 +30,10 @@ Internal only (ClusterIP + NetworkPolicy):
 | Service | Source Repo | Port | Description |
 |---------|-----------|------|-------------|
 | frontend | genetics-results-browser | 3000 | React SPA via nginx |
-| auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration |
-| oauth2-proxy | — (upstream image) | 4180 | Google OAuth login |
+| auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also routes auth.<domain> to keycloak |
+| oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak |
+| keycloak | keycloak/ (local build) | 8080 | Identity broker: Google + Apple sign-in, single OIDC issuer |
+| keycloak-postgres | — (upstream image) | 5432 | Keycloak database (PVC + daily pg_dump to GCS) |
 | results-api | genetics-results-api | 4000 | FastAPI genetics results API |
 | chat-backend | genetics-mcp-server | 8000 | LLM chat with MCP tools |
 | mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
@@ -96,11 +103,12 @@ External GWAS pseudo credible sets (COVID-19 HGI, PGC SCZ, PGC BIP, GP2 Parkinso
 
 ## Authentication
 
-- **oauth2-proxy** handles browser-based auth via Google OAuth, restricted by `oauth_email_domain` terraform variable (default: `finngen.fi`)
-- **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying
+- **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway on its own host `auth.<domain>` (which must be added to terraform `domains` so the managed cert covers it), backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
+- **oauth2-proxy** handles browser sessions. Its provider is profile-driven (`OAUTH2_PROXY_PROVIDER`): `oidc` against Keycloak where the broker is enabled (daly), or `google` directly otherwise (finngen). Either way it authorizes against an allow-list: one or more **domains** (`OAUTH2_PROXY_EMAIL_DOMAINS`, comma-separated) **or** specific **addresses** (the `--authenticated-emails-file`). Both lists come from terraform — `oauth_email_domain` (comma-separated, e.g. `broadinstitute.org,finngen.fi`) and `oauth_allowed_emails` (specific addresses, e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
+- **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying; a separate `server` block routes `auth.<domain>` to Keycloak. The email returned by oauth2-proxy is passed to backends in the `X-Goog-Authenticated-User-Email` header (the `accounts.google.com:` prefix is legacy and provider-agnostic — backends read only the address after the colon).
 - **results-api** also accepts `Authorization: Bearer` tokens (Google Identity Tokens or internal shared secret)
-- **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via three paths (parity with results-api): the `MCP_API_KEY` shared secret(s), Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list), and per-user API tokens issued via the chat API
-- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS` and `ALLOWED_EMAIL_DOMAINS` (used for Google Identity Token JWT validation in both results-api and mcp-server) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), consumed by both deployments via `envFrom: configMapRef` to prevent config drift
+- **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via three paths (parity with results-api): the `MCP_API_KEY` shared secret(s), Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list), and per-user API tokens issued via the chat API. NOTE: the bearer JWT path validates **Google** Identity Tokens only — programmatic (non-browser) access for Apple-only identities is a known follow-up.
+- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS` and `ALLOWED_EMAIL_DOMAINS` (used for Google Identity Token JWT validation in both results-api and mcp-server) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), populated from `oauth_allowed_emails`/`oauth_email_domain`, consumed by both deployments via `envFrom: configMapRef` to prevent config drift
 - **db-api** is internal-only, protected by NetworkPolicy (no auth needed)
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
 - **External MCP servers**: chat-backend proxies tools from external MCP servers (gnomAD, Open Targets) configured via `EXTERNAL_MCP_SERVERS` secret; `EXTERNAL_MCP_EXCLUDE_TOOLS` excludes specific tools by name (comma-separated)
