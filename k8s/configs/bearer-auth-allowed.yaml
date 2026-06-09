@@ -4,5 +4,5 @@ metadata:
   name: bearer-auth-allowed
   namespace: genetics
 data:
-  ALLOWED_EMAILS: ""
+  ALLOWED_EMAILS: "${OAUTH_ALLOWED_EMAILS}"
   ALLOWED_EMAIL_DOMAINS: "${OAUTH_EMAIL_DOMAIN}"

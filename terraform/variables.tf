@@ -74,9 +74,15 @@ variable "config_profile" {
 }
 
 variable "oauth_email_domain" {
-  description = "Email domain allowed for OAuth2 login (e.g. broadinstitute.org)"
+  description = "Email domain(s) allowed for OAuth2 login. Comma-separated for several, e.g. \"broadinstitute.org,finngen.fi\"."
   type        = string
   default     = "broadinstitute.org"
+}
+
+variable "oauth_allowed_emails" {
+  description = "Specific email addresses allowed in addition to oauth_email_domain (comma-separated, e.g. for Apple users on me.com/icloud.com/privaterelay.appleid.com). Empty = none."
+  type        = string
+  default     = ""
 }
 
 variable "app_name" {
