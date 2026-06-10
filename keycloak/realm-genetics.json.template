@@ -1,5 +1,4 @@
 {
-  "_comment": "Keycloak realm import TEMPLATE for the genetics suite. deploy.sh renders the ${VAR} placeholders from .env into the keycloak-realm Secret (so no secrets are committed). The Apple IdP (keycloak/apple-idp.json.template) is injected automatically when APPLE_* is set in .env; until then the realm is Google-only. Imported only on first start (empty DB); later changes are made in the admin console. See docs/keycloak-apple-signin.md.",
   "realm": "genetics",
   "enabled": true,
   "loginTheme": "keycloak",

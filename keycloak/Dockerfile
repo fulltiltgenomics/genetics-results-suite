@@ -9,6 +9,9 @@ ARG KEYCLOAK_VERSION=26.5
 
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION} AS builder
 ENV KC_DB=postgres
+# health must be baked in at build time: the deployment runs `start --optimized` (which ignores
+# build-time options set at runtime) and probes /health on :9000, so enabling it here is required.
+ENV KC_HEALTH_ENABLED=true
 # bundled provider JARs (empty providers/ just builds vanilla Keycloak)
 COPY providers/ /opt/keycloak/providers/
 RUN /opt/keycloak/bin/kc.sh build
