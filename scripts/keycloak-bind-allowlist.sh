@@ -88,6 +88,18 @@ for _ in $(seq 1 "${TOP_COUNT:-8}"); do
   kc create "authentication/executions/${EXEC_ID}/raise-priority" -r "${REALM}" >/dev/null 2>&1 || true
 done
 
+# 3b) disable the "Review Profile" step — Google/Apple are trusted, so don't prompt federated
+# users with a profile form on first login.
+REVIEW_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("providerId")=="idp-review-profile": print(e["id"]); break')"
+if [ -n "${REVIEW_ID}" ]; then
+  kc update "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" \
+    -b "{\"id\":\"${REVIEW_ID}\",\"requirement\":\"DISABLED\"}"
+  echo "Disabled 'Review Profile' in '${FLOW}'."
+fi
+
 # 4) point the brokered IdPs at the custom flow
 for idp in ${IDPS}; do
   if kc get "identity-provider/instances/${idp}" -r "${REALM}" >/dev/null 2>&1; then
