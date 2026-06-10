@@ -4,6 +4,10 @@
   "displayNameHtml": "${APP_NAME}",
   "enabled": true,
   "loginTheme": "keycloak",
+  "attributes": {
+    "allowedEmailDomains": "${OAUTH_EMAIL_DOMAIN}",
+    "allowedEmails": "${OAUTH_ALLOWED_EMAILS}"
+  },
   "clients": [
     {
       "clientId": "oauth2-proxy",

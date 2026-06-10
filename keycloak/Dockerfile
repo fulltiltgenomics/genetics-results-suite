@@ -12,9 +12,10 @@ ENV KC_DB=postgres
 # health must be baked in at build time: the deployment runs `start --optimized` (which ignores
 # build-time options set at runtime) and probes /health on :9000, so enabling it here is required.
 ENV KC_HEALTH_ENABLED=true
-# bundled provider JARs (empty providers/ just builds vanilla Keycloak)
+# bundled provider JARs: the Apple IdP extension and the email allow-list script authenticator
+# (keycloak/providers/email-allowlist-authenticator.jar). The latter needs the "scripts" feature.
 COPY providers/ /opt/keycloak/providers/
-RUN /opt/keycloak/bin/kc.sh build
+RUN /opt/keycloak/bin/kc.sh build --features=scripts
 
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
 COPY --from=builder /opt/keycloak/ /opt/keycloak/

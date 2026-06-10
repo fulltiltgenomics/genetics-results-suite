@@ -1,0 +1,9 @@
+{
+  "authenticators": [
+    {
+      "name": "Email allow-list",
+      "fileName": "email-allowlist.js",
+      "description": "Deny first-broker-login for emails not matching the realm attributes allowedEmailDomains / allowedEmails"
+    }
+  ]
+}
