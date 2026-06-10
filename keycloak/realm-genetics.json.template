@@ -1,5 +1,7 @@
 {
   "realm": "genetics",
+  "displayName": "${APP_NAME}",
+  "displayNameHtml": "${APP_NAME}",
   "enabled": true,
   "loginTheme": "keycloak",
   "clients": [

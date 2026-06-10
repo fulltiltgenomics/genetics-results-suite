@@ -15,12 +15,19 @@ is used) and authorize it against the allow-list.
 
 ```
 browser → GKE ingress → auth-gateway (nginx)
-            ├── app hosts → oauth2-proxy (OIDC) ──▶ Keycloak realm "genetics"
-            └── auth.<domain> ───────────────────▶ Keycloak (login UI + OIDC endpoints)
-                                                      ├── Google IdP
-                                                      └── Apple IdP (bundled extension)
+            ├── <domain>/...  → oauth2-proxy (OIDC) ──▶ Keycloak realm "genetics"
+            └── <domain>/auth ──────────────────────▶ Keycloak (login UI + OIDC endpoints)
+                                                         ├── Google IdP
+                                                         └── Apple IdP (bundled extension)
 Keycloak DB: in-cluster Postgres (PVC) → daily pg_dump to GCS
 ```
+
+Keycloak is exposed under the **`/auth` path on the primary domain** (e.g.
+`https://genegenie.broadinstitute.org/auth`) rather than a dedicated `auth.<domain>` subdomain,
+so it reuses the existing DNS record, managed cert and ingress with no extra provisioning. It
+keeps its default `/` relative path and advertises the `/auth` prefix via `KC_HOSTNAME`; the
+auth-gateway `location /auth/` strips the prefix when proxying. To move to a dedicated subdomain
+once its DNS exists, see [Switching Keycloak to a dedicated subdomain](#switching-keycloak-to-a-dedicated-subdomain).
 
 ## Components added
 
@@ -32,7 +39,7 @@ Keycloak DB: in-cluster Postgres (PVC) → daily pg_dump to GCS
 | Keycloak Postgres + PVC | `k8s/deployments/postgres.yaml`, `k8s/volumes/pvc-keycloak-postgres.yaml` |
 | Daily backup CronJob | `k8s/cronjobs/keycloak-postgres-backup.yaml` |
 | Backup bucket + IAM | `terraform/backups.tf` (`google_storage_bucket.keycloak_backups`) |
-| Host routing | `k8s/deployments/auth-gateway.yaml` (server block for `${KEYCLOAK_HOST}`) |
+| Path routing | `k8s/deployments/auth-gateway.yaml` (`location /auth/` injected via `${KEYCLOAK_SERVER}`) |
 | oauth2-proxy repoint | `k8s/deployments/oauth2-proxy.yaml` (`--provider=oidc`) |
 | Allow-list (domains + addresses) | `oauth_email_domain`, `oauth_allowed_emails` → `bearer-auth-allowed` + oauth2-proxy |
 
@@ -122,12 +129,43 @@ ANTHROPIC_API_KEY=... COHERE_API_KEY=... ./scripts/create-secrets.sh
 The realm is imported only on Keycloak's **first** start (empty DB). Later changes are made
 in the admin console (`https://<KEYCLOAK_HOST>/admin`, user/pass from `keycloak-secrets`).
 
-**Issuer hairpin**: oauth2-proxy fetches OIDC discovery from `https://<KEYCLOAK_HOST>/...`,
-i.e. the public URL routed back through the ingress from inside the cluster. If hairpin NAT
-is blocked in your network, either allow it, or split discovery from the issuer (point
-oauth2-proxy at the in-cluster `keycloak` Service for endpoints while keeping the public
-issuer string that matches token `iss`). Verify after deploy with the test in step 1 of the
-verification list (below) from an oauth2-proxy pod.
+**Issuer hairpin**: oauth2-proxy fetches OIDC discovery from `https://<KEYCLOAK_HOST>/realms/genetics/...`,
+i.e. the public URL routed back through the ingress from inside the cluster. This is verified
+working on GKE for the daly deployment. If hairpin NAT is blocked in your network, either allow
+it, or split discovery from the issuer: set `OAUTH2_PROXY_SKIP_OIDC_DISCOVERY=true` and point
+`OAUTH2_PROXY_LOGIN_URL` at the public URL (browser-facing) while pointing
+`OAUTH2_PROXY_REDEEM_URL` / `OAUTH2_PROXY_OIDC_JWKS_URL` at the in-cluster
+`http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/...` endpoints — Keycloak still
+serves those at `/realms/...` internally (only the advertised URLs carry the `/auth` prefix), and
+the issuer string keeps matching token `iss`.
+
+## Switching Keycloak to a dedicated subdomain
+
+Keycloak currently lives at the **`/auth` path on the primary domain** (no separate DNS/cert
+needed). To move it to a dedicated `auth.<domain>` subdomain once that DNS record exists, make
+these changes (all driven from `deploy.sh`):
+
+1. **DNS** — create an A record `auth.<domain>` → the ingress static IP (`terraform output
+   static_ip` / the value behind `kubernetes.io/ingress.global-static-ip-name`).
+2. **`scripts/deploy.sh`** (Keycloak broker block): set `KEYCLOAK_PATH=""` and
+   `KEYCLOAK_HOST="auth.${REDIRECT_TO_HOST:-${DOMAIN}}"`, and change the `KEYCLOAK_SERVER`
+   snippet from the `location /auth/ { … proxy_pass …:8080/; }` form back to a dedicated
+   `server { listen 8080; server_name <host>; location / { proxy_pass …:8080; } }` block.
+   With no path prefix, `proxy_pass` must **not** have a trailing slash (no prefix to strip).
+3. **`k8s/deployments/auth-gateway.yaml`** — move the `${KEYCLOAK_SERVER}` placeholder back out
+   of the main `server { }` block to the `http { }` level (a sibling server block), since it
+   now carries its own `server_name`.
+4. **Cert + ingress** — add `KEYCLOAK_HOST` to `generate_cert`'s `DOMAIN_LIST` (managed-cert
+   SAN) and to `generate_ingress`'s host rules so `auth.<domain>` gets a cert and routes to
+   `auth-gateway`. Wait for the managed cert to re-provision (DNS must resolve first; 15–60 min).
+5. **Provider consoles** — update the Google/Apple authorized redirect URIs to
+   `https://auth.<domain>/realms/genetics/broker/{google,apple}/endpoint` (the `/auth` segment
+   drops out of the path when the prefix moves to a subdomain).
+
+`KC_HOSTNAME` (`https://${KEYCLOAK_HOST}`) and `OIDC_ISSUER_URL`
+(`https://${KEYCLOAK_HOST}/realms/genetics`) follow `KEYCLOAK_HOST` automatically, so no edits
+to `keycloak.yaml`/`oauth2-proxy.yaml` are needed. Because the issuer string changes, existing
+sessions are invalidated (users re-login once).
 
 ## Allow-list (who may log in)
 
