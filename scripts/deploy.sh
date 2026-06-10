@@ -111,7 +111,7 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   # on proxy_pass strips the ${KEYCLOAK_PATH} prefix so Keycloak (served at "/") receives
   # /realms/...; it advertises the prefix back via KC_HOSTNAME. Served WITHOUT the oauth2-proxy
   # auth_request — these are the auth endpoints themselves.
-  printf -v KEYCLOAK_SERVER 'location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto $scheme;\n        }' "${KEYCLOAK_PATH}"
+  printf -v KEYCLOAK_SERVER 'location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto $scheme;\n          # Apple sign-in returns via a cross-site form_post; Keycloak login cookies must be\n          # SameSite=None; Secure or the browser drops them on that POST (default Lax fails,\n          # giving "Restart login cookie not found"). Google uses a GET redirect and is unaffected.\n          proxy_cookie_flags ~ secure samesite=none;\n        }' "${KEYCLOAK_PATH}"
   echo "Keycloak broker enabled (login URL: https://${KEYCLOAK_HOST})"
 else
   export OAUTH2_PROVIDER="google"
