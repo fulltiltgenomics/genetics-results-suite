@@ -108,4 +108,20 @@ for idp in ${IDPS}; do
   fi
 done
 
+# 5) make firstName/lastName optional in the user profile. Apple only returns the name on the
+# very first authorization and not at all for repeat/Hide-My-Email logins, so requiring them
+# forces a "complete your profile" form on federated sign-in. Email stays required.
+NEW_PROFILE="$(kc get users/profile -r "${REALM}" | python3 -c '
+import json,sys
+p=json.load(sys.stdin)
+for a in p.get("attributes",[]):
+    if a.get("name") in ("firstName","lastName"): a.pop("required",None)
+print(json.dumps(p))')"
+if [ -n "${NEW_PROFILE}" ]; then
+  B64="$(printf '%s' "${NEW_PROFILE}" | base64 | tr -d '\n')"
+  kubectl exec -n "${NAMESPACE}" "${POD}" -- bash -c \
+    "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json && rm -f /tmp/kc-userprofile.json"
+  echo "Made firstName/lastName optional in the user profile."
+fi
+
 echo "Done."
