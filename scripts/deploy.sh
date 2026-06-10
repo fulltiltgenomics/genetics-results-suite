@@ -206,7 +206,7 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \

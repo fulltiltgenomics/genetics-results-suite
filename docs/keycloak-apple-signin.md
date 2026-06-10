@@ -178,6 +178,24 @@ and to the backends (`bearer-auth-allowed` ConfigMap). "Hide My Email" Apple use
 `@privaterelay.appleid.com` — allow them by adding their specific relay address to
 `oauth_allowed_emails`.
 
+They are **also** enforced at Keycloak during first-broker-login, *before* an account is
+created, so a non-allowlisted federated user gets a clean Forbidden page (not a Keycloak account
+plus a downstream oauth2-proxy 403). This is a small script authenticator
+(`keycloak/email-allowlist-authenticator/`, packaged as
+`keycloak/providers/email-allowlist-authenticator.jar`, needs the `scripts` build feature — see
+`keycloak/Dockerfile`). It reads the realm attributes `allowedEmailDomains` / `allowedEmails`,
+which `deploy.sh` renders from `oauth_email_domain` / `oauth_allowed_emails`.
+
+The realm import only runs on a fresh DB, so on an already-imported realm bind it (and re-sync
+the attributes after changing the allow-list) with:
+
+```sh
+OAUTH_EMAIL_DOMAIN=... OAUTH_ALLOWED_EMAILS=... ./scripts/keycloak-bind-allowlist.sh
+```
+
+This is idempotent: it sets the realm attributes and inserts the `script-email-allowlist.js`
+authenticator as the first REQUIRED step of the **first broker login** flow.
+
 ## Apple client-secret rotation
 
 Apple's client secret is a JWT signed with the .p8 key, max ~6-month lifetime. The bundled
