@@ -139,6 +139,15 @@ for f in configs/*.yaml; do
   envsubst '${OAUTH_EMAIL_DOMAIN}' < "$f" | kubectl apply -f -
 done
 
+# keep the sibling service repos' committed datasets.yaml in sync with the canonical
+# copy (best-effort: skips repos that aren't checked out next to this one). The pods
+# below get the canonical file via the ConfigMap regardless, but this prevents the
+# committed copies (used for local dev and baked into freshly built images) from drifting.
+if [ -x "${SCRIPT_DIR}/sync-datasets.sh" ]; then
+  echo "=== Syncing datasets.yaml to sibling service repos ==="
+  "${SCRIPT_DIR}/sync-datasets.sh" || echo "  WARN: dataset sync reported an issue (continuing)"
+fi
+
 # datasets ConfigMap (single source of truth for dataset definitions)
 kubectl create configmap datasets-config \
   --from-file=datasets.yaml="${ROOT_DIR}/configs/datasets.yaml" \
