@@ -18,3 +18,11 @@
 #kc-social-providers h2 {
     text-align: center !important;
 }
+
+/* make the GeneGenie brand header prominent (it sits on the dark banner) */
+#kc-header-wrapper {
+    font-size: 1.75rem !important;
+    font-weight: 700 !important;
+    color: #ffffff !important;
+    letter-spacing: 0.5px;
+}

@@ -55,12 +55,24 @@ spec:
           value: "true"
         - name: KC_HEALTH_ENABLED
           value: "true"
+        # serve the login CSS from a ConfigMap (see volumes) without caching, so tweaks apply on a
+        # ConfigMap update + restart — no image rebuild, and browsers don't hold a 30-day-stale copy.
+        - name: KC_SPI_THEME_CACHE_THEMES
+          value: "false"
+        - name: KC_SPI_THEME_CACHE_TEMPLATES
+          value: "false"
+        - name: KC_SPI_THEME_STATIC_MAX_AGE
+          value: "-1"
         ports:
         - containerPort: 8080
         - containerPort: 9000
         volumeMounts:
         - name: realm-import
           mountPath: /opt/keycloak/data/import
+          readOnly: true
+        # overrides the baked theme CSS so it can be edited via the ConfigMap (no image rebuild)
+        - name: login-css
+          mountPath: /opt/keycloak/themes/genetics/login/resources/css
           readOnly: true
         readinessProbe:
           httpGet:
@@ -86,6 +98,9 @@ spec:
       - name: realm-import
         secret:
           secretName: keycloak-realm
+      - name: login-css
+        configMap:
+          name: keycloak-login-css
 ---
 apiVersion: v1
 kind: Service

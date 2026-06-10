@@ -216,6 +216,15 @@ elif [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   echo "Skipping keycloak-realm render (GOOGLE_CLIENT_ID not set in .env)"
 fi
 
+# keycloak login theme CSS: mounted into the keycloak pod from this ConfigMap so visual tweaks
+# apply with a ConfigMap update + restart, no image rebuild (theme caching is disabled in the
+# deployment). The same file is also baked into the image as a fallback.
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  kubectl create configmap keycloak-login-css \
+    --from-file=genetics.css="${ROOT_DIR}/keycloak/themes/genetics/login/resources/css/genetics.css" \
+    -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+fi
+
 # datasets ConfigMap (single source of truth for dataset definitions)
 kubectl create configmap datasets-config \
   --from-file=datasets.yaml="${ROOT_DIR}/configs/datasets.yaml" \
