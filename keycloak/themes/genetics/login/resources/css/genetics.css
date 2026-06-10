@@ -8,3 +8,13 @@
 #kc-registration {
     display: none !important;
 }
+
+/* social-only sign-in: drop the generic "Sign in to your account" page title */
+#kc-page-title {
+    display: none !important;
+}
+
+/* center the social-login helper text (rendered as the #kc-social-providers heading) */
+#kc-social-providers h2 {
+    text-align: center !important;
+}
