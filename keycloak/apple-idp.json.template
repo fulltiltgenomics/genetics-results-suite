@@ -7,7 +7,7 @@
     "clientId": "${APPLE_SERVICES_ID}",
     "teamId": "${APPLE_TEAM_ID}",
     "keyId": "${APPLE_KEY_ID}",
-    "p8Key": "${APPLE_P8_KEY}",
+    "privateKey": "${APPLE_P8_KEY}",
     "defaultScope": "name email",
     "syncMode": "IMPORT"
   }
