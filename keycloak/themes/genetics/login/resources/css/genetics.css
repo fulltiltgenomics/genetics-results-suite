@@ -1,0 +1,28 @@
+/* genetics login theme — only Google/Apple federated sign-in is supported.
+   Hide the local username/password form (and registration) so the page shows just the
+   helper text + the social provider buttons. */
+#kc-form-login {
+    display: none !important;
+}
+#kc-registration-container,
+#kc-registration {
+    display: none !important;
+}
+
+/* social-only sign-in: drop the generic "Sign in to your account" page title */
+#kc-page-title {
+    display: none !important;
+}
+
+/* center the social-login helper text (rendered as the #kc-social-providers heading) */
+#kc-social-providers h2 {
+    text-align: center !important;
+}
+
+/* make the GeneGenie brand header prominent (it sits on the dark banner) */
+#kc-header-wrapper {
+    font-size: 1.75rem !important;
+    font-weight: 700 !important;
+    color: #ffffff !important;
+    letter-spacing: 0.5px;
+}

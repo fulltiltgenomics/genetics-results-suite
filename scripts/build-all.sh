@@ -82,5 +82,10 @@ MONITOR_DIR="${SCRIPT_DIR}/monitor"
 TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
 build_and_push monitor "${MONITOR_DIR}" "${TAG}"
 
+# keycloak (local build context: official Keycloak + bundled Apple extension JARs)
+KEYCLOAK_DIR="${SCRIPT_DIR}/../keycloak"
+TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
+
 echo ""
 echo "All images built and pushed."

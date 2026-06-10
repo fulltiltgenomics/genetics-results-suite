@@ -1,0 +1,2 @@
+# place vetted Keycloak extension JARs here (e.g. the Apple identity-provider).
+# they are baked into the image by keycloak/Dockerfile. keep this file so the dir exists.

@@ -1,0 +1,14 @@
+{
+  "alias": "apple",
+  "providerId": "apple",
+  "enabled": true,
+  "trustEmail": true,
+  "config": {
+    "clientId": "${APPLE_SERVICES_ID}",
+    "teamId": "${APPLE_TEAM_ID}",
+    "keyId": "${APPLE_KEY_ID}",
+    "clientSecret": "${APPLE_P8_KEY}",
+    "defaultScope": "name email",
+    "syncMode": "IMPORT"
+  }
+}

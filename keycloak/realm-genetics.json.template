@@ -1,0 +1,40 @@
+{
+  "realm": "genetics",
+  "displayName": "${APP_NAME}",
+  "displayNameHtml": "${APP_NAME}",
+  "enabled": true,
+  "loginTheme": "genetics",
+  "attributes": {
+    "allowedEmailDomains": "${OAUTH_EMAIL_DOMAIN}",
+    "allowedEmails": "${OAUTH_ALLOWED_EMAILS}"
+  },
+  "clients": [
+    {
+      "clientId": "oauth2-proxy",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "secret": "${OAUTH2_PROXY_CLIENT_SECRET}",
+      "redirectUris": ["https://${DOMAIN}/oauth2/callback"],
+      "webOrigins": ["https://${DOMAIN}"],
+      "attributes": { "post.logout.redirect.uris": "https://${DOMAIN}/*" },
+      "defaultClientScopes": ["openid", "email", "profile"]
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "providerId": "google",
+      "enabled": true,
+      "trustEmail": true,
+      "config": {
+        "clientId": "${GOOGLE_CLIENT_ID}",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+        "defaultScope": "openid email profile",
+        "syncMode": "IMPORT"
+      }
+    }${APPLE_IDP_ENTRY}
+  ]
+}
