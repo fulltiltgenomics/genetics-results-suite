@@ -90,23 +90,37 @@ export LEGACY_REDIRECT
 
 # Keycloak identity broker — enabled per profile (default: on for daly). When enabled,
 # oauth2-proxy uses OIDC against Keycloak (Google + Apple) and the auth-gateway serves the
-# login host; otherwise oauth2-proxy talks to Google directly and no broker is deployed.
+# login endpoint; otherwise oauth2-proxy talks to Google directly and no broker is deployed.
 ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${CONFIG_PROFILE}" = "daly" ] && echo true || echo false)}"
-# canonical login host: auth.<redirect target when migrating, else primary domain>
-export KEYCLOAK_HOST="${KEYCLOAK_HOST:-auth.${REDIRECT_TO_HOST:-${DOMAIN}}}"
+# Keycloak is exposed under a PATH on the primary domain (https://<domain>/auth) so it reuses
+# the existing DNS record, managed cert and ingress — no dedicated auth.<domain> subdomain (and
+# its DNS/cert provisioning) required. Keycloak keeps its default "/" relative path and merely
+# advertises the /auth prefix via KC_HOSTNAME; the nginx location below strips the prefix.
+# To switch to a dedicated subdomain once DNS exists, see
+# docs/keycloak-apple-signin.md ("Switching Keycloak to a dedicated subdomain").
+KEYCLOAK_PATH="/auth"
+export KEYCLOAK_HOST="${KEYCLOAK_HOST:-${REDIRECT_TO_HOST:-${DOMAIN}}${KEYCLOAK_PATH}}"
 if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   export OAUTH2_PROVIDER="oidc"
   export OIDC_ISSUER_URL="https://${KEYCLOAK_HOST}/realms/genetics"
-  # nginx server block for the login host (indentation matches the http { } level)
-  printf -v KEYCLOAK_SERVER 'server {\n        listen 8080;\n        server_name %s;\n        location = /healthz { return 200 '\''ok'\''; add_header Content-Type text/plain; }\n        location / {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto $scheme;\n        }\n      }' "${KEYCLOAK_HOST}"
-  echo "Keycloak broker enabled (host: ${KEYCLOAK_HOST})"
+  # full logout: on sign_out, oauth2-proxy calls this server-side (in-cluster, no hairpin) to end
+  # the Keycloak SSO session — otherwise the browser keeps the Keycloak session and the next
+  # request silently re-authenticates. {id_token} is filled in by oauth2-proxy from the session.
+  export OIDC_BACKEND_LOGOUT_URL="http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/protocol/openid-connect/logout?id_token_hint={id_token}"
+  # nginx location for the login path, injected INSIDE the main server block. The trailing slash
+  # on proxy_pass strips the ${KEYCLOAK_PATH} prefix so Keycloak (served at "/") receives
+  # /realms/...; it advertises the prefix back via KC_HOSTNAME. Served WITHOUT the oauth2-proxy
+  # auth_request — these are the auth endpoints themselves.
+  printf -v KEYCLOAK_SERVER 'location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto $scheme;\n        }' "${KEYCLOAK_PATH}"
+  echo "Keycloak broker enabled (login URL: https://${KEYCLOAK_HOST})"
 else
   export OAUTH2_PROVIDER="google"
   export OIDC_ISSUER_URL=""
+  export OIDC_BACKEND_LOGOUT_URL=""
   KEYCLOAK_SERVER=""
   echo "Keycloak broker disabled (oauth2-proxy uses google provider directly)"
 fi
-export OAUTH2_PROVIDER OIDC_ISSUER_URL KEYCLOAK_SERVER
+export OAUTH2_PROVIDER OIDC_ISSUER_URL OIDC_BACKEND_LOGOUT_URL KEYCLOAK_SERVER
 
 # slack member id(s) to @mention on monitor failures; space/comma-separated for multiple.
 # kept out of version control — set via .env or the shell environment.
@@ -192,7 +206,7 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \
@@ -276,7 +290,7 @@ for f in deployments/*.yaml; do
     echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
