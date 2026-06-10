@@ -154,9 +154,22 @@ python3 scripts/generate_resource_sql.py lint                       # must repor
 
 If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` (`credible_sets_v`,
 `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`)
-so the `CASE` block matches the generated fragment, then re-apply the view to BigQuery.
-Loading the actual rows into the base tables is a separate data-pipeline step
-(`scripts/load_data.py` / the munge pipeline) — it is **not** done by `deploy.sh`.
+so the `CASE` block matches the generated fragment.
+
+Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
+`IF NOT EXISTS` and re-applies every `*_v` view via `CREATE OR REPLACE` — no data loss;
+`--recreate` drops and rebuilds tables and **deletes data**). To apply just one changed
+view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
+`genetics_results` placeholder with `<project>.<dataset>`.
+
+Loading the actual rows into the base tables is a separate step — **not** done by
+`deploy.sh`. The low-level loader is `scripts/load_data.py`; per-data-type wrapper scripts
+drive it (e.g. `load_pseudo.sh` for the shared external/meta pseudo credible-set bundle,
+`load_credsets_coloc.sh`, `load_genebass_variants.sh`, `load_gene_burden_extra.sh`, …). Each
+wrapper deletes the dataset's existing rows and re-appends from GCS, so adding a new
+`dataset` value (e.g. `IIBDGC`) means adding it to the relevant wrapper's GCS file list and
+its delete-before-load set. Set `PROJECT_ID`/`DATASET_ID`/`GCS_BUCKET`/`GCS_PREFIX` per
+profile (finngen vs daly buckets).
 
 ## 7. Deploy
 
