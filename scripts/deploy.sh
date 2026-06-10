@@ -66,6 +66,10 @@ TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
+TF_OAUTH_ALLOWED_EMAILS=$(terraform output -raw oauth_allowed_emails 2>/dev/null || true)
+export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}"
+TF_KEYCLOAK_BACKUP_BUCKET=$(terraform output -raw keycloak_backup_bucket 2>/dev/null || true)
+export KEYCLOAK_BACKUP_BUCKET="${KEYCLOAK_BACKUP_BUCKET:-${TF_KEYCLOAK_BACKUP_BUCKET}}"
 TF_APP_NAME=$(terraform output -raw app_name)
 export APP_NAME="${APP_NAME:-${TF_APP_NAME}}"
 TF_REDIRECT_FROM_HOST=$(terraform output -raw redirect_from_host 2>/dev/null || true)
@@ -83,6 +87,40 @@ else
   LEGACY_REDIRECT=""
 fi
 export LEGACY_REDIRECT
+
+# Keycloak identity broker — enabled per profile (default: on for daly). When enabled,
+# oauth2-proxy uses OIDC against Keycloak (Google + Apple) and the auth-gateway serves the
+# login endpoint; otherwise oauth2-proxy talks to Google directly and no broker is deployed.
+ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${CONFIG_PROFILE}" = "daly" ] && echo true || echo false)}"
+# Keycloak is exposed under a PATH on the primary domain (https://<domain>/auth) so it reuses
+# the existing DNS record, managed cert and ingress — no dedicated auth.<domain> subdomain (and
+# its DNS/cert provisioning) required. Keycloak keeps its default "/" relative path and merely
+# advertises the /auth prefix via KC_HOSTNAME; the nginx location below strips the prefix.
+# To switch to a dedicated subdomain once DNS exists, see
+# docs/keycloak-apple-signin.md ("Switching Keycloak to a dedicated subdomain").
+KEYCLOAK_PATH="/auth"
+export KEYCLOAK_HOST="${KEYCLOAK_HOST:-${REDIRECT_TO_HOST:-${DOMAIN}}${KEYCLOAK_PATH}}"
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  export OAUTH2_PROVIDER="oidc"
+  export OIDC_ISSUER_URL="https://${KEYCLOAK_HOST}/realms/genetics"
+  # full logout: on sign_out, oauth2-proxy calls this server-side (in-cluster, no hairpin) to end
+  # the Keycloak SSO session — otherwise the browser keeps the Keycloak session and the next
+  # request silently re-authenticates. {id_token} is filled in by oauth2-proxy from the session.
+  export OIDC_BACKEND_LOGOUT_URL="http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/protocol/openid-connect/logout?id_token_hint={id_token}"
+  # nginx location for the login path, injected INSIDE the main server block. The trailing slash
+  # on proxy_pass strips the ${KEYCLOAK_PATH} prefix so Keycloak (served at "/") receives
+  # /realms/...; it advertises the prefix back via KC_HOSTNAME. Served WITHOUT the oauth2-proxy
+  # auth_request — these are the auth endpoints themselves.
+  printf -v KEYCLOAK_SERVER 'location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          # TLS terminates at the ingress and this hop is plain http, so $scheme is http here.\n          # Tell Keycloak the public scheme is https (the /auth path is only reached via the\n          # https ingress) so it treats the request as a secure context and sets Secure;\n          # SameSite=None cookies itself (needed for the Apple cross-site form_post callback).\n          proxy_set_header X-Forwarded-Proto https;\n          # Belt-and-suspenders for the Apple form_post: force the login cookies SameSite=None;\n          # Secure even if Keycloak ever decides otherwise (default Lax is dropped on the\n          # cross-site POST, giving "Restart login cookie not found").\n          proxy_cookie_flags ~ secure samesite=none;\n        }' "${KEYCLOAK_PATH}"
+  echo "Keycloak broker enabled (login URL: https://${KEYCLOAK_HOST})"
+else
+  export OAUTH2_PROVIDER="google"
+  export OIDC_ISSUER_URL=""
+  export OIDC_BACKEND_LOGOUT_URL=""
+  KEYCLOAK_SERVER=""
+  echo "Keycloak broker disabled (oauth2-proxy uses google provider directly)"
+fi
+export OAUTH2_PROVIDER OIDC_ISSUER_URL OIDC_BACKEND_LOGOUT_URL KEYCLOAK_SERVER
 
 # slack member id(s) to @mention on monitor failures; space/comma-separated for multiple.
 # kept out of version control — set via .env or the shell environment.
@@ -111,6 +149,10 @@ for f in volumes/*.yaml; do
     echo "Skipping rag-stores volume (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
+  if [ "${ENABLE_KEYCLOAK}" != "true" ] && [ "$(basename "$f")" = "pvc-keycloak-postgres.yaml" ]; then
+    echo "Skipping keycloak-postgres volume (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
+    continue
+  fi
   kubectl apply -f "$f"
 done
 
@@ -134,10 +176,54 @@ if [ -n "${SNAPSHOT_POLICY}" ]; then
   fi
 fi
 
-# configs (envsubst for profile-aware values like OAUTH_EMAIL_DOMAIN)
+# configs (envsubst for profile-aware values like OAUTH_EMAIL_DOMAIN).
+# oauth2-allowed-emails is generated below from OAUTH_ALLOWED_EMAILS, so skip the static file.
 for f in configs/*.yaml; do
-  envsubst '${OAUTH_EMAIL_DOMAIN}' < "$f" | kubectl apply -f -
+  [ "$(basename "$f")" = "oauth2-allowed-emails.yaml" ] && continue
+  envsubst '${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS}' < "$f" | kubectl apply -f -
 done
+
+# oauth2-proxy per-address allowlist (one email per line) — single source of truth is
+# OAUTH_ALLOWED_EMAILS (comma-separated); these addresses are allowed in addition to the domains.
+OAUTH2_ALLOWED_EMAILS_TXT="$(printf '%s' "${OAUTH_ALLOWED_EMAILS}" | tr ',' '\n' | sed '/^$/d')"
+kubectl create configmap oauth2-allowed-emails \
+  --from-literal=allowed-emails.txt="${OAUTH2_ALLOWED_EMAILS_TXT}" \
+  -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+# Keycloak realm import: render the template (secrets from .env) into the keycloak-realm
+# Secret. Imported by Keycloak only on first start (empty DB); later edits go via the admin
+# console. The Apple IdP is injected automatically once APPLE_SERVICES_ID is set in .env
+# (register for the Apple Developer Program first); until then the realm is Google-only.
+# Skipped when the broker is disabled, or if GOOGLE_CLIENT_ID isn't set.
+if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
+  APPLE_IDP_ENTRY=""
+  if [ -n "${APPLE_SERVICES_ID:-}" ]; then
+    APPLE_JSON="$(envsubst '${APPLE_SERVICES_ID} ${APPLE_TEAM_ID} ${APPLE_KEY_ID} ${APPLE_P8_KEY}' \
+      < "${ROOT_DIR}/keycloak/apple-idp.json.template")"
+    APPLE_IDP_ENTRY=",${APPLE_JSON}"
+  fi
+  export APPLE_IDP_ENTRY
+  # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
+  # else the primary domain) — NOT a legacy host that 301-redirects away.
+  REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
+    < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
+  kubectl create secret generic keycloak-realm \
+    --from-literal=realm.json="${REALM_RENDERED}" \
+    -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+  echo "keycloak-realm rendered (apple IdP: ${APPLE_SERVICES_ID:+enabled}${APPLE_SERVICES_ID:-google-only})"
+elif [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  echo "Skipping keycloak-realm render (GOOGLE_CLIENT_ID not set in .env)"
+fi
+
+# keycloak login theme CSS: mounted into the keycloak pod from this ConfigMap so visual tweaks
+# apply with a ConfigMap update + restart, no image rebuild (theme caching is disabled in the
+# deployment). The same file is also baked into the image as a fallback.
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  kubectl create configmap keycloak-login-css \
+    --from-file=genetics.css="${ROOT_DIR}/keycloak/themes/genetics/login/resources/css/genetics.css" \
+    -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 # keep the sibling service repos' committed datasets.yaml in sync with the canonical
 # copy (best-effort: skips repos that aren't checked out next to this one). The pods
@@ -213,13 +299,26 @@ kubectl apply -f network-policies/
 
 # deployments (substitute variables and image tags)
 for f in deployments/*.yaml; do
-  if [ "${ENABLE_RAG}" != "true" ] && [ "$(basename "$f")" = "rag-service.yaml" ]; then
+  base="$(basename "$f")"
+  if [ "${ENABLE_RAG}" != "true" ] && [ "${base}" = "rag-service.yaml" ]; then
     echo "Skipping rag-service (ENABLE_RAG=${ENABLE_RAG})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
+  if [ "${ENABLE_KEYCLOAK}" != "true" ] && { [ "${base}" = "keycloak.yaml" ] || [ "${base}" = "postgres.yaml" ]; }; then
+    echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
+    continue
+  fi
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
+
+# cronjobs (e.g. keycloak postgres backup) — only when the broker is enabled
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  for f in cronjobs/*.yaml; do
+    [ -e "$f" ] || continue
+    envsubst '${KEYCLOAK_BACKUP_BUCKET}' < "$f" | kubectl apply -f -
+  done
+fi
 
 echo ""
 echo "=== Forcing rollout restarts ==="
@@ -228,6 +327,9 @@ echo "=== Forcing rollout restarts ==="
 DEPLOYS="frontend results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"
+fi
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  DEPLOYS="${DEPLOYS} keycloak"
 fi
 for deploy in ${DEPLOYS}; do
   kubectl rollout restart deployment/"${deploy}" -n "${NAMESPACE}"

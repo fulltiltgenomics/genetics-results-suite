@@ -168,6 +168,11 @@ data:
           chunked_transfer_encoding off;
         }
 
+        # Keycloak identity broker login path (e.g. /auth/), injected by deploy.sh only when
+        # the broker is enabled (daly); empty otherwise. Served WITHOUT oauth2-proxy auth — it
+        # is the auth endpoint itself. Placed before "location /" so the prefix matches first.
+        ${KEYCLOAK_SERVER}
+
         # frontend
         location / {
           auth_request /oauth2/auth;

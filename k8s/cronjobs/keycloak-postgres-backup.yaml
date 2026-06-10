@@ -1,0 +1,58 @@
+# daily logical backup of the Keycloak Postgres to GCS. Auth to GCS is via Workload
+# Identity (the genetics-suite KSA -> GSA with objectAdmin on the backup bucket; the bucket
+# enforces retention with a lifecycle rule, see terraform). Restore: see docs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keycloak-postgres-backup
+  namespace: genetics
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: keycloak-postgres-backup
+        spec:
+          serviceAccountName: genetics-suite
+          restartPolicy: Never
+          containers:
+          - name: backup
+            image: google/cloud-sdk:slim
+            env:
+            - name: PGHOST
+              value: keycloak-postgres.genetics.svc.cluster.local
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-secrets
+                  key: db-user
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-secrets
+                  key: db-password
+            - name: BACKUP_BUCKET
+              value: "${KEYCLOAK_BACKUP_BUCKET}"
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null
+              ts="$(date -u +%Y%m%dT%H%M%SZ)"
+              pg_dump -d keycloak | gzip | \
+                gsutil cp - "gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
+              echo "backup uploaded: gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+              limits:
+                cpu: "500m"
+                memory: "256Mi"

@@ -60,13 +60,23 @@ output "snapshot_policy_name" {
 }
 
 output "oauth_email_domain" {
-  description = "Email domain allowed for OAuth2 login"
+  description = "Email domain(s) allowed for OAuth2 login (comma-separated)"
   value       = var.oauth_email_domain
+}
+
+output "oauth_allowed_emails" {
+  description = "Specific email addresses allowed in addition to the domains (comma-separated)"
+  value       = var.oauth_allowed_emails
 }
 
 output "config_profile" {
   description = "Data profile for results-api"
   value       = var.config_profile
+}
+
+output "keycloak_backup_bucket" {
+  description = "GCS bucket holding Keycloak Postgres backups"
+  value       = google_storage_bucket.keycloak_backups.name
 }
 
 output "app_name" {

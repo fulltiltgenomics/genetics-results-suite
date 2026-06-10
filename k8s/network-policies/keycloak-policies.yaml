@@ -1,0 +1,49 @@
+# NetworkPolicies for the Keycloak identity broker (profile-gated feature). These punch
+# through default-deny-ingress for the keycloak stack; harmless when the broker is off
+# (the selected pods simply don't exist). See docs/keycloak-apple-signin.md.
+---
+# keycloak-postgres: allow from keycloak and the daily backup cronjob
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-keycloak-postgres
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak-postgres
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: keycloak
+    - podSelector:
+        matchLabels:
+          app: keycloak-postgres-backup
+    ports:
+    - port: 5432
+  policyTypes:
+  - Ingress
+---
+# keycloak: allow from auth-gateway (public traffic proxied via the ingress) and oauth2-proxy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-keycloak
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    - podSelector:
+        matchLabels:
+          app: oauth2-proxy
+    ports:
+    - port: 8080
+  policyTypes:
+  - Ingress

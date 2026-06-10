@@ -17,8 +17,10 @@ spec:
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.14.3
         args:
-        - --provider=google
-        - --email-domain=${OAUTH_EMAIL_DOMAIN}
+        # provider is profile-driven (env OAUTH2_PROXY_PROVIDER below): "google" (direct, e.g.
+        # finngen) or "oidc" against the Keycloak broker for Google+Apple (e.g. daly).
+        # email domains come from OAUTH2_PROXY_EMAIL_DOMAINS (env, comma-separated) so several
+        # domains can be allowed; specific extra addresses go in the authenticated-emails file.
         - --authenticated-emails-file=/etc/oauth2-proxy/allowed-emails.txt
         - --http-address=0.0.0.0:4180
         - --reverse-proxy=true
@@ -31,6 +33,17 @@ spec:
         ports:
         - containerPort: 4180
         env:
+        - name: OAUTH2_PROXY_PROVIDER
+          value: "${OAUTH2_PROVIDER}"
+        # issuer is set only for the oidc provider (Keycloak); empty/ignored for google
+        - name: OAUTH2_PROXY_OIDC_ISSUER_URL
+          value: "${OIDC_ISSUER_URL}"
+        # on sign_out, end the Keycloak SSO session server-side so logout is complete (else the
+        # browser keeps the Keycloak session and silently re-authenticates). Empty for google.
+        - name: OAUTH2_PROXY_BACKEND_LOGOUT_URL
+          value: "${OIDC_BACKEND_LOGOUT_URL}"
+        - name: OAUTH2_PROXY_EMAIL_DOMAINS
+          value: "${OAUTH_EMAIL_DOMAIN}"
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
             secretKeyRef:
