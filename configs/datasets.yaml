@@ -583,6 +583,11 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "GP2 Parkinson's GWAS"
 
+  - pattern: "IIBDGC"
+    resource: "ibd_gwas"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "IIBDGC IBD/UC/CD pseudo credible sets (lowercase fallback would give 'iibdgc', not 'ibd_gwas')"
+
   # fallback: lowercase the dataset name
   - pattern: "*"
     resource: null
@@ -1305,6 +1310,7 @@ profiles:
         n_phenotypes: 3
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/ibd_gwas_pheno.json"
         metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "IBD"
             phenotype_string: "Inflammatory bowel disease"
@@ -2053,6 +2059,7 @@ profiles:
         n_phenotypes: 3
         metadata_file: "gs://daly-genetics-results/mapping_files/ibd_gwas_pheno.json"
         metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
         phenotypes:
           - phenotype_code: "IBD"
             phenotype_string: "Inflammatory bowel disease"
