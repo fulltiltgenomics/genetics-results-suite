@@ -15,6 +15,8 @@ ENV KC_HEALTH_ENABLED=true
 # bundled provider JARs: the Apple IdP extension and the email allow-list script authenticator
 # (keycloak/providers/email-allowlist-authenticator.jar). The latter needs the "scripts" feature.
 COPY providers/ /opt/keycloak/providers/
+# custom login theme (hides the username/password form; social-only sign-in)
+COPY themes/ /opt/keycloak/themes/
 RUN /opt/keycloak/bin/kc.sh build --features=scripts
 
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}

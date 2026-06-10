@@ -1,0 +1,10 @@
+/* genetics login theme — only Google/Apple federated sign-in is supported.
+   Hide the local username/password form (and registration) so the page shows just the
+   helper text + the social provider buttons. */
+#kc-form-login {
+    display: none !important;
+}
+#kc-registration-container,
+#kc-registration {
+    display: none !important;
+}
