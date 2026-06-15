@@ -8,15 +8,17 @@ set -euo pipefail
 #   TAVILY_API_KEY        - Tavily API key (optional)
 #   PERPLEXITY_API_KEY    - Perplexity API key (optional)
 #   MCP_API_KEY           - bearer token for MCP server auth (optional)
-#   COHERE_API_KEY        - Cohere API key for RAG service embeddings
+#   COHERE_API_KEY        - Cohere API key for RAG service embeddings (required only when ENABLE_RAG=true)
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (reused from the existing secret if not set, generated on first install)
 #   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
-#
-# oauth2-proxy secrets are created separately — see README.md
+#   OAUTH2_PROXY_CLIENT_ID     - oauth2-proxy OAuth client id (Google client id on finngen; Keycloak OIDC client id on daly). reused from the cluster if not set; required on first install
+#   OAUTH2_PROXY_CLIENT_SECRET - matching OAuth client secret (reused if not set; required on first install)
+#   OAUTH2_PROXY_COOKIE_SECRET - oauth2-proxy session cookie secret (reused from the cluster if not set, generated on first install — never rotated on re-run, so sessions survive)
 
 NAMESPACE="${NAMESPACE:-genetics}"
+ENABLE_RAG="${ENABLE_RAG:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
@@ -29,7 +31,10 @@ echo "Creating genetics-secrets in namespace ${NAMESPACE}..."
 
 # required
 : "${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}"
-: "${COHERE_API_KEY:?Set COHERE_API_KEY}"
+# cohere is only needed by rag-service; require it only when RAG is deployed
+if [ "${ENABLE_RAG}" = "true" ]; then
+  : "${COHERE_API_KEY:?Set COHERE_API_KEY (required when ENABLE_RAG=true)}"
+fi
 
 # reuse the internal API secret to avoid breaking service-to-service auth for
 # already-running pods: an explicit env value wins, otherwise reuse the value
@@ -48,7 +53,7 @@ kubectl create secret generic genetics-secrets \
   --from-literal=tavily-api-key="${TAVILY_API_KEY:-}" \
   --from-literal=perplexity-api-key="${PERPLEXITY_API_KEY:-}" \
   --from-literal=mcp-api-key="${MCP_API_KEY:-}" \
-  --from-literal=cohere-api-key="${COHERE_API_KEY}" \
+  --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
@@ -56,6 +61,31 @@ kubectl create secret generic genetics-secrets \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "genetics-secrets created/updated."
+
+# oauth2-proxy-secrets: OAuth client creds + session cookie secret, consumed only by the
+# oauth2-proxy deployment (both profiles). client-id/client-secret are the Google OAuth client
+# on finngen, or the Keycloak OIDC client on daly. As with the other secrets, an explicit env
+# value wins, else we reuse what's already in the cluster. The cookie-secret is reused-or-
+# generated (NEVER regenerated on a re-run) — rotating it would invalidate every active session.
+reuse_o2p() {
+  kubectl get secret oauth2-proxy-secrets --namespace="${NAMESPACE}" \
+    -o jsonpath="{.data.$1}" 2>/dev/null | base64 -d || true
+}
+OAUTH2_PROXY_CLIENT_ID="${OAUTH2_PROXY_CLIENT_ID:-$(reuse_o2p client-id)}"
+OAUTH2_PROXY_CLIENT_SECRET="${OAUTH2_PROXY_CLIENT_SECRET:-$(reuse_o2p client-secret)}"
+: "${OAUTH2_PROXY_CLIENT_ID:?Set OAUTH2_PROXY_CLIENT_ID (OAuth client id) — required on first install}"
+: "${OAUTH2_PROXY_CLIENT_SECRET:?Set OAUTH2_PROXY_CLIENT_SECRET — required on first install}"
+OAUTH2_PROXY_COOKIE_SECRET="${OAUTH2_PROXY_COOKIE_SECRET:-$(reuse_o2p cookie-secret)}"
+OAUTH2_PROXY_COOKIE_SECRET="${OAUTH2_PROXY_COOKIE_SECRET:-$(openssl rand -base64 32 | head -c 32)}"
+
+kubectl create secret generic oauth2-proxy-secrets \
+  --namespace="${NAMESPACE}" \
+  --from-literal=client-id="${OAUTH2_PROXY_CLIENT_ID}" \
+  --from-literal=client-secret="${OAUTH2_PROXY_CLIENT_SECRET}" \
+  --from-literal=cookie-secret="${OAUTH2_PROXY_COOKIE_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+echo "oauth2-proxy-secrets created/updated."
 
 # keycloak-secrets: Postgres + Keycloak bootstrap admin credentials. Only for deployments
 # that run the broker (daly). Passwords are reused from the cluster if already present (so the

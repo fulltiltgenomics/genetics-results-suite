@@ -140,26 +140,25 @@ Create Google OAuth credentials for oauth2-proxy:
 
 ### 3. Create secrets
 
-API keys for the chat backend:
+`create-secrets.sh` creates both `genetics-secrets` (chat-backend API keys) and
+`oauth2-proxy-secrets` (the OAuth client creds + session cookie secret). Set the relevant
+env vars, then run it once:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
-export COHERE_API_KEY="..."              # optional, for rag-service embeddings
+export COHERE_API_KEY="..."              # optional, for rag-service embeddings (required when ENABLE_RAG=true)
 export MCP_API_KEY="$(openssl rand -hex 32)"  # optional for bearer token MCP and API access, comma-separated for multiple keys
 # INTERNAL_API_SECRET for results API is auto-generated if not set
 
+# oauth2-proxy credentials (YOUR_CLIENT_ID/SECRET from the OAuth client created in step 2).
+# only needed on first install — afterwards they're reused from the cluster if unset.
+export OAUTH2_PROXY_CLIENT_ID='YOUR_CLIENT_ID'
+export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
+# OAUTH2_PROXY_COOKIE_SECRET is generated on first install and reused thereafter (never rotated).
+
 ./scripts/create-secrets.sh
-```
-
-oauth2-proxy credentials (get YOUR_CLIENT_ID and YOUR_CLIENT_SECRET from the credentials created in step 2):
-
-```bash
-kubectl create secret generic oauth2-proxy-secrets -n genetics \
-  --from-literal=client-id='YOUR_CLIENT_ID' \
-  --from-literal=client-secret='YOUR_CLIENT_SECRET' \
-  --from-literal=cookie-secret="$(openssl rand -base64 32 | head -c 32)"
 ```
 
 ### 4. Build and push Docker images
