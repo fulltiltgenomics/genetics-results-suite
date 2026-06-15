@@ -603,15 +603,15 @@ profiles:
       # --- GWAS ---
       finngen_gwas:
         resource: finngen
-        version: "R13"
+        version: "R14"
         description: >-
-          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
-          quantitative traits in 500,186 Finnish biobank participants.
+          FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 499,755 Finnish biobank participants.
         author: "FinnGen Consortium"
-        publication_date: "2025-09-12"
+        publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
 
       finngen_kanta:
@@ -745,17 +745,33 @@ profiles:
       # --- QTL ---
       finngen_pqtl:
         resource: finngen
-        version: "batch1-4"
+        version: "3K"
         description: >-
-          FinnGen Olink pQTL. Plasma protein levels measured by Olink Explore 3072 (batches 1-3)
-          and Olink Explore HT (batch 4). Unrelated samples were used in analysis.
-          Sample size is 3,561. The samples were collected from blood donors who were heterozygous
-          or homozygous carriers of specific genetic variants of interest.
+          FinnGen Olink Explore 3072 (3K) pQTL. Plasma protein levels measured primarily by
+          Olink Explore 3072 (batches 1-3, meta-analysed with Olink Explore HT batch 4).
+          Unrelated samples were used in analysis. Sample size is 3,561. The samples were
+          collected from blood donors who were heterozygous or homozygous carriers of specific
+          genetic variants of interest.
         author: "FinnGen Consortium"
-        publication_date: "2025-01-01"
+        publication_date: "2025-03-20"
         data_type: pqtl
         trait_type: quantitative
         n_samples: 3561
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_pqtl_5k:
+        resource: finngen
+        version: "5K"
+        description: >-
+          FinnGen Olink Explore HT (5K) pQTL. FG3 Cross-Batch Harmonised aggregate: plasma
+          protein levels for 5,416 proteins measured by the Olink Explore HT panel in 4,118
+          unrelated FinnGen participants (REGENIE association on FinnGen R13 imputed genotypes).
+        author: "FinnGen Consortium"
+        publication_date: "2026-05-04"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 4118
         metadata_file: null
         metadata_harmonizer: null
 
@@ -857,18 +873,18 @@ profiles:
       # --- collection ---
       eqtl_catalogue:
         resource: eqtl_catalogue
-        version: "R7"
+        version: "R8"
         description: >-
-          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies across
+          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
           identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
           results. Full summary stats are not available for the eQTL Catalogue.
         author: "eQTL Catalogue"
-        publication_date: "2024-06-01"
+        publication_date: "2026-01-01"
         data_type: mixed
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL", "pQTL"]
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r8_dataset_metadata.tsv"
         metadata_harmonizer: eqtl_catalogue
         collection: true
         subdataset_id_field: phenotype_code
@@ -1352,15 +1368,15 @@ profiles:
       # --- GWAS ---
       finngen_gwas:
         resource: finngen
-        version: "R13"
+        version: "R14"
         description: >-
-          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
-          quantitative traits in 500,186 Finnish biobank participants.
+          FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 499,755 Finnish biobank participants.
         author: "FinnGen Consortium"
-        publication_date: "2025-09-12"
+        publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
-        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
 
       finngen_kanta:
@@ -1494,17 +1510,33 @@ profiles:
       # --- QTL ---
       finngen_pqtl:
         resource: finngen
-        version: "batch1-4"
+        version: "3K"
         description: >-
-          FinnGen Olink pQTL. Plasma protein levels measured by Olink Explore 3072 (batches 1-3)
-          and Olink Explore HT (batch 4). Unrelated samples were used in analysis.
-          Sample size is 3,561. The samples were collected from blood donors who were heterozygous
-          or homozygous carriers of specific genetic variants of interest.
+          FinnGen Olink Explore 3072 (3K) pQTL. Plasma protein levels measured primarily by
+          Olink Explore 3072 (batches 1-3, meta-analysed with Olink Explore HT batch 4).
+          Unrelated samples were used in analysis. Sample size is 3,561. The samples were
+          collected from blood donors who were heterozygous or homozygous carriers of specific
+          genetic variants of interest.
         author: "FinnGen Consortium"
-        publication_date: "2025-01-01"
+        publication_date: "2025-03-20"
         data_type: pqtl
         trait_type: quantitative
         n_samples: 3561
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_pqtl_5k:
+        resource: finngen
+        version: "5K"
+        description: >-
+          FinnGen Olink Explore HT (5K) pQTL. FG3 Cross-Batch Harmonised aggregate: plasma
+          protein levels for 5,416 proteins measured by the Olink Explore HT panel in 4,118
+          unrelated FinnGen participants (REGENIE association on FinnGen R13 imputed genotypes).
+        author: "FinnGen Consortium"
+        publication_date: "2026-05-04"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 4118
         metadata_file: null
         metadata_harmonizer: null
 
@@ -1606,18 +1638,18 @@ profiles:
       # --- collection ---
       eqtl_catalogue:
         resource: eqtl_catalogue
-        version: "R7"
+        version: "R8"
         description: >-
-          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies across
+          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
           identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
           results. Full summary stats are not available for the eQTL Catalogue.
         author: "eQTL Catalogue"
-        publication_date: "2024-06-01"
+        publication_date: "2026-01-01"
         data_type: mixed
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL", "pQTL"]
-        metadata_file: "gs://daly-genetics-results/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_file: "gs://daly-genetics-results/mapping_files/eqtl_catalogue_r8_dataset_metadata.tsv"
         metadata_harmonizer: eqtl_catalogue
         collection: true
         subdataset_id_field: phenotype_code
