@@ -616,7 +616,7 @@ profiles:
 
       finngen_kanta:
         resource: finngen
-        version: "2025-03"
+        version: "R14"
         description: >-
           FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
           standard medical care throughout Finland (covering public and private health care providers)
@@ -625,17 +625,17 @@ profiles:
           as well as a number of less common laboratory results. Laboratory data are available for more
           than 400,000 FinnGen participants.
           The first Kanta laboratory results are from 2014, with comprehensive results available from 2018 onwards.
-          Included in the results are all available labs with >=1000 individuals (n=383).
+          Included in the results are all available labs with >=1000 individuals (n=600).
           FinnGen's experts carried out extensive quality control of the laboratory values before introducing
           the new data into FinnGen.
           In addition, the data have been harmonised and adapted to international standards (OMOP) to facilitate
           the straightforward use of the data in research.
           GWAS phenotypes are the median of lab values for an individual (quantitative labs) or ever positive (binary labs).
         author: "FinnGen Consortium"
-        publication_date: "2025-03-10"
+        publication_date: "2026-05-29"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/Kanta_metadata_202503.tsv"
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_kanta_pheno_202605.json"
         metadata_harmonizer: finngen_kanta
 
       finngen_drugs:
@@ -1381,7 +1381,7 @@ profiles:
 
       finngen_kanta:
         resource: finngen
-        version: "2025-03"
+        version: "R14"
         description: >-
           FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
           standard medical care throughout Finland (covering public and private health care providers)
@@ -1390,17 +1390,17 @@ profiles:
           as well as a number of less common laboratory results. Laboratory data are available for more
           than 400,000 FinnGen participants.
           The first Kanta laboratory results are from 2014, with comprehensive results available from 2018 onwards.
-          Included in the results are all available labs with >=1000 individuals (n=383).
+          Included in the results are all available labs with >=1000 individuals (n=600).
           FinnGen's experts carried out extensive quality control of the laboratory values before introducing
           the new data into FinnGen.
           In addition, the data have been harmonised and adapted to international standards (OMOP) to facilitate
           the straightforward use of the data in research.
           GWAS phenotypes are the median of lab values for an individual (quantitative labs) or ever positive (binary labs).
         author: "FinnGen Consortium"
-        publication_date: "2025-03-10"
+        publication_date: "2026-05-29"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://daly-genetics-results/mapping_files/Kanta_metadata_202503.tsv"
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_kanta_pheno_202605.json"
         metadata_harmonizer: finngen_kanta
 
       finngen_drugs:
