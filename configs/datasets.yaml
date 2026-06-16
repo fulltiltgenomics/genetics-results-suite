@@ -13,7 +13,7 @@ resources:
 
   finngen_ukbb:
     label: "FinnGen+UKB"
-    description: "FinnGen + UK Biobank GWAS meta-analysis"
+    description: "FinnGen + UK Biobank GWAS and pQTL meta-analysis"
     aliases: ["finngen ukbb", "finngen uk biobank"]
 
   finngen_mvp_ukbb:
@@ -772,6 +772,23 @@ profiles:
         data_type: pqtl
         trait_type: quantitative
         n_samples: 4118
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_ukbb_pqtl:
+        resource: finngen_ukbb
+        version: "v1"
+        description: >-
+          Pan-asset three-way inverse-variance-weighted pQTL meta-analysis of FG2-3K (Olink
+          Explore 3072 / 3K, N=1,732) + UKB-PPP (Olink Explore 3072 / 3K, N=42,853) + FG3
+          Cross-Batch (Olink Explore HT / 5K, N=4,118). 2,831 proteins common to all three
+          platforms; max combined N=48,703. GRCh38, dbSNP b156. Summary statistics only
+          (no fine-mapping / credible sets; per-protein plots and QC workbook forthcoming).
+        author: "FinnGen Consortium / UKB-PPP"
+        publication_date: "2026-06"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 48703
         metadata_file: null
         metadata_harmonizer: null
 
@@ -1537,6 +1554,23 @@ profiles:
         data_type: pqtl
         trait_type: quantitative
         n_samples: 4118
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_ukbb_pqtl:
+        resource: finngen_ukbb
+        version: "v1"
+        description: >-
+          Pan-asset three-way inverse-variance-weighted pQTL meta-analysis of FG2-3K (Olink
+          Explore 3072 / 3K, N=1,732) + UKB-PPP (Olink Explore 3072 / 3K, N=42,853) + FG3
+          Cross-Batch (Olink Explore HT / 5K, N=4,118). 2,831 proteins common to all three
+          platforms; max combined N=48,703. GRCh38, dbSNP b156. Summary statistics only
+          (no fine-mapping / credible sets; per-protein plots and QC workbook forthcoming).
+        author: "FinnGen Consortium / UKB-PPP"
+        publication_date: "2026-06"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 48703
         metadata_file: null
         metadata_harmonizer: null
 
