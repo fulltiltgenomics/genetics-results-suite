@@ -936,6 +936,21 @@ profiles:
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
 
+      finngen_kanta_r12:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
+          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not yet
+          been recomputed against the current R14 Kanta release; R14 is the current Kanta release
+          for all other analyses.
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_kanta_pheno_202503.json"
+        metadata_harmonizer: finngen_kanta
+
       finngen_nmr:
         resource: finngen
         version: "NA"
@@ -1718,6 +1733,21 @@ profiles:
         trait_type: binary
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
+
+      finngen_kanta_r12:
+        resource: finngen
+        version: "R12"
+        description: >-
+          FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
+          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not yet
+          been recomputed against the current R14 Kanta release; R14 is the current Kanta release
+          for all other analyses.
+        author: "FinnGen Consortium"
+        publication_date: "2025-03-10"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_kanta_pheno_202503.json"
+        metadata_harmonizer: finngen_kanta
 
       finngen_nmr:
         resource: finngen
