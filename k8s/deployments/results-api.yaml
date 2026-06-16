@@ -45,17 +45,25 @@ spec:
           mountPath: /app/configs/datasets.yaml
           subPath: datasets.yaml
           readOnly: true
+        # /healthz only returns 200 after lifespan startup warming completes, so a
+        # 200 means the pod is warm. The startupProbe gives warming time before
+        # liveness/readiness kick in; readiness then flips the moment warming
+        # finishes (no fixed initial-delay floor).
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 4000
+          periodSeconds: 5
+          failureThreshold: 60      # allow up to ~5 min for the first warm start
         readinessProbe:
           httpGet:
             path: /healthz
             port: 4000
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          periodSeconds: 5
         livenessProbe:
           httpGet:
             path: /healthz
             port: 4000
-          initialDelaySeconds: 60
           periodSeconds: 30
         resources:
           requests:
