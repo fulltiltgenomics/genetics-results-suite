@@ -926,8 +926,9 @@ profiles:
         resource: finngen
         version: "R12"
         description: >-
-          FinnGen R12 core GWAS. Used as colocalization partner for certain datasets;
-          R13 is the current release for other analyses.
+          FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
+          caQTL and eQTL, whose colocalizations have not yet been recomputed against the
+          current R14 release; R14 is the current release for all other analyses.
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
@@ -1708,8 +1709,9 @@ profiles:
         resource: finngen
         version: "R12"
         description: >-
-          FinnGen R12 core GWAS. Used as colocalization partner for certain datasets;
-          R13 is the current release for other analyses.
+          FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
+          caQTL and eQTL, whose colocalizations have not yet been recomputed against the
+          current R14 release; R14 is the current release for all other analyses.
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
