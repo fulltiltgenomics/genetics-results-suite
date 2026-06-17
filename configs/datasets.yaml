@@ -890,7 +890,7 @@ profiles:
       # --- collection ---
       eqtl_catalogue:
         resource: eqtl_catalogue
-        version: "R8"
+        version: "R8_pre"
         description: >-
           eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
@@ -1101,6 +1101,7 @@ profiles:
         n_samples: 238546
         n_cases: 87959
         n_controls: 150587
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1137,6 +1138,7 @@ profiles:
         n_samples: 238546
         n_cases: 87959
         n_controls: 150587
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1159,6 +1161,7 @@ profiles:
         n_samples: 232536
         n_cases: 64435
         n_controls: 168101
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1285,6 +1288,7 @@ profiles:
         n_samples: 161405
         n_cases: 67390
         n_controls: 94015
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
@@ -1310,6 +1314,7 @@ profiles:
         n_samples: 935658
         n_cases: 67948
         n_controls: 867710
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
@@ -1335,6 +1340,7 @@ profiles:
         n_samples: 1809941
         n_cases: 63555
         n_controls: 1746386
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
@@ -1688,7 +1694,7 @@ profiles:
       # --- collection ---
       eqtl_catalogue:
         resource: eqtl_catalogue
-        version: "R8"
+        version: "R8_pre"
         description: >-
           eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
@@ -1899,6 +1905,7 @@ profiles:
         n_samples: 238546
         n_cases: 87959
         n_controls: 150587
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1935,6 +1942,7 @@ profiles:
         n_samples: 238546
         n_cases: 87959
         n_controls: 150587
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -1957,6 +1965,7 @@ profiles:
         n_samples: 232536
         n_cases: 64435
         n_controls: 168101
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
@@ -2083,6 +2092,7 @@ profiles:
         n_samples: 161405
         n_cases: 67390
         n_controls: 94015
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
@@ -2108,6 +2118,7 @@ profiles:
         n_samples: 935658
         n_cases: 67948
         n_controls: 867710
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
@@ -2133,6 +2144,7 @@ profiles:
         n_samples: 1809941
         n_cases: 63555
         n_controls: 1746386
+        n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         pseudo_credible_sets: true
