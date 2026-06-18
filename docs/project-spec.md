@@ -41,6 +41,21 @@ Internal only (ClusterIP + NetworkPolicy):
 | rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only) |
 | monitor | — (scripts/monitor/) | — | CronJob: health checks, BQ summary, log alerts → Slack |
 
+### results-api deployment tuning
+
+`k8s/deployments/results-api.yaml` sets two env vars that bound the resources its
+range-query path (in-process bgzf/tabix reads over GCS) consumes; both have safe
+in-code defaults, so they are tuning knobs, not requirements:
+
+| Env var | Value (manifest) | Default in code | Purpose |
+|---------|------------------|-----------------|---------|
+| `TABIX_FILTER_WORKERS` | `2` | `min(4, cpu-1)` | Size of the decompress/filter `ProcessPoolExecutor`. The default reads `os.cpu_count()` (host cores, **not** the cgroup CPU quota), so on a large node an unbounded count would spawn many idle, FD-holding workers. Set to match the container's CPU limit (currently `2`). |
+| `GCS_MAX_CONNECTIONS` | `128` | `128` | Process-wide cap on concurrent GCS range-fetch sockets. A single all-resources variant batch fans out across ~12-15 data files; without a cap the simultaneously-open sockets exhausted the file-descriptor limit ("Too many open files"). Lower if the pod's `NOFILE` limit is tight, raise for more fetch parallelism. |
+
+The container entrypoint (`genetics-results-api`'s `start.sh`) also raises `ulimit -n`
+to 65536 as defense-in-depth. Keep `TABIX_FILTER_WORKERS` in step with the deployment's
+CPU `limits` if you change them.
+
 ## Project structure
 
 ```
