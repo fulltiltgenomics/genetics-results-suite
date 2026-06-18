@@ -27,6 +27,13 @@ spec:
           value: "prod"
         - name: CONFIG_PROFILE
           value: "${CONFIG_PROFILE}"
+        # match the CPU limit below: the decompress/filter process pool sizes off
+        # os.cpu_count() (host cores, not the cgroup quota) unless told otherwise
+        - name: TABIX_FILTER_WORKERS
+          value: "2"
+        # global cap on concurrent GCS range-fetch sockets (bounds open FDs)
+        - name: GCS_MAX_CONNECTIONS
+          value: "128"
         - name: REQUIRE_AUTH
           value: "true"
         - name: INTERNAL_API_SECRET
