@@ -293,10 +293,9 @@ tables:
       Single-variant exome association results from multiple resources with different
       significance thresholds. Genebass contains variants filtered to p < 1e-4.
       IBD exome (ibd_exome_2026) contains variants filtered to mlog10p > 4.
-      SCHEMA2 contains exome variant results for schizophrenia filtered to mlog10p > 4.
 
     columns:
-      dataset: "Study name (e.g. genebass, IBD_exome, SCHEMA2)"
+      dataset: "Study name (e.g. genebass, IBD_exome)"
       chr: "Chromosome number, chromosome X is 23"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
@@ -1087,30 +1086,6 @@ profiles:
             n_controls: 478363
             n_samples: 522494
 
-      schema_exome:
-        resource: schema2
-        version: "v2"
-        description: >-
-          SCHEMA consortium exome variant-level results. Single-variant rare variant
-          association results for schizophrenia from exome sequencing of 87,959 cases
-          and 150,587 controls. Results filtered to mlog10p > 4.
-        author: "SCHEMA Consortium"
-        publication_date: "NA"
-        data_type: exome
-        trait_type: binary
-        n_samples: 238546
-        n_cases: 87959
-        n_controls: 150587
-        n_phenotypes: 1
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
-          - phenotype_code: "SCZ"
-            phenotype_string: "Schizophrenia"
-            n_cases: 87959
-            n_controls: 150587
-            n_samples: 238546
-
       genebass_gene_based:
         resource: genebass
         version: "NA"
@@ -1890,30 +1865,6 @@ profiles:
             n_cases: 44131
             n_controls: 478363
             n_samples: 522494
-
-      schema_exome:
-        resource: schema2
-        version: "v2"
-        description: >-
-          SCHEMA consortium exome variant-level results. Single-variant rare variant
-          association results for schizophrenia from exome sequencing of 87,959 cases
-          and 150,587 controls. Results filtered to mlog10p > 4.
-        author: "SCHEMA Consortium"
-        publication_date: "NA"
-        data_type: exome
-        trait_type: binary
-        n_samples: 238546
-        n_cases: 87959
-        n_controls: 150587
-        n_phenotypes: 1
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
-          - phenotype_code: "SCZ"
-            phenotype_string: "Schizophrenia"
-            n_cases: 87959
-            n_controls: 150587
-            n_samples: 238546
 
       genebass_gene_based:
         resource: genebass
