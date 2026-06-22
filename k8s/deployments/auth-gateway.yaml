@@ -104,9 +104,12 @@ data:
           proxy_send_timeout 300s;
         }
 
-        # results API
+        # results API (browser oauth2 traffic goes through the BFF, which assembles /v1/results and
+        # passes everything else through to results-api; the BFF forwards the user header below and
+        # authenticates to the API with the internal secret)
         location /api/ {
-          # bearer token requests bypass oauth2, backend handles auth
+          # bearer token requests bypass oauth2 AND the BFF — programmatic clients (MCP, scripts) hit
+          # the raw results-api directly via @api_bearer.
           if ($http_authorization ~* "^Bearer ") {
             error_page 418 = @api_bearer;
             return 418;
@@ -118,7 +121,7 @@ data:
           proxy_set_header X-Internal-MCP-Call "";
           error_page 401 = @oauth2_login;
 
-          proxy_pass http://results-api.genetics.svc.cluster.local:4000;
+          proxy_pass http://bff.genetics.svc.cluster.local:5000;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

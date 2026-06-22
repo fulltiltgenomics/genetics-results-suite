@@ -1,0 +1,67 @@
+# BFF (backend-for-frontend) for the genetics-results-browser refactor: assembles POST /v1/results
+# from the genetics-results-api fan-out (credible sets + variant annotation + gnomAD + nearest genes +
+# datasets, plus cis/trans + eQTL-Catalogue enrichment) and passes every other /api/* call through to
+# the API. The auth-gateway routes the browser's oauth2 /api/ traffic here; this service then calls
+# results-api with the shared internal secret (REQUIRE_AUTH on the API).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bff
+  namespace: genetics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bff
+  template:
+    metadata:
+      labels:
+        app: bff
+    spec:
+      containers:
+      - name: bff
+        image: ${REGISTRY}/genetics-results-browser-bff:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: BFF_PORT
+          value: "5000"
+        # upstream API base already includes the /api segment (matches the dev contract)
+        - name: GENETICS_API_URL
+          value: "http://results-api.genetics.svc.cluster.local:4000/api"
+        # shared internal secret -> sent as Authorization: Bearer on the BFF's calls to results-api
+        - name: GENETICS_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: internal-api-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 5000
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 5000
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bff
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5000
+    targetPort: 5000
+  selector:
+    app: bff

@@ -25,6 +25,22 @@ spec:
   policyTypes:
   - Ingress
 ---
+# bff: allow on 5000 (auth-gateway forwards browser /api/ traffic here; also kubelet health probes)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-bff
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: bff
+  ingress:
+  - ports:
+    - port: 5000
+  policyTypes:
+  - Ingress
+---
 # results-api: allow from load balancer, chat-backend, and mcp-server
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
