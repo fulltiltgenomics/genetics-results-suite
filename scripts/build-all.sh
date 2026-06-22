@@ -60,6 +60,10 @@ TAG=$(tag_for "${WORK_DIR}/genetics-results-browser")
 build_and_push genetics-results-browser "${WORK_DIR}/genetics-results-browser" "${TAG}" \
   --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}"
 
+# BFF (backend-for-frontend) — same repo as the frontend, separate Dockerfile, shares the frontend tag
+build_and_push genetics-results-browser-bff "${WORK_DIR}/genetics-results-browser" "${TAG}" \
+  -f "${WORK_DIR}/genetics-results-browser/bff/Dockerfile"
+
 # results API
 TAG=$(tag_for "${WORK_DIR}/genetics-results-api")
 build_and_push genetics-results-api "${WORK_DIR}/genetics-results-api" "${TAG}" \
