@@ -324,7 +324,7 @@ echo ""
 echo "=== Forcing rollout restarts ==="
 # Always restart so pods pick up: (a) freshly-built :latest images,
 # (b) ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload).
-DEPLOYS="frontend results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
+DEPLOYS="frontend bff results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"
 fi
