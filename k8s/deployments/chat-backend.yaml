@@ -67,6 +67,10 @@ spec:
           value: "/data/chat_history.db"
         - name: ATTACHMENT_STORAGE_PATH
           value: "/data/attachments"
+        - name: MAX_MESSAGE_CHARS
+          value: "50000"
+        - name: MAX_ATTACHMENTS_PER_MESSAGE
+          value: "10"
         - name: EXTERNAL_MCP_SERVERS
           valueFrom:
             secretKeyRef:
