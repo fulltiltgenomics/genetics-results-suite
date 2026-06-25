@@ -208,3 +208,30 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
 - **Manual monitor run**: `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
+
+### Nightly conversation analysis CronJob
+
+`k8s/deployments/analyze-conversations-cronjob.yaml` is a CronJob (namespace `genetics`,
+schedule `30 2 * * *` — 02:30 daily, a low-traffic window) that keeps every conversation's
+analysis up to date. It reuses the existing chat-backend image (`${REGISTRY}/genetics-mcp-server:latest`)
+and runs `python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db`.
+The analyzer is staleness-based: it only (re)analyzes sessions that are missing, have new
+messages (`updated_at > analyzed_at`), or were analyzed by an older `ANALYZER_VERSION`. Results
+are written into the `conversation_analysis`/`conversation_issue` tables in `chat_history.db`,
+which lives on the daily-snapshot-backed `chat-data` PVC.
+
+- **Storage / RWO co-scheduling**: the job mounts the same `chat-data` PVC at `/data` as
+  chat-backend so it reads/writes the same `chat_history.db`. Because that PVC is `ReadWriteOnce`,
+  the CronJob uses a `podAffinity requiredDuringSchedulingIgnoredDuringExecution` rule
+  (`labelSelector app: chat-backend`, `topologyKey kubernetes.io/hostname`) to co-schedule on the
+  same node as chat-backend so it can attach the volume.
+- **Concurrency / scheduling**: `concurrencyPolicy: Forbid` (never overlap nightly runs),
+  `startingDeadlineSeconds: 3600`, `restartPolicy: OnFailure`, `backoffLimit: 1`,
+  `successfulJobsHistoryLimit/failedJobsHistoryLimit: 3`. Resources are modest (the work is
+  LLM-bound, mostly waiting on the Anthropic API).
+- **Secret**: `ANTHROPIC_API_KEY` from `genetics-secrets` (key `anthropic-api-key`), the same
+  secret/key chat-backend uses.
+- **Deploy**: picked up automatically by `deploy.sh`'s `deployments/*.yaml` loop (`REGISTRY`
+  envsubst + `:latest`→tag rewrite); no script change needed.
+- **Manual force-reanalyze** (rerun everything from scratch, e.g. after bumping `ANALYZER_VERSION`):
+  `kubectl -n genetics create job analyze-conversations-force-$(date +%Y%m%d) --from=cronjob/analyze-conversations -- python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db --force`
