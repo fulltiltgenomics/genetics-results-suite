@@ -1,0 +1,71 @@
+# Nightly conversation analysis. Reuses the chat-backend's genetics-mcp-server image to run
+# analyze_conversations against the live chat_history.db on the chat-data PVC, keeping every
+# conversation's analysis up to date (staleness-based: only missing/continued/version-bumped
+# sessions are reanalyzed; --force is reserved for manual runs after analysis-code changes).
+#
+# Manual force-reanalyze (rerun everything from scratch, e.g. after bumping ANALYZER_VERSION):
+#   kubectl -n genetics create job analyze-conversations-force-$(date +%Y%m%d) \
+#     --from=cronjob/analyze-conversations -- \
+#     python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db --force
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: analyze-conversations
+  namespace: genetics
+spec:
+  # 02:30 daily — low-traffic window, after the daily chat-data disk snapshot window
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid          # never overlap nightly runs (RWO PVC + shared db)
+  startingDeadlineSeconds: 3600      # if a run is missed (e.g. node churn), still start within 1h
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: analyze-conversations
+        spec:
+          serviceAccountName: genetics-suite
+          # the chat-data PVC is ReadWriteOnce, so this job must land on the same node as
+          # chat-backend (which holds the mount) to be able to attach the volume.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    app: chat-backend
+                topologyKey: kubernetes.io/hostname
+          restartPolicy: OnFailure
+          containers:
+          - name: analyze-conversations
+            image: ${REGISTRY}/genetics-mcp-server:latest
+            command:
+            - python
+            - -m
+            - genetics_mcp_server.scripts.analyze_conversations
+            - --db
+            - /data/chat_history.db
+            env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: genetics-secrets
+                  key: anthropic-api-key
+            volumeMounts:
+            - name: chat-data
+              mountPath: /data
+            # LLM-bound: the job spends most of its wall time waiting on the Anthropic API,
+            # so modest CPU is enough; memory covers loading the conversations into polars.
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "512Mi"
+              limits:
+                cpu: "500m"
+                memory: "1Gi"
+          volumes:
+          - name: chat-data
+            persistentVolumeClaim:
+              claimName: chat-data
