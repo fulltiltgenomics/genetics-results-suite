@@ -209,16 +209,47 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
 - **Manual monitor run**: `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
 
-### Nightly conversation analysis CronJob
+## Conversation analysis pipeline
+
+The chat backend's conversations are scored for topic, quality and disposition by an LLM-based
+analyzer (`analyze_conversations`) whose results are cached in SQLite, refreshed nightly in the
+cluster, surfaced to admins in the frontend, and backed up for free alongside the conversations
+themselves. The pieces span three repos:
+
+| Piece | Repo | Where |
+|-------|------|-------|
+| Analyzer + SQLite cache + shared time-series aggregation + admin API | `../genetics-mcp-server` | `scripts/analyze_conversations.py`, `scripts/analysis_timeseries.py`, `db/chat_history_db.py`, `routers/admin.py` |
+| Nightly CronJob (this repo) | `genetics-results-suite` | `k8s/deployments/analyze-conversations-cronjob.yaml` |
+| Admin UI (Conversations columns + Quality plots) | `../genetics-results-browser` | `src/features/admin/AdminPage.tsx`, `adminApi.ts` |
+
+### SQLite analysis cache
+
+Analysis results persist in two tables inside the same `chat_history.db` SQLite database that
+holds the conversations (`conversation_analysis`, keyed by `session_id`, plus a normalized
+`conversation_issue` table so issue-category filtering and plots are plain SQL). Storing the
+cache in the live DB rather than flat files means it is **persistent and backed up for free**:
+`chat_history.db` lives on the `chat-data` PVC, which the existing daily GCE disk snapshot
+covers (`terraform/backups.tf`, `google_compute_resource_policy.chat_data_snapshots`, 03:00
+daily, `snapshot_retention_days` retention). A restore of that snapshot therefore brings back
+the conversations **and** their analysis together, since they share one database file. The
+analyzer keeps its write transactions short so the nightly run does not block live chat writes.
+
+The human-readable analysis report stays a flat `.md` file; `metrics.json` and the PNG plots
+(`plot_conversation_scores.py`) are local-dev outputs only.
+
+### Nightly CronJob
 
 `k8s/deployments/analyze-conversations-cronjob.yaml` is a CronJob (namespace `genetics`,
-schedule `30 2 * * *` — 02:30 daily, a low-traffic window) that keeps every conversation's
-analysis up to date. It reuses the existing chat-backend image (`${REGISTRY}/genetics-mcp-server:latest`)
-and runs `python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db`.
+schedule `30 2 * * *` — 02:30 daily, a low-traffic window, and just before the 03:00 disk
+snapshot so each night's snapshot captures that night's fresh analysis) that keeps every
+conversation's analysis up to date. It reuses the existing chat-backend image
+(`${REGISTRY}/genetics-mcp-server:latest`) and runs
+`python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db`.
 The analyzer is staleness-based: it only (re)analyzes sessions that are missing, have new
-messages (`updated_at > analyzed_at`), or were analyzed by an older `ANALYZER_VERSION`. Results
-are written into the `conversation_analysis`/`conversation_issue` tables in `chat_history.db`,
-which lives on the daily-snapshot-backed `chat-data` PVC.
+messages (continued conversations, `updated_at > analyzed_at`), or were analyzed by an older
+`ANALYZER_VERSION` — unchanged conversations are skipped, so the nightly run only spends LLM
+budget on what actually changed. Results are written into the `conversation_analysis`/
+`conversation_issue` tables in `chat_history.db`.
 
 - **Storage / RWO co-scheduling**: the job mounts the same `chat-data` PVC at `/data` as
   chat-backend so it reads/writes the same `chat_history.db`. Because that PVC is `ReadWriteOnce`,
@@ -235,3 +266,43 @@ which lives on the daily-snapshot-backed `chat-data` PVC.
   envsubst + `:latest`→tag rewrite); no script change needed.
 - **Manual force-reanalyze** (rerun everything from scratch, e.g. after bumping `ANALYZER_VERSION`):
   `kubectl -n genetics create job analyze-conversations-force-$(date +%Y%m%d) --from=cronjob/analyze-conversations -- python -m genetics_mcp_server.scripts.analyze_conversations --db /data/chat_history.db --force`
+
+### Local / dev usage
+
+The analyzer still runs standalone for development (in `../genetics-mcp-server`):
+`python -m genetics_mcp_server.scripts.analyze_conversations --db <path>/chat_history.db --output-dir <dir>`.
+`--db` points at any copy of the SQLite DB and `--output-dir` collects the local-dev artifacts
+(`metrics.json` and, via `plot_conversation_scores.py`, the PNG plots); the analysis report
+`.md` is also written there. The same SQLite cache and staleness rules apply locally, so a dev
+run only re-analyzes changed sessions unless `--force` is passed. Bumping the `ANALYZER_VERSION`
+constant in `analyze_conversations.py` invalidates all cached rows so the next run (local or the
+nightly CronJob, with `--force`) re-scores everything.
+
+### Admin UI additions
+
+The admin page in `../genetics-results-browser` (`src/features/admin/AdminPage.tsx`) consumes
+the analysis through the chat backend's admin API:
+
+- **Conversations tab** gains 4 analysis-derived columns, each server-side filterable
+  (consistent with the existing user/date filters): disposition, issue count (with a tooltip
+  listing the issue categories), LLM rating (1-5 or `NA` for unrated), and a
+  successful / neutral / unsuccessful icon.
+- **Quality plots tab** (added after Feedback) renders 4 interactive Chart.js line charts —
+  per-score share, rolling mean + volume, disposition mix, and issue-category mix — that mirror
+  the PNG plots. Hovering a line highlights it and dims the others so a single issue category or
+  disposition can be followed over time.
+
+These are fed by the chat backend's admin router (`../genetics-mcp-server/routers/admin.py`):
+the `/chat/v1/admin/sessions` list LEFT JOINs the analysis fields and accepts the new filter
+params (disposition, `min_issues`, success label, rating including `NA`=unrated), and a new
+`GET /chat/v1/admin/analytics/quality` endpoint returns raw per-conversation rows that the
+frontend aggregates client-side using the same rolling-window logic as `analysis_timeseries.py`,
+so the JS and PNG plots cannot drift.
+
+### Backup / restore
+
+No new backup infrastructure is needed: because the analysis tables live in `chat_history.db`
+on the `chat-data` PVC, the existing daily disk snapshot (`terraform/backups.tf`) already covers
+them. Restoring a `chat-data` snapshot restores the conversations and their cached analysis
+together. If analysis was lost or wiped without restoring the disk, re-running the analyzer
+(nightly or the manual force job above) regenerates it from the conversations.
