@@ -13,7 +13,8 @@ metadata:
   name: analyze-conversations
   namespace: genetics
 spec:
-  # 02:30 daily — low-traffic window, after the daily chat-data disk snapshot window
+  # 02:30 daily — low-traffic window, just before the 03:00 chat-data disk snapshot
+  # so each night's snapshot captures that night's fresh analysis
   schedule: "30 2 * * *"
   concurrencyPolicy: Forbid          # never overlap nightly runs (RWO PVC + shared db)
   startingDeadlineSeconds: 3600      # if a run is missed (e.g. node churn), still start within 1h
