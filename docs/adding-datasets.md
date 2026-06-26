@@ -42,6 +42,12 @@ Consequences:
 - **genetics-mcp-server** — the agent/backend and standalone MCP server. Has **no
   hardcoded dataset paths**; it reaches everything through results-api and db-api, so it
   usually needs **no changes**.
+- **genetics-results-browser** — the web frontend. Discovers resources/datasets from
+  db-api `/schema` (see `src/features/chat/schemaApi.ts`), so a new dataset surfaces
+  **automatically with no code change**. The one exception is display naming: if the raw
+  `dataset` id reads poorly or ambiguously in the result tables, add a frontend label
+  override to `DATASET_LABEL_OVERRIDES` in `src/features/table/utils/tableutil.tsx`
+  (e.g. `UKB_PPP` → "UKBB PPP (Olink 3K)"). Optional, and only for display clarity.
 
 Both `genetics-results-api` and `genetics-results-db` keep a committed copy of
 `datasets.yaml` under `configs/`, refreshed by `scripts/sync-datasets.sh` (and by
@@ -239,6 +245,8 @@ label IIBDGC rows as `ibd_gwas` once loaded.
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
       apply views + load BQ rows if BQ-bound.
 - [ ] genetics-mcp-server: usually nothing.
+- [ ] genetics-results-browser: usually nothing (API-driven); add a
+      `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.
 - [ ] Build + roll out results-api if its configs changed; `deploy.sh` for datasets.yaml.
 - [ ] Verify `/datasets`, the data endpoint, the agent, and (if applicable) the BQ view —
       for **both** profiles.
