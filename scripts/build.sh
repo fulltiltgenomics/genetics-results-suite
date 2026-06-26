@@ -39,7 +39,7 @@ fi
 
 # branch overrides (same env vars as build-all.sh)
 declare -A BRANCH_MAP=(
-  [frontend]="${FRONTEND_BRANCH:-llm}"
+  [frontend]="${FRONTEND_BRANCH:-master}"
   [results-api]="${RESULTS_API_BRANCH:-master}"
   [chat-backend]="${MCP_SERVER_BRANCH:-master}"
   [mcp-server]="${MCP_SERVER_BRANCH:-master}"
