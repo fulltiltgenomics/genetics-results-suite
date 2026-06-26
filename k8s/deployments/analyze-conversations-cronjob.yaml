@@ -54,6 +54,11 @@ spec:
                 secretKeyRef:
                   name: genetics-secrets
                   key: anthropic-api-key
+            # use Opus 4.8 for both categorization (topic + issue) and quality eval
+            - name: ANALYZE_TOPIC_MODEL
+              value: claude-opus-4-8
+            - name: ANALYZE_QUALITY_MODEL
+              value: claude-opus-4-8
             volumeMounts:
             - name: chat-data
               mountPath: /data
