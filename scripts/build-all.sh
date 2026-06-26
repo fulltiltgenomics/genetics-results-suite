@@ -9,7 +9,7 @@ GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
 RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
 # branch overrides
-FRONTEND_BRANCH="${FRONTEND_BRANCH:-llm}"
+FRONTEND_BRANCH="${FRONTEND_BRANCH:-master}"
 RESULTS_API_BRANCH="${RESULTS_API_BRANCH:-master}"
 MCP_SERVER_BRANCH="${MCP_SERVER_BRANCH:-master}"
 DB_API_BRANCH="${DB_API_BRANCH:-master}"
