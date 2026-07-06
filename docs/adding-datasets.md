@@ -122,6 +122,14 @@ the API-side resource grouping.
 - **Gene-based / burden results** → `gene_based_results.py`, `gene_based_data_files`. A
   `"gene_based"` block with a single `"file"`.
 - **Expression / coloc / chromatin / gene-disease** → the correspondingly named module.
+- **Open chromatin / variant effect** — unlike a plain new dataset (which only needs a
+  `datasets.yaml` entry plus an existing product config), these are two **new products**.
+  Each gets its own new results-api tabix vertical (`open_chromatin.py` / `variant_effect.py`,
+  cloned from the chromatin_peaks vertical) plus a new BigQuery view (`open_chromatin_v` /
+  `variant_effect_v`) — position-indexed and variant-indexed respectively, `data_type:
+  open_chromatin` / `variant_effect` and both `trait_type: null`. Those modules/views are
+  created by the sibling results-api and results-db tasks in this epic; this repo only adds
+  the `datasets.yaml` registry entries and any `dataset_to_resource_rules`.
 
 ### The shared-combined-file + per-row resource filter (important for credible sets)
 
