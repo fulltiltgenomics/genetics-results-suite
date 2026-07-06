@@ -188,7 +188,19 @@ profiles:
 | `gene_based` | Gene-level burden test results |
 | `expression` | Gene/protein expression levels |
 | `chromatin_peaks` | Chromatin accessibility peaks |
+| `open_chromatin` | Atlas of accessible/active chromatin regions by cell type/tissue |
+| `variant_effect` | In-silico predicted variant effect on chromatin (e.g. ChromBPNet, FLARE) |
 | `gene_disease` | Gene-disease associations |
+
+Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the other three — `chromatin_peaks`, `open_chromatin`, `variant_effect` — carry `trait_type: null`):
+
+- `caqtl` -> the accessibility QTL (a measured variant-accessibility association).
+- `chromatin_peaks` -> the single-cell peak-to-gene link product.
+- `open_chromatin` -> an atlas of accessible/active regions; any gene links are secondary
+  (via `target_gene`).
+- `variant_effect` -> in-silico predicted effect of a variant on accessibility, not a
+  measured QTL. Usually per cell-type context (some scores, e.g. FLARE, are pan-context
+  with `cell_type` null).
 
 ### `trait_type` enum
 
@@ -197,7 +209,7 @@ profiles:
 | `binary` | Case/control phenotypes |
 | `quantitative` | Continuous phenotypes |
 | `mixed` | Both binary and quantitative |
-| `null` | Non-association data (expression, chromatin_peaks, gene_disease) |
+| `null` | Non-association data (expression, chromatin_peaks, open_chromatin, variant_effect, gene_disease) |
 
 ### Profile differences
 
