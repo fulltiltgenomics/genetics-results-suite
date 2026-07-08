@@ -1195,8 +1195,12 @@ profiles:
         resource: hpa
         version: "v24.1"
         description: >-
-          Human Protein Atlas v24.1 immunohistochemistry-based protein expression across
-          human tissues and cell types.
+          Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
+          Covers only the ~5,500 genes with validated IHC antibodies (NOT proteome-wide;
+          many genes have no rows at all). Levels are categorical (High / Medium / Low /
+          Not_detected) across 53 tissues, with individual cell-type resolution encoded in
+          the tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such
+          as bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
         publication_date: "2024-11-18"
         data_type: expression
@@ -1975,8 +1979,12 @@ profiles:
         resource: hpa
         version: "v24.1"
         description: >-
-          Human Protein Atlas v24.1 immunohistochemistry-based protein expression across
-          human tissues and cell types.
+          Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
+          Covers only the ~5,500 genes with validated IHC antibodies (NOT proteome-wide;
+          many genes have no rows at all). Levels are categorical (High / Medium / Low /
+          Not_detected) across 53 tissues, with individual cell-type resolution encoded in
+          the tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such
+          as bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
         publication_date: "2024-11-18"
         data_type: expression
