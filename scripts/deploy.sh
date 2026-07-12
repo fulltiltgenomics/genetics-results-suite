@@ -122,6 +122,20 @@ else
 fi
 export OAUTH2_PROVIDER OIDC_ISSUER_URL OIDC_BACKEND_LOGOUT_URL KEYCLOAK_SERVER
 
+# MCP OAuth resource-server env (genetics-results-suite-v3n). Non-secret PUBLIC values rendered
+# into the mcp-server Deployment via envsubst; the mcp-server treats them as optional and the
+# whole OAuth path stays inert when they are empty — so profiles without the Keycloak broker
+# (finngen) get no resource-server behaviour. OAUTH_ISSUER reuses OIDC_ISSUER_URL so it exactly
+# matches the `iss` Keycloak advertises (KC_HOSTNAME/realms/genetics); OAUTH_RESOURCE_URL is the
+# MCP canonical URL / expected token audience on the canonical web host. JWKS is left to the
+# mcp-server (derives <issuer>/protocol/openid-connect/certs).
+export OAUTH_ISSUER="${OIDC_ISSUER_URL}"
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  export OAUTH_RESOURCE_URL="https://${REDIRECT_TO_HOST:-${DOMAIN}}/mcp"
+else
+  export OAUTH_RESOURCE_URL=""
+fi
+
 # slack member id(s) to @mention on monitor failures; space/comma-separated for multiple.
 # kept out of version control — set via .env or the shell environment.
 export SLACK_ALERT_USER_ID="${SLACK_ALERT_USER_ID:-}"
@@ -308,7 +322,7 @@ for f in deployments/*.yaml; do
     echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
