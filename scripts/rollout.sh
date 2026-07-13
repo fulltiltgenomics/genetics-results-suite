@@ -14,6 +14,7 @@ fi
 
 declare -A IMAGE_MAP=(
   [frontend]=genetics-results-browser
+  [bff]=genetics-results-browser-bff
   [results-api]=genetics-results-api
   [chat-backend]=genetics-mcp-server
   [mcp-server]=genetics-mcp-server
