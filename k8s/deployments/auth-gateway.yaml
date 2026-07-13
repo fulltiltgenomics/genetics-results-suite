@@ -31,6 +31,11 @@ data:
       proxy_buffers 8 32k;
       proxy_busy_buffers_size 64k;
 
+      # must be set here, not per-location: the auth_request subrequest is evaluated against
+      # its own location's limit, so a location-level 50M is still defeated by the 1m default
+      # inheriting into /oauth2/auth (chat messages with a base64 image attached exceed 1m)
+      client_max_body_size 50M;
+
       access_log /dev/stdout redacted;
       resolver kube-dns.kube-system.svc.cluster.local valid=10s;
 
@@ -174,7 +179,6 @@ data:
           proxy_set_header X-Internal-MCP-Call "";
           error_page 401 = @oauth2_login;
 
-          client_max_body_size 50M;
           proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
