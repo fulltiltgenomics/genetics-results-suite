@@ -116,6 +116,12 @@ sudo rm /etc/nginx/sites-enabled/default
 server {
     server_name YOUR_DOMAIN;
 
+    # must be set at server level, not per-location: the auth_request subrequest is evaluated
+    # against its own location's limit, so a location-level value is still defeated by the 1m
+    # default inheriting into /oauth2/auth (chat messages with a base64 image attached exceed 1m,
+    # and auth_request turns the resulting 413 into an opaque 500)
+    client_max_body_size 50M;
+
     # oauth2-proxy endpoints
     location /oauth2/ {
         proxy_pass http://127.0.0.1:4180;
@@ -172,7 +178,6 @@ server {
         proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
         error_page 401 = @oauth2_login;
 
-        client_max_body_size 50M;
         proxy_pass http://localhost:4000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
