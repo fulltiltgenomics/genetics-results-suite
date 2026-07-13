@@ -30,6 +30,7 @@ Internal only (ClusterIP + NetworkPolicy):
 | Service | Source Repo | Port | Description |
 |---------|-----------|------|-------------|
 | frontend | genetics-results-browser | 3000 | React SPA via nginx |
+| bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
 | auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also routes auth.<domain> to keycloak |
 | oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak |
 | keycloak | keycloak/ (local build) | 8080 | Identity broker: Google + Apple sign-in, single OIDC issuer |
