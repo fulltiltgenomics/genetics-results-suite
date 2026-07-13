@@ -1,6 +1,7 @@
 """Cloud Logging alerter with SQLite-based deduplication."""
 
 import hashlib
+import logging
 import os
 import re
 import sqlite3
@@ -9,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from google.cloud import logging as cloud_logging
+
+logger = logging.getLogger("monitor.alerter")
 
 
 @dataclass
@@ -39,12 +42,59 @@ _NORMALIZE_PATTERNS = [
 _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("oauth2-proxy", re.compile(r"Invalid redirect provided")),
     ("oauth2-proxy", re.compile(r"Invalid redirect generated")),
+    ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 state")),  # stale/bot callbacks
     ("mcp-server", re.compile(r"Authentication via query parameter token")),
 ]
+
+# GKE's logging agent tags everything a container writes to stderr as severity=ERROR
+# regardless of content, so the entry severity is meaningless for the many services that
+# log normally to stderr (uvicorn, postgres, batch scripts). Recover the level the app
+# itself reported from the message text and alert on that instead.
+_LEVEL_PATTERNS = [
+    # python logging / uvicorn: "INFO:     Application startup complete."
+    re.compile(r"^\s*(?P<level>DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b[: ]"),
+    # nginx: "2026/07/12 17:34:56 [error] 30#30: *2480 ..."
+    re.compile(r"\[(?P<level>debug|info|notice|warn|error|crit|alert|emerg)\]"),
+    # postgres: "2026-07-12 15:51:32.554 UTC [27] LOG:  checkpoint complete: ..."
+    re.compile(
+        r"\[\d+\]\s+(?P<level>DEBUG[1-5]?|LOG|INFO|NOTICE|WARNING|ERROR|FATAL|PANIC"
+        r"|STATEMENT|DETAIL|HINT|CONTEXT):"
+    ),
+]
+
+_LEVEL_RANK = {
+    "DEBUG": 10,
+    "INFO": 20, "LOG": 20, "NOTICE": 20,
+    "STATEMENT": 20, "DETAIL": 20, "HINT": 20, "CONTEXT": 20,
+    "WARN": 30, "WARNING": 30,
+    "ERROR": 40, "CRIT": 40, "CRITICAL": 40,
+    "ALERT": 50, "EMERG": 50, "EMERGENCY": 50, "FATAL": 50, "PANIC": 50,
+}
+_MIN_ALERT_RANK = _LEVEL_RANK["WARNING"]
 
 
 def _should_ignore(container: str, message: str) -> bool:
     return any(c == container and p.search(message) for c, p in _IGNORE_PATTERNS)
+
+
+def _embedded_level(message: str) -> str | None:
+    """The log level the application itself reported, if the message carries one."""
+    for pattern in _LEVEL_PATTERNS:
+        match = pattern.search(message)
+        if match:
+            return match.group("level").upper().rstrip("12345")
+    return None
+
+
+def _effective_severity(message: str, gcp_severity: str | None) -> str:
+    """The app's own level, falling back to GCP's when the message carries none."""
+    return _embedded_level(message) or gcp_severity or "WARNING"
+
+
+def _below_threshold(severity: str) -> bool:
+    """True when the level is known to be below WARNING. Unknown levels alert (fail open)."""
+    rank = _LEVEL_RANK.get(severity)
+    return rank is not None and rank < _MIN_ALERT_RANK
 
 
 def _normalize_message(msg: str) -> str:
@@ -116,6 +166,7 @@ class LogAlerter:
         )
 
         entries = []
+        dropped = 0
         for entry in self.client.list_entries(
             filter_=log_filter,
             order_by=cloud_logging.ASCENDING,
@@ -135,16 +186,28 @@ class LogAlerter:
                 message = str(payload)
 
             if _should_ignore(container, message):
+                dropped += 1
+                continue
+
+            severity = _effective_severity(message, entry.severity)
+            if _below_threshold(severity):
+                dropped += 1
                 continue
 
             entries.append({
                 "container": container,
                 "message": message,
-                "severity": entry.severity or "WARNING",
+                "severity": severity,
                 "timestamp": (
                     entry.timestamp.isoformat() if entry.timestamp else timestamp_str
                 ),
             })
+
+        if dropped:
+            logger.info(
+                "dropped %d non-alerting log entries (ignored or below WARNING once "
+                "reclassified from the message text)", dropped
+            )
 
         return entries
 
