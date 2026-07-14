@@ -134,6 +134,51 @@ resources:
     description: "deCODE Genetics — allele-specific methylation QTL (ASM-QTL) results"
     aliases: ["deCODE", "decode genetics"]
 
+  # open-chromatin (scATAC / epigenome) + variant-effect prediction resources
+  marderstein:
+    label: "Marderstein/FLARE (neuro-variants)"
+    description: >-
+      Marderstein, Kundu, Kundaje & Montgomery 2026 (Nature Genetics) — fetal and adult
+      brain and heart scATAC/snATAC peak atlas plus ChromBPNet and FLARE in-silico
+      variant-effect scores on chromatin accessibility.
+    aliases: ["neuro-variants", "neuro variants", "FLARE", "ChromBPNet"]
+
+  li_brain_atac:
+    label: "Li 2023 brain scATAC atlas"
+    description: >-
+      Li et al. 2023 (Science) human brain single-cell ATAC-seq atlas — 1.1M cells across
+      42 brain regions, with candidate cis-regulatory elements (cCREs) and cCRE-to-gene links.
+    aliases: ["Li brain", "Li 2023 brain"]
+
+  catlas:
+    label: "Catlas (Zhang 2021)"
+    description: >-
+      Zhang et al. 2021 (Cell) "Catlas" adult body-wide single-cell ATAC-seq atlas —
+      30 tissues, 222 cell types, ~1.15M candidate cis-regulatory elements (cCREs).
+    aliases: ["Catlas", "Zhang 2021"]
+
+  epimap:
+    label: "EpiMap"
+    description: >-
+      Boix et al. 2021 (Nature) EpiMap — 18-state ChromHMM active regulatory states and
+      activity-based enhancer-to-gene links across 833 bulk biosamples (hg38). Not the raw
+      Meuleman DHS layer.
+    aliases: ["EpiMap", "Boix 2021", "ChromHMM"]
+
+  calderon_immune:
+    label: "Calderon immune (2019)"
+    description: >-
+      Calderon et al. 2019 (Nature Genetics) stimulation-responsive immune chromatin —
+      ~32 immune cell populations in resting and stimulated states.
+    aliases: ["Calderon", "Calderon 2019", "immune stimulation"]
+
+  rosmap_brain:
+    label: "ROSMAP AD brain (Xiong 2023)"
+    description: >-
+      Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease epigenome — aged prefrontal cortex
+      snATAC (~850k nuclei, 92 donors, AD and control), cell-type peaks and peak-to-gene links.
+    aliases: ["ROSMAP", "Xiong 2023", "AD brain"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -442,6 +487,111 @@ tables:
       variant_rank: null
       vartype: null
 
+  open_chromatin_v:
+    description: >-
+      Atlas of accessible/active chromatin regions (peaks) labeled by cell
+      type, tissue, and condition. Region-indexed presence/annotation atlas
+      (no p-values): a row means the interval is open/active chromatin in the
+      given context. Query by overlapping a position or region against
+      peak_start/peak_end. Always filter by resource, not dataset.
+
+    columns:
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25)"
+      peak_start: "Peak interval start (GRCh38)"
+      peak_end: "Peak interval end (GRCh38)"
+      peak_id: "Peak identifier as chr-start-end"
+      dataset: "Source dataset identifier"
+      cell_type: "Verbatim source cell-type/context label"
+      tissue: "Harmonized tissue (e.g. brain, heart, immune)"
+      life_stage: "Developmental stage (fetal, adult, unknown)"
+      condition: "Experimental condition (resting, stimulated, AD, control, unknown)"
+      assay: "Assay type (scATAC, snATAC, bulk_ATAC, chromHMM)"
+      score: "Peak signal strength (NA for presence/ChromHMM data)"
+      score_type: "Meaning of score (e.g. signal, cpm, presence, chromhmm:<State>)"
+      n_cells: "Number of cells supporting the peak (single-cell assays)"
+      cell_ontology_id: "Cell Ontology (CL) identifier where available"
+      uberon_id: "UBERON anatomy identifier where available"
+      target_gene: "Linked target gene symbol for cCRE->gene links (else NA)"
+      target_gene_id: "Linked target Ensembl gene ID for cCRE->gene links (else NA)"
+      version: "Data release version"
+      resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    examples:
+      - description: "Cell types/tissues where a genomic position is open chromatin"
+        sql: >-
+          SELECT DISTINCT resource, tissue, cell_type, condition
+          FROM open_chromatin_v
+          WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
+
+      - description: "Check whether a variant's position is accessible in brain"
+        sql: >-
+          SELECT resource, cell_type, condition, assay, score
+          FROM open_chromatin_v
+          WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
+            AND tissue = 'brain'
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      tissue: "resource"
+      life_stage: "resource"
+      condition: "resource"
+      assay: "resource"
+
+  variant_effect_v:
+    description: >-
+      In-silico PREDICTED effects of variants on chromatin accessibility from
+      deep-learning models (ChromBPNet and FLARE). Variant-indexed: one row per
+      variant per model/context with a predicted effect score. These are model
+      predictions, not measured associations. Always filter by resource, not
+      dataset.
+
+    columns:
+      chr: "Chromosome number (GRCh38, chromosome X is 23)"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23"
+      rsid: "dbSNP rsID"
+      dataset: "Source dataset identifier"
+      model: "Prediction model (chrombpnet, flare)"
+      cell_type: "Cell-type context (NA for pan-context FLARE predictions)"
+      tissue: "Harmonized tissue (e.g. brain, heart, immune)"
+      life_stage: "Developmental stage (fetal, adult, unknown)"
+      score: "Predicted effect magnitude on accessibility"
+      score_type: "Meaning of score (chrombpnet_abs_logfc, flare_score)"
+      mlog10p: "-log10(p) per-context significance (ChromBPNet; NA for FLARE)"
+      predicted_direction: "Predicted direction of the accessibility effect"
+      quantile_rank: "Effect-strength rank (how strongly the variant is predicted to act)"
+      is_significant: "Whether the predicted effect passes the model's significance threshold"
+      version: "Data release version"
+      resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    examples:
+      - description: "Predicted accessibility effect of a variant per cell type"
+        sql: >-
+          SELECT resource, model, cell_type, tissue, score, score_type, mlog10p,
+                 predicted_direction, is_significant
+          FROM variant_effect_v
+          WHERE variant = '1:55039974:A:G'
+          ORDER BY mlog10p DESC
+
+      - description: "Strongest ChromBPNet predicted effects near a gene"
+        sql: >-
+          SELECT v.variant, v.cell_type, v.tissue, v.score, v.mlog10p, v.predicted_direction
+          FROM variant_effect_v v
+          JOIN gene_annotations_v g
+            ON v.chr = g.chr
+           AND v.pos BETWEEN g.gene_start - 100000 AND g.gene_end + 100000
+          WHERE g.symbol = 'PCSK9' AND v.model = 'chrombpnet'
+          ORDER BY v.mlog10p DESC LIMIT 50
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      model: "resource"
+      tissue: "resource"
+
   gene_annotations_v:
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
@@ -586,6 +736,37 @@ dataset_to_resource_rules:
     resource: "ibd_gwas"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "IIBDGC IBD/UC/CD pseudo credible sets (lowercase fallback would give 'iibdgc', not 'ibd_gwas')"
+
+  # open_chromatin_v / variant_effect_v patterns
+  - pattern: "marderstein%"
+    resource: "marderstein"
+    applies_to: ["open_chromatin_v", "variant_effect_v"]
+    comment: "Marderstein peaks (open_chromatin) + ChromBPNet/FLARE (variant_effect)"
+
+  - pattern: "li_brain%"
+    resource: "li_brain_atac"
+    applies_to: ["open_chromatin_v"]
+    comment: "Li 2023 brain scATAC atlas"
+
+  - pattern: "catlas%"
+    resource: "catlas"
+    applies_to: ["open_chromatin_v"]
+    comment: "Catlas (Zhang 2021) body-wide scATAC atlas"
+
+  - pattern: "epimap%"
+    resource: "epimap"
+    applies_to: ["open_chromatin_v"]
+    comment: "EpiMap ChromHMM active states + enhancer-gene links"
+
+  - pattern: "calderon%"
+    resource: "calderon_immune"
+    applies_to: ["open_chromatin_v"]
+    comment: "Calderon 2019 stimulation-responsive immune chromatin"
+
+  - pattern: "rosmap%"
+    resource: "rosmap_brain"
+    applies_to: ["open_chromatin_v"]
+    comment: "ROSMAP (Xiong 2023) AD brain snATAC"
 
   # fallback: lowercase the dataset name
   - pattern: "*"
@@ -1220,6 +1401,132 @@ profiles:
         data_type: chromatin_peaks
         trait_type: null
         n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- open chromatin ---
+      marderstein_open_chromatin:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) fetal and adult brain and heart
+          open-chromatin atlas. scATAC/snATAC peak calls across 132 cell-type contexts
+          (fetal brain, adult brain, fetal heart, adult heart); the tissue and life_stage
+          columns slice the atlas and cell_type carries the source label. Companion
+          ChromBPNet and FLARE variant-effect scores are in the variant_effect product
+          (marderstein_chrombpnet, marderstein_flare).
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      li_brain_open_chromatin:
+        resource: li_brain_atac
+        version: "2023"
+        description: >-
+          Li et al. 2023 (Science) human brain single-cell ATAC-seq open-chromatin atlas.
+          Candidate cis-regulatory elements (cCREs) from 1.1M nuclei across 42 adult brain
+          regions, with cCRE-to-gene links carried in target_gene. tissue=brain,
+          life_stage=adult.
+        author: "Li et al."
+        publication_date: "2023-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      catlas_open_chromatin:
+        resource: catlas
+        version: "2021"
+        description: >-
+          Zhang et al. 2021 (Cell) "Catlas" adult body-wide single-cell ATAC-seq
+          open-chromatin atlas. ~1.15M candidate cis-regulatory elements (cCREs) across
+          222 cell types from 30 adult human tissues. life_stage=adult.
+        author: "Zhang et al."
+        publication_date: "2021-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      epimap_open_chromatin:
+        resource: epimap
+        version: "2021"
+        description: >-
+          Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
+          18-state ChromHMM active regulatory states (active promoter, enhancer and
+          bivalent states) plus activity-based enhancer-to-gene links across 833 bulk
+          biosamples (hg38). This is EpiMap's regulatory-state layer, not the raw
+          Meuleman DHS index. assay=chromHMM; the exact ChromHMM state is carried in
+          score_type and target_gene carries enhancer-to-gene links.
+        author: "Boix et al."
+        publication_date: "2021-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      calderon_open_chromatin:
+        resource: calderon_immune
+        version: "2019"
+        description: >-
+          Calderon et al. 2019 (Nature Genetics) stimulation-responsive immune
+          open-chromatin atlas. Bulk ATAC-seq peaks across ~32 immune cell populations in
+          resting and stimulated states (condition in {resting, stimulated}). tissue=immune,
+          life_stage=adult; lifted over from hg19 to hg38.
+        author: "Calderon et al."
+        publication_date: "2019-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      rosmap_open_chromatin:
+        resource: rosmap_brain
+        version: "2023"
+        description: >-
+          Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
+          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors) with
+          peak-to-gene links carried in target_gene; condition in {AD, control, unknown}.
+          tissue=brain, life_stage=adult.
+        author: "Xiong et al."
+        publication_date: "2023-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- variant effect prediction ---
+      marderstein_chrombpnet:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) ChromBPNet in-silico variant-effect
+          predictions on chromatin accessibility. Per-cell-type predicted effect of variants
+          on scATAC/snATAC accessibility across the brain and heart contexts
+          (model=chrombpnet), thresholded to variants with a significant/non-zero predicted
+          effect in at least one context. cell_type/tissue give the predicting context.
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: variant_effect
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      marderstein_flare:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) FLARE in-silico variant-effect scores.
+          Pan-context prioritized variant-effect scores on chromatin accessibility derived
+          from ChromBPNet (model=flare); FLARE scores are pan-context, so cell_type and
+          tissue are null. quantile_rank indicates predicted effect strength.
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: variant_effect
+        trait_type: null
         metadata_file: null
         metadata_harmonizer: null
 
@@ -2004,6 +2311,132 @@ profiles:
         data_type: chromatin_peaks
         trait_type: null
         n_samples: 1108
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- open chromatin ---
+      marderstein_open_chromatin:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) fetal and adult brain and heart
+          open-chromatin atlas. scATAC/snATAC peak calls across 132 cell-type contexts
+          (fetal brain, adult brain, fetal heart, adult heart); the tissue and life_stage
+          columns slice the atlas and cell_type carries the source label. Companion
+          ChromBPNet and FLARE variant-effect scores are in the variant_effect product
+          (marderstein_chrombpnet, marderstein_flare).
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      li_brain_open_chromatin:
+        resource: li_brain_atac
+        version: "2023"
+        description: >-
+          Li et al. 2023 (Science) human brain single-cell ATAC-seq open-chromatin atlas.
+          Candidate cis-regulatory elements (cCREs) from 1.1M nuclei across 42 adult brain
+          regions, with cCRE-to-gene links carried in target_gene. tissue=brain,
+          life_stage=adult.
+        author: "Li et al."
+        publication_date: "2023-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      catlas_open_chromatin:
+        resource: catlas
+        version: "2021"
+        description: >-
+          Zhang et al. 2021 (Cell) "Catlas" adult body-wide single-cell ATAC-seq
+          open-chromatin atlas. ~1.15M candidate cis-regulatory elements (cCREs) across
+          222 cell types from 30 adult human tissues. life_stage=adult.
+        author: "Zhang et al."
+        publication_date: "2021-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      epimap_open_chromatin:
+        resource: epimap
+        version: "2021"
+        description: >-
+          Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
+          18-state ChromHMM active regulatory states (active promoter, enhancer and
+          bivalent states) plus activity-based enhancer-to-gene links across 833 bulk
+          biosamples (hg38). This is EpiMap's regulatory-state layer, not the raw
+          Meuleman DHS index. assay=chromHMM; the exact ChromHMM state is carried in
+          score_type and target_gene carries enhancer-to-gene links.
+        author: "Boix et al."
+        publication_date: "2021-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      calderon_open_chromatin:
+        resource: calderon_immune
+        version: "2019"
+        description: >-
+          Calderon et al. 2019 (Nature Genetics) stimulation-responsive immune
+          open-chromatin atlas. Bulk ATAC-seq peaks across ~32 immune cell populations in
+          resting and stimulated states (condition in {resting, stimulated}). tissue=immune,
+          life_stage=adult; lifted over from hg19 to hg38.
+        author: "Calderon et al."
+        publication_date: "2019-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      rosmap_open_chromatin:
+        resource: rosmap_brain
+        version: "2023"
+        description: >-
+          Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
+          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors) with
+          peak-to-gene links carried in target_gene; condition in {AD, control, unknown}.
+          tissue=brain, life_stage=adult.
+        author: "Xiong et al."
+        publication_date: "2023-01-01"
+        data_type: open_chromatin
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- variant effect prediction ---
+      marderstein_chrombpnet:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) ChromBPNet in-silico variant-effect
+          predictions on chromatin accessibility. Per-cell-type predicted effect of variants
+          on scATAC/snATAC accessibility across the brain and heart contexts
+          (model=chrombpnet), thresholded to variants with a significant/non-zero predicted
+          effect in at least one context. cell_type/tissue give the predicting context.
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: variant_effect
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      marderstein_flare:
+        resource: marderstein
+        version: "2026"
+        description: >-
+          Marderstein et al. 2026 (Nature Genetics) FLARE in-silico variant-effect scores.
+          Pan-context prioritized variant-effect scores on chromatin accessibility derived
+          from ChromBPNet (model=flare); FLARE scores are pan-context, so cell_type and
+          tissue are null. quantile_rank indicates predicted effect strength.
+        author: "Marderstein, Kundu, Kundaje & Montgomery"
+        publication_date: "2026-01-01"
+        data_type: variant_effect
+        trait_type: null
         metadata_file: null
         metadata_harmonizer: null
 
