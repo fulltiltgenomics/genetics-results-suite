@@ -55,8 +55,7 @@ CLIENT_JSON="$(cat <<EOF
     "https://brainzzz-staging.dsp-eng-tools.broadinstitute.org",
     "https://brainzzz-prod.dsp-eng-tools.broadinstitute.org"
   ],
-  "attributes": { "pkce.code.challenge.method": "S256" },
-  "defaultClientScopes": ["openid", "email", "profile"]
+  "attributes": { "pkce.code.challenge.method": "S256" }
 }
 EOF
 )"
