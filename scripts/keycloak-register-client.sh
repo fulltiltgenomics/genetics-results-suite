@@ -68,7 +68,6 @@ print(json.dumps({
     "redirectUris": redirects,
     "webOrigins": ["+"],
     "attributes": {"pkce.code.challenge.method": "S256"},
-    "defaultClientScopes": ["openid", "email", "profile"],
 }))
 PY
 )"
