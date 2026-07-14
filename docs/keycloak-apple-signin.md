@@ -179,6 +179,14 @@ letting arbitrary parties register clients on the realm). Like `keycloak-bind-al
 clients live only in the running realm, so re-run the script after a fresh-DB reimport. Every token
 is still gated by the shared email/domain allow-list, so the app's users must be on it.
 
+To **test** the MCP OAuth path yourself (before handing a client to an external developer), run
+`scripts/keycloak-get-token.sh` on a machine with a browser: it performs the browser
+authorization-code + PKCE flow against a registered client (default `authorized_agent`) and prints
+an access token you can paste into MCP Inspector's Bearer-token field or use with `curl` against
+`/mcp`. Note generic MCP tools like Inspector expect Dynamic Client Registration (off here), so
+they can't self-register — this token helper sidesteps that, while a real app like brainzzz uses
+its own pre-registered client and needs no DCR.
+
 ## Switching Keycloak to a dedicated subdomain
 
 Keycloak currently lives at the **`/auth` path on the primary domain** (no separate DNS/cert
