@@ -16,6 +16,7 @@ set -euo pipefail
 # Usage:
 #   ./scripts/keycloak-register-client.sh <clientId> <redirect-uri> [redirect-uri ...]
 #   ./scripts/keycloak-register-client.sh --rotate-secret <clientId> <redirect-uri> [...]
+#   ./scripts/keycloak-register-client.sh --delete <clientId>   # remove a client (e.g. a test one)
 #
 # Config (from .env / environment):
 #   OAUTH_RESOURCE_URL   MCP resource audience (default: https://genegenie.broadinstitute.org/mcp)
@@ -25,25 +26,34 @@ NAMESPACE="${NAMESPACE:-genetics}"
 REALM="${KC_REALM:-genetics}"
 
 ROTATE_SECRET=false
-if [ "${1:-}" = "--rotate-secret" ]; then ROTATE_SECRET=true; shift; fi
+DELETE=false
+case "${1:-}" in
+  --delete) DELETE=true; shift ;;
+  --rotate-secret) ROTATE_SECRET=true; shift ;;
+esac
 
 CLIENT_ID="${1:-}"
 shift || true
 REDIRECT_URIS=("$@")
 
-if [ -z "${CLIENT_ID}" ] || [ "${#REDIRECT_URIS[@]}" -eq 0 ]; then
+usage() {
   echo "Usage: $0 [--rotate-secret] <clientId> <redirect-uri> [redirect-uri ...]" >&2
+  echo "       $0 --delete <clientId>" >&2
   exit 2
-fi
+}
+[ -n "${CLIENT_ID}" ] || usage
+# delete needs only a clientId; registration needs at least one redirect URI
+if [ "${DELETE}" != true ] && [ "${#REDIRECT_URIS[@]}" -eq 0 ]; then usage; fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "${ROOT_DIR}/.env" ]; then set -a; . "${ROOT_DIR}/.env"; set +a; fi
 OAUTH_RESOURCE_URL="${OAUTH_RESOURCE_URL:-https://genegenie.broadinstitute.org/mcp}"
 OAUTH_ISSUER="${OAUTH_ISSUER:-https://genegenie.broadinstitute.org/auth/realms/genetics}"
 
-# build the client representation. no "secret" field → Keycloak generates one on create; on
-# update, omitting it preserves the existing secret. webOrigins "+" = the registered redirect
-# URIs' origins.
+# build the client representation (register mode only). no "secret" field → Keycloak generates one
+# on create; on update, omitting it preserves the existing secret. webOrigins "+" = the registered
+# redirect URIs' origins.
+if [ "${DELETE}" != true ]; then
 CLIENT_JSON="$(python3 - "${CLIENT_ID}" "${REDIRECT_URIS[@]}" <<'PY'
 import json, sys
 client_id, redirects = sys.argv[1], sys.argv[2:]
@@ -73,6 +83,7 @@ print(json.dumps({
 }))
 PY
 )"
+fi
 
 POD="$(kubectl get pods -n "${NAMESPACE}" -l app=keycloak -o jsonpath='{.items[0].metadata.name}')"
 AU="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 -d)"
@@ -85,6 +96,17 @@ kc config credentials --server http://localhost:8080 --realm master --user "${AU
 
 CID="$(kc get clients -r "${REALM}" -q clientId="${CLIENT_ID}" 2>/dev/null \
   | python3 -c 'import json,sys; a=json.load(sys.stdin); print(a[0]["id"] if a else "")')"
+
+if [ "${DELETE}" = true ]; then
+  if [ -z "${CID}" ]; then
+    echo "Client '${CLIENT_ID}' not found in realm '${REALM}'; nothing to delete."
+    exit 0
+  fi
+  echo "Deleting client '${CLIENT_ID}' (${CID})..."
+  kc delete "clients/${CID}" -r "${REALM}"
+  echo "Deleted '${CLIENT_ID}'."
+  exit 0
+fi
 
 if [ -z "${CID}" ]; then
   echo "Creating client '${CLIENT_ID}'..."
