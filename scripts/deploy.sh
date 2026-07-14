@@ -217,10 +217,21 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
     APPLE_IDP_ENTRY=",${APPLE_JSON}"
   fi
   export APPLE_IDP_ENTRY
+  # brainzzz OAuth client (GeneGenie MCP integration): injected only when its secret is set in
+  # .env, so deployments that don't use it stay unaffected. On an already-imported realm this
+  # template change does nothing (import runs on a fresh DB only) — use
+  # scripts/keycloak-register-brainzzz.sh to reconcile the live realm.
+  BRAINZZZ_CLIENT_ENTRY=""
+  if [ -n "${BRAINZZZ_CLIENT_SECRET:-}" ]; then
+    BRAINZZZ_JSON="$(envsubst '${BRAINZZZ_CLIENT_SECRET} ${OAUTH_RESOURCE_URL}' \
+      < "${ROOT_DIR}/keycloak/brainzzz-client.json.template")"
+    BRAINZZZ_CLIENT_ENTRY=",${BRAINZZZ_JSON}"
+  fi
+  export BRAINZZZ_CLIENT_ENTRY
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \
