@@ -165,10 +165,19 @@ The **brainzzz** integration ships as a confidential (web-application) client:
   It uses `kcadm.sh` inside the keycloak pod (admin creds from `keycloak-secrets`) to upsert the
   client and its `mcp-audience` mapper. Re-run it to rotate the secret or change redirect URIs.
 
-To onboard another app, add a client the same way (its own redirect URIs + an audience mapper for
-the MCP resource URL), or enable Dynamic Client Registration so standards-compliant MCP clients
-self-register. Every token is still gated by the shared email/domain allow-list, so the app's
-users must be on it.
+To onboard **another** app, don't hand-edit the realm — run the generic reconcile script, which
+creates a confidential client + the MCP audience mapper and lets Keycloak generate the secret (so
+you never invent or store one), printing it for handoff:
+
+```sh
+./scripts/keycloak-register-client.sh <clientId> <redirect-uri> [more-redirect-uris...]
+# re-run to change redirect URIs; add --rotate-secret to regenerate the secret
+```
+
+Registration stays manual (no open/anonymous Dynamic Client Registration — deliberately, to avoid
+letting arbitrary parties register clients on the realm). Like `keycloak-bind-allowlist.sh`, these
+clients live only in the running realm, so re-run the script after a fresh-DB reimport. Every token
+is still gated by the shared email/domain allow-list, so the app's users must be on it.
 
 ## Switching Keycloak to a dedicated subdomain
 
