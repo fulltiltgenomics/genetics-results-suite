@@ -85,16 +85,13 @@ else
 fi
 
 # upsert the mcp-audience mapper so access tokens carry aud=${OAUTH_RESOURCE_URL}
+# delete any existing mcp-audience mapper, then create fresh — updating a mapper in place needs
+# the id inside the body (Keycloak reads rep.id, not the URL), which kcadm -b does not supply
 MID="$(kc get "clients/${CID}/protocol-mappers/models" -r "${REALM}" 2>/dev/null \
   | python3 -c 'import json,sys; a=json.load(sys.stdin); print(next((m["id"] for m in a if m.get("name")=="mcp-audience"), ""))')"
-
-if [ -z "${MID}" ]; then
-  echo "Adding mcp-audience mapper (aud=${OAUTH_RESOURCE_URL})..."
-  kc create "clients/${CID}/protocol-mappers/models" -r "${REALM}" -b "${MAPPER_JSON}"
-else
-  echo "Updating mcp-audience mapper (aud=${OAUTH_RESOURCE_URL})..."
-  kc update "clients/${CID}/protocol-mappers/models/${MID}" -r "${REALM}" -b "${MAPPER_JSON}"
-fi
+[ -n "${MID}" ] && kc delete "clients/${CID}/protocol-mappers/models/${MID}" -r "${REALM}"
+echo "Setting mcp-audience mapper (aud=${OAUTH_RESOURCE_URL})..."
+kc create "clients/${CID}/protocol-mappers/models" -r "${REALM}" -b "${MAPPER_JSON}"
 
 echo "Done. clientId=${CLIENT_ID}, audience=${OAUTH_RESOURCE_URL}"
 echo "Give the brainzzz developer: client_id=${CLIENT_ID}, client_secret=<BRAINZZZ_CLIENT_SECRET>, issuer=https://genegenie.broadinstitute.org/auth/realms/genetics, mcp_url=https://genegenie.broadinstitute.org/mcp"

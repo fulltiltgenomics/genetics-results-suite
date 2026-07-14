@@ -121,14 +121,13 @@ else
   fi
 fi
 
-# reconcile the mcp-audience mapper (subresource; not managed by the client update above)
+# reconcile the mcp-audience mapper (subresource; not managed by the client update above).
+# delete any existing one then create fresh — an in-place update needs the id inside the body
+# (Keycloak reads rep.id, not the URL path), which kcadm -b does not supply.
 MID="$(kc get "clients/${CID}/protocol-mappers/models" -r "${REALM}" 2>/dev/null \
   | python3 -c 'import json,sys; a=json.load(sys.stdin); print(next((m["id"] for m in a if m.get("name")=="mcp-audience"), ""))')"
-if [ -z "${MID}" ]; then
-  kc create "clients/${CID}/protocol-mappers/models" -r "${REALM}" -b "${MAPPER_JSON}"
-else
-  kc update "clients/${CID}/protocol-mappers/models/${MID}" -r "${REALM}" -b "${MAPPER_JSON}"
-fi
+[ -n "${MID}" ] && kc delete "clients/${CID}/protocol-mappers/models/${MID}" -r "${REALM}"
+kc create "clients/${CID}/protocol-mappers/models" -r "${REALM}" -b "${MAPPER_JSON}"
 
 SECRET="$(kc get "clients/${CID}/client-secret" -r "${REALM}" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))')"
