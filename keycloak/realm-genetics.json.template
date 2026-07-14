@@ -21,7 +21,7 @@
       "webOrigins": ["https://${DOMAIN}"],
       "attributes": { "post.logout.redirect.uris": "https://${DOMAIN}/*" },
       "defaultClientScopes": ["openid", "email", "profile"]
-    }
+    }${BRAINZZZ_CLIENT_ENTRY}
   ],
   "identityProviders": [
     {

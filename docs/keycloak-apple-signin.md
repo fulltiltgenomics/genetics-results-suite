@@ -96,6 +96,7 @@ Secret. Set in `.env`:
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 OAUTH2_PROXY_CLIENT_SECRET=... # shared with the oauth2-proxy client in the realm
+BRAINZZZ_CLIENT_SECRET=...     # optional; confidential secret for the brainzzz MCP OAuth client (see below)
 ```
 
 Apple is **wired in but auto-optional**: `deploy.sh` injects the Apple IdP
@@ -138,6 +139,36 @@ it, or split discovery from the issuer: set `OAUTH2_PROXY_SKIP_OIDC_DISCOVERY=tr
 `http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/...` endpoints — Keycloak still
 serves those at `/realms/...` internally (only the advertised URLs carry the `/auth` prefix), and
 the issuer string keeps matching token `iss`.
+
+## MCP OAuth clients (e.g. brainzzz)
+
+External apps can reach the MCP server (`/mcp`) via a standard OAuth flow instead of a shared
+API token: the mcp-server validates Keycloak-issued access tokens as a fourth bearer path and
+advertises discovery at `/.well-known/oauth-protected-resource` (see the Authentication section
+of `project-spec.md`). Each app is its own Keycloak client.
+
+The **brainzzz** integration ships as a confidential (web-application) client:
+
+- Declarative form: `keycloak/brainzzz-client.json.template`, injected into the realm by
+  `deploy.sh` only when `BRAINZZZ_CLIENT_SECRET` is set in `.env` (empty entry otherwise, so
+  other deployments are unaffected). It carries the dev/staging/prod redirect URIs under
+  `brainzzz-*.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback`, PKCE (S256), and an
+  **audience mapper** that stamps `aud = ${OAUTH_RESOURCE_URL}` (`https://<host>/mcp`) into access
+  tokens — required, or the mcp-server rejects the token on its audience check.
+- Because the realm import only runs on a fresh DB, the template does **not** update an
+  already-running realm. To create/update the client live (idempotent), run:
+
+  ```sh
+  BRAINZZZ_CLIENT_SECRET=... ./scripts/keycloak-register-brainzzz.sh
+  ```
+
+  It uses `kcadm.sh` inside the keycloak pod (admin creds from `keycloak-secrets`) to upsert the
+  client and its `mcp-audience` mapper. Re-run it to rotate the secret or change redirect URIs.
+
+To onboard another app, add a client the same way (its own redirect URIs + an audience mapper for
+the MCP resource URL), or enable Dynamic Client Registration so standards-compliant MCP clients
+self-register. Every token is still gated by the shared email/domain allow-list, so the app's
+users must be on it.
 
 ## Switching Keycloak to a dedicated subdomain
 

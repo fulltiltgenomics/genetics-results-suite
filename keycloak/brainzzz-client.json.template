@@ -1,0 +1,38 @@
+{
+  "clientId": "brainzzz",
+  "name": "brainzzz (GeneGenie MCP)",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "secret": "${BRAINZZZ_CLIENT_SECRET}",
+  "redirectUris": [
+    "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback",
+    "https://brainzzz-staging.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback",
+    "https://brainzzz-prod.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback"
+  ],
+  "webOrigins": [
+    "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org",
+    "https://brainzzz-staging.dsp-eng-tools.broadinstitute.org",
+    "https://brainzzz-prod.dsp-eng-tools.broadinstitute.org"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-staging.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-prod.dsp-eng-tools.broadinstitute.org/*"
+  },
+  "defaultClientScopes": ["openid", "email", "profile"],
+  "protocolMappers": [
+    {
+      "name": "mcp-audience",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "config": {
+        "included.custom.audience": "${OAUTH_RESOURCE_URL}",
+        "access.token.claim": "true",
+        "id.token.claim": "false"
+      }
+    }
+  ]
+}
