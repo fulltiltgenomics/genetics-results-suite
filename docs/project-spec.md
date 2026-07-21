@@ -118,6 +118,47 @@ ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both Bi
 
 External GWAS pseudo credible sets (COVID-19 HGI, PGC SCZ, PGC BIP, GP2 Parkinson's, and IIBDGC IBD/UC/CD) live in a single shared file `gs://<bucket>/credible_sets/ext_pseudo/EXT_*_pseudo_credible_sets.*.tsv.gz` referenced by five datasets (`covid_hgi`, `pgc_scz`, `pgc_bip`, `gp2_pd`, `ibd_gwas`). Per-phenotype individual CS files are organized into per-source subdirs `ext_pseudo/individual/<source>/` (e.g. `covid_hgi/`, `pgc_scz/`, `iibdgc/`) so phenotype lookups disambiguate when multiple datasets share the same resource (e.g. `pgc_scz` and `pgc_bip` both belong to resource `pgc`). The `dataset_to_resource_rules` map the combined file's `dataset` column values `COVID19_HGI%`, `PGC`, `GP2`, and `IIBDGC` to resources `covid_hgi`, `pgc`, `gp2`, and `ibd_gwas`. The IIBDGC pseudo CS reuse the existing `ibd_gwas` dataset/resource (the IIBDGC IBD/UC/CD GWAS meta-analysis whose summary statistics are already served); they are not formally fine-mapped, so the `ibd_gwas` dataset carries `pseudo_credible_sets: true`. The results-api dedups range queries by combined-file path (one tabix per shared file) and uses a per-row resource filter (`dataset_to_resource` in each profile's `common.py`) so each resource only sees its own rows — the `dataset` column value must therefore be present in that map (e.g. `IIBDGC → ibd_gwas`) for region/variant credible-set queries to attribute its rows.
 
+### Open chromatin and variant effect (Products A and B)
+
+Two data products cover chromatin accessibility rather than association statistics. Both carry
+`trait_type: null` and their own `data_type` (`open_chromatin` / `variant_effect`), and both are
+served the same way as the other tabix verticals: the GCS file paths live in
+`genetics-results-api`'s `app/config/profiles/<profile>/{open_chromatin,variant_effect}.py`
+(baked into the image), while the dataset registry lives in `configs/datasets.yaml`.
+
+- **Open chromatin (Product A)** — an atlas of accessible/active regions labelled by cell type,
+  tissue and condition, answering "which contexts is this variant/region/gene accessible in?".
+  Six datasets: `marderstein_open_chromatin` (Marderstein/Kundaje 2026, brain + heart),
+  `li_brain_open_chromatin` (Li 2023), `catlas_open_chromatin` (Zhang 2021),
+  `epimap_open_chromatin` (EpiMap ChromHMM active states + enhancer-gene links),
+  `calderon_open_chromatin` (Calderon 2019 immune stimulation, the only dataset with two
+  `condition` values) and `rosmap_open_chromatin` (ROSMAP/Xiong 2023 AD brain). The files are
+  **interval-indexed** tabix TSVs.
+- **Variant effect (Product B)** — in-silico predicted variant effect on accessibility. Two
+  datasets, both under the `marderstein` resource because the resource ships two distinct
+  predictors: `marderstein_chrombpnet` (ChromBPNet, per-context, thresholded per the row-scale
+  policy) and `marderstein_flare` (FLARE, pan-context). The files are **point-indexed**
+  (`-s1 -b2 -e2`) tabix TSVs.
+
+Endpoints (results-api): `/api/v1/open_chromatin/{region/{chrom}/{start}/{end}, variant/{variant},
+peak/{peak_id}}` and `/api/v1/variant_effect/{variant/{variant}, region/{chrom}/{start}/{end},
+gene/{gene}}`. The `variant` path parameter accepts both `chrom_pos_ref_alt` and `chrom:pos:ref:alt`.
+
+In BigQuery the products land in the `open_chromatin` and `variant_effect` tables with
+`open_chromatin_v` / `variant_effect_v` views deriving `resource` from the `dataset` column
+(both registered in the db-api `VIEWS` allowlist). Tables are created by
+`genetics-results-db`'s `scripts/setup_bigquery.sh`; rows are loaded separately by
+`scripts/load_open_chromatin.sh` and `scripts/load_variant_effect.sh` (set
+`PROJECT_ID`/`DATASET_ID`/`GCS_BUCKET`/`GCS_PREFIX` per profile — the daly bucket has no prefix,
+finngen uses `results_api_data/`).
+
+The agent reaches both products through five MCP tools: `get_open_chromatin_by_{variant,region,gene}`
+and `get_variant_effect_by_{variant,gene}`. The three position-based tools go through results-api;
+the two **gene-based** tools resolve gene → coordinates via BigQuery (`gene_annotations_v`) because
+results-api has no by-gene open-chromatin endpoint, so they work only where the caller can reach
+db-api — currently chat-backend but **not** the standalone mcp-server (see
+`genetics-results-suite-v1n`).
+
 ## Authentication
 
 - **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway on its own host `auth.<domain>` (which must be added to terraform `domains` so the managed cert covers it), backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
