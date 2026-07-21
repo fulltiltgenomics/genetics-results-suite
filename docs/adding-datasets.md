@@ -130,6 +130,11 @@ the API-side resource grouping.
   open_chromatin` / `variant_effect` and both `trait_type: null`. Those modules/views are
   created by the sibling results-api and results-db tasks in this epic; this repo only adds
   the `datasets.yaml` registry entries and any `dataset_to_resource_rules`.
+- **MPRA** (`siraj_mpra`, Siraj et al. 2026) reused this same new-vertical + new-view pattern:
+  a measured MPRA functional annotation with its own results-api tabix vertical (`mpra.py`) and
+  BigQuery view (`mpra_v`, variant-indexed, LONG one row per variant × cell line), `data_type:
+  mpra` and `trait_type: null`. As above, this repo only owns the `datasets.yaml` entries and
+  `dataset_to_resource_rules`.
 
 ### The shared-combined-file + per-row resource filter (important for credible sets)
 
