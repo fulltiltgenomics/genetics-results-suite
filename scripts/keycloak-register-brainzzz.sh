@@ -46,11 +46,13 @@ CLIENT_JSON="$(cat <<EOF
   "serviceAccountsEnabled": false,
   "secret": "${BRAINZZZ_CLIENT_SECRET}",
   "redirectUris": [
+    "http://localhost:3000/api/auth/genegenie/callback",
     "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback",
     "https://brainzzz-staging.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback",
     "https://brainzzz-prod.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback"
   ],
   "webOrigins": [
+    "http://localhost:3000",
     "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org",
     "https://brainzzz-staging.dsp-eng-tools.broadinstitute.org",
     "https://brainzzz-prod.dsp-eng-tools.broadinstitute.org"
