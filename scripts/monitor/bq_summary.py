@@ -28,13 +28,14 @@ VIEWS = [
     "exome_variant_results_v",
     "gene_burden_results_v",
     "asm_qtl_v",
+    "mpra_v",
 ]
 
 # colocalization_v uses resource1/resource2 instead of resource
 _DUAL_RESOURCE_VIEWS = {"colocalization_v"}
 
 # views where expected resources come from config rules
-_CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v", "asm_qtl_v"}
+_CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v", "asm_qtl_v", "mpra_v"}
 
 # views where expected resources come from the API (coloc pairs)
 _API_VIEWS = {"colocalization_v", "coloc_credsets_v"}
