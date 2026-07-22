@@ -190,9 +190,10 @@ profiles:
 | `chromatin_peaks` | Chromatin accessibility peaks |
 | `open_chromatin` | Atlas of accessible/active chromatin regions by cell type/tissue |
 | `variant_effect` | In-silico predicted variant effect on chromatin (e.g. ChromBPNet, FLARE) |
+| `mpra` | Measured cis-regulatory allelic activity from a massively parallel reporter assay (MPRA) |
 | `gene_disease` | Gene-disease associations |
 
-Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the other three — `chromatin_peaks`, `open_chromatin`, `variant_effect` — carry `trait_type: null`):
+Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the others — `chromatin_peaks`, `open_chromatin`, `variant_effect`, `mpra` — carry `trait_type: null`):
 
 - `caqtl` -> the accessibility QTL (a measured variant-accessibility association).
 - `chromatin_peaks` -> the single-cell peak-to-gene link product.
@@ -201,6 +202,10 @@ Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL 
 - `variant_effect` -> in-silico predicted effect of a variant on accessibility, not a
   measured QTL. Usually per cell-type context (some scores, e.g. FLARE, are pan-context
   with `cell_type` null).
+- `mpra` -> *measured* cis-regulatory allelic activity from a reporter assay (emVar /
+  active / log2Skew), per cell line plus a cross-line `meta` call. Distinct from
+  `variant_effect` (in-silico prediction) and from `caqtl`/eQTL: MPRA reads out intrinsic
+  reporter activity out of native chromatin context, not an endogenous QTL association.
 
 ### `trait_type` enum
 
@@ -209,7 +214,7 @@ Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL 
 | `binary` | Case/control phenotypes |
 | `quantitative` | Continuous phenotypes |
 | `mixed` | Both binary and quantitative |
-| `null` | Non-association data (expression, chromatin_peaks, open_chromatin, variant_effect, gene_disease) |
+| `null` | Non-association data (expression, chromatin_peaks, open_chromatin, variant_effect, mpra, gene_disease) |
 
 ### Profile differences
 

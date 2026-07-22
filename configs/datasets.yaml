@@ -179,6 +179,18 @@ resources:
       snATAC (~850k nuclei, 92 donors, AD and control), cell-type peaks and peak-to-gene links.
     aliases: ["ROSMAP", "Xiong 2023", "AD brain"]
 
+  # massively parallel reporter assay (measured cis-regulatory allelic activity)
+  siraj_mpra:
+    label: "Siraj MPRA"
+    description: >-
+      Siraj et al. 2026 massively parallel reporter assay (MPRA) — 221K fine-mapped +
+      86K control variants tested in 5 cell lines (K562 blood/myeloid, HepG2 liver,
+      SK-N-SH brain, HCT116 colon, A549 lung). Measures intrinsic cis-regulatory allelic
+      activity (emVars) as a functional-validation layer whose emVar rate and
+      allelic-effect concordance scale with FinnGen fine-mapping PIP; distinct from
+      in-silico variant_effect predictions and from endogenous eQTL/caQTL.
+    aliases: ["MPRA", "Siraj", "reporter assay"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -592,6 +604,66 @@ tables:
       model: "resource"
       tissue: "resource"
 
+  mpra_v:
+    description: >-
+      MEASURED cis-regulatory allelic activity from a massively parallel reporter
+      assay (Siraj et al. 2026 MPRA). Variant x cell_line indexed: one row per variant
+      per cell_line, where cell_line is 'meta' (cross-cell-line meta-analysis summary)
+      or one of the 5 tested lines (K562, HEPG2, SKNSH, HCT116, A549). Reports whether
+      an allele modulates reporter expression (emVar / log2Skew) and whether the element
+      drives expression above background (active / log2FC). This is measured reporter
+      activity, distinct from in-silico variant_effect predictions and from endogenous
+      eQTL/caQTL. Always filter by resource, not dataset.
+
+    columns:
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
+      pos: "Genomic position (GRCh38)"
+      variant: "Variant identifier as chr:pos:ref:alt (chromosome X=23)"
+      ref: "Reference allele"
+      alt: "Alternative (tested) allele"
+      cohort: "Fine-mapping cohort the variant was drawn from: GTEx, UKBB, or BBJ (all fine-mapped trait variants), or control (matched controls). NA if the variant had no meta-analysis row"
+      cell_line: "MPRA context — 'meta' (cross-cell-line meta-analysis summary) or one of K562, HEPG2, SKNSH, HCT116, A549. One row per variant per cell_line"
+      emVar: "Whether the allele modulates reporter expression in this context (allelic skew significant)"
+      active: "Whether the element drives reporter expression above background in this context"
+      log2Skew: "Signed allelic effect, log2(alt/ref) of reporter activity (positive = alt drives higher expression)"
+      log2Skew_se: "Standard error of log2Skew. Populated only for cell_line='meta' rows; NULL for per-cell-line rows"
+      log2Skew_mlog10p: "-log10 p for allelic skew. RAW -log10 p for meta rows, but adjusted -log10 p for per-cell-line rows (per-line has no raw p) — note this meta-vs-per-line asymmetry"
+      log2FC: "Element activity vs background, log2 fold change of reporter expression over background"
+      log2FC_mlog10p: "-log10 p for element activity. RAW -log10 p for meta rows, Bonferroni-adjusted -log10 p for per-cell-line rows — same meta-vs-per-line asymmetry as log2Skew_mlog10p"
+      mean_RNA_ref: "Mean reporter RNA level for the ref allele. Populated only for per-cell-line rows; NULL for meta rows"
+      mean_RNA_alt: "Mean reporter RNA level for the alt allele. Populated only for per-cell-line rows; NULL for meta rows"
+      dataset: "Source dataset identifier (constant 'siraj_mpra')"
+      resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    examples:
+      - description: "MPRA calls for a variant across all cell lines (and the meta summary)"
+        sql: >-
+          SELECT cell_line, emVar, active, log2Skew, log2Skew_mlog10p, log2FC, log2FC_mlog10p
+          FROM mpra_v
+          WHERE variant = '1:55039974:A:G'
+          ORDER BY cell_line
+
+      - description: "emVars in a region using the cross-cell-line meta summary"
+        sql: >-
+          SELECT variant, log2Skew, log2Skew_mlog10p, log2FC
+          FROM mpra_v
+          WHERE chr = 1 AND pos BETWEEN 55039974 AND 55539974
+            AND cell_line = 'meta' AND emVar
+          ORDER BY log2Skew_mlog10p DESC
+
+      - description: "Per-cell-line reporter RNA levels for a variant (meta rows have mean_RNA NULL)"
+        sql: >-
+          SELECT cell_line, mean_RNA_ref, mean_RNA_alt, log2Skew, active
+          FROM mpra_v
+          WHERE variant = '1:55039974:A:G' AND cell_line != 'meta'
+          ORDER BY cell_line
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      cell_line: null
+      cohort: null
+
   gene_annotations_v:
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
@@ -767,6 +839,12 @@ dataset_to_resource_rules:
     resource: "rosmap_brain"
     applies_to: ["open_chromatin_v"]
     comment: "ROSMAP (Xiong 2023) AD brain snATAC"
+
+  # mpra_v pattern
+  - pattern: "siraj_mpra%"
+    resource: "siraj_mpra"
+    applies_to: ["mpra_v"]
+    comment: "Siraj et al. 2026 MPRA; lowercase fallback would already give 'siraj_mpra', kept explicit like the other products for clarity and applies_to scoping"
 
   # fallback: lowercase the dataset name
   - pattern: "*"
@@ -1526,6 +1604,25 @@ profiles:
         author: "Marderstein, Kundu, Kundaje & Montgomery"
         publication_date: "2026-01-01"
         data_type: variant_effect
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- MPRA (measured cis-regulatory allelic activity) ---
+      siraj_mpra:
+        resource: siraj_mpra
+        version: "2026"
+        description: >-
+          Siraj et al. 2026 massively parallel reporter assay (MPRA). 221K fine-mapped +
+          86K control variants tested in 5 cell lines (K562, HepG2, SK-N-SH, HCT116, A549)
+          for intrinsic cis-regulatory allelic activity. One row per variant per cell_line
+          (plus a 'meta' cross-cell-line summary); emVar flags allelic modulation of
+          reporter expression and active flags element activity above background. A
+          measured functional-validation layer distinct from in-silico variant_effect and
+          endogenous eQTL/caQTL.
+        author: "Siraj et al."
+        publication_date: "2026-01-01"
+        data_type: mpra
         trait_type: null
         metadata_file: null
         metadata_harmonizer: null
@@ -2436,6 +2533,25 @@ profiles:
         author: "Marderstein, Kundu, Kundaje & Montgomery"
         publication_date: "2026-01-01"
         data_type: variant_effect
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- MPRA (measured cis-regulatory allelic activity) ---
+      siraj_mpra:
+        resource: siraj_mpra
+        version: "2026"
+        description: >-
+          Siraj et al. 2026 massively parallel reporter assay (MPRA). 221K fine-mapped +
+          86K control variants tested in 5 cell lines (K562, HepG2, SK-N-SH, HCT116, A549)
+          for intrinsic cis-regulatory allelic activity. One row per variant per cell_line
+          (plus a 'meta' cross-cell-line summary); emVar flags allelic modulation of
+          reporter expression and active flags element activity above background. A
+          measured functional-validation layer distinct from in-silico variant_effect and
+          endogenous eQTL/caQTL.
+        author: "Siraj et al."
+        publication_date: "2026-01-01"
+        data_type: mpra
         trait_type: null
         metadata_file: null
         metadata_harmonizer: null
