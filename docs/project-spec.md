@@ -19,7 +19,7 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
 Login flow: oauth2-proxy → Keycloak (genetics realm) → Google or Apple IdP.
 
 Internal only (ClusterIP + NetworkPolicy):
-  ├── db-api            (BigQuery proxy, port 8080) — only accessible from chat-backend
+  ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server
   ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
   ├── keycloak          (identity broker, port 8080) — reached via auth.<domain>
   └── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
@@ -158,8 +158,8 @@ The agent reaches both products through five MCP tools: `get_open_chromatin_by_{
 and `get_variant_effect_by_{variant,gene}`. The three position-based tools go through results-api;
 the two **gene-based** tools resolve gene → coordinates via BigQuery (`gene_annotations_v`) because
 results-api has no by-gene open-chromatin endpoint, so they work only where the caller can reach
-db-api — currently chat-backend but **not** the standalone mcp-server (see
-`genetics-results-suite-v1n`).
+db-api — both chat-backend and the standalone mcp-server (mcp-server sets `BIGQUERY_API_URL`
+and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-results-suite-v1n`).
 
 ## Authentication
 
@@ -234,7 +234,7 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 
 ## Security
 
-- Network policies enforce db-api is only reachable from chat-backend, and rag-service only from chat-backend and mcp-server
+- Network policies enforce db-api is only reachable from chat-backend and mcp-server, and rag-service only from chat-backend and mcp-server
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - All services output structured JSON logs, captured by GKE fluentbit and sent to Cloud Logging

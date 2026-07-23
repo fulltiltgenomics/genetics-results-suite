@@ -26,6 +26,8 @@ spec:
         env:
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"
+        - name: BIGQUERY_API_URL
+          value: "http://db-api.genetics.svc.cluster.local:8080"
         - name: MCP_DISABLE_TRANSPORT_SECURITY
           value: "true"
         - name: MCP_API_KEY
