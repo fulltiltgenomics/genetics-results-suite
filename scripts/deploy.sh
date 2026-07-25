@@ -68,6 +68,10 @@ TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 TF_OAUTH_ALLOWED_EMAILS=$(terraform output -raw oauth_allowed_emails 2>/dev/null || true)
 export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}"
+# audience accepted on Google Identity Tokens. Defaults to the gcloud CLI's OAuth client id,
+# which is what `gcloud auth print-identity-token` (the documented programmatic flow) mints;
+# user credentials cannot request a custom audience. Override to add service-account clients.
+export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-32555940559.apps.googleusercontent.com}"
 TF_KEYCLOAK_BACKUP_BUCKET=$(terraform output -raw keycloak_backup_bucket 2>/dev/null || true)
 export KEYCLOAK_BACKUP_BUCKET="${KEYCLOAK_BACKUP_BUCKET:-${TF_KEYCLOAK_BACKUP_BUCKET}}"
 TF_APP_NAME=$(terraform output -raw app_name)
@@ -194,7 +198,7 @@ fi
 # oauth2-allowed-emails is generated below from OAUTH_ALLOWED_EMAILS, so skip the static file.
 for f in configs/*.yaml; do
   [ "$(basename "$f")" = "oauth2-allowed-emails.yaml" ] && continue
-  envsubst '${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS}' < "$f" | kubectl apply -f -
+  envsubst '${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${GOOGLE_TOKEN_AUDIENCE}' < "$f" | kubectl apply -f -
 done
 
 # oauth2-proxy per-address allowlist (one email per line) — single source of truth is
