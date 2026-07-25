@@ -45,6 +45,14 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "100m"

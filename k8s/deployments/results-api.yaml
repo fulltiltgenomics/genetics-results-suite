@@ -72,6 +72,12 @@ spec:
             path: /healthz
             port: 4000
           periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "500m"
