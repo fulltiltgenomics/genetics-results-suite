@@ -28,6 +28,13 @@ spec:
           value: "100000"
         - name: DATASETS_CONFIG_PATH
           value: "/app/configs/datasets.yaml"
+        # chat-backend and mcp-server already send this as a bearer token on every call;
+        # without it here db-api serves anyone who can route to it (see NetworkPolicy note)
+        - name: INTERNAL_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: internal-api-secret
         volumeMounts:
         - name: datasets-config
           mountPath: /app/configs/datasets.yaml

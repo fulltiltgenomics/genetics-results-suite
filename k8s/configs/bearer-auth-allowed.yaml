@@ -6,3 +6,7 @@ metadata:
 data:
   ALLOWED_EMAILS: "${OAUTH_ALLOWED_EMAILS}"
   ALLOWED_EMAIL_DOMAINS: "${OAUTH_EMAIL_DOMAIN}"
+  # `aud` a Google Identity Token must carry. Without it results-api and mcp-server accept
+  # any Google-signed id_token with an allow-listed email, including one minted for an
+  # unrelated app the user signed into — that app's operator could replay it here.
+  GOOGLE_TOKEN_AUDIENCE: "${GOOGLE_TOKEN_AUDIENCE}"
