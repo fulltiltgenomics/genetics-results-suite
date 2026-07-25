@@ -43,7 +43,6 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("oauth2-proxy", re.compile(r"Invalid redirect provided")),
     ("oauth2-proxy", re.compile(r"Invalid redirect generated")),
     ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 state")),  # stale/bot callbacks
-    ("mcp-server", re.compile(r"Authentication via query parameter token")),
 ]
 
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
