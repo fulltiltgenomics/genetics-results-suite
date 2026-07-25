@@ -16,6 +16,13 @@ spec:
         app: chat-backend
     spec:
       serviceAccountName: genetics-suite
+      # the SQLite files on chat-data are owned by uid 1031 from an earlier image, while the
+      # container runs as root. That only worked because root could bypass the permission bits
+      # via CAP_DAC_OVERRIDE; dropping ALL capabilities below took it away and every write
+      # failed with "attempt to write a readonly database". fsGroup makes the kubelet chgrp the
+      # volume to this gid and add group-write, which needs no capability in the container.
+      securityContext:
+        fsGroup: 1032
       containers:
       - name: chat-backend
         image: ${REGISTRY}/genetics-mcp-server:latest
