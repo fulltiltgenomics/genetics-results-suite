@@ -227,19 +227,75 @@ tables:
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
     examples:
-      - description: "Fine-mapped variants for a gene from FinnGen with high PIP"
-        sql: >-
-          SELECT trait, variant, pip, mlog10p, beta
+      - description: "Everything a variant is fine-mapped for, across all resources and data types. Always add the chr filter next to variant — the table is partitioned by chr and without it the same query scans ~20x more data and can hit the bytes-billed limit."
+        sql: |-
+          SELECT resource, dataset, data_type, trait, trait_original, cell_type,
+                 pip, mlog10p, beta, cs_id, cs_size, most_severe, gene_most_severe
           FROM credible_sets_v
-          WHERE gene_most_severe = 'PCSK9' AND resource = 'finngen' AND pip > 0.1
-          ORDER BY pip DESC
+          WHERE chr = 12 AND variant = '12:111446804:T:C'
+          ORDER BY mlog10p DESC
 
-      - description: "Credible sets for a phenotype across resources"
-        sql: >-
-          SELECT resource, dataset, variant, pip, mlog10p
+      - description: "Find the exact trait codes before filtering on them. trait_original holds the source phenotype code (FinnGen endpoints like K11_IBD_STRICT, UKBB field codes), trait a readable name — do this lookup first instead of guessing a code."
+        sql: |-
+          SELECT DISTINCT dataset, trait, trait_original
           FROM credible_sets_v
-          WHERE trait = 'T2D' AND pip > 0.5
-          ORDER BY pip DESC LIMIT 50
+          WHERE resource = 'finngen' AND data_type = 'GWAS'
+            AND (LOWER(trait) LIKE '%colorectal%' OR LOWER(trait_original) LIKE '%colorectal%')
+          ORDER BY trait
+
+      - description: "Lead variant of every genome-wide significant credible set for a phenotype. Rows are variant-level, so pick the top-PIP variant per (resource, dataset, cs_id) rather than reporting every row."
+        sql: |-
+          WITH leads AS (
+            SELECT resource, dataset, cs_id, cs_size, chr, pos, variant, pip, mlog10p, beta, maf,
+                   most_severe, gene_most_severe,
+                   ROW_NUMBER() OVER (PARTITION BY resource, dataset, cs_id
+                                      ORDER BY pip DESC, mlog10p DESC) AS rn
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS' AND trait_original = 'K11_IBD_STRICT'
+          )
+          SELECT * EXCEPT (rn) FROM leads
+          WHERE rn = 1 AND mlog10p >= 7.30103
+          ORDER BY chr, pos
+
+      - description: "All credible sets (GWAS and molecular QTL) overlapping a locus, one row per credible set"
+        sql: |-
+          SELECT resource, dataset, data_type, trait, trait_original, cell_type, cs_id, cs_size,
+                 COUNT(*) AS n_variants, MAX(pip) AS max_pip, MAX(mlog10p) AS max_mlog10p
+          FROM credible_sets_v
+          WHERE chr = 1 AND pos BETWEEN 113259226 AND 114244415 AND pip > 0.01
+          GROUP BY resource, dataset, data_type, trait, trait_original, cell_type, cs_id, cs_size
+          ORDER BY max_mlog10p DESC
+
+      - description: "Fine-mapped protective loss-of-function variants. Note the LoF consequence values actually present in most_severe; 'transcript_ablation' and 'transcript_ablation_variant' do not occur."
+        sql: |-
+          SELECT variant, gene_most_severe, most_severe, trait, trait_original,
+                 pip, mlog10p, beta, maf
+          FROM credible_sets_v
+          WHERE resource = 'finngen' AND data_type = 'GWAS'
+            AND most_severe IN ('frameshift_variant', 'stop_gained', 'stop_lost', 'start_lost',
+                                'splice_acceptor_variant', 'splice_donor_variant')
+            AND pip > 0.1 AND beta < 0 AND maf < 0.05
+          ORDER BY pip DESC, mlog10p DESC
+
+      - description: "Everything fine-mapped in a window around a gene. gene_most_severe only tags variants whose consequence hits that gene, so use gene coordinates from gene_annotations_v for locus-level questions. chr is INT64 in both views — no casting needed."
+        sql: |-
+          WITH g AS (
+            SELECT chr, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end
+            FROM gene_annotations_v WHERE symbol = 'SEMA4B' GROUP BY chr
+          )
+          SELECT c.resource, c.dataset, c.trait, c.trait_original, c.cs_id, c.variant,
+                 c.pip, c.mlog10p, c.beta, c.most_severe, c.gene_most_severe
+          FROM credible_sets_v c
+          JOIN g ON c.chr = g.chr AND c.pos BETWEEN g.gene_start - 200000 AND g.gene_end + 200000
+          WHERE c.data_type = 'GWAS' AND c.pip > 0.1
+          ORDER BY c.mlog10p DESC
+
+      - description: "Molecular QTLs for a gene. For eQTL/pQTL/sQTL rows the measured molecule is in trait (gene or protein symbol), the context in cell_type."
+        sql: |-
+          SELECT resource, dataset, data_type, cell_type, variant, pip, mlog10p, beta, cs_id
+          FROM credible_sets_v
+          WHERE chr = 1 AND trait = 'PCSK9' AND data_type IN ('eQTL', 'pQTL', 'sQTL')
+          ORDER BY mlog10p DESC
 
     categorical_columns:
       resource: null
@@ -294,12 +350,45 @@ tables:
       resource2: "Data source for study 2 (lowercase)"
 
     examples:
-      - description: "Find GWAS-eQTL colocalizations for a gene"
-        sql: >-
-          SELECT trait1, trait2, cell_type2, PP_H4_abf, hit1, dataset2
+      - description: "What molecular QTLs colocalize with a GWAS phenotype — the usual 'what is the likely mechanism' query"
+        sql: |-
+          SELECT trait1, trait1_original, resource2, dataset2, data_type2, trait2, cell_type2,
+                 PP_H4_abf, clpp, hit1, hit2, hit1_beta, hit2_beta, cs1_id, cs2_id
           FROM colocalization_v
-          WHERE trait2 = 'PCSK9' AND data_type2 = 'eQTL' AND PP_H4_abf > 0.8
+          WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
+            AND data_type2 IN ('eQTL', 'pQTL', 'sQTL', 'caQTL')
+            AND PP_H4_abf > 0.8
           ORDER BY PP_H4_abf DESC
+
+      - description: "Everything colocalizing at a locus. There is no single position column — a colocalization covers the region [region_start_min, region_end_max], so test region overlap rather than pos BETWEEN."
+        sql: |-
+          SELECT resource1, dataset1, data_type1, trait1, trait1_original,
+                 resource2, dataset2, data_type2, trait2, cell_type2,
+                 PP_H4_abf, PP_H3_abf, hit1, hit2, cs_overlap, cs1_id, cs2_id
+          FROM colocalization_v
+          WHERE chr = 19 AND region_start_min < 8500000 AND region_end_max > 8300000
+            AND PP_H4_abf > 0.5
+          ORDER BY PP_H4_abf DESC
+
+      - description: "All colocalizations involving one trait. Pairs are not ordered, so a gene or phenotype can appear as either side — always test trait1 OR trait2, otherwise half the hits are missed."
+        sql: |-
+          SELECT data_type1, dataset1, trait1, cell_type1, data_type2, dataset2, trait2, cell_type2,
+                 PP_H4_abf, hit1, hit2, hit1_mlog10p, hit2_mlog10p
+          FROM colocalization_v
+          WHERE (trait1 = 'PCSK9' OR trait2 = 'PCSK9') AND PP_H4_abf > 0.8
+          ORDER BY PP_H4_abf DESC
+
+      - description: "Phenotypes sharing causal variants with a GWAS trait, with effect direction concordance from the lead variant betas"
+        sql: |-
+          SELECT trait2_original, resource2, COUNT(DISTINCT cs1_id) AS n_loci,
+                 ROUND(MAX(PP_H4_abf), 3) AS max_pp_h4,
+                 COUNTIF(SIGN(hit1_beta) = SIGN(hit2_beta)) AS n_same_direction,
+                 COUNTIF(SIGN(hit1_beta) != SIGN(hit2_beta)) AS n_opposite_direction
+          FROM colocalization_v
+          WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
+            AND data_type1 = 'GWAS' AND data_type2 = 'GWAS' AND PP_H4_abf > 0.8
+          GROUP BY trait2_original, resource2
+          ORDER BY n_loci DESC
 
     categorical_columns:
       resource1: null
@@ -312,7 +401,8 @@ tables:
   coloc_credsets_v:
     description: >-
       Individual credible set variants in colocalized credible sets.
-      Join with colocalization_v on cs1_id/cs2_id for full colocalization context.
+      Join to colocalization_v on (cs_id, dataset) = (cs1_id, dataset1) or (cs2_id, dataset2)
+      for full colocalization context — cs_id alone is reused across datasets and traits.
 
     columns:
       dataset: "Study/release name"
@@ -328,17 +418,44 @@ tables:
       beta: "Effect size estimate (log-OR for binary traits)"
       se: "Standard error of beta"
       pip: "Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal"
-      cs_id: "Credible set identifier (matches cs1_id or cs2_id in colocalization_v)"
+      cs_id: "Credible set identifier. Matches cs1_id/cs2_id in colocalization_v, but only together with dataset — the same cs_id occurs in many datasets"
       variant: "Variant identifier as chr:pos:ref:alt"
       resource: "Data source identifier (lowercase)"
 
     examples:
-      - description: "Get variants in a colocalization credible set"
-        sql: >-
-          SELECT variant, pip, mlog10p, beta
-          FROM coloc_credsets_v
-          WHERE cs_id = 'cs_id_here'
-          ORDER BY pip DESC
+      - description: "Both credible sets behind a colocalization. Join on cs_id AND dataset; joining on cs_id alone returns credible sets from unrelated datasets."
+        sql: |-
+          WITH top_coloc AS (
+            SELECT dataset1, cs1_id, dataset2, cs2_id
+            FROM colocalization_v
+            WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
+              AND data_type2 = 'eQTL' AND PP_H4_abf > 0.9
+            ORDER BY PP_H4_abf DESC LIMIT 1
+          )
+          SELECT cc.dataset, cc.data_type, cc.trait, cc.cell_type,
+                 cc.variant, cc.pip, cc.mlog10p, cc.beta
+          FROM top_coloc t
+          JOIN coloc_credsets_v cc
+            ON (cc.cs_id = t.cs1_id AND cc.dataset = t.dataset1)
+            OR (cc.cs_id = t.cs2_id AND cc.dataset = t.dataset2)
+          ORDER BY cc.data_type, cc.pip DESC
+
+      - description: "Variants shared by both credible sets of a colocalization, with each side's PIP and effect direction (candidate causal variants)"
+        sql: |-
+          WITH pair AS (
+            SELECT dataset1, cs1_id, dataset2, cs2_id
+            FROM colocalization_v
+            WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
+              AND data_type2 = 'eQTL' AND PP_H4_abf > 0.9 AND cs_overlap > 0
+            ORDER BY PP_H4_abf DESC LIMIT 1
+          )
+          SELECT a.variant, a.pip AS gwas_pip, b.pip AS qtl_pip,
+                 a.beta AS gwas_beta, b.beta AS qtl_beta
+          FROM pair p
+          JOIN coloc_credsets_v a ON a.cs_id = p.cs1_id AND a.dataset = p.dataset1
+          JOIN coloc_credsets_v b ON b.cs_id = p.cs2_id AND b.dataset = p.dataset2
+                                 AND b.variant = a.variant
+          ORDER BY a.pip DESC
 
     categorical_columns:
       resource: null
@@ -375,19 +492,27 @@ tables:
       resource: "Data source identifier (lowercase)"
 
     examples:
-      - description: "Significant exome variant associations for a gene"
-        sql: >-
-          SELECT gene, variant, annotation, mlog10p, beta, trait
+      - description: "Predicted loss-of-function variant associations in a gene. annotation values differ per resource: genebass uses pLoF/missense/LC, ibd_exome_2026 uses VEP terms such as frameshift_variant."
+        sql: |-
+          SELECT resource, dataset, trait, trait_original, gene, annotation, variant,
+                 mlog10p, beta, se, af_overall, ac, an
           FROM exome_variant_results_v
-          WHERE gene = 'PCSK9' AND mlog10p > 3
+          WHERE gene = 'NOD2' AND annotation = 'pLoF'
           ORDER BY mlog10p DESC
 
-      - description: "IBD exome significant variant associations for a gene"
-        sql: >-
-          SELECT gene, variant, annotation, mlog10p, beta, trait, n_cases, n_controls
+      - description: "Exome associations for one variant across resources"
+        sql: |-
+          SELECT resource, dataset, gene, annotation, trait, mlog10p, beta, af_overall, ac
           FROM exome_variant_results_v
-          WHERE gene = 'NOD2' AND resource = 'ibd_exome_2026'
+          WHERE variant = '16:50729867:G:GC'
           ORDER BY mlog10p DESC
+
+      - description: "Distinct qualifying variants in a gene with allele counts — ac/2 approximates the number of heterozygous carriers behind a burden signal"
+        sql: |-
+          SELECT DISTINCT gene, variant, annotation, af_overall, ac, an
+          FROM exome_variant_results_v
+          WHERE gene = 'TLN2' AND annotation = 'pLoF' AND resource = 'genebass'
+          ORDER BY ac DESC
 
     categorical_columns:
       resource: null
@@ -420,19 +545,29 @@ tables:
       resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
 
     examples:
-      - description: "Significant gene burden results from BipEx2 bipolar exome study"
-        sql: >-
-          SELECT gene, annotation, mlog10p_burden, beta, n_cases, n_controls
+      - description: "All burden tests for a gene across every exome study and phenotype — the usual starting point for 'is this gene implicated anywhere'"
+        sql: |-
+          SELECT resource, dataset, trait, trait_original, annotation,
+                 mlog10p_burden, beta, se, n_cases, n_controls, total_variants
+          FROM gene_burden_results_v
+          WHERE gene = 'TLN1'
+          ORDER BY mlog10p_burden DESC
+
+      - description: "pLoF burden hits for a disease. Trait names are source-specific strings, so match them case-insensitively rather than assuming an exact label."
+        sql: |-
+          SELECT gene, annotation, trait, mlog10p_burden, beta, se,
+                 n_cases, n_controls, total_variants
+          FROM gene_burden_results_v
+          WHERE resource = 'genebass' AND annotation = 'pLoF'
+            AND LOWER(trait) LIKE '%crohn%'
+          ORDER BY mlog10p_burden DESC
+
+      - description: "Top burden signals in a single exome study"
+        sql: |-
+          SELECT gene, annotation, trait, mlog10p_burden, beta, n_cases, n_controls
           FROM gene_burden_results_v
           WHERE resource = 'bipex2' AND mlog10p_burden > 3
           ORDER BY mlog10p_burden DESC LIMIT 20
-
-      - description: "Compare burden results for a gene across all exome studies"
-        sql: >-
-          SELECT resource, dataset, annotation, mlog10p_burden, beta
-          FROM gene_burden_results_v
-          WHERE gene = 'PCSK9'
-          ORDER BY mlog10p_burden DESC
 
     categorical_columns:
       resource: null
@@ -703,6 +838,15 @@ tables:
       resource: "Data source identifier, constant 'hgnc'"
 
     examples:
+      - description: "Coordinates for a set of genes, to drive window queries against the result views. A symbol can have several rows, so aggregate to one interval per gene; chr is INT64 here and in the result views, so joins need no casting."
+        sql: |-
+          SELECT symbol, chr, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end,
+                 strand, ensembl_gene_id
+          FROM gene_annotations_v
+          WHERE symbol IN ('PCSK9', 'NOD2', 'TLN1')
+          GROUP BY symbol, chr, strand, ensembl_gene_id
+          ORDER BY symbol
+
       - description: "Enumerate protein-coding genes in an HGNC gene group (here GPCRs, group 139), excluding olfactory receptors, with coordinates"
         sql: >-
           SELECT symbol, chr, gene_start, gene_end
@@ -739,6 +883,71 @@ tables:
       resource: null
       locus_type: null
       strand: null
+
+  variant_annotation_v:
+    description: >-
+      Per-variant functional annotation and FinnGen (R14) allele frequencies —
+      one row per variant, covering all imputed variants, not only fine-mapped ones.
+      This is the only view with rsIDs and genotype counts: join to it whenever a
+      question needs an rsID, an allele frequency, imputation quality, or Finnish
+      enrichment for variants found in the association views. Association results
+      are not here — use credible_sets_v, exome_variant_results_v etc. for those.
+
+    columns:
+      variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23. Same format as the variant column in the association views, so it joins directly"
+      chr: "Chromosome number, chromosome X is 23"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative (effect) allele"
+      INFO: "Imputation INFO score (imputation quality, 0-1). Low values indicate poorly imputed variants"
+      AF: "Alternative allele frequency in FinnGen. This is the alt allele frequency, not the minor allele frequency — there is no maf column, use LEAST(AF, 1 - AF)"
+      AC_Het: "Number of heterozygous genotypes in FinnGen"
+      AC_Hom: "Number of homozygous (alt/alt) genotypes in FinnGen"
+      most_severe: "Most severe VEP-predicted variant consequence"
+      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      rsid: "dbSNP rsID when available. The only place rsIDs are stored — the association views have none"
+      EXOME_enrichment_nfe: "Finnish vs non-Finnish European allele-frequency ratio from gnomAD exomes. Values above ~2 mark Finnish-enriched variants"
+      GENOME_enrichment_nfe: "Finnish vs non-Finnish European allele-frequency ratio from gnomAD genomes"
+      index: "Row index in the source annotation file, not a genetic quantity"
+      resource: "Data source identifier, constant 'finngen' (FinnGen R14)"
+
+    examples:
+      - description: "Translate an rsID to the chr:pos:ref:alt identifier the association views use. rsid is neither partitioned nor clustered, so this scans the whole table — add a chr filter whenever the chromosome is already known."
+        sql: |-
+          SELECT variant, chr, pos, ref, alt, rsid, most_severe, gene_most_severe,
+                 AF, AC_Het, AC_Hom, INFO
+          FROM variant_annotation_v
+          WHERE rsid = 'rs11591147'
+
+      - description: "Attach rsIDs, allele frequencies and Finnish enrichment to fine-mapped variants. credible_sets_v has no rsid, AF, AC_Het, AC_Hom or enrichment columns — join here for them, matching on chr as well so the join prunes partitions."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, variant, trait, trait_original, pip, mlog10p, beta
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS'
+              AND trait_original = 'K11_IBD_STRICT' AND pip > 0.1
+          )
+          SELECT cs.trait_original, cs.variant, va.rsid, va.most_severe, va.gene_most_severe,
+                 cs.pip, cs.mlog10p, cs.beta, va.AF, va.AC_Het, va.AC_Hom,
+                 va.EXOME_enrichment_nfe, va.INFO
+          FROM cs
+          JOIN variant_annotation_v va ON va.chr = cs.chr AND va.variant = cs.variant
+          ORDER BY cs.pip DESC
+
+      - description: "Finnish-enriched coding variants in a gene, regardless of whether they are associated with anything. The table is clustered by most_severe and gene_most_severe, so filtering on both is cheap."
+        sql: |-
+          SELECT variant, rsid, most_severe, gene_most_severe, AF,
+                 ROUND(LEAST(AF, 1 - AF), 5) AS maf, AC_Het, AC_Hom,
+                 EXOME_enrichment_nfe, GENOME_enrichment_nfe
+          FROM variant_annotation_v
+          WHERE gene_most_severe = 'PCSK9'
+            AND most_severe IN ('missense_variant', 'frameshift_variant', 'stop_gained',
+                                'splice_acceptor_variant', 'splice_donor_variant')
+            AND EXOME_enrichment_nfe > 2
+          ORDER BY AF DESC
+
+    categorical_columns:
+      resource: null
 
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
