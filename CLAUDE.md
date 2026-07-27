@@ -27,6 +27,43 @@ QUALITY CODING RULES
 6. This should often be your first step in understanding a task.
 
 
+# Documentation ownership
+
+Changing a path on the left makes the doc on the right wrong until it is updated in
+the same commit. `scripts/check-doc-drift.sh` warns (never blocks) on commits that
+violate this; it runs from the `pre-commit` hook.
+
+| changed path | doc to update | what to check |
+|---|---|---|
+| `configs/datasets.yaml` | `docs/datasets-yaml-schema.md`, `docs/adding-datasets.md` | `data_type` enum, dataset/rule/table fields, the `ALL_VIEWS` list |
+| `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
+| `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
+| `scripts/deploy.sh`, `rollout.sh`, `build*.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
+| `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
+| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
+
+A doc is stale the moment it *enumerates* something the code no longer matches.
+Counts and lists rot silently — view lists, endpoint tables, env-var tables,
+service inventories — so re-derive them from the code rather than trusting them.
+
+
+# Cross-repo documentation
+
+This repo is the spec of record for the suite as a whole. The sibling repos
+(`genetics-results-api`, `-db`, `-browser`, `-munge`, `genetics-mcp-server`) each
+document only themselves, so a feature that spans repos leaves no single repo's
+docs wrong in a way that repo can detect.
+
+1. Adding or changing a **dataset, BigQuery view, API route, or MCP tool** anywhere
+   in the suite requires updating this repo's `docs/adding-datasets.md` and
+   `docs/project-spec.md`, not only the docs of the repo you edited.
+2. `configs/datasets.yaml` here is the canonical copy. Sibling repos hold generated
+   copies — when you change it, check whether those copies need regenerating.
+3. When a change lands in a sibling repo that invalidates a count or list in this
+   repo's docs, fix it here in the same session. Do not assume the other repo's
+   own docs cover it.
+
+
 # Software Development Behavior Guidelines
 
 1. Don't guess and do things which you are not certain about. Ask the user instead.
