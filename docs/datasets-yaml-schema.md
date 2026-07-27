@@ -182,6 +182,7 @@ profiles:
 | `pqtl` | Protein QTL |
 | `sqtl` | Splicing QTL |
 | `caqtl` | Chromatin accessibility QTL |
+| `asmqtl` | Allele-specific methylation QTL |
 | `metaboqtl` | Metabolomics QTL |
 | `mixed` | Multiple QTL types (collections) |
 | `exome` | Exome variant-level results |

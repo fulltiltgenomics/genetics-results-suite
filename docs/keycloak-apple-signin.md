@@ -46,15 +46,12 @@ once its DNS exists, see [Switching Keycloak to a dedicated subdomain](#switchin
 ## One-time prerequisites
 
 ### 1. Keycloak host
-Keycloak's issuer must be browser-reachable over TLS. Add the host to terraform `domains`
-so the GKE managed cert covers it and the ingress routes it to the auth-gateway:
-
-```hcl
-domains = ["finngenie.finngen.fi", "finngenie.fi", "auth.finngenie.finngen.fi"]
-```
-
-`KEYCLOAK_HOST` defaults to `auth.${DOMAIN}` in `deploy.sh`; override via env if needed.
-Point a DNS record for the host at the ingress static IP.
+Keycloak's issuer must be browser-reachable over TLS. Nothing to provision: `KEYCLOAK_HOST` defaults
+to `${REDIRECT_TO_HOST:-${DOMAIN}}/auth` in `deploy.sh`, i.e. the `/auth` path on the canonical web
+host, which the existing DNS record, managed cert and ingress already cover. Override via env only if
+you serve Keycloak somewhere else — and if that is a dedicated subdomain, follow
+[Switching Keycloak to a dedicated subdomain](#switching-keycloak-to-a-dedicated-subdomain), which
+also needs the host added to terraform `domains` and its own DNS record.
 
 ### 2. Apple Developer (Sign in with Apple)
 Requires a paid Apple Developer Program membership. In the portal:

@@ -8,12 +8,15 @@ genetics-results-suite is the Terraform and Kubernetes deployment configuration 
 
 ```
 Internet → GKE Ingress (HTTPS, Google-managed certs)
-           ├── auth.<domain> → auth-gateway → keycloak (identity broker, login UI + OIDC)
            └── /*  → auth-gateway (nginx, port 8080)
                      ├── /oauth2/*  → oauth2-proxy (OIDC → Keycloak, port 4180)
-                     ├── /api/*     → results-api  (FastAPI, port 4000) — oauth2 or bearer token
-                     ├── /chat/*    → chat-backend  (FastAPI, port 8000)
-                     ├── /mcp/*     → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
+                     ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — unauthenticated
+                     ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
+                     │                 Authorization: Bearer requests bypass both and hit results-api
+                     │                 (FastAPI, port 4000) directly
+                     ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
+                     ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth;
+                     │                 /.well-known/oauth-protected-resource[/mcp] served unauthenticated
                      └── /*         → frontend      (nginx, port 3000)
 
 Login flow: oauth2-proxy → Keycloak (genetics realm) → Google or Apple IdP.
@@ -21,7 +24,7 @@ Login flow: oauth2-proxy → Keycloak (genetics realm) → Google or Apple IdP.
 Internal only (ClusterIP + NetworkPolicy):
   ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server
   ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
-  ├── keycloak          (identity broker, port 8080) — reached via auth.<domain>
+  ├── keycloak          (identity broker, port 8080) — reached via the /auth path on the primary domain
   └── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
 ```
 
@@ -31,8 +34,8 @@ Internal only (ClusterIP + NetworkPolicy):
 |---------|-----------|------|-------------|
 | frontend | genetics-results-browser | 3000 | React SPA via nginx |
 | bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
-| auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also routes auth.<domain> to keycloak |
-| oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak |
+| auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also serves the keycloak login path `<domain>/auth` |
+| oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | 8080 | Identity broker: Google + Apple sign-in, single OIDC issuer |
 | keycloak-postgres | — (upstream image) | 5432 | Keycloak database (PVC + daily pg_dump to GCS) |
 | results-api | genetics-results-api | 4000 | FastAPI genetics results API |
@@ -41,6 +44,8 @@ Internal only (ClusterIP + NetworkPolicy):
 | db-api | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only) |
 | monitor | — (scripts/monitor/) | — | CronJob: health checks, BQ summary, log alerts → Slack |
+| analyze-conversations | genetics-mcp-server (same image) | — | Nightly CronJob: LLM scoring of chat conversations (see below) |
+| keycloak-postgres-backup | — (upstream `google/cloud-sdk`) | — | Daily CronJob: `pg_dump` of the Keycloak DB to GCS (only when the broker is enabled) |
 
 ### results-api deployment tuning
 
@@ -63,21 +68,34 @@ CPU `limits` if you change them.
 ├── configs/
 │   ├── rag/                  # RAG experiment configs (not k8s manifests)
 │   ├── datasets.yaml              # canonical dataset/resource definitions (single source of truth)
-│   └── datasets-schema-example.yaml  # YAML schema reference with example datasets
+│   ├── datasets-schema-example.yaml  # YAML schema reference with example datasets
+│   └── *_pheno.json          # per-phenotype metadata for external GWAS (covid_hgi, ibd_gwas)
 ├── k8s/
 │   ├── namespace.yaml
-│   ├── deployments/          # deployment manifests for all services
-│   ├── ingress/              # ingress, managed certs, backend/frontend configs
-│   ├── configs/              # k8s config manifests (e.g., allowed emails)
+│   ├── deployments/          # deployment manifests for all services (+ analyze-conversations
+│   │                         #   and monitor CronJobs)
+│   ├── ingress/              # backend/frontend configs only — the Ingress and ManagedCertificate
+│   │                         #   are generated by deploy.sh from the terraform `domains` list
+│   ├── configs/              # k8s config manifests (oauth2/bearer-auth allow-lists)
+│   ├── cronjobs/             # cronjobs applied only when Keycloak is enabled (postgres backup)
 │   ├── network-policies/     # network isolation rules
 │   ├── secrets/              # non-sensitive secret templates
 │   └── volumes/              # persistent volume claims
+├── keycloak/                 # Keycloak image build context (official image + Apple IdP and
+│                             #   email-allowlist extension JARs), realm/client/IdP templates,
+│                             #   and the `genetics` login theme
 ├── scripts/
 │   ├── build-all.sh          # build and push all Docker images
+│   ├── build.sh              # build and push one service's image
 │   ├── create-secrets.sh     # create k8s secrets from env vars
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── chat_usage_stats.sh   # chat usage counts from the BigQuery chat-log sink
+│   ├── keycloak-register-client.sh    # register/update an MCP OAuth client in the live realm
+│   ├── keycloak-register-brainzzz.sh  # the brainzzz client specifically
+│   ├── keycloak-bind-allowlist.sh     # bind the email allow-list authenticator + realm attrs
+│   ├── keycloak-get-token.sh          # browser auth-code+PKCE flow, prints an access token
 │   └── monitor/              # monitoring CronJob (Python)
 │       ├── Dockerfile
 │       ├── requirements.txt
@@ -91,16 +109,23 @@ CPU `limits` if you change them.
 │   ├── gke.tf                # GKE cluster and node pool
 │   ├── network.tf            # VPC, subnets, static IP, DNS
 │   ├── registry.tf           # Artifact Registry for Docker images
-│   ├── backups.tf            # daily disk snapshot schedule for chat-data PVC
+│   ├── backups.tf            # daily disk snapshot schedule for chat-data PVC, Keycloak
+│   │                         #   backup bucket
+│   ├── logging.tf            # Cloud Logging → BigQuery sinks (gated by `enable_log_sinks`)
 │   ├── iam.tf                # service accounts, Workload Identity
 │   ├── kubernetes.tf         # namespace, k8s service account
 │   ├── variables.tf          # input variables
 │   ├── outputs.tf            # output values
-│   └── terraform.tfvars      # variable values (not committed)
+│   ├── {daly,finngen}.tfbackend       # per-profile GCS state backends
+│   ├── terraform.tfvars.example
+│   ├── terraform.tfvars.{daly,finngen}  # per-deployment values (not committed)
+│   └── terraform.tfvars      # active variable values (not committed)
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
-    ├── nginx-setup.md        # notes for local VM nginx setup
+    ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
+    ├── genegenie-migration.md   # finngenie → genegenie hostname migration (daly)
+    ├── nginx-setup.md        # notes for the legacy VM nginx setup
     └── project-spec.md       # this file
 ```
 
@@ -115,6 +140,8 @@ Both services load all dataset/resource metadata exclusively from the YAML -- th
 The YAML defines two exome dataset resources with different filtering levels: `genebass_exome` (filtered to p < 1e-4) and `ibd_exome` (resource: `ibd_exome_2026`, containing only exome-wide significant variants at p < 3e-7 plus LD-curated variants at p < 5e-6, with 3 phenotypes: IBD, UC, CD). The `dataset_to_resource_rules` map `IBD_exome_2026` to `ibd_exome_2026` for `exome_variant_results_v` and `gene_burden_results_v` views.
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
+
+caQTL results are keyed by **peak**, not gene: `finngen_caqtl` rows in `credible_sets_v` carry a peak id (e.g. `chr5-35482826-35484273`) in the `trait` column, so a gene-based caQTL question is only answerable by joining through the Open4Gene peak-to-gene link table (`peak_to_gene_v`, the BQ face of the `finngen_chromatin_peaks` dataset) on `peak_id = trait` and `cell_type = cell_type`. The `tables.peak_to_gene_v` block in `datasets.yaml` carries the column descriptions, worked join examples, and an explicit warning against approximating the link by coordinates (linked peaks sit up to ~1 Mb away and most nearby peaks are not linked) — without it agents fell back to hand-written coordinate-window SQL that silently answered a different question. The `FinnGen%` resource rule is scoped to include `peak_to_gene_v` since the table is FinnGen ATAC-seq only.
 
 MPRA (Siraj et al. 2026) is a new functional-annotation product — measured intrinsic cis-regulatory allelic activity from a massively parallel reporter assay (221K fine-mapped + 86K control variants tested in 5 cell lines: K562, HepG2, SK-N-SH, HCT116, A549), served for both profiles. Like open_chromatin/variant_effect it is a new vertical rather than a plain dataset: one dataset `siraj_mpra` under resource `siraj_mpra` (`dataset_to_resource_rules` map `siraj_mpra%` -> `siraj_mpra`), `data_type: mpra`, `trait_type: null`. The source WIDE per-variant TSV is munged to LONG (one row per variant × `cell_line`, where `cell_line` ∈ {`meta`, K562, HEPG2, SKNSH, HCT116, A549}) carrying the emVar/active/log2Skew/log2FC calls, bgzip+tabix-indexed on GCS. Served two ways: results-api tabix range endpoints (`/api/v1/mpra` by-variant / by-region / by-gene, its own tabix vertical) and BigQuery (`mpra` base table / `mpra_v` view, which adds `resource`). The genetics-mcp-server exposes `get_mpra_by_variant`, `get_mpra_by_region`, and `get_mpra_by_gene`. Scientifically it is the functional-validation layer for the regulatory-buffering story (Kanai et al.): emVar rates and allelic-effect concordance scale with FinnGen fine-mapping PIP, and MPRA measures intrinsic reporter activity distinct from endogenous eQTL/caQTL and from in-silico variant_effect predictions.
 
@@ -163,9 +190,9 @@ and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-
 
 ## Authentication
 
-- **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway on its own host `auth.<domain>` (which must be added to terraform `domains` so the managed cert covers it), backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
+- **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway under the **`/auth` path on the primary domain** (`KEYCLOAK_HOST` defaults to `<domain>/auth`), so it reuses the existing DNS record, managed cert and ingress rather than needing an `auth.<domain>` subdomain; it is backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
 - **oauth2-proxy** handles browser sessions. Its provider is profile-driven (`OAUTH2_PROXY_PROVIDER`): `oidc` against Keycloak where the broker is enabled (daly), or `google` directly otherwise (finngen). Either way it authorizes against an allow-list: one or more **domains** (`OAUTH2_PROXY_EMAIL_DOMAINS`, comma-separated) **or** specific **addresses** (the `--authenticated-emails-file`). Both lists come from terraform — `oauth_email_domain` (comma-separated, e.g. `broadinstitute.org,finngen.fi`) and `oauth_allowed_emails` (specific addresses, e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
-- **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying; a separate `server` block routes `auth.<domain>` to Keycloak. The email returned by oauth2-proxy is passed to backends in the `X-Goog-Authenticated-User-Email` header (the `accounts.google.com:` prefix is legacy and provider-agnostic — backends read only the address after the colon).
+- **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying; a `location /auth/` block (injected by `deploy.sh` via `${KEYCLOAK_SERVER}`, and served without the `auth_request` since it *is* the auth endpoint) strips the prefix and proxies to Keycloak. The email returned by oauth2-proxy is passed to backends in the `X-Goog-Authenticated-User-Email` header (the `accounts.google.com:` prefix is legacy and provider-agnostic — backends read only the address after the colon).
 - **results-api** also accepts `Authorization: Bearer` tokens (Google Identity Tokens or internal shared secret)
 - **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via **four** paths: the `MCP_API_KEY` shared secret(s); Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list); per-user API tokens issued via the chat API; and **Keycloak OAuth 2.1 access tokens** (see below). NOTE: the Google JWT path validates **Google** Identity Tokens only — programmatic access for Apple-only identities is a known follow-up.
 - **MCP OAuth (resource-server) path**: when `OAUTH_ISSUER` + `OAUTH_RESOURCE_URL` are set (daly/genegenie; empty for finngen, so the path is inert there), the mcp-server acts as an OAuth 2.1 **resource server**. It validates Keycloak-issued JWT access tokens (RS256 signature via the realm JWKS, `iss`/`aud`/`exp`, then the same email/domain allow-list), and advertises RFC 9728 discovery at `/.well-known/oauth-protected-resource` (routed unauthenticated through auth-gateway; returns `WWW-Authenticate: Bearer resource_metadata=…` on 401), so MCP clients auto-discover the Keycloak authorization server. The Keycloak issuer is **path-based** (`https://<host>/auth/realms/genetics`); tokens must carry `aud` = `OAUTH_RESOURCE_URL` (`https://<host>/mcp`), enforced per client via an audience mapper. Each external app is its own Keycloak client (registered manually — no open Dynamic Client Registration); onboard one with `scripts/keycloak-register-client.sh <clientId> <redirect-uri>…` (brainzzz is the first, via `keycloak/brainzzz-client.json.template` + `scripts/keycloak-register-brainzzz.sh`). Setup is documented in `docs/keycloak-apple-signin.md`.
@@ -182,7 +209,8 @@ and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
-- **Storage**: 10Gi PVC for chat-backend SQLite databases, file attachments, and tool result downloads; 50Gi PV/PVC for rag-service embedding stores
+- **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases, file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
+- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
 
@@ -201,12 +229,12 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 **What it checks:**
 
 - **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
-- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`) for row counts and distinct resources. For credible_sets/exome/gene_based views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
+- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`, `mpra_v`) for row counts and distinct resources. For credible_sets/exome/gene_based/asm_qtl/mpra views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
 - **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 8h). Groups by container, deduplicates via SQLite, and only reports new alerts.
 
 **Severity reclassification:** GKE's logging agent tags *everything a container writes to stderr* as `severity=ERROR` regardless of content, so the Cloud Logging severity is meaningless for the many services that log normally to stderr (uvicorn, postgres, batch scripts). The alerter therefore recovers the level the application itself reported by matching the message text against `_LEVEL_PATTERNS` (python/uvicorn `INFO:`, nginx `[error]`, postgres `[27] LOG:`), ranks it via `_LEVEL_RANK`, and drops anything below WARNING. Messages carrying no recognizable level fall back to the Cloud Logging severity (fail open, so unknown formats still alert). The count of dropped entries is logged to the CronJob's stdout so the suppression is never silent. Services that log progress to stderr must prefix it with a level (see `analyze_conversations.py`) or it will be reported as an error.
 
-**Ignore list:** `_IGNORE_PATTERNS` drops known-benign `(container, message regex)` pairs outright — oauth2-proxy probe/callback noise and mcp-server query-parameter-token notices.
+**Ignore list:** `_IGNORE_PATTERNS` drops known-benign `(container, message regex)` pairs outright — currently only oauth2-proxy probe/callback noise. The mcp-server query-parameter-token warning was deliberately removed from the list: the query-token fallback is off by default in genetics-mcp-server, so if it fires again someone enabled `MCP_ALLOW_QUERY_TOKEN` and credentials are travelling in URLs — that must reach Slack.
 
 **Deduplication:** The alerter normalizes log messages (stripping timestamps, UUIDs, IPs, request IDs) and hashes `container|normalized_message` into a dedup key. Seen keys are stored in a SQLite database on a PVC (`/data/monitor.db`) with a 24-hour TTL. Expired entries are cleaned up at the start of each run.
 
@@ -236,6 +264,7 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 ## Security
 
 - Network policies enforce db-api is only reachable from chat-backend and mcp-server, and rag-service only from chat-backend and mcp-server
+- **Container privileges**: every application container sets `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and the `RuntimeDefault` seccomp profile. `db-api` and `bff` additionally run `runAsNonRoot` (uid 10001 / 1000) since they write nothing outside their image; results-api, chat-backend and mcp-server still run as root because they raise `ulimit`, shell out to `gcloud`, cache tabix indexes, or own root-owned files on the `chat-data` PVC. chat-backend sets `fsGroup: 1032` so the pre-existing SQLite files stay writable once `CAP_DAC_OVERRIDE` is dropped.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - All services output structured JSON logs, captured by GKE fluentbit and sent to Cloud Logging
@@ -251,8 +280,8 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
 - **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (grepping `terraform.tfvars` directly, like `deploy.sh` does for `config_profile`) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
-- **Single service update**: `./scripts/rollout.sh <service> <tag>` — updates one deployment image (requires `REGISTRY` env var)
-- **Build all images**: `./scripts/build-all.sh` — builds and pushes all Docker images to Artifact Registry (requires `REGISTRY` env var)
+- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (requires `REGISTRY` env var; `tag` defaults to `latest`). Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
+- **Build all images**: `./scripts/build-all.sh` — clones the service repos (branch overridable per service, all default `master` except rag-service) and builds/pushes all Docker images to Artifact Registry, including the local `monitor` and `keycloak` build contexts (requires `REGISTRY` env var)
 - **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh)
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor)
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
