@@ -1,5 +1,15 @@
 # Nginx + OAuth2 Proxy Setup for Genetics Results Suite
 
+> **superseded — historical record, do not follow for a new deployment.** this is the original
+> single-VM setup: nginx on the host, TLS from certbot/Let's Encrypt, oauth2-proxy under systemd.
+> the suite is now deployed to GKE with `./scripts/deploy.sh`, which applies the manifests in
+> `k8s/` and generates the Ingress plus a Google `ManagedCertificate` from the `domains` list; the
+> `auth_request` nginx layer runs in-cluster as `k8s/deployments/auth-gateway.yaml`. see
+> [project-spec.md](project-spec.md) and the repository README for the current architecture.
+> one piece of this era is still live: the `finngenie` → `genegenie` 301 redirect, now rendered
+> into the in-cluster auth-gateway by `deploy.sh` — see
+> [genegenie-migration.md](genegenie-migration.md).
+
 Replicating the dev.finngen.fi reverse-proxy configuration on a fresh Google VM.
 
 ## Architecture
