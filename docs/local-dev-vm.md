@@ -32,6 +32,7 @@ gcloud compute instances create $VM_NAME \
   --machine-type=e2-standard-2 \
   --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
   --boot-disk-size=100GB \
+  --service-account=SERVICE_ACCOUNT_NAME@$GCP_PROJECT.iam.gserviceaccount.com \
   --scopes=cloud-platform
 ```
 
@@ -225,6 +226,7 @@ curl localhost:8080/health           # db-api
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |
+| db-api logs `bigquery.tables.get` / `bigquery.jobs.create` denied | the VM runs as the default compute service account, which has no roles. Attach one with `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` (`gcloud compute instances set-service-account`, VM stopped) and restart the servers |
 | Browser CORS errors | the origin must be `http://localhost:3000` (the chat backend's `CORS_ORIGINS` default); a different port needs `CORS_ORIGINS` set |
 | `networks/default ... cannot be found` on create | custom-mode VPC — pass `--subnet=<subnet>` |
 | `Network interface must specify a subnet` | `--network` was given without `--subnet` |
