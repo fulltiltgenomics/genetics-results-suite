@@ -720,7 +720,7 @@ tables:
           SELECT resource, model, cell_type, tissue, score, score_type, mlog10p,
                  predicted_direction, is_significant
           FROM variant_effect_v
-          WHERE variant = '1:55039974:A:G'
+          WHERE variant = '1:241069353:A:G'
           ORDER BY mlog10p DESC
 
       - description: "Strongest ChromBPNet predicted effects near a gene"
