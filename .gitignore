@@ -12,7 +12,6 @@ terraform.tfvars.*
 *.secret
 *.key
 *.pem
-k8s/secrets/oauth2-allowed-emails.yaml
 
 # environment
 .env

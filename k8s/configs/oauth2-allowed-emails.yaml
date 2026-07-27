@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: oauth2-allowed-emails
-  namespace: genetics
-data:
-  allowed-emails.txt: ""
