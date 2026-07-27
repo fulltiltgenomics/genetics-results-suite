@@ -125,6 +125,7 @@ CPU `limits` if you change them.
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
     ├── genegenie-migration.md   # record of the finngenie → genegenie legacy-hostname redirect
+    ├── local-dev-vm.md       # running the whole suite from source on a GCE VM (no docker/k8s)
     ├── nginx-setup.md        # notes for the legacy VM nginx setup
     └── project-spec.md       # this file
 ```
