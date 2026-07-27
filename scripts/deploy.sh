@@ -195,9 +195,8 @@ if [ -n "${SNAPSHOT_POLICY}" ]; then
 fi
 
 # configs (envsubst for profile-aware values like OAUTH_EMAIL_DOMAIN).
-# oauth2-allowed-emails is generated below from OAUTH_ALLOWED_EMAILS, so skip the static file.
+# note: the oauth2-allowed-emails ConfigMap has no manifest here — it is generated below.
 for f in configs/*.yaml; do
-  [ "$(basename "$f")" = "oauth2-allowed-emails.yaml" ] && continue
   envsubst '${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${GOOGLE_TOKEN_AUDIENCE}' < "$f" | kubectl apply -f -
 done
 
