@@ -24,6 +24,7 @@ the BFF and call `:4000` directly. db-api is only used server-side, so it needs 
 export GCP_PROJECT=your-project-name
 export ZONE=us-central1-a
 export VM_NAME=genetics-dev
+export SA_NAME=genetics-suite-gke
 ```
 
 ```bash
@@ -32,7 +33,7 @@ gcloud compute instances create $VM_NAME \
   --machine-type=e2-standard-2 \
   --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
   --boot-disk-size=100GB \
-  --service-account=SERVICE_ACCOUNT_NAME@$GCP_PROJECT.iam.gserviceaccount.com \
+  --service-account=$SA_NAME@$GCP_PROJECT.iam.gserviceaccount.com \
   --scopes=cloud-platform
 ```
 
