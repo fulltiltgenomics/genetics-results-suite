@@ -171,9 +171,10 @@ python3 scripts/generate_resource_sql.py generate credible_sets_v   # prints the
 python3 scripts/generate_resource_sql.py lint                       # must report "All views match."
 ```
 
-If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` (`credible_sets_v`,
-`colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`)
-so the `CASE` block matches the generated fragment.
+If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` so the `CASE` block matches the
+generated fragment. The resource-mapped views are `credible_sets_v`, `colocalization_v`,
+`coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`,
+`open_chromatin_v`, `variant_effect_v`, `mpra_v` and `peak_to_gene_v` (the script's `ALL_VIEWS`).
 
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
 `IF NOT EXISTS` and re-applies every `*_v` view via `CREATE OR REPLACE` — no data loss;
