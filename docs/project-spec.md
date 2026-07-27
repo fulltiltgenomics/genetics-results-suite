@@ -124,7 +124,7 @@ CPU `limits` if you change them.
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
-    ├── genegenie-migration.md   # finngenie → genegenie hostname migration (daly)
+    ├── genegenie-migration.md   # record of the finngenie → genegenie legacy-hostname redirect
     ├── nginx-setup.md        # notes for the legacy VM nginx setup
     └── project-spec.md       # this file
 ```
