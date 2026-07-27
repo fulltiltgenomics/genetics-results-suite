@@ -201,11 +201,18 @@ tables:
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
       Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
+      NOTE ON caQTL: for data_type = 'caQTL' the trait is a chromatin ACCESSIBILITY PEAK
+      (e.g. chr5-35863122-35863905), never a gene symbol, so a gene-based caQTL question
+      is NOT answerable from this table alone. Join peak_to_gene_v on
+      peak_id = trait (and cell_type = cell_type for the cell-type-matched answer) to get
+      the genes each peak is linked to — see the peak_to_gene_v examples. Do NOT approximate
+      the link by comparing peak and gene coordinates: linked peaks sit up to ~1 Mb from the
+      gene and most peaks near a gene are not linked to it.
 
     columns:
       dataset: "Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2)"
       data_type: "Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL"
-      trait: "Trait/phenotype name"
+      trait: "Trait/phenotype name. For caQTL this is the peak id (chr-start-end), not a gene — join peak_to_gene_v to reach genes"
       trait_original: "Original trait name in the respective dataset, e.g. phenotype code"
       cell_type: "Cell type or tissue context (for QTL data)"
       chr: "Chromosome number"
@@ -290,12 +297,22 @@ tables:
           WHERE c.data_type = 'GWAS' AND c.pip > 0.1
           ORDER BY c.mlog10p DESC
 
-      - description: "Molecular QTLs for a gene. For eQTL/pQTL/sQTL rows the measured molecule is in trait (gene or protein symbol), the context in cell_type."
+      - description: "Molecular QTLs for a gene. For eQTL/pQTL/sQTL rows the measured molecule is in trait (gene or protein symbol), the context in cell_type. caQTL is NOT included here — its trait is a peak, see the next example."
         sql: |-
           SELECT resource, dataset, data_type, cell_type, variant, pip, mlog10p, beta, cs_id
           FROM credible_sets_v
           WHERE chr = 1 AND trait = 'PCSK9' AND data_type IN ('eQTL', 'pQTL', 'sQTL')
           ORDER BY mlog10p DESC
+
+      - description: "How many caQTL associations, over how many peaks and cell types, a gene has. caQTL traits are peaks, so the gene is reached only by joining peak_to_gene_v; the literal cs.chr predicate prunes partitions and is worth adding whenever the gene's chromosome is known. Drop the cell_type equality from the join for the cell-type-agnostic, peak-level count."
+        sql: |-
+          SELECT COUNT(*) AS n_associations,
+                 COUNT(DISTINCT cs.trait) AS n_peaks,
+                 COUNT(DISTINCT cs.cell_type) AS n_cell_types
+          FROM credible_sets_v cs
+          JOIN peak_to_gene_v l
+            ON l.peak_id = cs.trait AND l.cell_type = cs.cell_type
+          WHERE cs.data_type = 'caQTL' AND l.symbol = 'IL7R' AND cs.chr = 5
 
     categorical_columns:
       resource: null
