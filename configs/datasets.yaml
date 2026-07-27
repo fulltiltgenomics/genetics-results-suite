@@ -775,7 +775,7 @@ tables:
         sql: >-
           SELECT cell_line, emVar, active, log2Skew, log2Skew_mlog10p, log2FC, log2FC_mlog10p
           FROM mpra_v
-          WHERE variant = '1:55039974:A:G'
+          WHERE variant = '1:55054110:G:A'
           ORDER BY cell_line
 
       - description: "emVars in a region using the cross-cell-line meta summary"
@@ -790,7 +790,7 @@ tables:
         sql: >-
           SELECT cell_line, mean_RNA_ref, mean_RNA_alt, log2Skew, active
           FROM mpra_v
-          WHERE variant = '1:55039974:A:G' AND cell_line != 'meta'
+          WHERE variant = '1:55054110:G:A' AND cell_line != 'meta'
           ORDER BY cell_line
 
     categorical_columns:
