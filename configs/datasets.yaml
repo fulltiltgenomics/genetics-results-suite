@@ -1468,16 +1468,16 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
-        version: "25.12"
+        version: "26.06"
         description: >-
-          Open Targets Genetics Portal (release 25.12). GWAS studies from the GWAS Catalog,
+          Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
           Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
           SuSiE fine-mapped results from Open Targets.
         author: "Open Targets"
-        publication_date: "2025-12-10"
+        publication_date: "2026-06-25"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202512/ot_2512_data_studies.json"
+        metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202606/ot_2606_data_studies.json"
         metadata_harmonizer: open_targets
 
       # --- coloc-only datasets ---
@@ -2397,16 +2397,16 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
-        version: "25.12"
+        version: "26.06"
         description: >-
-          Open Targets Genetics Portal (release 25.12). GWAS studies from the GWAS Catalog,
+          Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
           Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
           SuSiE fine-mapped results from Open Targets.
         author: "Open Targets"
-        publication_date: "2025-12-10"
+        publication_date: "2026-06-25"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202512/ot_2512_data_studies.json"
+        metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202606/ot_2606_data_studies.json"
         metadata_harmonizer: open_targets
 
       # --- coloc-only datasets ---
