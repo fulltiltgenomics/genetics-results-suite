@@ -9,4 +9,9 @@ spec:
     timeoutSec: 10
     type: HTTP
     requestPath: /healthz
-  timeoutSec: 300
+  # total RESPONSE timeout, not an idle timeout: the load balancer severs the
+  # connection this long after the request starts even while bytes are still
+  # streaming. At 300s it was cutting long chat turns mid-answer, which the
+  # browser surfaces as "TypeError: network error". Chat SSE streams are the
+  # longest-lived responses here, so this has to exceed the worst-case turn.
+  timeoutSec: 1800
