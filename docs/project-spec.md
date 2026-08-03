@@ -212,6 +212,26 @@ and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-
 - **db-api** is internal-only (NetworkPolicy) **and** requires `Authorization: Bearer $INTERNAL_API_SECRET` on every endpoint except `/health`. The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is itself reachable from outside, so anything that could drive mcp-server could reach BigQuery behind it. Fails open (with a startup warning) if the env var is unset, so local runs and mid-rollout clusters keep working.
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
 - **External MCP servers**: chat-backend proxies tools from external MCP servers (gnomAD, Open Targets) configured via `EXTERNAL_MCP_SERVERS` secret; `EXTERNAL_MCP_EXCLUDE_TOOLS` excludes specific tools by name (comma-separated)
+- **Third-party live resources called natively**: separately from the proxied MCP servers, genetics-mcp-server calls several public APIs directly over its own unauthenticated HTTP client (never the internal secret): MouseMine/MGI (`search_mgi`), UniProt + EBI Proteins (`get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`), myvariant.info (`get_myvariant_annotations`), cBioPortal (`search_cbioportal`), and the literature/web backends (Europe PMC, Perplexity, Tavily). All are chat-backend only — excluded from the standalone mcp-server via `_mcp_disabled`. None needs an API key except Perplexity and Tavily. Per-tool behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`.
+
+### Genome build across resources
+
+The suite is **GRCh38** throughout, but the third-party resources are not uniform, and this is a correctness boundary rather than a detail:
+
+| Resource | Build | Handling |
+|---|---|---|
+| Suite datasets, results-api, BigQuery | GRCh38 | native |
+| myvariant.info | GRCh38 | assembly pinned to `hg38` on every request |
+| UniProt / EBI genomic-HGVS lookups | GRCh38 | pinned per-chromosome RefSeq accessions |
+| cBioPortal | **mostly GRCh37** (467 of 539 studies hg19) | never lifted over; matched on gene symbol and protein change only |
+
+cBioPortal is the one resource whose coordinates must not be compared with the
+suite's. `search_cbioportal` therefore keys every query type on build-independent
+identifiers, returns coordinates grouped under the build they came from without
+merging, and carries a `genome_build_note` on every response pointing the agent at
+`get_variant_protein_effect` to convert a GRCh38 variant into a protein change
+first. Adding any further third-party resource requires making the same decision
+explicitly: pin the build, or match on something build-independent.
 
 ## Infrastructure
 
