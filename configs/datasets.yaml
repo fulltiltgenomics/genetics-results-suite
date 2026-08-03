@@ -2006,12 +2006,18 @@ profiles:
         publication_date: "2022-04-08"
         data_type: gwas
         trait_type: binary
+        n_samples: 161405
+        n_cases: 67390
+        n_controls: 94015
         n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
           - phenotype_code: "SCZ"
             phenotype_string: "Schizophrenia"
+            n_cases: 67390
+            n_controls: 94015
+            n_samples: 161405
 
       pgc_bip:
         resource: pgc
@@ -2116,7 +2122,6 @@ profiles:
         pseudo_credible_sets: true
 
   daly:
-    datasets:
     datasets:
       # --- GWAS ---
       finngen_gwas:
@@ -2960,12 +2965,18 @@ profiles:
         publication_date: "2022-04-08"
         data_type: gwas
         trait_type: binary
+        n_samples: 161405
+        n_cases: 67390
+        n_controls: 94015
         n_phenotypes: 1
         metadata_file: null
         metadata_harmonizer: null
         phenotypes:
           - phenotype_code: "SCZ"
             phenotype_string: "Schizophrenia"
+            n_cases: 67390
+            n_controls: 94015
+            n_samples: 161405
 
       pgc_bip:
         resource: pgc
