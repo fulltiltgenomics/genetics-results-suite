@@ -184,9 +184,12 @@ data:
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_read_timeout 300s;
+          # idle timeouts (reset by every SSE chunk), so these only fire when the
+          # backend goes quiet — a stalled tool call, not a slow answer. Kept above
+          # the load balancer's response timeout so the LB is never the shorter cap.
+          proxy_read_timeout 1800s;
           proxy_connect_timeout 300s;
-          proxy_send_timeout 300s;
+          proxy_send_timeout 1800s;
           # SSE streaming support
           proxy_buffering off;
           proxy_cache off;

@@ -21,6 +21,14 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
 
 Login flow: oauth2-proxy → Keycloak (genetics realm) → Google or Apple IdP.
 
+Request-duration ceiling: the Ingress backend service (`k8s/ingress/backend-configs.yaml`,
+`timeoutSec: 1800`) caps how long *any* response may take, streaming or not — GCLB's
+`timeoutSec` is a total response timeout, not an idle timeout, so it kills a chat SSE
+stream mid-answer even while chunks are flowing (the browser reports `TypeError: network
+error`). It was 300s, which cut long chat turns; nginx's per-location `proxy_read_timeout`
+on `/chat/v1/` is idle-based and is kept at or above this value so the LB is never the
+shorter cap. Any turn expected to run longer than this needs both raised together.
+
 Internal only (ClusterIP + NetworkPolicy):
   ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server
   ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
