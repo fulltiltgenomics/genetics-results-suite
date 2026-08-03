@@ -246,6 +246,34 @@ Result: `dataset_products("ibd_gwas")` reports `credible_sets: true`, the agent'
 credible-set tools (which call results-api) return IBD/UC/CD pseudo CS, and the BQ views
 label IIBDGC rows as `ibd_gwas` once loaded.
 
+## 10. Worked example: PGC SCZ published fine-mapping next to its pseudo credible sets
+
+Context: `pgc_scz` already served pseudo credible sets from the shared `ext_pseudo/` file. The
+published FINEMAP 95 % credible sets (Trubetskoy et al. 2022, ST11a) were munged into the
+standard credible-set format and are now served **alongside** them, not in place of them, under
+the same `pgc` resource.
+
+Changes made (new dataset, existing resource, own file — not part of the shared `ext_pseudo` one):
+
+1. `genetics-results-munge`: `scripts/munge_pgc_scz_finemap.{py,sh}` plus
+   `docs/pgc-scz-finemapping.md`. Output
+   `credible_sets/pgc_scz_finemap/2022/PGC_SCZ_2022_credible_sets.tsv.gz` with per-trait files
+   under `individual/` and `credible_set_stats.tsv`.
+2. `datasets.yaml`: `pgc_scz_finemap` dataset in both profiles (no `pseudo_credible_sets` flag —
+   these are real). A `PGC_SCZ%` rule was needed because the existing `PGC` rule is an **exact**
+   match and would not have caught `PGC_SCZ_2022`; `sync-datasets.sh`.
+3. `genetics-results-api` (both profiles): `credible_sets.py` entry `pgc_scz_finemap` with its own
+   `all_cs_file`, `prefix`/`suffix_95` (`.FINEMAP.munged.tsv`) and `stats_file`; `common.py`
+   `"PGC_SCZ_2022": ("pgc", "2022")`.
+4. `genetics-results-db`: the `PGC_SCZ%` branch added to `credible_sets_v.sql`,
+   `colocalization_v.sql` and `coloc_credsets_v.sql` (`generate_resource_sql.py lint`), and the
+   file added to `load_credsets_coloc.sh` — **not** `load_pseudo.sh`, since it is real
+   fine-mapping — with `PGC_SCZ_2022` added to that script's surgical `DELETE` list.
+
+The point of interest: two datasets under one resource now carry credible sets for the same trait
+code (`SCZ`), one pseudo and one fine-mapped. That is intended, but it means a consumer that wants
+only genuine fine-mapping must filter on `dataset`, not on `resource`.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
