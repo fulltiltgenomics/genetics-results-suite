@@ -1098,7 +1098,12 @@ dataset_to_resource_rules:
   - pattern: "PGC"
     resource: "pgc"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
-    comment: "PGC SCZ/BIP meta-analyses"
+    comment: "PGC SCZ/BIP meta-analyses (pseudo credible sets, bundled in the shared ext file)"
+
+  - pattern: "PGC_SCZ%"
+    resource: "pgc"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "PGC SCZ published fine-mapping; the exact-match 'PGC' rule above does not cover it"
 
   - pattern: "GP2"
     resource: "gp2"
@@ -1982,6 +1987,31 @@ profiles:
             n_cases: 67390
             n_controls: 94015
             n_samples: 161405
+
+      pgc_scz_finemap:
+        resource: pgc
+        version: "2022"
+        description: >-
+          Published FINEMAP 95% credible sets for PGC schizophrenia (Trubetskoy et al. 2022,
+          supplementary table ST11a). Genuine fine-mapping, unlike the pgc_scz pseudo credible
+          sets served alongside them from the same resource. FINEMAP was run allowing several
+          causal variants per locus, so posterior probabilities within one credible set sum to
+          roughly the locus expected number of causal variants rather than to 1, and one set can
+          span several independent signals. Most sets come from the paper extended GWAS, so their
+          effect sizes and p-values are not the wave 3 ones in pgc_scz. Coordinates, alleles and
+          allele frequencies are lifted onto GRCh38 through the munged wave 3 summary statistics;
+          the X-linked sets, which wave 3 does not cover, carry no allele frequency. cs_min_r2 is
+          not available for this dataset.
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "2022-04-08"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
 
       pgc_bip:
         resource: pgc
@@ -2911,6 +2941,31 @@ profiles:
             n_cases: 67390
             n_controls: 94015
             n_samples: 161405
+
+      pgc_scz_finemap:
+        resource: pgc
+        version: "2022"
+        description: >-
+          Published FINEMAP 95% credible sets for PGC schizophrenia (Trubetskoy et al. 2022,
+          supplementary table ST11a). Genuine fine-mapping, unlike the pgc_scz pseudo credible
+          sets served alongside them from the same resource. FINEMAP was run allowing several
+          causal variants per locus, so posterior probabilities within one credible set sum to
+          roughly the locus expected number of causal variants rather than to 1, and one set can
+          span several independent signals. Most sets come from the paper extended GWAS, so their
+          effect sizes and p-values are not the wave 3 ones in pgc_scz. Coordinates, alleles and
+          allele frequencies are lifted onto GRCh38 through the munged wave 3 summary statistics;
+          the X-linked sets, which wave 3 does not cover, carry no allele frequency. cs_min_r2 is
+          not available for this dataset.
+        author: "Psychiatric Genomics Consortium"
+        publication_date: "2022-04-08"
+        data_type: gwas
+        trait_type: binary
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
 
       pgc_bip:
         resource: pgc
