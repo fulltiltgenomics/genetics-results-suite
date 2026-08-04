@@ -120,7 +120,11 @@ the API-side resource grouping.
   with either an `"all_exome_file"` (combined) and/or a `"prefix"` + `"suffix"` for
   per-phenotype files.
 - **Gene-based / burden results** → `gene_based_results.py`, `gene_based_data_files`. A
-  `"gene_based"` block with a single `"file"`.
+  `"gene_based"` block with a `"file"` (combined, gene-locus indexed, backs
+  `/gene_based/{gene}` across all traits) plus a `"prefix"` + `"suffix"` for the
+  unfiltered per-trait files that `/gene_based_results_by_phenotype/{resource}/{trait}`
+  streams. The per-trait files are also what BigQuery's `gene_burden_results` is loaded
+  from. For genebass the combined file holds the mlog10p_burden > 4 hits only.
 - **Expression / coloc / chromatin / gene-disease** → the correspondingly named module.
 - **Open chromatin / variant effect** — unlike a plain new dataset (which only needs a
   `datasets.yaml` entry plus an existing product config), these are two **new products**.

@@ -539,7 +539,11 @@ tables:
   gene_burden_results_v:
     description: >-
       Gene-level burden test results from exome sequencing studies
-      (e.g. BipEx2, SCHEMA2, Genebass, IBD exome).
+      (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
+      annotation x trait combination is present, so a null result for a specific
+      gene in a specific trait is a real null result and not a missing row.
+      Genebass alone contributes ~343M rows, so always constrain on gene and/or
+      trait rather than scanning.
 
     columns:
       dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome)"
@@ -585,6 +589,14 @@ tables:
           FROM gene_burden_results_v
           WHERE resource = 'bipex2' AND mlog10p_burden > 3
           ORDER BY mlog10p_burden DESC LIMIT 20
+
+      - description: "One gene's burden result in specific traits, significant or not — the table is unfiltered, so this answers 'was this gene tested and what came out'"
+        sql: |-
+          SELECT trait_original, annotation, mlog10p_burden, beta, se, total_variants
+          FROM gene_burden_results_v
+          WHERE gene = 'PCSK9'
+            AND trait_original IN ('continuous_30780_both_sexes__irnt', 'icd10_E78_both_sexes__')
+          ORDER BY mlog10p_burden DESC
 
     categorical_columns:
       resource: null
@@ -1657,6 +1669,8 @@ profiles:
         description: >-
           GeneBass gene-level burden test results. Aggregated gene-level rare variant
           association results from whole-exome sequencing of 394,841 UK Biobank participants.
+          Per-trait results are unfiltered (~19k genes x 4 annotation classes for each of
+          4,501 phenotypes); only the cross-trait gene lookup is filtered to p < 1e-4.
         author: "Genebass"
         publication_date: "2022-09-14"
         data_type: gene_based
@@ -2616,6 +2630,8 @@ profiles:
         description: >-
           GeneBass gene-level burden test results. Aggregated gene-level rare variant
           association results from whole-exome sequencing of 394,841 UK Biobank participants.
+          Per-trait results are unfiltered (~19k genes x 4 annotation classes for each of
+          4,501 phenotypes); only the cross-trait gene lookup is filtered to p < 1e-4.
         author: "Genebass"
         publication_date: "2022-09-14"
         data_type: gene_based
