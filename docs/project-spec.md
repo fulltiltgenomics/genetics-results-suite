@@ -240,7 +240,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
-- **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases, file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
+- **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
 - **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
@@ -318,6 +318,50 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
 - **Manual monitor run**: `kubectl create job --from=cronjob/monitor monitor-manual -n genetics`
+
+## Chat instructions (user-authored prompt text)
+
+Users store named sets of their own instructions ("I'm a statistician", "answer in Finnish") and
+select one per chat; the selected set's text is appended to the chat system prompt as a second,
+separately cached block. The feature spans two service repos and needed **no manifest or
+infrastructure change in this one** — it lands entirely inside the chat-backend image and the
+frontend bundle, on storage that already exists.
+
+| Piece | Repo | Where |
+|-------|------|-------|
+| Tables, accessors and caps; envelope; per-turn resolution; two-block cached system prompt | `../genetics-mcp-server` | `db/llm_config_db.py`, `config/defaults.py`, `chat_api.py`, `llm_service.py` |
+| CRUD + history API; per-message persistence; admin visibility; nightly report breakdown | `../genetics-mcp-server` | `routers/llm_config.py`, `routers/chat_history.py`, `routers/admin.py`, `scripts/analyze_conversations.py` |
+| Account-menu dialog, options-row selector, API client, per-message persistence | `../genetics-results-browser` | `src/features/chat/InstructionsDialog.tsx`, `instructionSetsApi.ts`, `useInstructionSets.ts`, `LLMChat.tsx`, `ChatPage.tsx` |
+
+New routes on the chat backend (all behind `/chat/v1/*` → chat-backend, all authenticated and
+scoped to the caller):
+
+- `GET /chat/v1/llm-config/user/instruction-sets` — the caller's non-archived sets
+- `POST /chat/v1/llm-config/user/instruction-sets` — create (400 empty, 413 over the 4000-char body cap, 409 over the 20-sets-per-user cap)
+- `PUT /chat/v1/llm-config/user/instruction-sets/{id}` — update (404 if not the caller's, or archived)
+- `DELETE /chat/v1/llm-config/user/instruction-sets/{id}` — archive (soft delete), 204
+- `GET /chat/v1/llm-config/user/instruction-sets/{id}/history?limit=` — version history (`limit` bounded 1..100)
+
+Which set is selected reuses the existing user-settings key `selected_instruction_set` — no new
+endpoint. `POST /chat/v1/chat` gains an `instruction_set_id` field: **only the id travels**, the
+body is loaded server-side scoped to the authenticated user, and an id that does not resolve for
+that user is ignored rather than rejected. `chat_messages.instruction_set_id` records the set in
+force per message, so the admin sessions list and the nightly analyzer can both attribute an
+answer to it. Full behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`
+("Instructions"); note that instructions apply to the chat path only — the standalone `mcp-server`
+pod has no server-side system prompt and mounts no `chat-data` volume, so `llm_config.db` is not
+reachable from `/mcp` at all.
+
+**Storage and backup.** The sets live in `llm_config.db` on the `chat-data` PVC, alongside tool
+descriptions, user settings, hashed API tokens and user feedback comments. It is the first user
+text in that file that is *fed back into the model* rather than only read by admins, and it
+persists there even for users who only ever use secret chat (the dialog copy says so). No new backup infrastructure is needed: the daily GCE disk snapshot of that PVC
+(`terraform/backups.tf`, 14-day retention) already covers it, and restoring a `chat-data` snapshot
+restores the sets alongside the conversations that reference them. Deletion is a soft archive
+rather than a row removal, precisely so a restored `chat_messages` row keeps resolving. The
+`analyze-conversations` CronJob already mounts the same PVC and the analyzer derives
+`--llm-config-db` as `llm_config.db` beside `--db`, so its report names sets without any manifest
+change.
 
 ## Conversation analysis pipeline
 
