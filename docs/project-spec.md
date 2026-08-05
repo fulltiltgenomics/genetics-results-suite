@@ -70,6 +70,27 @@ The container entrypoint (`genetics-results-api`'s `start.sh`) also raises `ulim
 to 65536 as defense-in-depth. Keep `TABIX_FILTER_WORKERS` in step with the deployment's
 CPU `limits` if you change them.
 
+### chat-backend shutdown and stream draining
+
+A chat turn is a single long-lived SSE response — with tool-calling loops it routinely runs
+1-3 minutes. Under the default 30s termination grace period, any pod deletion (deploy, eviction,
+drain) SIGKILLed uvicorn mid-stream and truncated the answer on screen. `chat-backend.yaml`
+therefore sets three related knobs:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `terminationGracePeriodSeconds` (pod spec) | `300` | Window for the in-flight SSE response to finish before SIGKILL. |
+| `lifecycle.preStop.sleep` | `10` seconds | Leaves the Service endpoints before uvicorn stops accepting, so a request arriving as SIGTERM lands isn't met with connection refused. Uses the native `sleep` hook (GA since Kubernetes 1.30), so it needs no shell in an image that drops `ALL` capabilities. |
+| `--timeout-graceful-shutdown` (uvicorn arg) | `280` | Uvicorn's graceful shutdown is unbounded by default and would sit out the whole grace period, then take SIGKILL. Exiting inside the window closes the `chat_history.db` / `llm_config.db` handles on the `chat-data` PVC cleanly. |
+
+Keep the uvicorn timeout below `terminationGracePeriodSeconds`, with room for the preStop sleep.
+
+The cost is deploy latency: chat-backend is `strategy: Recreate`, so `deploy.sh` blocks on the
+old pod for up to ~5 minutes when someone is mid-conversation. That stays inside the
+deployment's `progressDeadlineSeconds` (600). This makes shutdown graceful; it does not make it
+resumable — a stream cut short by a hard node failure is still lost, since there is no
+client-side reconnect and no persistence of partial assistant turns.
+
 ## Project structure
 
 ```
@@ -242,12 +263,51 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in `terraform/terraform.tfvars`
 - **Region**: Configured via `region` in `terraform/terraform.tfvars`
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
+- **Node pool**: pinned at `min_node_count == max_node_count == 2` on `e2-standard-4` (see "Node pool sizing" below) — the autoscaler is deliberately given no room to move
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
 - **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
+
+### Node pool sizing
+
+`min_node_count` and `max_node_count` in `terraform.tfvars` are **pinned equal** (both `2`).
+This is not a cost-tuning choice — an autoscaler with room to move breaks chat.
+
+A full `deploy.sh` rolls every deployment at once. All of them except chat-backend, postgres
+and rag-service (which are `strategy: Recreate`) surge by one extra pod, adding 1300m CPU and
+5.69 GiB on top of the ~2651m / 7.91 GiB steady-state requests:
+
+| | steady state | + rollout surge | one e2-standard-4 allocatable |
+|---|---|---|---|
+| CPU | 2651m | **3951m** | 3920m |
+| Memory | 7.91 GiB | **13.60 GiB** | 12.97 GiB |
+
+So a full deploy overshoots a single node on *both* axes (`results-api` at 500m / 4Gi, doubling
+to 8Gi mid-roll, dominates the memory term). With `min < max` the autoscaler reliably added a
+second node for the rollout, the scheduler placed pods on it, and ~15 minutes later the now-idle
+node was scaled down — evicting those pods with `ScaleDown: deleting pod for node scale down`.
+For chat-backend that kills an in-flight SSE response mid-answer. Pinning removes the scale-down
+event entirely.
+
+Consequences to keep in mind:
+
+- **Raising any deployment's requests, or adding a service, can re-break this.** Re-derive the
+  surge total against 2 × 3920m / 12.97 GiB before merging such a change.
+- The `chat-data` PVC is `ReadWriteOnce`, so with two nodes a `Recreate` rollout can land
+  chat-backend on the *other* node and stall ~20s on `Multi-Attach error` while the volume
+  detaches. That is a slower deploy, not a dropped request.
+- The analyze-conversations CronJob already carries a podAffinity onto chat-backend's node for
+  the same PVC reason (see "Conversation analysis pipeline"); that keeps working with two nodes.
+- There is still **no PodDisruptionBudget** in the namespace, and every deployment is
+  `replicas: 1`. Node auto-upgrade or repair will therefore still interrupt chat. Pinning
+  addresses the autoscaler, not voluntary drains.
+
+To consolidate onto one larger node instead, note that `node_config.machine_type` is ForceNew on
+`google_container_node_pool` — changing it in place destroys and recreates the pool. Do it as a
+new pool plus cordon/drain migration, not a tfvars edit.
 
 ## Monitoring
 

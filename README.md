@@ -238,6 +238,10 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+Rolling out `chat-backend` can block for up to ~5 minutes: it waits for any in-flight chat
+stream to finish rather than cutting it off mid-answer. See "chat-backend shutdown and stream
+draining" in `docs/project-spec.md`.
+
 ## Services
 
 | Service | Source Repo | Image | Port | Notes |
