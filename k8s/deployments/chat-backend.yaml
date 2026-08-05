@@ -23,10 +23,18 @@ spec:
       # volume to this gid and add group-write, which needs no capability in the container.
       securityContext:
         fsGroup: 1032
+      # a chat turn with tool-calling loops routinely runs 1-3 minutes; the default 30s grace
+      # SIGKILLs uvicorn mid-stream and truncates the answer the user is reading. Deploys get
+      # correspondingly slower — Recreate waits out the old pod before starting the new one.
+      terminationGracePeriodSeconds: 300
       containers:
       - name: chat-backend
         image: ${REGISTRY}/genetics-mcp-server:latest
-        command: ["uvicorn", "genetics_mcp_server.chat_api:app", "--host", "0.0.0.0", "--port", "8000"]
+        # uvicorn's graceful shutdown is unbounded by default, so it would wait out the full
+        # grace period and then take SIGKILL. Exiting at 280s closes the SQLite handles on the
+        # chat-data PVC cleanly instead.
+        command: ["uvicorn", "genetics_mcp_server.chat_api:app", "--host", "0.0.0.0", "--port", "8000",
+                  "--timeout-graceful-shutdown", "280"]
         ports:
         - containerPort: 8000
         env:
@@ -129,6 +137,12 @@ spec:
             port: 8000
           initialDelaySeconds: 30
           periodSeconds: 30
+        # leave the Service endpoints before uvicorn stops accepting, so a request arriving as
+        # SIGTERM lands isn't met with connection refused
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 10
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
