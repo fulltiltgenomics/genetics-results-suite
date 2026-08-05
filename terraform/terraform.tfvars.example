@@ -12,5 +12,9 @@ oauth_email_domain   = "finngen.fi"          # comma-separated for several, e.g.
 oauth_allowed_emails = ""                     # extra specific addresses, e.g. "a@apple.com,b@me.com,c@privaterelay.appleid.com"
 app_name             = "FinnGenie" # product/brand name shown in UI and assistant persona (e.g. "GeneGenie" for daly)
 machine_type         = "e2-standard-4"
-min_node_count       = 1
-max_node_count       = 3
+# Pin these equal. A full deploy.sh surges every RollingUpdate deployment by one pod, which
+# overshoots a single e2-standard-4; with min < max the autoscaler adds a node for the rollout
+# and reaps it ~15 min later, evicting whatever was scheduled onto it mid-request. Two
+# e2-standard-4 nodes fit the surge. See "Node pool sizing" in docs/project-spec.md.
+min_node_count = 2
+max_node_count = 2
