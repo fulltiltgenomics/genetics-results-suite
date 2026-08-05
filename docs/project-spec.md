@@ -349,7 +349,17 @@ endpoint. `POST /chat/v1/chat` gains an `instruction_set_id` field: **only the i
 body is loaded server-side scoped to the authenticated user, and an id that does not resolve for
 that user is ignored rather than rejected. `chat_messages.instruction_set_id` records the set in
 force per message, so the admin sessions list and the nightly analyzer can both attribute an
-answer to it. Full behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`
+answer to it; both resolve "the last set wins" from a total order on `(created_at, rowid)`, since
+`created_at` has one-second resolution and they would otherwise be free to disagree.
+
+Two other changes to the same request shape belong here rather than only in the edited repo's
+docs. `system_prompt` is **gone** — it was used verbatim with no gate, so any authenticated user
+could discard the server prompt for their turn; nothing in the suite ever sent it, and pydantic
+ignores the unknown key rather than 422ing an old caller. `ChatMessage.role` is now
+`Literal["user", "assistant"]`, because the same capability had a second form: a `role: "system"`
+message, which the OpenAI path forwarded into a real system slot *after* the server's, where
+recency favours it. Both provider paths still filter system-role messages as defence in depth,
+since `stream_chat` is reachable with raw dicts. Full behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`
 ("Instructions"); note that instructions apply to the chat path only — the standalone `mcp-server`
 pod has no server-side system prompt and mounts no `chat-data` volume, so `llm_config.db` is not
 reachable from `/mcp` at all.
