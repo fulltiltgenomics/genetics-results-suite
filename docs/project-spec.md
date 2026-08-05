@@ -363,6 +363,31 @@ rather than a row removal, precisely so a restored `chat_messages` row keeps res
 `--llm-config-db` as `llm_config.db` beside `--db`, so its report names sets without any manifest
 change.
 
+## Chat option persistence
+
+The four chat options (**Answer** detail, **Instructions**, **Literature search**, **Tools**) are
+persisted in two layers, so that a preference follows the user across browsers while an old
+conversation still reopens the way it was held.
+
+| Layer | Storage | Written by | Read by |
+|-------|---------|-----------|---------|
+| User default | `user_settings` in `llm_config.db` — keys `chat_verbosity`, `chat_literature_backend`, `chat_tool_profile`, `selected_instruction_set` | only an explicit control interaction | page load, and every new chat |
+| Per conversation | `chat_messages` columns `verbosity`, `literature_backend`, `tool_profile`, `instruction_set_id` | every message save | opening an existing conversation |
+
+Opening a conversation applies **its last message's** options to the controls and deliberately does
+*not* touch the user default: reading an old detailed chat must not make "detailed" the setting for
+the next new chat. Starting a new chat (including secret chat) returns the controls to the default.
+A conversation that predates a column reads NULL there and falls through to the user's default
+rather than to the built-in one.
+
+No new endpoints — the defaults ride on the generic `GET/PUT /chat/v1/llm-config/user/settings*`,
+and the per-message values on the existing message save. Because that save is an
+`ON CONFLICT DO UPDATE` full-row replace, **every** save path must carry all four fields; omitting
+one clears it. Both stores live at module scope in the browser
+(`src/features/chat/useChatOptions.ts`, `useInstructionSets.ts`) because `ChatPage` remounts
+`LLMChat` on every conversation switch, and each keeps the current value separate from the default
+for the reason above.
+
 ## Conversation analysis pipeline
 
 The chat backend's conversations are scored for topic, quality and disposition by an LLM-based
