@@ -213,7 +213,7 @@ profile (finngen vs daly buckets).
   `"credible_sets": true`) and `pseudo_credible_sets` flag.
 - Hit the relevant endpoint (e.g. `/api/v1/credible_sets_by_gene/<gene>`,
   `/api/v1/summary_stats/<resource>/<data_type>?variants=...&phenotypes=...`, or
-  `/api/v1/summary_stats_by_range/<resource>/<data_type>/<chr:start-end>?phenotypes=...`)
+  `/api/v1/summary_stats_by_region/<resource>/<data_type>/<chr:start-end>?phenotypes=...`)
   and confirm rows come back for both profiles.
 - Ask the agent for the data by gene/phenotype and confirm it finds it (it goes through
   results-api).
