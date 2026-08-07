@@ -41,6 +41,7 @@ violate this; it runs from the `pre-commit` hook.
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
 | `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
+| `sandbox/**`, `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md`, `docs/project-spec.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers |
 
 A doc is stale the moment it *enumerates* something the code no longer matches.
 Counts and lists rot silently — view lists, endpoint tables, env-var tables,

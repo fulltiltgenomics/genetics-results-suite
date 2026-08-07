@@ -152,6 +152,9 @@ client-side reconnect and no persistence of partial assistant turns.
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
+    ├── code-execution-security.md # threat model and security design of record for the
+    │                         #   model-authored-code sandbox (isolation, egress, credentials,
+    │                         #   MCP exposure, residual risk)
     ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
     ├── genegenie-migration.md   # record of the finngenie → genegenie legacy-hostname redirect
     ├── local-dev-vm.md       # running the whole suite from source on a GCE VM (no docker/k8s)
