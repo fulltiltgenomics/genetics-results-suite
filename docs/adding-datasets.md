@@ -180,6 +180,14 @@ generated fragment. The resource-mapped views are `credible_sets_v`, `colocaliza
 `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`,
 `open_chromatin_v`, `variant_effect_v`, `mpra_v` and `peak_to_gene_v` (the script's `ALL_VIEWS`).
 
+The two metadata views — `phenotypes_v` and `datasets_v` — are deliberately **not** in
+`ALL_VIEWS`. They carry `resource` as a real column taken straight from this file's registry,
+which is authoritative; the generated `CASE` blocks only exist to recover the resource from a
+dataset *name* where the registry is not available in the row. They are likewise absent from
+`scripts/monitor/bq_summary.py`'s `VIEWS`, which compares per-resource coverage of *result*
+views against `dataset_to_resource_rules` — a comparison that is meaningless for a table whose
+rows are the registry itself.
+
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
 `IF NOT EXISTS` and re-applies every `*_v` view via `CREATE OR REPLACE` — no data loss;
 `--recreate` drops and rebuilds tables and **deletes data**). To apply just one changed
@@ -194,6 +202,28 @@ wrapper deletes the dataset's existing rows and re-appends from GCS, so adding a
 `dataset` value (e.g. `IIBDGC`) means adding it to the relevant wrapper's GCS file list and
 its delete-before-load set. Set `PROJECT_ID`/`DATASET_ID`/`GCS_BUCKET`/`GCS_PREFIX` per
 profile (finngen vs daly buckets).
+
+### Metadata tables (`phenotypes`, `datasets`)
+
+Both are derived entirely from this file plus the `metadata_file` JSON/TSVs it points at, and
+are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh` (which calls
+`scripts/build_phenotypes.py`). **Re-run it after any change to a dataset entry, a resource
+entry or a metadata file** — nothing else propagates registry edits into BigQuery.
+
+`build_phenotypes.py` holds one thing that lives nowhere else: `BQ_DATASETS_BY_DATASET_ID`,
+the mapping from a registry key (`finngen_gwas`) to the `dataset` value the results tables
+actually carry (`FinnGen_R14`). That value is baked into the source credible-set TSVs by
+`genetics-results-munge` and this file never records it, so **a new dataset needs an entry
+there too** or it gets a `datasets` row with `dataset = NULL` and no `phenotypes` rows. The
+relation is many-to-many in both directions (`pgc_scz` + `pgc_bip` both ship inside `PGC`;
+`finngen_pqtl` is `FinnGen_Olink` in `credible_sets` but `FinnGen_Olink_3K` in
+`colocalization`), which is why neither `resource` nor the registry key can serve as the join
+key. The loader cross-checks the map against the live tables and warns on each mismatch.
+
+The `phenotypes` join key is **`trait_original`, never `trait`**: in every results view
+`trait_original` is the phenotype code while `trait` is a display form for most rows
+(`HEIGHT_IRN` vs `Height,_inverse-rank_normalized`). Joining on `trait` returns zero rows
+silently.
 
 ## 7. Deploy
 
