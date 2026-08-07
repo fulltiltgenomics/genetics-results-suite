@@ -828,6 +828,70 @@ tables:
       cell_line: null
       cohort: null
 
+  hla_associations_v:
+    description: >-
+      Classical HLA allele associations from FinnGen R14 — every imputed HLA allele
+      tested against every core R14 endpoint (~2,712 phenotypes x 187 alleles across
+      10 genes). The association unit is an ALLELE (e.g. 'B*27:05'), not a nucleotide
+      variant, so these rows do not join to credible_sets_v / variant_annotation_v on
+      chr/pos/ref/alt; every allele of a gene shares that gene's single anchor
+      position. This is the only place the cross-phenotype question is answerable
+      ("which traits is an allele associated with?") — the results-api /hla endpoint
+      reads per-phenotype files and can only go the other way.
+
+    columns:
+      chr: "Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
+      pos: "Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000"
+      gene: "HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5"
+      allele: "Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name"
+      phenotype: "FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. Joins to the same phenotype codes used by the FinnGen GWAS datasets"
+      pval: "Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlogp, never on pval"
+      mlogp: "-log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3)"
+      beta: "Effect size (log odds ratio for binary endpoints) per copy of the allele"
+      sebeta: "Standard error of beta"
+      af_alt: "Allele frequency in the full cohort"
+      af_alt_cases: "Allele frequency in cases. NULL for quantitative endpoints"
+      af_alt_controls: "Allele frequency in controls. NULL for quantitative endpoints"
+      info: "Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations"
+      dataset: "Source dataset identifier (constant 'finngen_hla')"
+      resource: "Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset"
+
+    examples:
+      - description: "The HLA profile of one phenotype, strongest allele first"
+        sql: >-
+          SELECT gene, allele, mlogp, beta, sebeta, af_alt_cases, af_alt_controls, info
+          FROM hla_associations_v
+          WHERE phenotype = 'K11_COELIAC' AND mlogp > 7.3
+          ORDER BY mlogp DESC
+
+      - description: "Which phenotypes an allele is associated with (the cross-phenotype question)"
+        sql: >-
+          SELECT phenotype, mlogp, beta, af_alt_cases, af_alt_controls
+          FROM hla_associations_v
+          WHERE allele = 'B*27:05' AND mlogp > 7.3
+          ORDER BY mlogp DESC
+
+      - description: "Well-imputed genome-wide significant hits only, excluding imputation artifacts"
+        sql: >-
+          SELECT phenotype, gene, allele, mlogp, beta
+          FROM hla_associations_v
+          WHERE mlogp > 7.3 AND info >= 0.8 AND af_alt >= 0.005
+          ORDER BY mlogp DESC
+          LIMIT 100
+
+      - description: "Which HLA gene carries the lead signal for each phenotype"
+        sql: >-
+          SELECT phenotype, ARRAY_AGG(STRUCT(gene, allele, mlogp)
+                   ORDER BY mlogp DESC LIMIT 1)[OFFSET(0)] AS lead
+          FROM hla_associations_v
+          WHERE mlogp > 7.3 AND info >= 0.8
+          GROUP BY phenotype
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      gene: null
+
   gene_annotations_v:
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
@@ -1333,6 +1397,12 @@ dataset_to_resource_rules:
     applies_to: ["mpra_v"]
     comment: "Siraj et al. 2026 MPRA; lowercase fallback would already give 'siraj_mpra', kept explicit like the other products for clarity and applies_to scoping"
 
+  # hla_associations_v pattern
+  - pattern: "finngen_hla%"
+    resource: "finngen"
+    applies_to: ["hla_associations_v"]
+    comment: "FinnGen R14 classical HLA allele associations; the lowercase fallback would give 'finngen_hla', not the 'finngen' resource the rest of the suite uses"
+
   # fallback: lowercase the dataset name
   - pattern: "*"
     resource: null
@@ -1356,6 +1426,28 @@ profiles:
         publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_hla:
+        resource: finngen
+        version: "R14"
+        description: >-
+          FinnGen R14 classical HLA allele associations. The 187 HLA alleles imputed from
+          FinnGen genotype data (4-digit/two-field resolution across HLA-A, -B, -C, -DPB1,
+          -DQA1, -DQB1, -DRB1, -DRB3, -DRB4, -DRB5) tested with REGENIE against the 2,712
+          core R14 endpoints. The tested unit is presence of an allele, not a nucleotide
+          variant, so these results carry no ref/alt and do not join to variant-keyed data
+          on chr/pos/ref/alt; every allele of a gene shares that gene's anchor position.
+          Each row carries the allele's imputation INFO, which is what separates a real
+          association from a rare badly-imputed allele with a large unstable effect.
+          Source endpoints with no R14 phenotype metadata (96 extra _WIDE codes) are not
+          served, and 4 core endpoints have no HLA run.
+        author: "FinnGen Consortium"
+        publication_date: "2026-05-13"
+        data_type: hla
+        trait_type: mixed
+        n_phenotypes: 2712
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
 
@@ -2317,6 +2409,28 @@ profiles:
         publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_hla:
+        resource: finngen
+        version: "R14"
+        description: >-
+          FinnGen R14 classical HLA allele associations. The 187 HLA alleles imputed from
+          FinnGen genotype data (4-digit/two-field resolution across HLA-A, -B, -C, -DPB1,
+          -DQA1, -DQB1, -DRB1, -DRB3, -DRB4, -DRB5) tested with REGENIE against the 2,712
+          core R14 endpoints. The tested unit is presence of an allele, not a nucleotide
+          variant, so these results carry no ref/alt and do not join to variant-keyed data
+          on chr/pos/ref/alt; every allele of a gene shares that gene's anchor position.
+          Each row carries the allele's imputation INFO, which is what separates a real
+          association from a rare badly-imputed allele with a large unstable effect.
+          Source endpoints with no R14 phenotype metadata (96 extra _WIDE codes) are not
+          served, and 4 core endpoints have no HLA run.
+        author: "FinnGen Consortium"
+        publication_date: "2026-05-13"
+        data_type: hla
+        trait_type: mixed
+        n_phenotypes: 2712
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
 
