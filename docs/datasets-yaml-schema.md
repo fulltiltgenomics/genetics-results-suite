@@ -192,6 +192,7 @@ profiles:
 | `open_chromatin` | Atlas of accessible/active chromatin regions by cell type/tissue |
 | `variant_effect` | In-silico predicted variant effect on chromatin (e.g. ChromBPNet, FLARE) |
 | `mpra` | Measured cis-regulatory allelic activity from a massively parallel reporter assay (MPRA) |
+| `hla` | Classical HLA allele associations (association unit is an imputed HLA allele, not a variant) |
 | `gene_disease` | Gene-disease associations |
 
 Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the others — `chromatin_peaks`, `open_chromatin`, `variant_effect`, `mpra` — carry `trait_type: null`):
@@ -207,6 +208,12 @@ Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL 
   active / log2Skew), per cell line plus a cross-line `meta` call. Distinct from
   `variant_effect` (in-silico prediction) and from `caqtl`/eQTL: MPRA reads out intrinsic
   reporter activity out of native chromatin context, not an endogenous QTL association.
+
+`hla` is an association data type like `gwas` (it carries a real `trait_type`), but its
+unit is an imputed classical HLA **allele** rather than a nucleotide variant, so its rows
+carry `gene`/`allele` instead of `ref`/`alt` and never join to variant-keyed data on
+chr/pos/ref/alt. Keep it separate from `gwas` for exactly that reason: a consumer that
+assumes a variant key would silently mis-handle it.
 
 ### `trait_type` enum
 
