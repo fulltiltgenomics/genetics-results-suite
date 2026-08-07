@@ -227,6 +227,39 @@ results-api has no by-gene open-chromatin endpoint, so they work only where the 
 db-api — both chat-backend and the standalone mcp-server (mcp-server sets `BIGQUERY_API_URL`
 and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-results-suite-v1n`).
 
+### Phenotype and dataset metadata in BigQuery
+
+Trait/phenotype metadata and the dataset registry also exist as BigQuery tables, `phenotypes`
+and `datasets`, exposed as `phenotypes_v` / `datasets_v` (both in the db-api `VIEWS`
+allowlist) and documented for agents by their `tables.*` blocks in `configs/datasets.yaml`.
+Before this, the only way to turn `AB1_ACTINOMYCOSIS` into "Actinomycosis", or to filter
+traits by case count or ICD chapter, was a results-api round trip — which is why a phenotype
+question cost a search call, a lookup call and then the real query. It is now a JOIN inside
+the same query.
+
+- `phenotypes` — one row per `(dataset, trait_original)`, ~33k rows. **Join on
+  `trait_original`, never on `trait`**: in every results view `trait_original` is the
+  phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
+  `Height,_inverse-rank_normalized`; `continuous_30040_both_sexes__irnt` vs `Mean corpuscular
+  volume`), so joining on `trait` returns zero rows silently. Coverage is partial by design —
+  QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
+  `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
+  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. Use a `LEFT JOIN` when the dataset
+  is not known in advance.
+- `datasets` — one row per results-view `dataset` value (~890, of which 841 are eQTL
+  Catalogue QTD sub-studies), unique on `dataset` so the join never fans results out, plus a
+  `dataset IS NULL` row for each registry entry with no BigQuery presence. Carries
+  `pseudo_credible_sets`, which must be checked before `pip`/`cs_size` are interpreted.
+
+**Ranked fuzzy phenotype search stays on results-api.** BigQuery cannot replace an in-memory
+ranked index, and search is the entry point of most conversations; these tables serve exact
+resolution and SQL-expressible filtering only.
+
+Both are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh` from
+`configs/datasets.yaml` and the `metadata_file` sources it references — see
+[adding-datasets.md](adding-datasets.md) for the registry-key → `dataset`-value map that the
+builder owns and that a new dataset must be added to.
+
 ## Authentication
 
 - **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway under the **`/auth` path on the primary domain** (`KEYCLOAK_HOST` defaults to `<domain>/auth`), so it reuses the existing DNS record, managed cert and ingress rather than needing an `auth.<domain>` subdomain; it is backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
