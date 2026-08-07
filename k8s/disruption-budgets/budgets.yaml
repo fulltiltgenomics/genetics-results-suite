@@ -1,0 +1,77 @@
+# PodDisruptionBudgets for the workloads where an interrupted in-flight request is
+# expensive. Every deployment here is replicas: 1, so maxUnavailable: 0 and
+# minAvailable: 1 are the same constraint: NO voluntary eviction is ever allowed.
+# That is deliberate — see "Node pool sizing" in docs/project-spec.md.
+#
+# OPERATIONAL CONSEQUENCE — read before adding another PDB here.
+# The dominant cost is NOT extra upgrade time. It is that a node hosting one of these pods
+# becomes permanently ineligible for autoscaler scale-down, with no time bound at all:
+# "If there are Pods on a node that cannot move to other nodes in the cluster, cluster
+# autoscaler does not attempt to scale down that node." A maxUnavailable: 0 PDB over a
+# replicas: 1 deployment is permanently unsatisfiable, so the node is never even selected.
+# The documented one-hour force-termination applies only to a node already selected for
+# scale-down that then fails to drain — a state these pods never reach
+# (https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler).
+# Practical effect: once a rollout surge puts a protected pod on a second node, the pool
+# ratchets to two nodes and stays there.
+#
+# The upgrade path IS bounded, but only for the strategy this pool actually uses:
+# SURGE upgrades drain "respecting PodDisruptionBudget ... for up to one hour", then
+# forcefully evict (terraform/gke.tf sets no upgrade_settings, so surge is in effect).
+# Under BLUE_GREEN the bound is different — pods are deleted in the delete-blue-pool phase,
+# gated by a configurable soak defaulting to 1h and extendable to 7 days
+# (https://cloud.google.com/kubernetes-engine/docs/concepts/node-pool-upgrade-strategies).
+# For node auto-repair Google documents a one-hour drain bound but does NOT state that PDBs
+# are honoured during it — treat that path as UNCONFIRMED.
+#
+# ASYMMETRY between the two budgets below: results-api is RollingUpdate, so its replacement
+# pod can land on the surge node and pin it forever. chat-backend is Recreate, so it never
+# occupies a surge node concurrently with its own old pod — but its chat-data PVC is
+# ReadWriteOnce/standard-rwo, which is zonal, not node-scoped, so it does NOT pin the pod to
+# a node. A Recreate rollout can still reschedule chat-backend onto an existing surge node
+# and pin it there. results-api is the reliable ratchet; chat-backend is the occasional one.
+#
+# Do not add a PDB here for a workload that restarts cheaply — the price is a node that may
+# never go away.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-backend
+  namespace: genetics
+spec:
+  maxUnavailable: 0
+  # without this, IfHealthyBudget (the default) also blocks eviction of a CrashLoopBackOff
+  # pod: it serves nothing and still blocks any eviction-API drain (kubectl drain, surge
+  # upgrade). AlwaysAllow lets an unhealthy pod be evicted regardless of the budget. It is
+  # NOT confirmed that autoscaler scale-down simulation models this field at all, so do not
+  # assume a crashlooping pod releases the scale-down ratchet described above.
+  #
+  # CAVEAT — "healthy" here is status.conditions[type=Ready] == "True", so a pod that is
+  # merely still STARTING counts as unhealthy and is freely evictable. See results-api below.
+  # The field is accepted at policy/v1 on this cluster (v1.35.6-gke.1250000), verified with
+  # `kubectl explain pdb.spec.unhealthyPodEvictionPolicy` and a client-side dry-run.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: chat-backend
+---
+# results-api holds warm in-memory indices; its startupProbe allows ~5 minutes for a cold
+# start (failureThreshold: 60, periodSeconds: 5), and with replicas: 1 that is 5 minutes of
+# failed tool calls for every chat turn.
+#
+# Note the hole this leaves: for that same ~5 minutes the pod is not yet Ready, so under
+# AlwaysAllow it is evictable regardless of this budget and its node is drainable (and,
+# possibly, scale-down eligible). The guarantee below begins when the startupProbe passes,
+# not when the pod is created — precisely the window the budget was justified by. Keeping
+# AlwaysAllow is still correct: the alternative is an unbounded crashloop deadlock.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: results-api
+  namespace: genetics
+spec:
+  maxUnavailable: 0
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: results-api

@@ -325,6 +325,9 @@ generate_ingress | kubectl apply -f -
 # network policies
 kubectl apply -f network-policies/
 
+# pod disruption budgets
+kubectl apply -f disruption-budgets/
+
 # deployments (substitute variables and image tags)
 for f in deployments/*.yaml; do
   base="$(basename "$f")"
