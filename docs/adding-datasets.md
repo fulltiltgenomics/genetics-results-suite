@@ -279,6 +279,47 @@ The point of interest: two datasets under one resource now carry credible sets f
 code (`SCZ`), one pseudo and one fine-mapped. That is intended, but it means a consumer that wants
 only genuine fine-mapping must filter on `dataset`, not on `resource`.
 
+## 11. Worked example: FinnGen classical HLA allele associations
+
+Context: a new **data type** on an existing resource, where the association unit is not a
+variant. FinnGen R14 ships imputed classical HLA allele results — 187 alleles x 2,712
+endpoints — encoded as a variant (`ref='<absent>'`, `alt='A*02:01'`). Reusing `gwas` would have
+handed every consumer rows that look variant-keyed but can never join on chr/pos/ref/alt.
+
+Changes made (existing resource `finngen`, new `data_type: hla`, new API vertical, new BQ table):
+
+1. `genetics-results-munge`: `scripts/munge_hla.{py,sh}` + `docs/hla-allele-associations.md`.
+   Rewrites `ref`/`alt` into `gene`/`allele`, joins per-allele imputation `info` from the
+   `.snpstats` sidecar, and drops the 96 source endpoints with no R14 phenotype metadata.
+   Emits **two** artifacts because the data has two query axes: per-phenotype tabix files and
+   one combined TSV. Staged to both buckets under `hla/finngen_hla/`.
+2. `datasets.yaml`: `finngen_hla` dataset in both profiles (`data_type: hla`, `trait_type:
+   mixed`); a `tables.hla_associations_v` block with column descriptions and worked SQL; a
+   `finngen_hla%` rule mapping to `finngen` (the lowercase fallback would give `finngen_hla`);
+   `sync-datasets.sh`. `hla` added to the `data_type` enum in `datasets-yaml-schema.md`.
+3. `genetics-results-api` (both profiles): the per-phenotype files are registered in
+   `summary_stats.py`, so the read path is the existing `SumstatsDataAccess` — but the merge
+   sort key had to become per-data_type (`SORT_CONFIG_HLA`), because these files have no
+   `ref`/`alt` to order on and `create_sort_key` raises on a missing column. New `config/hla.py`
+   (gene anchor registry) and `routers/hla.py`, plus `stream_sumstats_positions` for the
+   `genes` filter. No startup-check change: per-phenotype `prefix`+`suffix` files are not
+   enumerable and are already excluded there.
+4. `genetics-results-db`: `schemas/hla_associations{,_v}.sql`, `scripts/load_hla.sh`, the
+   `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view added
+   to the `VIEWS` allowlist in `api/main.py` **and** to `ALL_VIEWS` in
+   `generate_resource_sql.py` so the linter covers it.
+5. `genetics-mcp-server`: `get_hla_by_phenotype` (results-api) and `get_hla_by_allele`
+   (BigQuery), plus an HLA section in the chat system prompt.
+6. `genetics-results-suite`: `hla_associations_v` added to the monitor's `VIEWS` and
+   `_CONFIG_VIEWS` in `scripts/monitor/bq_summary.py`.
+
+Two points of interest. First, **a new data type is not automatically a new storage layout**:
+the files are shaped exactly like summary stats and reuse that machinery, so only the ordering
+and the router are new. Second, the two artifacts are not redundant — a per-phenotype file
+answers "all alleles for this trait" and cannot answer "all traits for this allele", which is
+the question that makes MHC pleiotropy visible, so BigQuery is load-bearing rather than a
+convenience mirror.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
@@ -290,8 +331,11 @@ only genuine fine-mapping must filter on `dataset`, not on `resource`.
 - [ ] genetics-results-api: `common.py` `dataset_to_resource` entry if the data shares a
       combined credible-set file (per-row resource attribution).
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
-      apply views + load BQ rows if BQ-bound.
-- [ ] genetics-mcp-server: usually nothing.
+      apply views + load BQ rows if BQ-bound. A **new** view also needs adding to
+      `ALL_VIEWS` (generator/linter), `VIEWS` (`api/main.py`) and the monitor's
+      `VIEWS`/`_CONFIG_VIEWS` in this repo, or it is silently unmonitored and unqueryable.
+- [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
+      tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
       `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.
 - [ ] Build + roll out results-api if its configs changed; `deploy.sh` for datasets.yaml.

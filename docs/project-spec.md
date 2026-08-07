@@ -171,13 +171,67 @@ The YAML defines two exome dataset resources with different filtering levels: `g
 
 Summary statistics are served by results-api from per-phenotype tabix files two ways: `/api/v1/summary_stats/{resource}/{data_type}` (GET/POST) for named variants, and `/api/v1/summary_stats_by_region/{resource}/{data_type}/{region}` for every record in a `chr:start-end` region. Both require `phenotypes=<comma-separated>` — there is no combined file spanning a region across traits, unlike `credible_sets_by_region`. The genetics-mcp-server exposes both as `get_summary_stats` and `get_summary_stats_by_region`.
 
-Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL.
+Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.)
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
 
 caQTL results are keyed by **peak**, not gene: `finngen_caqtl` rows in `credible_sets_v` carry a peak id (e.g. `chr5-35482826-35484273`) in the `trait` column, so a gene-based caQTL question is only answerable by joining through the Open4Gene peak-to-gene link table (`peak_to_gene_v`, the BQ face of the `finngen_chromatin_peaks` dataset) on `peak_id = trait` and `cell_type = cell_type`. The `tables.peak_to_gene_v` block in `datasets.yaml` carries the column descriptions, worked join examples, and an explicit warning against approximating the link by coordinates (linked peaks sit up to ~1 Mb away and most nearby peaks are not linked) — without it agents fell back to hand-written coordinate-window SQL that silently answered a different question. The `FinnGen%` resource rule is scoped to include `peak_to_gene_v` since the table is FinnGen ATAC-seq only.
 
 MPRA (Siraj et al. 2026) is a new functional-annotation product — measured intrinsic cis-regulatory allelic activity from a massively parallel reporter assay (221K fine-mapped + 86K control variants tested in 5 cell lines: K562, HepG2, SK-N-SH, HCT116, A549), served for both profiles. Like open_chromatin/variant_effect it is a new vertical rather than a plain dataset: one dataset `siraj_mpra` under resource `siraj_mpra` (`dataset_to_resource_rules` map `siraj_mpra%` -> `siraj_mpra`), `data_type: mpra`, `trait_type: null`. The source WIDE per-variant TSV is munged to LONG (one row per variant × `cell_line`, where `cell_line` ∈ {`meta`, K562, HEPG2, SKNSH, HCT116, A549}) carrying the emVar/active/log2Skew/log2FC calls, bgzip+tabix-indexed on GCS. Served two ways: results-api tabix range endpoints (`/api/v1/mpra` by-variant / by-region / by-gene, its own tabix vertical) and BigQuery (`mpra` base table / `mpra_v` view, which adds `resource`). The genetics-mcp-server exposes `get_mpra_by_variant`, `get_mpra_by_region`, and `get_mpra_by_gene`. Scientifically it is the functional-validation layer for the regulatory-buffering story (Kanai et al.): emVar rates and allelic-effect concordance scale with FinnGen fine-mapping PIP, and MPRA measures intrinsic reporter activity distinct from endogenous eQTL/caQTL and from in-silico variant_effect predictions.
+
+### Classical HLA allele associations
+
+FinnGen R14 imputed **classical HLA allele** results are served for both profiles: 187
+alleles at 4-digit (two-field) resolution across 10 genes (HLA-A, -B, -C, -DPB1, -DQA1,
+-DQB1, -DRB1, -DRB3, -DRB4, -DRB5), tested with REGENIE against 2,712 core R14 endpoints —
+~507k (phenotype, allele) rows in all. One dataset `finngen_hla` under the existing
+`finngen` resource, `data_type: hla`, `trait_type: mixed`.
+
+**Why it is a separate data type rather than more GWAS.** The association unit is an
+allele, not a nucleotide variant. The source encodes the dosage test as `ref='<absent>'` /
+`alt='A*02:01'`, which is faithful to the test run (presence of the allele vs its absence)
+but reads as a variant everywhere downstream; the munge rewrites it into explicit
+`gene`/`allele` columns. The consequence is deliberate: these rows have **no
+chr:pos:ref:alt identity**, so they do not join to credible sets or variant annotations,
+and no by-variant path can return one. Every allele of a gene sits at that gene's single
+anchor position (HLA-DRB3/4/5 share a placeholder anchor and cannot be separated
+positionally). This is why the MHC is worth serving at all: LD across chr6:29-33Mb makes
+SNP-level results there effectively uninterpretable, and the classical allele is what the
+literature and the clinic use.
+
+Two fields need care and are documented everywhere they surface: `pval` **underflows to 0**
+for the strongest signals (coeliac `DQB1*02:01` is mlogp 1596), so ranking must use
+`mlogp`; and each row carries the allele's imputation `info`, because rare alleles imputed
+below ~0.5 produce enormous unstable betas that read as spectacular findings but are
+artifacts.
+
+Served two ways, because the data has two query axes and neither storage layout serves both:
+
+- **results-api tabix** (per-phenotype files, its own `/hla` router but the existing
+  `SumstatsDataAccess` read path — the files are registered in the profile `summary_stats`
+  config under `data_type: hla`): `GET /api/v1/hla/{resource}?phenotypes=…[&genes=…]`
+  returns a trait's whole HLA profile, and `GET /api/v1/hla/genes` returns the locus
+  registry. Only the merge ordering is new (`SORT_CONFIG_HLA` on chr/pos/allele, selected
+  per data_type, since the files have no ref/alt to sort on); `genes` is served by discrete
+  point reads at the selected anchors rather than the span between them.
+- **BigQuery** (`hla_associations` table / `hla_associations_v` view, added to the db-api
+  `VIEWS` allowlist and the monitor's view list): the only place the cross-phenotype
+  question is answerable — "which traits is `B*27:05` associated with?" spans all 2,712
+  per-phenotype files. The view maps `dataset` to `resource = 'finngen'` explicitly, since
+  the lowercase fallback would give `finngen_hla`.
+
+The agent reaches both through `get_hla_by_phenotype` and `get_hla_by_allele`.
+
+Data is produced by `genetics-results-munge`'s `scripts/munge_hla.{py,sh}` and staged to
+`gs://finngen-commons/results_api_data/hla/finngen_hla/` and
+`gs://daly-genetics-results/hla/finngen_hla/` (per-phenotype tabix files under
+`summary_stats/`, plus one combined `finngen_hla.tsv.gz` for the BigQuery load, which
+`genetics-results-db`'s `scripts/load_hla.sh` reads). The munge drops the ~96 extra `_WIDE`
+endpoints the source ships that have no entry in the R14 phenotype metadata — without
+metadata they would appear as traits with no name, case count or category — and 4 core
+endpoints have no HLA run. R10-R13 ship the same directory; only R14 is carried, since
+R12/R13 HLA would duplicate the rows for a release the suite no longer serves elsewhere.
+Decisions are recorded in `genetics-results-munge/docs/hla-allele-associations.md`.
 
 External GWAS pseudo credible sets (COVID-19 HGI, PGC SCZ, PGC BIP, GP2 Parkinson's, and IIBDGC IBD/UC/CD) live in a single shared file `gs://<bucket>/credible_sets/ext_pseudo/EXT_*_pseudo_credible_sets.*.tsv.gz` referenced by five datasets (`covid_hgi`, `pgc_scz`, `pgc_bip`, `gp2_pd`, `ibd_gwas`). Per-phenotype individual CS files are organized into per-source subdirs `ext_pseudo/individual/<source>/` (e.g. `covid_hgi/`, `pgc_scz/`, `iibdgc/`) so phenotype lookups disambiguate when multiple datasets share the same resource (e.g. `pgc_scz` and `pgc_bip` both belong to resource `pgc`). The `dataset_to_resource_rules` map the combined file's `dataset` column values `COVID19_HGI%`, `PGC`, `GP2`, and `IIBDGC` to resources `covid_hgi`, `pgc`, `gp2`, and `ibd_gwas`. The IIBDGC pseudo CS reuse the existing `ibd_gwas` dataset/resource (the IIBDGC IBD/UC/CD GWAS meta-analysis whose summary statistics are already served); they are not formally fine-mapped, so the `ibd_gwas` dataset carries `pseudo_credible_sets: true`. The results-api dedups range queries by combined-file path (one tabix per shared file) and uses a per-row resource filter (`dataset_to_resource` in each profile's `common.py`) so each resource only sees its own rows — the `dataset` column value must therefore be present in that map (e.g. `IIBDGC → ibd_gwas`) for region/variant credible-set queries to attribute its rows.
 
