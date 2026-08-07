@@ -178,7 +178,8 @@ python3 scripts/generate_resource_sql.py lint                       # must repor
 If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` so the `CASE` block matches the
 generated fragment. The resource-mapped views are `credible_sets_v`, `colocalization_v`,
 `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`,
-`open_chromatin_v`, `variant_effect_v`, `mpra_v` and `peak_to_gene_v` (the script's `ALL_VIEWS`).
+`open_chromatin_v`, `variant_effect_v`, `mpra_v`, `peak_to_gene_v` and `hla_associations_v`
+(the script's `ALL_VIEWS`).
 
 The two metadata views — `phenotypes_v` and `datasets_v` — are deliberately **not** in
 `ALL_VIEWS`. They carry `resource` as a real column taken straight from this file's registry,
@@ -218,12 +219,30 @@ there too** or it gets a `datasets` row with `dataset = NULL` and no `phenotypes
 relation is many-to-many in both directions (`pgc_scz` + `pgc_bip` both ship inside `PGC`;
 `finngen_pqtl` is `FinnGen_Olink` in `credible_sets` but `FinnGen_Olink_3K` in
 `colocalization`), which is why neither `resource` nor the registry key can serve as the join
-key. The loader cross-checks the map against the live tables and warns on each mismatch.
+key. The loader cross-checks the map against the live views in every direction and **fails the
+build** on any mismatch.
+
+The **scope** of that cross-check is derived from the `VIEWS` list in `genetics-results-db`'s
+`api/main.py` (by `scripts/live_dataset_scope.py`), not from a hardcoded table list. So adding
+a view to `VIEWS` is all it takes to bring its `dataset` values under the check — and a new
+`dataset` value fails the loader until it is mapped. Views opt out only via that script's
+`EXCLUDED_VIEWS`, each entry carrying a reason (`gene_annotations_v` and `variant_annotation_v`
+have no `dataset` column; `phenotypes_v` / `datasets_v` are built from the map under test).
+A view that is neither excluded nor has a `dataset` column fails loudly rather than being
+skipped. When you expose a new view, expect the next `load_phenotypes.sh` run to demand a
+`BQ_DATASETS_BY_DATASET_ID` entry for whatever `dataset` values it carries.
 
 The `phenotypes` join key is **`trait_original`, never `trait`**: in every results view
 `trait_original` is the phenotype code while `trait` is a display form for most rows
 (`HEIGHT_IRN` vs `Height,_inverse-rank_normalized`). Joining on `trait` returns zero rows
 silently.
+
+`hla_associations_v` is the **third** spelling: it has neither `trait` nor `trait_original`
+and calls its phenotype code `phenotype`. Its join is
+`phenotypes_v p ON p.dataset = 'finngen_hla' AND p.trait_original = h.phenotype`. A view whose
+trait column is named anything other than `trait_original` must say so in its `tables:` block
+in `configs/datasets.yaml`, since the silent zero-row join is otherwise indistinguishable from
+"no results".
 
 ## 7. Deploy
 
@@ -364,6 +383,12 @@ convenience mirror.
       apply views + load BQ rows if BQ-bound. A **new** view also needs adding to
       `ALL_VIEWS` (generator/linter), `VIEWS` (`api/main.py`) and the monitor's
       `VIEWS`/`_CONFIG_VIEWS` in this repo, or it is silently unmonitored and unqueryable.
+- [ ] genetics-results-db: `BQ_DATASETS_BY_DATASET_ID` entry in `scripts/build_phenotypes.py`
+      for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Adding the view to
+      `VIEWS` automatically brings its `dataset` values under the registry cross-check, so the
+      loader will fail until the map covers them. Skipping this leaves the dataset invisible in
+      `datasets_v` and its trait codes unresolvable in `phenotypes_v` — exactly what happened
+      to `finngen_hla`.
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a

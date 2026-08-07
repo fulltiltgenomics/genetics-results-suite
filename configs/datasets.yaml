@@ -839,12 +839,27 @@ tables:
       ("which traits is an allele associated with?") — the results-api /hla endpoint
       reads per-phenotype files and can only go the other way.
 
+      JOIN KEY WARNING — this view is the THIRD spelling of the trait column in this
+      schema. credible_sets_v / colocalization_v / coloc_credsets_v /
+      exome_variant_results_v / gene_burden_results_v carry both `trait_original` (the
+      phenocode, the join key) and `trait` (a display string); hla_associations_v carries
+      NEITHER and calls its phenocode `phenotype`. Joining phenotypes_v on h.trait or
+      h.trait_original is a query error; joining on p.trait is a SILENT ZERO-ROW join.
+      The only correct join is
+        phenotypes_v p ON p.dataset = h.dataset AND p.trait_original = h.phenotype
+      (`USING (dataset, trait_original)` does not work here — only the TRAIT column differs;
+      `dataset` is present on both sides, so it must be matched explicitly against
+      `phenotype`). Without SOME dataset predicate the join fans out across every FinnGen
+      release sharing the code space. Background, not an alternative: all 2,712 HLA
+      phenotype codes are also FinnGen R14 endpoint codes, so h.dataset is always
+      'finngen_hla' and the join above is the one to write.
+
     columns:
       chr: "Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
       pos: "Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000"
       gene: "HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5"
       allele: "Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name"
-      phenotype: "FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. Joins to the same phenotype codes used by the FinnGen GWAS datasets"
+      phenotype: "FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. THE TRAIT COLUMN — this view has no `trait` or `trait_original`, so the join to phenotypes_v is `p.dataset = h.dataset AND p.trait_original = h.phenotype`, never `= h.trait`"
       pval: "Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlogp, never on pval"
       mlogp: "-log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3)"
       beta: "Effect size (log odds ratio for binary endpoints) per copy of the allele"
@@ -878,6 +893,16 @@ tables:
           WHERE mlogp > 7.3 AND info >= 0.8 AND af_alt >= 0.005
           ORDER BY mlogp DESC
           LIMIT 100
+
+      - description: "Human-readable trait names for HLA hits — the join key is p.trait_original = h.phenotype, NOT h.trait (this view has no `trait` column)"
+        sql: >-
+          SELECT p.trait_name, h.gene, h.allele, h.mlogp, h.beta
+          FROM hla_associations_v h
+          JOIN phenotypes_v p
+            ON p.dataset = h.dataset AND p.trait_original = h.phenotype
+          WHERE h.mlogp > 7.3 AND h.info >= 0.8
+          ORDER BY h.mlogp DESC
+          LIMIT 20
 
       - description: "Which HLA gene carries the lead signal for each phenotype"
         sql: >-

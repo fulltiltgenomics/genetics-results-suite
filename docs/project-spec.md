@@ -291,11 +291,13 @@ traits by case count or ICD chapter, was a results-api round trip — which is w
 question cost a search call, a lookup call and then the real query. It is now a JOIN inside
 the same query.
 
-- `phenotypes` — one row per `(dataset, trait_original)`, ~33k rows. **Join on
-  `trait_original`, never on `trait`**: in every results view `trait_original` is the
-  phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
+- `phenotypes` — one row per `(dataset, trait_original)`, 35,327 rows. **Join on
+  `trait_original`, never on `trait`**: in every results view that has both columns
+  `trait_original` is the phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
   `Height,_inverse-rank_normalized`; `continuous_30040_both_sexes__irnt` vs `Mean corpuscular
-  volume`), so joining on `trait` returns zero rows silently. Coverage is partial by design —
+  volume`), so joining on `trait` returns zero rows silently. `hla_associations_v` is the
+  exception with neither column: it spells its phenocode `phenotype`, so its join is
+  `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
   QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
   `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
   (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. Use a `LEFT JOIN` when the dataset
