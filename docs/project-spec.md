@@ -356,7 +356,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in `terraform/terraform.tfvars`
 - **Region**: Configured via `region` in `terraform/terraform.tfvars`
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
-- **Node pool**: `e2-standard-4`, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`max = 2` on the daly profile); one node is running today. A full deploy can surge past a single node, and the PodDisruptionBudgets in `k8s/disruption-budgets/` keep the subsequent scale-down from evicting chat-backend or results-api — see "Node pool sizing" below
+- **Node pool**: `e2-standard-4`, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`max = 2` on the daly profile); one node is running today. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
@@ -372,9 +372,10 @@ The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every liv
 > An earlier version of this section claimed the pool was pinned at
 > `min_node_count == max_node_count == 2`. That pinning was written into
 > `terraform.tfvars.example` by commit 6db94e8 but **never applied to any live profile**
-> (`genetics-results-suite-262`). The decision has since been to keep autoscaling and defend
-> the eviction case with PodDisruptionBudgets instead, which also covers node auto-upgrade —
-> something pinning never did.
+> (`genetics-results-suite-262`). The decision has since been to keep autoscaling and handle
+> the eviction case with graceful shutdown, which also covers node auto-upgrade — something
+> pinning never did. PodDisruptionBudgets are declared for the two expensive workloads but,
+> at `replicas: 1`, do not currently block anything (see below).
 
 **Why the surge matters.** A full `deploy.sh` rolls every deployment at once. All of them
 except chat-backend, keycloak-postgres and rag-service (which are `strategy: Recreate`) use
@@ -424,22 +425,27 @@ scale down`. For chat-backend that killed an in-flight SSE response mid-answer.
 > which was actually recorded); or a resource request that has been lowered since. This is
 > **open**. Do not treat the table as having explained the incident.
 
-**Two mitigations are in place, and neither is the pinning.**
+**One mitigation is actually in place, and it is not the pinning.**
 
-1. Graceful shutdown on chat-backend (`k8s/deployments/chat-backend.yaml`):
-   `terminationGracePeriodSeconds: 300`, a `preStop` sleep of 10s, and uvicorn
-   `--timeout-graceful-shutdown 280`. An evicted pod finishes the stream it is serving.
-2. **PodDisruptionBudgets** (`k8s/disruption-budgets/budgets.yaml`) on **chat-backend** and
-   **results-api**, both `maxUnavailable: 0`. The cluster autoscaler will not even select a
-   node for scale-down if deleting it would violate a PDB, so the reap-the-surge-node eviction
-   cannot happen to either pod. results-api is included because its `startupProbe` allows ~5
-   minutes for a cold start and there is no second replica to serve tool calls meanwhile.
+Graceful shutdown on chat-backend (`k8s/deployments/chat-backend.yaml`):
+`terminationGracePeriodSeconds: 300`, a `preStop` sleep of 10s, and uvicorn
+`--timeout-graceful-shutdown 280`. An evicted pod finishes the stream it is serving. This is
+the whole of the live protection for a mid-stream eviction.
 
-**The operational cost of those PDBs, and why the autoscaler cost is unbounded.** Every
-deployment is `replicas: 1`, so `maxUnavailable: 0` and `minAvailable: 1` are the same
-constraint and both forbid voluntary eviction outright — the budget can never be satisfied
-while the pod exists. The cost is **not** symmetric across the two GKE drain paths, and the
-expensive one is the autoscaler:
+**The PodDisruptionBudgets** (`k8s/disruption-budgets/budgets.yaml`) on **chat-backend** and
+**results-api** are set to `maxUnavailable: 1` and are **declarative only today**. Both
+deployments are `replicas: 1`, so `desiredHealthy = replicas - maxUnavailable = 0` and
+`disruptionsAllowed = 1` whenever the pod is healthy: every eviction is admitted immediately.
+The budgets record which two workloads are expensive to interrupt — results-api because its
+`startupProbe` allows ~5 minutes for a cold start with no second replica to serve tool calls
+meanwhile, chat-backend because of the SSE stream — and they become a real constraint the
+moment a second replica exists. They do not prevent the reap-the-surge-node eviction now.
+
+**Why `maxUnavailable: 0` was rejected.** It is the value that would make these budgets bite at
+`replicas: 1`, and it is a trap. With one replica `maxUnavailable: 0` and `minAvailable: 1` are
+the same constraint and both forbid voluntary eviction outright — the budget can never be
+satisfied while the pod exists. The cost is **not** symmetric across the two GKE drain paths,
+and the expensive one is the autoscaler:
 
 - **cluster autoscaler — no time bound at all, this is the dominant cost.** The autoscaler
   documents two separate branches. "If there are Pods on a node that cannot move to other
@@ -461,59 +467,68 @@ expensive one is the autoscaler:
   does not state that PDBs are honoured during it. Do not rely on the one-hour figure holding
   for this path either way.
 
-**The permanent-ratchet consequence.** results-api is `RollingUpdate`, so during a rollout its
-replacement pod is scheduled onto the surge node before the old pod dies. The old pod then
-goes away and node 1 frees up — but the new pod stays on node 2, and node 2 now hosts a
-PDB-protected pod, so it can never be selected for scale-down. **The pool ratchets to two
-nodes and stays there.** That is a real, permanent cost, and it is close to the
-`min == max == 2` pinning that was explicitly rejected — arrived at as a side effect rather
-than as a decision. Whether results-api should keep a blocking PDB given that cost is an open
-decision, tracked separately; it is deliberately *not* resolved by weakening the budget here.
+**The permanent-ratchet consequence that `0` would have produced.** results-api is
+`RollingUpdate`, so during a rollout its replacement pod is scheduled onto the surge node
+before the old pod dies. The old pod then goes away and node 1 frees up — but the new pod
+stays on node 2, and under a blocking budget node 2 would host a pod that can never be
+selected for scale-down. **The pool would ratchet to two nodes and stay there** — a permanent
+cost arrived at as a side effect, and effectively the `min == max == 2` pinning that was
+explicitly rejected. That is the reason for choosing `1` over `0` (bead
+`genetics-results-suite-0v5`), accepting that the budgets are protectively inert until a second
+replica exists. At `maxUnavailable: 1` this ratchet does not occur.
 
-**The two PDBs are not equally expensive.**
+**Which workload would have driven that ratchet.**
 
 - **results-api** is `RollingUpdate` with no volume or affinity holding it to a node, so it
-  migrates to the surge node on every rollout. It is the reliable cause of the ratchet above.
+  migrates to the surge node on every rollout. It would have been the reliable cause.
 - **chat-backend** is `strategy: Recreate`, so it never runs alongside its own old pod and
   never *creates* a surge node. Its `chat-data` PVC is `ReadWriteOnce` on `standard-rwo`,
   which is **zonal, not node-scoped** — it does not pin the pod to a node, it only forces a
   detach/reattach (and the ~20s `Multi-Attach error` noted below). So chat-backend *can* be
-  rescheduled onto a surge node that some other deployment created, and its PDB will then pin
-  that node too. Less frequent than results-api, not impossible.
+  rescheduled onto a surge node that some other deployment created, and a blocking budget would
+  then pin that node too. Less frequent than results-api, not impossible.
 
 Neither PDB blocks `deploy.sh` itself: the Deployment controller deletes pods directly rather
 than going through the Eviction API, so rollouts are unaffected.
 
-Both budgets set `unhealthyPodEvictionPolicy: AlwaysAllow`. Under the default
-`IfHealthyBudget`, a running-but-unhealthy pod may be evicted only if the guarded application
-is not disrupted, which with `maxUnavailable: 0` means a **CrashLoopBackOff pod cannot be
-evicted either** — serving nothing while still blocking any eviction-API drain (`kubectl
-drain`, surge upgrade). `AlwaysAllow` lets an unhealthy pod "be evicted regardless of whether
-the criteria in a PDB is met"
+Both budgets set `unhealthyPodEvictionPolicy: AlwaysAllow`. At `maxUnavailable: 1` over one
+replica the budget blocks nothing, so this field **has no effect today** — it is not fixing an
+active deadlock. It is kept because it is the correct setting once a second replica exists, and
+because removing it would leave that deadlock unguarded once the budget can actually reach its
+limit — every replica unhealthy at `maxUnavailable: 1`, or *any* unhealthy pod under
+`minAvailable` or `maxUnavailable: 0`. (At `replicas: 2, maxUnavailable: 1` a single unhealthy
+pod beside a healthy one still leaves `currentHealthy >= desiredHealthy`, so `IfHealthyBudget`
+admits its eviction; raising `replicas` alone does not recreate the block.) Under the default
+`IfHealthyBudget`, a running-but-unhealthy pod
+may be evicted only if the guarded application is not disrupted, so under a blocking budget a
+**CrashLoopBackOff pod cannot be evicted either** — serving nothing while still blocking any
+eviction-API drain (`kubectl drain`, surge upgrade). `AlwaysAllow` lets an unhealthy pod "be
+evicted regardless of whether the criteria in a PDB is met"
 ([configure a PDB](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)). That
 relief is confirmed only for the Eviction API path; whether cluster-autoscaler's scale-down
 candidate simulation models the field at all is **unconfirmed**, so do not assume a
-crashlooping pod releases the scale-down ratchet. The field is accepted at `policy/v1` on
+crashlooping pod releases the scale-down ratchet a blocking budget would create. The field is accepted at `policy/v1` on
 this cluster's 1.35.6-gke.1250000, verified with
 `kubectl explain pdb.spec.unhealthyPodEvictionPolicy` and a client-side dry-run.
 
-**`AlwaysAllow` has a cost, and it lands on results-api's own justification.** "Healthy" here
-means `status.conditions[type=Ready].status == "True"`, so a pod that is merely *starting* is
-also unhealthy for this purpose and is freely evictable. results-api's `startupProbe` is
-`failureThreshold: 60, periodSeconds: 5` — about five minutes — so for ~5 minutes after every
-restart its PDB provides **no** protection: the pod can be evicted and its node is drainable
-(and possibly scale-down eligible). That is exactly the cold-start window the results-api PDB
-was justified by, so the guarantee begins when the `startupProbe` passes, not when the pod is
-created. `AlwaysAllow` stays anyway — the alternative is an unbounded crashloop deadlock, and
-the shorter pin slightly reduces the ratchet.
+**`AlwaysAllow` would carry a cost once the budgets bite, and it lands on results-api's own
+justification.** "Healthy" here means `status.conditions[type=Ready].status == "True"`, so a
+pod that is merely *starting* is also unhealthy for this purpose and is freely evictable.
+results-api's `startupProbe` is `failureThreshold: 60, periodSeconds: 5` — about five minutes —
+so even at `replicas: 2` the budget would give **no** protection for ~5 minutes after every
+restart: the pod can be evicted and its node is drainable. That is exactly the cold-start
+window the results-api budget is justified by, so any future guarantee begins when the
+`startupProbe` passes, not when the pod is created. `AlwaysAllow` stays anyway — the
+alternative is an unbounded crashloop deadlock.
 
-So each PDB buys protection for an in-flight request and costs a node that may never be
-reclaimed. That is the right trade for a long-lived SSE stream and arguably for a 5-minute
-cold start; it is **not** the right trade for a cheap-to-restart service. Do not blanket the
-namespace with PDBs — db-api, mcp-server, bff, auth-gateway, frontend and oauth2-proxy
-deliberately have none, because eviction already runs their `preStop`/SIGTERM path and they
-come back in seconds. Symptom of an over-restrictive PDB: `gke_cluster` log entries reading
-`Cannot evict pod as it would violate the pod's disruption budget`.
+So a *blocking* budget buys protection for an in-flight request and costs a node that may never
+be reclaimed. That is arguably the right trade for a long-lived SSE stream and a 5-minute cold
+start once there are two replicas to make it satisfiable; it is **not** the right trade for a
+cheap-to-restart service, and at `replicas: 1` it is not available at all without the ratchet.
+Do not blanket the namespace with PDBs — db-api, mcp-server, bff, auth-gateway, frontend and
+oauth2-proxy deliberately have none, because eviction already runs their `preStop`/SIGTERM path
+and they come back in seconds. Symptom of an over-restrictive PDB: `gke_cluster` log entries
+reading `Cannot evict pod as it would violate the pod's disruption budget`.
 
 Other consequences to keep in mind:
 
