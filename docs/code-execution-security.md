@@ -935,7 +935,7 @@ has 120 seconds in which to loop. For the sandbox audience:
 |---|---|---|
 | `maximum_bytes_billed` per query | 50 GB | Half the existing default. Bounds one query only — which is the point of the next row. |
 | Aggregate bytes billed per `jti` | 200 GB | Four queries at the per-query ceiling. **The control the per-query cap is not.** A single-pod, 120-second, concurrency-1 token needs no shared state to enforce this: an in-process counter in db-api keyed on `jti`, with a bounded LRU so a flood of distinct `jti`s cannot grow it, is sufficient. Over budget → `429`, not a silent truncation. |
-| Response rows | 25 000 | A quarter of the existing default, and well above what any legitimate aggregation returns *to a script* — the script aggregates in-pod and returns 64 KiB to the model regardless (section 2). |
+| Response rows | 25 000 | **db-api only.** A quarter of the existing default, and well above what any legitimate aggregation returns *to a script* — the script aggregates in-pod and returns 64 KiB to the model regardless (section 2). results-api carries **no** row cap; see "As shipped" below for why counting rows there cost more than it bought. |
 
 All three are enforced server-side from the token, never requested by the caller, and a
 script cannot widen them by asking.
@@ -952,6 +952,168 @@ attributable per `sub` and `sid` through the logging in control 3 of 6.2. If a p
 per-user budget is ever wanted, the same in-process LRU counter keyed on `sid` or `sub`
 instead of `jti` provides it; it is deliberately not in v1 because a cross-turn budget needs
 shared state once replicas exceed 1.
+
+**As shipped (`genetics-results-suite-4h6.28`), and the one place the implementation departs
+from the paragraphs above.** db-api enforces all three limits in `api/main.py`: `_caps_for()`
+resolves the row and byte ceilings from `request.state.principal`, the row cap is clamped in
+`execute_query` (not on the Pydantic field, and not by lowering `MAX_ROWS`), and the aggregate
+budget is charged from the dry run's estimate *before* the query runs and reconciled afterwards
+to the bytes the job **processed** — so a cache hit does not consume budget and the 429 arrives
+before the spend, not after it. A query that raises between the charge and the reconcile is
+refunded in a `finally`: a job that never ran bills nothing, so a script's syntax errors, each
+priced by the dry run, must not eat a budget they spent no bytes of.
+
+*Processed, not billed — this section previously said "actually billed", which is the wrong
+figure.* `total_bytes_billed` is what Google invoices (10 MB minimum, rounded up), but a
+**dry-run job reports only `total_bytes_processed`** — its billed figure is 0. Processed is
+therefore the one number available on *both* sides of a pre-flight charge and its correction,
+and charging in one unit while reconciling in the other would make the correction wrong by
+construction. The two differ by at most 10 MB per query against a 200 GB budget.
+
+*The budget covers all four of db-api's BigQuery paths, not only `/query`.* `/schema`'s
+distinct-value scans, `/stats`'s uncached `GROUP BY dataset, data_type` over `credible_sets_v`,
+and `/tables/{t}/sample` all submit jobs and none of them is cached at the HTTP layer, so a
+script could loop them for its whole wall clock at up to 50 GB a call entirely outside a budget
+this section describes as an aggregate across every query of one execution. All three now go
+through one shared helper (`_run_internal_query`) that refuses to start a job once the budget is
+spent and charges what the job processed once it finishes. Post-hoc charging is forced — those
+paths have no dry run to price them with — and it means the budget can be overshot by at most
+one query, and by at most that query's `maximum_bytes_billed`, which is exactly what the
+per-query cap bounds.
+
+*The `/schema` value scans run at the **triggering** caller's ceiling, not the operator's.* They
+used to pass no request at all, so a sandbox request drove them at the relaxed 100 GB ceiling —
+**twice its own per-query cap** — and paid nothing, which inverts the point of the caps. The
+earlier justification (one caller's cap must not decide what a later caller finds in the shared
+`_get_categorical_values` cache) was sound about the cached *value*, but it silently also decided
+who pays and at what ceiling, and those are separable. Cache contents are still not contaminated
+across callers: a job over the triggering caller's ceiling fails and leaves the cache
+unpopulated, so the next caller retries the scan under its own limits. `_VALUES_CACHE_TTL_SECONDS`
+behaviour is otherwise unchanged.
+
+db-api runs `replicas: 1` and no HorizontalPodAutoscaler exists in
+`k8s/`, so the in-process counter is exact today — **at more than one replica it bounds spend
+per replica, not globally.** That is a real limit of the design, not a detail: two replicas
+would make the effective budget 400 GB per `jti`. `k8s/deployments/db-api.yaml` carries a
+comment on `replicas: 1` saying so, because a routine scale-up would otherwise multiply the
+budget silently.
+
+results-api enforces a **16 MiB response-byte cap, and no row cap**, in
+`SandboxResponseCapMiddleware` (`app/middleware.py`), registered innermost so it measures the
+payload the caller decodes rather than its gzipped size. A capped response is buffered —
+bounded by the byte cap itself — because a stream cannot be un-sent once its first chunk is on
+the wire, and this design requires a 429 rather than a truncation. A relaxed response is never
+buffered or inspected, so browser and BFF traffic is untouched.
+
+*Why there is no row cap here, though the table above lists one for db-api.* Enforcing it meant
+`json.loads` over the whole buffered body, synchronously on the event loop, purely to get a
+length. For 25 000 wide rows the parsed object graph is several times the byte size, so peak
+memory ran to roughly 100–200 MB per in-flight capped request on a `replicas: 1` pod with an
+8Gi limit that already preloads the gene maps and the search index — and nothing limits a
+script's concurrency. That made the row cap a memory amplifier **only a sandbox caller could
+trigger**: presenting the token hurt the service more than omitting it. It also never bound the
+payloads it was written for, because the counter recognised only JSON and **TSV is the default
+`format` of every bulk range endpoint**. The byte cap was already the binding one — 25 000
+summary-statistic rows serialize to roughly 5 MB, well inside 16 MiB — so dropping the row cap
+removes the amplifier without loosening anything that bound. The buffer is now also passed
+downstream as-is instead of being copied to `bytes`, which removed a second 16 MiB peak.
+
+*Over the cap the producer is torn down, not merely ignored.* Dropping the later ASGI messages
+bounds what the caller **receives** but not what results-api **spends**: measured, a 10 KiB cap
+against a 100 KiB `StreamingResponse` returned 429 after 11 chunks while the generator produced
+all 100 — and on the real endpoints that generator is GCS range reads plus the
+`TABIX_FILTER_WORKERS` pool. The middleware now raises out of `send` once the 429 is on the
+wire, which breaks `StreamingResponse.stream_response`'s `async for` and abandons the iterator.
+The exception passes through Starlette's `ExceptionMiddleware` (which handles only
+`HTTPException`) untouched and is caught by the cap middleware itself, so no 500 is ever
+attempted over the 429 already sent. `tests/test_response_caps.py` counts the generator's
+iterations to pin this, on both ASGI spec versions.
+
+*What results-api still does not have, stated rather than left implicit.* The byte cap bounds
+**one** response. results-api has no per-`jti` aggregate budget, no request-count limit and no
+concurrency limit, so nothing bounds a script that issues many in-cap requests over its 120
+seconds — the db-api counter has no analogue here. That is deliberate scope, filed as
+`genetics-results-suite-4h6.29`, and it must land before a sandbox Deployment exists; production
+impact today is nil, since there is none and `SANDBOX_ENABLED` is `"false"` on both services.
+
+**The departure: `@is_public` routes are relaxed, not tight — and the measurement that
+decided it.** Read literally, "no credential gets the tight limits" would apply the sandbox
+caps to results-api's `@is_public` routes, because `auth_required` returns before
+`get_verified_user` and no principal is resolved there at all. Re-derive that set with
+`grep -rn "@is_public" app/` rather than trusting a count here — today it is **seven**:
+`/api/v1/auth`, `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, `/api/v1/rsid/variants`
+GET and POST, and — missed by earlier drafts of this section, which said five — `/api/v1` and
+`/healthz` (`app/server.py`), each of which returns a fixed handful of bytes.
+Those routes are the browser's, reached through bff (`bff/inputParse.ts:81` and `:215`).
+
+The first question was whether tight caps there would truncate or 429 a real browser request.
+Measured, they would not, and the numbers are worth recording because they are the reason this
+is a judgement call rather than a forced one:
+
+| public route | calls, 30 d | largest response possible | vs the 16 MiB cap |
+|---|---|---|---|
+| `GET /api/v1/rsid/variants` | 140 | ~700–1 300 rows, bounded by URL length (nginx `large_client_header_buffers` 8k, h11's 16 KiB) rather than by code | <1% |
+| `POST /api/v1/rsid/variants` | 14 | was **unbounded in code**; now 5 000 ids (`app/routers/rsid.py` `MAX_RSIDS`), enforced for every caller | <1% |
+| `GET /api/v1/variant_sets/{name}` | 14 | 888 rows / 18.6 KB (`FinnGen_enriched_202505`, the largest configured file) | 0.1% |
+| `GET /api/v1/variant_sets` | 7 | 3 rows / 74 B | — |
+| `GET /api/v1/auth` | 0 (last hit 2026-03-14) | 1 object / ~90 B | — |
+| `GET /api/v1`, `GET /healthz` | not in the sink | a fixed object of a few hundred bytes | — |
+
+Counts from `phewas-development.genetics_api_logs.genetics_results_api` (the `endpoint_access`
+sink); sizes measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
+(external traffic only — bff and mcp-server reach results-api in-cluster and bypass the
+gateway, so **no response size is logged for the dominant caller**; `httpRequest.responseSize`
+is non-NULL on 0 of the 2 812 rows, and `full_path`, which would reveal rsid counts, is stripped
+before Cloud Logging).
+
+*What this table cannot show.* An earlier draft added "`user_email` is NULL on every one of
+these rows, confirming no principal is resolved". **That inference is withdrawn as
+unreproducible.** `phewas-development.genetics_api_logs.genetics_results_api` returns 0 rows for
+the last two days while Cloud Logging carries `endpoint_access` entries from today, and across
+30 days all 2 812 of its rows have a NULL `user_email` while a live entry from today carries
+`"mcp-tool"`. That is a sink artifact, not a fact about principals, so the table cannot support
+any claim about *who* called. The no-truncation conclusion below therefore rests on the caps
+being unreachable by the largest response this code can produce, not on logged size data.
+
+So capping them would not regress anything today. They are nonetheless **relaxed**, because the
+exception costs nothing and the alternative does not: these routes already answer the open
+internet with no credential and bill no BigQuery, so tight caps would constrain only *anonymous*
+browser traffic, while carrying a real regression risk if a curated variant set is ever
+configured with more than 25 000 variants. `REQUIRE_AUTH=false` (local development; the shipped
+`results-api.yaml` sets `"true"`) is relaxed for the same reason.
+
+**Why the exception has zero security delta — and the premise that had to be made true first.**
+The earlier argument was that a sandbox script is capped on these routes either way, so relaxing
+them changes nothing for it. That was half the story, and the missing half was a live break of
+the invariant. On `POST /api/v1/rsid/variants`, `parse_and_validate_rsids` validated format and
+never counted, and the handler read the body with an unbounded `await request.body()`. So a
+script **presenting** its sandbox token got 25 000 rows / 16 MiB, while the same script
+**omitting** the header got an unbounded response fully materialized in the pod — the absent
+credential buying a strictly looser cap than the sandbox credential, which is exactly what this
+section forbids. `k8s/network-policies/sandbox-policy.yaml` admits the sandbox to
+results-api:4000 directly, bypassing auth-gateway, so its `client_max_body_size` never saw that
+body either.
+
+What makes the exception safe is therefore not the cap but that every public route bounds its
+own response **for every caller**. `parse_and_validate_rsids` now rejects more than `MAX_RSIDS`
+ids with a 422 and the POST bounds its body read as it streams, both with **no sandbox special
+case** — a sandbox-only bound would leave the looser path open to the caller that simply
+declines to identify itself, so the uniformity is what makes the invariant hold. `MAX_RSIDS` is
+5 000, taken from the GET's own incidental ceiling: h11 caps the request line plus headers at
+16 KiB and the shortest possible id costs 4 bytes in the query string ("rs1,"), so no GET that
+works today can carry more than 4 096 ids. 5 000 therefore regresses nothing that currently
+succeeds, while bounding the POST to a response of a few hundred KB. No bulk POST caller exists
+today.
+
+The other half of the change still holds and still matters: the sandbox principal is resolved in
+`auth_required` **before** both short circuits, so a sandbox token is capped on a public route
+and under `REQUIRE_AUTH=false` as well. It is not sufficient on its own, because it only
+tightens the caller that chose to identify itself — which is why the invariant rests on the
+uniform bound above. The invariant the section
+above is really asserting — *a caller must never obtain looser limits by presenting a weaker
+credential* — is preserved: a sandbox token is capped everywhere it is presented, and dropping
+a verified credential on a route that requires one yields a 401, not a wider cap. What is
+relaxed is the absence of a credential on a route that asks for none.
 
 ### results-api: weaker auth than db-api, and a bypass that must close first
 
@@ -1349,10 +1511,11 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    false, because subdomain-label encoding sustains roughly 200 KB/s and needs no response
    (section 3, "On DNS"). If DNS is ever restored, this control is downgraded from "no
    sink" to "a bandwidth-limited sink", and must be reworded here.
-2. **Byte and row caps** (section 4): 50 GB per query, **200 GB aggregate per `jti`**, and
-   25 000 response rows — as defaults, not as a sandbox-only penalty. A full-table dump
-   fails rather than succeeding slowly, and a loop of medium queries hits the aggregate
-   budget rather than running for the full 120 seconds.
+2. **Byte and row caps** (section 4): on db-api, 50 GB per query, **200 GB aggregate per
+   `jti`** across all four of its BigQuery paths, and 25 000 response rows; on results-api, a
+   16 MiB response-byte cap and no row cap — all as defaults, not as a sandbox-only penalty. A
+   full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
+   aggregate budget rather than running for the full 120 seconds.
 3. **Everything is logged.** Every SDK function call emits a structured line carrying
    session id, function, argument summary and row count (`4h6.12`); db-api logs `sid`,
    `sub` and `jti` per request. A dump is visible after the fact and attributable to a
@@ -1620,7 +1783,7 @@ abstract.
 | `4h6.6` (image) | distroless `python3-debian12:nonroot`, uid 65532, no shell, build context `sandbox/` in **this** repo, wired into `build-all.sh`/`build.sh`. **Build-time assertion that `/etc/nsswitch.conf` exists and lists `files` before `dns` for the hosts database** — absent it, glibc defaults to `dns [!UNAVAIL=return] files` and every lookup stalls the full resolver timeout against a dropping egress policy before reaching `hostAliases`, and `readOnlyRootFilesystem: true` makes it unfixable at runtime. **No `google-auth`-based client in the image** (it probes `metadata.google.internal` by name, which is the same stall), or `GCE_METADATA_HOST` pinned to a literal IP if one is unavoidable. Second non-root uid for the child if pids option (a) is taken. |
 | `4h6.7` (manifests) | Full securityContext and resource table in section 2; **one** `emptyDir` (`/scratch`) and no PVC and **no pod-level `/tmp`**; KSA `sandbox` with no Workload Identity and `automountServiceAccountToken: false`; `hostAliases` for db-api and results-api instead of DNS, pinning **all four name forms** per IP (bare, `.genetics`, `.genetics.svc`, `.genetics.svc.cluster.local`) because the `files` NSS module does no search-domain expansion, with the SDK given the FQDN form; `oom_score_adj` on supervisor and child; a second non-root uid for the child if option (a) of the pids row is taken, with the shared-gid ownership contract in section 2; replicas 1; `runtimeClassName: gvisor` + toleration. `deploy.sh`: resolve the ClusterIPs **after** the Services are applied (resolving in the "derive variables" block deadlocks the first deploy to a fresh cluster), validate each as a dotted quad and abort otherwise (headless Services return the literal `None`), and add `DB_API_CLUSTER_IP`/`RESULTS_API_CLUSTER_IP` to the deployments `envsubst` allow-list or they ship unsubstituted. |
 | `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
-| `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **defaults for all requests**, relaxed for a verified non-sandbox principal — on db-api that means the shared secret only; on results-api it means shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
+| `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
 | `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |
 | `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |

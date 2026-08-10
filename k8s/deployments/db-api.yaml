@@ -4,6 +4,10 @@ metadata:
   name: db-api
   namespace: genetics
 spec:
+  # load-bearing for the sandbox aggregate byte budget, not just for cost: db-api keeps the
+  # per-execution BigQuery counter in process memory (api/main.py `_jti_bytes`), so N replicas
+  # give one execution N x SANDBOX_AGGREGATE_BYTES_BUDGET. Scaling up — or adding an HPA —
+  # requires moving that counter to shared state first. See docs/code-execution-security.md § 4.
   replicas: 1
   selector:
     matchLabels:
