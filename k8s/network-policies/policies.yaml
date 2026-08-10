@@ -25,7 +25,9 @@ spec:
   policyTypes:
   - Ingress
 ---
-# bff: allow on 5000 (auth-gateway forwards browser /api/ traffic here; also kubelet health probes)
+# bff: only auth-gateway calls it (nginx "location /api/" -> bff:5000); nothing else in the
+# suite references bff. Kubelet health probes are exempt from NetworkPolicy on this cluster
+# (Dataplane V2), so they need no ingress rule of their own.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,12 +38,23 @@ spec:
     matchLabels:
       app: bff
   ingress:
-  - ports:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    ports:
     - port: 5000
   policyTypes:
   - Ingress
 ---
-# results-api: allow from load balancer, chat-backend, and mcp-server
+# results-api: the four callers admitted BY THIS RULE. auth-gateway reaches it directly through
+# its @api_bearer location (programmatic bearer-token clients), bff through the browser /api/
+# path, chat-backend and mcp-server through the tool executor. It is a ClusterIP service with no
+# Ingress backend, so no load-balancer or health-check source needs to be admitted.
+# These four are NOT the complete set of callers: the monitor CronJob is admitted by a separate,
+# additive policy (allow-ingress-results-api-from-monitor in monitor-policy.yaml, same port).
+# NetworkPolicies union, so that rule is load-bearing — deleting it as "already covered here"
+# would lock the monitor out.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -52,9 +65,13 @@ spec:
     matchLabels:
       app: results-api
   ingress:
-  - ports:
-    - port: 4000
   - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    - podSelector:
+        matchLabels:
+          app: bff
     - podSelector:
         matchLabels:
           app: chat-backend
