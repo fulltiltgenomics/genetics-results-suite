@@ -238,6 +238,26 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+### Deploying the trusted-proxy marker
+
+**Roll out `bff` before `results-api`, and never both in the same `deploy.sh`.** results-api
+only honours `X-Goog-Authenticated-User-Email` from a caller that also presents
+`INTERNAL_API_SECRET`, and it is the BFF that attaches that bearer.
+
+```bash
+./scripts/build.sh bff && ./scripts/rollout.sh bff            # 1. must land first
+./scripts/build.sh results-api && ./scripts/rollout.sh results-api  # 2. only once bff is Running
+```
+
+- **bff new, results-api old** — safe, and safe to sit in indefinitely: the old API accepts the
+  bearer as an internal service call, and the usage log still names the real user.
+- **results-api new, bff old** — **every browser request 401s.** This is the order to avoid.
+- Rolling back reverses it: results-api first, then bff.
+
+`deploy.sh` restarts everything at once and gives no ordering, so use `rollout.sh` for the bff
+step first. Details and the full state table are in `docs/project-spec.md`, "Ordered rollout:
+the trusted-proxy marker".
+
 Rolling out `chat-backend` can block for up to ~5 minutes: it waits for any in-flight chat
 stream to finish rather than cutting it off mid-answer. See "chat-backend shutdown and stream
 draining" in `docs/project-spec.md`.
@@ -273,7 +293,7 @@ and bff share the same source repo but build different Dockerfiles.
 
 ## Authentication
 
-Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header.
+Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header. That header is not itself a credential — results-api honours it only when the request also carries `Authorization: Bearer $INTERNAL_API_SECRET`, proving it came from an in-cluster proxy, and then still checks the address against the shared email allow-list; without the bearer the header is ignored and the request is unauthenticated. The BFF attaches that bearer on every upstream call, including the generic `/api` passthrough that forwards the identity header, so the two always arrive together on the browser path. **Shipping the two halves of that change in the wrong order locks all browser users out** — see [Deploying the trusted-proxy marker](#deploying-the-trusted-proxy-marker) under Updating Services.
 
 Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` provider against Keycloak
 (which in turn federates Google and Apple); otherwise it talks to Google directly. See
@@ -344,7 +364,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 
 ## Security
 
-- Network policies enforce that db-api and rag-service are only reachable from chat-backend and mcp-server
+- Network policies enforce that db-api and rag-service are only reachable from chat-backend and mcp-server; results-api (4000) only from auth-gateway, bff, chat-backend and mcp-server (plus the monitor, via its own policy); bff (5000) only from auth-gateway
 - Application containers run with `allowPrivilegeEscalation: false`, all capabilities dropped and the `RuntimeDefault` seccomp profile; db-api and bff additionally run as non-root
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect

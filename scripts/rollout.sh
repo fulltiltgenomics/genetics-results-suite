@@ -3,6 +3,12 @@ set -euo pipefail
 
 # update a single service's container image
 # usage: rollout.sh <service-name> [tag]
+#
+# ORDERING: roll out `bff` before `results-api`. results-api honours the
+# X-Goog-Authenticated-User-Email header only from a caller that also presents
+# INTERNAL_API_SECRET, and bff is what attaches it — a new results-api in front of an old bff
+# 401s every browser request. The reverse order is safe to sit in. Rollback reverses it
+# (results-api first). See README "Deploying the trusted-proxy marker".
 
 SERVICE="${1:?Usage: rollout.sh <service-name> [tag]}"
 TAG="${2:-latest}"
