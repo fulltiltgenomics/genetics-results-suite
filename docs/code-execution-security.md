@@ -451,11 +451,11 @@ an error. Building against the branch that has it (`MCP_SERVER_BRANCH=…`) is w
 assertions above were verified against.
 
 **The image does not build with `4h6.13`'s placeholders either, by the same reasoning.**
-`schema/` and `stubs/` currently hold `PLACEHOLDER.md` / `PLACEHOLDER.pyi`, and shipping
-them degrades *silently*: `run_analysis` runs, the pod is healthy, and the model reads a
-file telling it this is not the real schema. `build-checks.py` fails the build on any
-`PLACEHOLDER*` file in the staged trees, which couples this image to `4h6.13` exactly as
-the import assertion couples it to `4h6.11`.
+Shipping them degrades *silently*: `run_analysis` runs, the pod is healthy, and the model
+reads a file telling it this is not the real schema. `build-checks.py` fails the build on
+any `PLACEHOLDER*` file in the staged trees, which couples this image to `4h6.13` exactly
+as the import assertion couples it to `4h6.11`. `4h6.13` has since landed and the
+placeholders are gone — see "Schema docs and stubs" below.
 
 **Interpreter pre-warming is split.** The image supplies `/genetics/prewarm.py` (the module
 list and a `prewarm()` that imports it, **raising `PrewarmError`** on any failure rather
@@ -492,18 +492,32 @@ they are per-execution and belong under `/scratch/<execution-id>`, and a fixed v
 image would recreate exactly the shared cross-execution directory that removing the
 pod-level `/tmp` eliminated.
 
-**Contract for `4h6.13`** (schema docs and `.pyi` stubs, not yet generated): write generated
-schema markdown into `sandbox/schema/` and generated stubs into `sandbox/stubs/`; the
+**Schema docs and stubs (`4h6.13`, landed).** `scripts/gen-sandbox-docs.py` writes schema
+markdown into `sandbox/schema/` and `.pyi` signature stubs into `sandbox/stubs/`; the
 Dockerfile copies those directories verbatim to `/genetics/schema/` and `/genetics/sdk/`
-owned `65532:65532`, exported as `GENETICS_SCHEMA_DIR` and `GENETICS_STUBS_DIR`. Both
-directories currently hold a single file named `PLACEHOLDER*` that says so and must be
-deleted by that task; neither may be left empty. **This is enforced, not requested**:
-`build-checks.py` fails the build while any `PLACEHOLDER*` file remains, so the sandbox
-image is unbuildable until `4h6.13` lands and cannot ship placeholder documentation to the
-model unnoticed. `/genetics/sdk/` is **not** on `PYTHONPATH`
-and must not be added to it — the importable SDK is the real package in `/opt/venv`, and two
-copies of those names on `sys.path` would shadow silently. Adding files to either directory
-needs no Dockerfile change.
+owned `65532:65532`, exported as `GENETICS_SCHEMA_DIR` and `GENETICS_STUBS_DIR`. **No
+Dockerfile change was needed** — the contract `4h6.6` fixed held exactly as written. The
+`PLACEHOLDER*` files are gone and neither directory is empty; `build-checks.py` still
+fails the build on any `PLACEHOLDER*` file, so the coupling stays. `/genetics/sdk/` is
+**not** on `PYTHONPATH` and must not be added to it — the importable SDK is the real
+package in `/opt/venv`, and two copies of those names on `sys.path` would shadow silently;
+the generated stubs say so in their own header.
+
+Both trees are *generated, never transcribed*. The schema markdown is rendered from this
+repo's canonical `configs/datasets.yaml` — one file per entry under `tables:`, carrying its
+description, columns, enumerable columns and worked example SQL — and the stubs are read
+out of the genetics SDK's source with `ast` (never imported: importing would execute
+`genetics_mcp_server.config.settings`, and the build host has no polars or httpx). The
+generator names no view and no SDK function; `scripts/test-sandbox-docs.py` asserts that,
+asserts the three correctness rules `4h6.13` names are present *in `datasets.yaml`*, and
+asserts that mutating those YAML fields moves the generated output. The reason is that a
+transcribed rule has no runtime symptom: the image builds green while `/genetics/schema`
+contradicts the canonical file, and `genetics-results-suite-5p5` is an open P1 that will
+rewrite `credible_sets_v`'s variant/chr guidance. Both build scripts regenerate before
+building, so the image can never document a schema older than the file it came from;
+`build.sh sandbox` fails hard if generation fails, `build-all.sh` skips the sandbox loudly.
+The generated files are also committed, so the directories are never empty and the diff of
+a `datasets.yaml` change is visible in review.
 
 **Image size is 607 MB.** numpy, scipy, matplotlib and polars are most of it. Noted because
 the sandbox node pool is pinned at one node and pulls the image on every node replacement.
