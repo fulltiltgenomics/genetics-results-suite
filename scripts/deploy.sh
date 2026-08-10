@@ -161,6 +161,36 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
   exit 1
 }
 
+# Every deployment below mounts sandbox-token-signing-key. Missing, the pods stay in
+# CreateContainerConfigError rather than starting degraded, so catch it here instead: an older
+# genetics-secrets predating the sandbox work simply has no such key.
+#
+# Deliberately NOT "re-run create-secrets.sh": that script only reuses-or-generates a few keys
+# and writes `--from-literal=x="${X:-}"` for the rest, so re-running it with an incomplete
+# environment blanks openai/tavily/perplexity/cohere/mcp keys, external-mcp-servers,
+# admin-users and slack-webhook-url. Patch in just the missing key instead.
+for key in internal-api-secret sandbox-token-signing-key; do
+  if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
+       -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
+    cat >&2 <<EOF
+ERROR: genetics-secrets is missing '${key}'.
+
+Add ONLY that key, leaving every other key in the secret untouched:
+
+  kubectl patch secret genetics-secrets -n ${NAMESPACE} --type=merge \\
+    -p "{\"stringData\":{\"${key}\":\"\$(openssl rand -base64 32)\"}}"
+
+(Substitute your own value for \$(openssl rand -base64 32) if the key already exists elsewhere
+and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
+results-api, and internal-api-secret on every internal caller.)
+
+Do NOT re-run create-secrets.sh to fix this unless you have the full set of optional secrets
+exported in your shell: it rewrites the whole secret and blanks any key you do not export.
+EOF
+    exit 1
+  fi
+done
+
 # volumes
 for f in volumes/*.yaml; do
   if [ "${ENABLE_RAG}" != "true" ] && [ "$(basename "$f")" = "pvc-rag-stores.yaml" ]; then

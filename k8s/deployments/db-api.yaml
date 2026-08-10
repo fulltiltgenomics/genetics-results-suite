@@ -35,6 +35,19 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
+        # verifies the per-execution sandbox tokens chat-backend mints. A separate key from
+        # internal-api-secret on purpose: separate blast radius, independent rotation. The
+        # sandbox itself holds neither (docs/code-execution-security.md section 4).
+        - name: SANDBOX_TOKEN_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: sandbox-token-signing-key
+        # flipped to "true" by the deploy that creates the sandbox Deployment (4h6.7). While
+        # true, db-api refuses to start if either secret above is unset — a sandbox script can
+        # otherwise be served by simply omitting the Authorization header.
+        - name: SANDBOX_ENABLED
+          value: "false"
         volumeMounts:
         - name: datasets-config
           mountPath: /app/configs/datasets.yaml
