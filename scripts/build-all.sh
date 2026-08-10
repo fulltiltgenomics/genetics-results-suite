@@ -98,26 +98,51 @@ build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
 # clone above and pip-installed at build time, so the sandbox and mcp-server can never
 # drift apart. See docs/code-execution-security.md, "Where the image lives".
 MCP_DIR="${WORK_DIR}/genetics-mcp-server"
-# the schema docs and SDK stubs (genetics-results-suite-4h6.13) gate the image the same
-# way the SDK does: build-checks.py refuses to build with them, because a sandbox whose
+# The schema docs and SDK stubs (genetics-results-suite-4h6.13) are generated below rather
+# than taken from the working tree, and they gate the image the same way the SDK does:
+# build-checks.py refuses to build while a placeholder is staged, because a sandbox whose
 # /genetics/schema says "PLACEHOLDER — not the real schema documentation" degrades
-# silently. Detected here so a suite build still skips rather than fails, as it does for
-# the SDK.
-SANDBOX_PLACEHOLDERS=$(find "${SANDBOX_DIR}/schema" "${SANDBOX_DIR}/stubs" -name 'PLACEHOLDER*' 2>/dev/null | tr '\n' ' ')
-if [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
-  echo ""
-  echo "!!! SKIPPING sandbox: placeholders still staged (${SANDBOX_PLACEHOLDERS})."
-  echo "!!! The image is not shippable with placeholder schema docs or SDK stubs"
-  echo "!!! (genetics-results-suite-4h6.13). Every other image was built."
-elif [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
+# silently. Failures are caught here so a suite build skips rather than fails, as it does
+# for the SDK.
+if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
   rm -rf "${SANDBOX_DIR}/.sdk-src"
   mkdir -p "${SANDBOX_DIR}/.sdk-src"
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
-  TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
-  build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" \
-    --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)"
-  rm -rf "${SANDBOX_DIR}/.sdk-src"
+  # regenerate /genetics/schema and /genetics/sdk from configs/datasets.yaml and the SDK
+  # clone (genetics-results-suite-4h6.13), so the image never documents a schema older
+  # than the canonical file. `|| true` under `set -e`: a suite build must not fail on the
+  # sandbox, so the outcome is inspected and the sandbox skipped loudly instead — the same
+  # shape as the SDK-missing branch. `build.sh sandbox` fails hard on the same condition.
+  echo "--- Generating sandbox schema docs and SDK stubs"
+  SANDBOX_DOCS_OK=0
+  python3 "${SCRIPT_DIR}/gen-sandbox-docs.py" --sdk-src "${SANDBOX_DIR}/.sdk-src" || SANDBOX_DOCS_OK=$?
+  # regeneration only proves the generator ran; test-sandbox-docs.py is what checks the
+  # properties that have no runtime symptom (coverage, the correctness rules still being in
+  # configs/datasets.yaml, the stubs matching the SDK's exported surface exactly). Folded
+  # into the same skip branch, so a suite build stays green and says why.
+  if [ "${SANDBOX_DOCS_OK}" -eq 0 ]; then
+    echo "--- Checking sandbox schema docs and SDK stubs"
+    python3 "${SCRIPT_DIR}/test-sandbox-docs.py" --sdk-src "${SANDBOX_DIR}/.sdk-src" \
+      || SANDBOX_DOCS_OK=$?
+  fi
+  # a placeholder surviving generation means the generator did not own that file; the
+  # image build would refuse anyway (build-checks.py), so stop here with a readable reason
+  SANDBOX_PLACEHOLDERS=$(find "${SANDBOX_DIR}/schema" "${SANDBOX_DIR}/stubs" -name 'PLACEHOLDER*' 2>/dev/null | tr '\n' ' ')
+  if [ "${SANDBOX_DOCS_OK}" -ne 0 ] || [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
+    echo ""
+    echo "!!! SKIPPING sandbox: could not generate or verify the schema docs and SDK stubs"
+    echo "!!! (gen-sandbox-docs.py / test-sandbox-docs.py exit ${SANDBOX_DOCS_OK};"
+    echo "!!!  placeholders: ${SANDBOX_PLACEHOLDERS:-none})."
+    echo "!!! The image is not shippable with placeholder or stale schema docs"
+    echo "!!! (genetics-results-suite-4h6.13). Every other image was built."
+    rm -rf "${SANDBOX_DIR}/.sdk-src"
+  else
+    TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+    build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" \
+      --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)"
+    rm -rf "${SANDBOX_DIR}/.sdk-src"
+  fi
 else
   echo ""
   echo "!!! SKIPPING sandbox: ${MCP_SERVER_BRANCH} of genetics-mcp-server has no"

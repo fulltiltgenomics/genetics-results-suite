@@ -47,6 +47,26 @@ if [ "${SERVICE}" = "sandbox" ]; then
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
 
+  # /genetics/schema and /genetics/sdk (genetics-results-suite-4h6.13). Regenerated from
+  # configs/datasets.yaml and from the SDK clone staged above on every build, not read
+  # from the committed copies, so the image cannot ship documentation older than the
+  # canonical file it is derived from. Under `set -e` a failure aborts the build, which is
+  # the intended behaviour here: this script builds the sandbox BY NAME, and an image whose
+  # schema docs did not regenerate is exactly the silent degradation build-checks.py's
+  # placeholder gate exists to prevent. build-all.sh skips instead, so a suite build stays
+  # green.
+  echo "--- Generating sandbox schema docs and SDK stubs"
+  python3 "${SCRIPT_DIR}/gen-sandbox-docs.py" --sdk-src "${SANDBOX_DIR}/.sdk-src"
+
+  # Regeneration alone only proves the generator ran. The properties that matter — every
+  # view covered, the correctness rules still in configs/datasets.yaml, the stubs matching
+  # the SDK's exported surface exactly — have no runtime symptom: an image that lost them
+  # builds, deploys and serves confidently wrong SQL. Gated here for the same reason
+  # deploy.sh gates on test-network-policies.py. Non-zero (1 = a property broke,
+  # 2 = the harness could not run) aborts under `set -e`.
+  echo "--- Checking sandbox schema docs and SDK stubs"
+  python3 "${SCRIPT_DIR}/test-sandbox-docs.py" --sdk-src "${SANDBOX_DIR}/.sdk-src"
+
   TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
   echo "=== Building sandbox (tag: ${TAG}) ==="
   docker build --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)" \
