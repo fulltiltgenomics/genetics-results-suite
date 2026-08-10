@@ -20,6 +20,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
+# sandbox: a local build context in this repo (like monitor and keycloak in
+# build-all.sh), but one that still needs a clone — the genetics SDK lives in
+# genetics-mcp-server and is pip-installed at build time rather than vendored here.
+# See docs/code-execution-security.md, "Where the image lives".
+if [ "${SERVICE}" = "sandbox" ]; then
+  SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
+  WORK_DIR=$(mktemp -d)
+  trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src"' EXIT
+
+  MCP_BRANCH="${MCP_SERVER_BRANCH:-master}"
+  MCP_DIR="${WORK_DIR}/genetics-mcp-server"
+  echo "--- Cloning genetics-mcp-server (branch: ${MCP_BRANCH}) for the SDK"
+  git clone --depth 1 --branch "${MCP_BRANCH}" \
+    "${GITHUB_ORG}/genetics-mcp-server.git" "${MCP_DIR}"
+
+  if [ ! -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
+    echo "ERROR: branch ${MCP_BRANCH} of genetics-mcp-server has no"
+    echo "       src/genetics_mcp_server/sdk. The sandbox image is not shippable"
+    echo "       without the genetics SDK (genetics-results-suite-4h6.11)."
+    exit 1
+  fi
+
+  rm -rf "${SANDBOX_DIR}/.sdk-src"
+  mkdir -p "${SANDBOX_DIR}/.sdk-src"
+  cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
+  cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
+
+  TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+  echo "=== Building sandbox (tag: ${TAG}) ==="
+  docker build --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)" \
+    -t "${REGISTRY}/sandbox:${TAG}" \
+    -t "${REGISTRY}/sandbox:latest" \
+    "${SANDBOX_DIR}"
+  docker push "${REGISTRY}/sandbox:${TAG}"
+  docker push "${REGISTRY}/sandbox:latest"
+
+  echo ""
+  echo "Image pushed: ${REGISTRY}/sandbox:${TAG}"
+  echo ""
+  echo "To roll out: REGISTRY=${REGISTRY} ./scripts/rollout.sh sandbox ${TAG}"
+  exit 0
+fi
+
 # service → image name
 declare -A IMAGE_MAP=(
   [frontend]=genetics-results-browser
@@ -34,7 +77,7 @@ declare -A IMAGE_MAP=(
 IMAGE="${IMAGE_MAP[$SERVICE]:-}"
 if [ -z "${IMAGE}" ]; then
   echo "Unknown service: ${SERVICE}"
-  echo "Available services: ${!IMAGE_MAP[*]}"
+  echo "Available services: ${!IMAGE_MAP[*]} sandbox"
   exit 1
 fi
 

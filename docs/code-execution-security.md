@@ -341,6 +341,173 @@ Rationale: the hardening (base image, uid, absent shell) is deployment policy an
 consistent with the manifests in `k8s/`, which live here; and this repo is the spec of
 record for cross-repo concerns.
 
+### As built (`4h6.6`) — what shipped, and the two places it departs from the above
+
+`sandbox/` in this repo: `Dockerfile`, `requirements.txt` (pinned analysis deps),
+`build-checks.py` (build-time assertions), `prewarm.py`, `schema/` and `stubs/`. Built by
+`build-all.sh` and by `build.sh sandbox`, tagged from this repo's HEAD like `monitor` and
+`keycloak`, with the genetics-mcp-server commit recorded in the image label
+`com.fulltiltgenomics.genetics-mcp-server-ref` because the tag alone does not identify the
+contents.
+
+**Deviation 1 — the builder is `python:3.11-slim`, not `python:3.12-slim`.**
+`gcr.io/distroless/python3-debian12:nonroot` ships **CPython 3.11.2** (bookworm's system
+python), verified by running it. The final stage runs *that* interpreter against the venv's
+site-packages, so a 3.12 venv would place cp312-tagged native wheels — numpy, scipy, polars
+and matplotlib all ship them — in front of a 3.11 interpreter and fail at import. The
+builder must track the base image's minor version. The decision's intent (venv built in a
+slim stage; no compiler, pip or package manager in the final image) is unchanged.
+
+**No pip, and it took a second pass to be true.** `python -m venv` seeds pip and
+setuptools into the venv, and the final stage copies the venv verbatim, so the first
+build of this image shipped `pip 24.0` and `setuptools 79.0.1`: `python3 -m pip install`
+ran inside the sandbox, and the assertion that was supposed to catch it walked only the
+distroless rootfs — never `/opt/venv`, which is where they were. `sandbox/prune_venv.py`
+now deletes pip, setuptools, `pkg_resources`, `_distutils_hack` and the whole of
+`/opt/venv/bin` in the builder stage, and the assertion walks `/dl`, `/opt/venv` and
+`/out` and additionally proves the modules are not importable. Nothing needed
+`/opt/venv/bin`: the entrypoint is `/usr/bin/python3` with `PYTHONPATH` at
+site-packages, and the venv's own `bin/python3` was a dangling symlink to the builder's
+interpreter in any case.
+
+**Deviation 2 — the SDK is installed `--no-deps`, and only its import closure ships.**
+"The SDK is pip-installed from genetics-mcp-server at build time" and "no
+`google-auth`-based client in the image" (section 3(c)) cannot both hold if
+genetics-mcp-server's own dependency set is resolved: that set contains
+`google-auth[requests]`, plus anthropic, openai and fastapi. The image therefore installs
+the package with `--no-deps` from a staged checkout and declares the SDK's real runtime
+closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx,
+and `python-dotenv` — see below). `build-checks.py` fails the build if a
+`google-auth`/`google-cloud` distribution reappears by any route, and separately if
+`import google.auth` succeeds. The cost is that the closure is declared in two places and
+can drift: an SDK that grows a new dependency fails the build's import check rather than
+silently shipping.
+
+`--no-deps` bounds the *distributions*; it does not bound the *files*, and pip installs
+the whole `genetics_mcp_server` package — 42 modules, of which the SDK imports 13. The
+other 29 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `auth/`, `routers/`,
+`db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
+anthropic, but that is the wrong property to rely on: a prompt-injected script *reads*
+files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every service in
+the suite trusts. `sandbox/prune_venv.py` therefore cuts the installed package to an
+explicit `SDK_ALLOWLIST`, and `build-checks.py` asserts the surviving set *equals* it, so
+the surface grows deliberately rather than with the next `pip install`.
+
+**The closure includes `config/settings.py`, and that is a known residual disclosure.**
+It is not optional: `sdk/client.py` imports `tools/executor.py`, whose module-level
+`from genetics_mcp_server.tools.uniprot import UniProtClient` pulls
+`from genetics_mcp_server.config.settings import Settings`, and `ToolExecutor.__init__`
+calls `get_settings()` at runtime. So the sandbox ships a file naming
+`INTERNAL_API_SECRET`, `ANTHROPIC_API_KEY`, `BIGQUERY_API_URL`, `ADMIN_USERS`,
+`ALLOWED_EMAILS`, `GOOGLE_TOKEN_AUDIENCE` and the on-disk paths of the two SQLite
+databases — names, never values; nothing sets those variables in the sandbox pod
+(`4h6.9`). `tools/executor.py` ships for the same reason and with it the f-string SQL
+interpolation sites recorded as blocking `4h6.14`. Removing either needs a change in
+genetics-mcp-server — a `TYPE_CHECKING` guard on uniprot's `Settings` import and a lazy
+`get_settings()` in the executor — not a change here; until then the allow-list records
+them explicitly rather than letting them arrive unnoticed. `auth/core.py` is **not** in
+the closure and does not ship.
+
+**Build-time assertions** (`sandbox/build-checks.py`, run in the builder stage against the
+artefacts the final stage copies, because the final stage has no shell to check anything
+in) — ten of them: `/etc/nsswitch.conf` present with `files` before `dns` (section 3(b));
+no shell, package manager, `pip`, `curl`, `wget`, `nc` or `ssh` anywhere in `/dl`,
+`/opt/venv` or `/out`; pip/setuptools/`pkg_resources` not importable; no `google-auth`
+distribution in the venv and `import google.auth` failing; any native object carrying a
+GCE metadata client answered by a literal-IP `GCE_METADATA_HOST` in the final stage
+(section 3(c), below); the surviving `genetics_mcp_server` modules equal to the SDK
+allow-list; no `PLACEHOLDER*` file in the staged `schema/` or `stubs/`; every analysis
+library **and `genetics_mcp_server.sdk`** importing cleanly; `passwd` carrying both uids
+on the shared gid; the matplotlib font cache baked. The probes run
+`python3 -S` with `PYTHONPATH` at site-packages rather than `/opt/venv/bin/python3`,
+which no longer exists and which was never how the final image runs anyway.
+
+**Section 3(c) is met by its second branch, not its first.** "No `google-auth`-based
+client in the image" was only ever true of the *Python distribution name*, which is not
+the property the control needs. polars links `object_store`, a full Rust GCS/S3/Azure
+client: in the built image `pl.scan_parquet("gs://…")` performs the metadata token
+request itself, with no google-auth and no Python in the path, and the native object
+contains `metadata.google.internal`, `169.254.169.254`, `computeMetadata`,
+`GCE_METADATA_HOST` and `oauth2.googleapis.com`. Left alone that is a name resolution
+inside a DNS-less pod — the multi-second stall 3(c) exists to prevent, measured at
+**86.7s** for one `scan_parquet` against a blackholed resolver — and, in a pool that ever
+runs in GCE_METADATA mode, a two-line token mint. The image therefore takes 3(c)'s named
+fallback and sets `GCE_METADATA_HOST=169.254.169.254`. **Verified, not assumed**: with the
+variable pointed at a listener on `127.0.0.1`, object_store sent it
+`GET /computeMetadata/v1/instance/service-accounts/default/token?audience=…` — it honours
+the variable, so the pin keeps the name out of the resolver. What the pin does *not* do is
+confine anything: `pl.write_parquet("s3://…")` remains an exfiltration primitive
+independent of httpx, and it is `4h6.8`'s NetworkPolicy that closes it. `build-checks.py`
+now greps the venv's `.so` files for the metadata strings and fails unless the final stage
+pins the variable to a literal IPv4, because the old check — grep for distribution names,
+`import google.auth` — reported green while the capability sat compiled into Rust.
+
+**The image does not build without the SDK, deliberately.** `4h6.11` has landed on
+genetics-mcp-server's `worktree-db-only-architecture` branch but not on `master`, so a
+default `build-all.sh` still finds no `src/genetics_mcp_server/sdk/` and skips the sandbox
+with a loud message while the rest of the suite builds; `build.sh sandbox` fails hard,
+because asking for that image by name and getting one without the SDK would be worse than
+an error. Building against the branch that has it (`MCP_SERVER_BRANCH=…`) is what the
+assertions above were verified against.
+
+**The image does not build with `4h6.13`'s placeholders either, by the same reasoning.**
+`schema/` and `stubs/` currently hold `PLACEHOLDER.md` / `PLACEHOLDER.pyi`, and shipping
+them degrades *silently*: `run_analysis` runs, the pod is healthy, and the model reads a
+file telling it this is not the real schema. `build-checks.py` fails the build on any
+`PLACEHOLDER*` file in the staged trees, which couples this image to `4h6.13` exactly as
+the import assertion couples it to `4h6.11`.
+
+**Interpreter pre-warming is split.** The image supplies `/genetics/prewarm.py` (the module
+list and a `prewarm()` that imports it, **raising `PrewarmError`** on any failure rather
+than returning the names — none of these modules is optional, and a supervisor that
+ignored the return value would answer health checks while every plotting script failed
+inside the child) and bakes the two costs that a fork cannot amortise:
+`.pyc` for the whole venv (`compileall`; the root filesystem is read-only, so without this
+every import in every execution recompiles) and the matplotlib font cache. The long-lived
+supervisor that calls `prewarm()` before its first fork is `4h6.14`'s; the image has **no
+`CMD`**, because a placeholder supervisor would be indistinguishable from a real one at
+runtime. Cold import of the full stack measured **2.99s** in the built image — that is the
+per-execution cost pre-warming removes.
+
+**Hard contract for `4h6.14` on matplotlib, verified not assumed.** `MPLCONFIGDIR` pointing
+at a read-only directory does **not** merely warn on matplotlib 3.10: with no writable
+`/tmp` it raises `OSError: Matplotlib requires access to a writable cache directory`. So the
+supervisor **must** copy `$GENETICS_MPLCACHE` (`/genetics/mplcache`, the baked font cache)
+into a writable directory and point `MPLCONFIGDIR` there **before** importing matplotlib.
+This is startup work, not per-execution work: the child inherits the imported font manager
+through the fork, so the per-execution `MPLCONFIGDIR` under `/scratch/<id>` required by the
+writable-paths row costs nothing.
+
+**Environment the image sets**, all of it non-per-execution: `PYTHONPATH` (the venv's
+site-packages — the venv's `bin/` is deleted in the builder stage, and its `python3` was a
+symlink to the builder's interpreter), `GCE_METADATA_HOST=169.254.169.254` (section 3(c);
+see "met by its second branch" above — this one is a security control, not a convenience,
+and `build-checks.py` fails the build if it is removed while polars ships),
+`PYTHONUNBUFFERED`, `PYTHONFAULTHANDLER`, `MPLBACKEND=Agg`, `GENETICS_MPLCACHE`,
+`GENETICS_SCHEMA_DIR`, `GENETICS_STUBS_DIR`, `GENETICS_PREWARM`, and
+`SANDBOX_SUPERVISOR_UID` / `SANDBOX_CHILD_UID` / `SANDBOX_SHARED_GID` (65532 / 65533 /
+65532) so `4h6.7` and `4h6.14` read the uids rather than restating them. `TMPDIR`, `HOME`,
+`MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately **not** set:
+they are per-execution and belong under `/scratch/<execution-id>`, and a fixed value in the
+image would recreate exactly the shared cross-execution directory that removing the
+pod-level `/tmp` eliminated.
+
+**Contract for `4h6.13`** (schema docs and `.pyi` stubs, not yet generated): write generated
+schema markdown into `sandbox/schema/` and generated stubs into `sandbox/stubs/`; the
+Dockerfile copies those directories verbatim to `/genetics/schema/` and `/genetics/sdk/`
+owned `65532:65532`, exported as `GENETICS_SCHEMA_DIR` and `GENETICS_STUBS_DIR`. Both
+directories currently hold a single file named `PLACEHOLDER*` that says so and must be
+deleted by that task; neither may be left empty. **This is enforced, not requested**:
+`build-checks.py` fails the build while any `PLACEHOLDER*` file remains, so the sandbox
+image is unbuildable until `4h6.13` lands and cannot ship placeholder documentation to the
+model unnoticed. `/genetics/sdk/` is **not** on `PYTHONPATH`
+and must not be added to it — the importable SDK is the real package in `/opt/venv`, and two
+copies of those names on `sys.path` would shadow silently. Adding files to either directory
+needs no Dockerfile change.
+
+**Image size is 607 MB.** numpy, scipy, matplotlib and polars are most of it. Noted because
+the sandbox node pool is pinned at one node and pulls the image on every node replacement.
+
 ---
 
 ## 3. Egress policy
@@ -1212,7 +1379,7 @@ abstract.
 | `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend `allow-ingress-db-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to its `from:` list** — without it the primary data path is dropped at the receiving end. Never copy the `from`-less rule in `allow-ingress-results-api`. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **defaults for all requests**, relaxed for a verified non-sandbox principal — on db-api that means the shared secret only; on results-api it means shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
-| `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |
+| `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |
 | `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
 
