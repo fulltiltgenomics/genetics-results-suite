@@ -376,37 +376,79 @@ interpreter in any case.
 genetics-mcp-server's own dependency set is resolved: that set contains
 `google-auth[requests]`, plus anthropic, openai and fastapi. The image therefore installs
 the package with `--no-deps` from a staged checkout and declares the SDK's real runtime
-closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx,
-and `python-dotenv` — see below). `build-checks.py` fails the build if a
+closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx —
+`python-dotenv` was needed only while `config/settings.py` was in the closure, and went
+with it; see below). `build-checks.py` fails the build if a
 `google-auth`/`google-cloud` distribution reappears by any route, and separately if
 `import google.auth` succeeds. The cost is that the closure is declared in two places and
 can drift: an SDK that grows a new dependency fails the build's import check rather than
 silently shipping.
 
 `--no-deps` bounds the *distributions*; it does not bound the *files*, and pip installs
-the whole `genetics_mcp_server` package — 42 modules, of which the SDK imports 13. The
-other 29 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `auth/`, `routers/`,
-`db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
+the whole `genetics_mcp_server` package — 48 modules, of which the SDK imports 11. The
+other 37 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
+`routers/`, `db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
 anthropic, but that is the wrong property to rely on: a prompt-injected script *reads*
 files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every service in
 the suite trusts. `sandbox/prune_venv.py` therefore cuts the installed package to an
 explicit `SDK_ALLOWLIST`, and `build-checks.py` asserts the surviving set *equals* it, so
 the surface grows deliberately rather than with the next `pip install`.
 
-**The closure includes `config/settings.py`, and that is a known residual disclosure.**
-It is not optional: `sdk/client.py` imports `tools/executor.py`, whose module-level
-`from genetics_mcp_server.tools.uniprot import UniProtClient` pulls
-`from genetics_mcp_server.config.settings import Settings`, and `ToolExecutor.__init__`
-calls `get_settings()` at runtime. So the sandbox ships a file naming
+**`config/settings.py` used to be in the closure; it no longer is** (`l41`). It reached
+the image because `sdk/client.py` imports `tools/executor.py`, whose module-level `from
+genetics_mcp_server.tools.uniprot import UniProtClient` pulled `from
+genetics_mcp_server.config.settings import Settings`, and `ToolExecutor.__init__` called
+`get_settings()` at construction. So the sandbox shipped a file naming
 `INTERNAL_API_SECRET`, `ANTHROPIC_API_KEY`, `BIGQUERY_API_URL`, `ADMIN_USERS`,
 `ALLOWED_EMAILS`, `GOOGLE_TOKEN_AUDIENCE` and the on-disk paths of the two SQLite
-databases — names, never values; nothing sets those variables in the sandbox pod
-(`4h6.9`). `tools/executor.py` ships for the same reason and with it the f-string SQL
-interpolation sites recorded as blocking `4h6.14`. Removing either needs a change in
-genetics-mcp-server — a `TYPE_CHECKING` guard on uniprot's `Settings` import and a lazy
-`get_settings()` in the executor — not a change here; until then the allow-list records
-them explicitly rather than letting them arrive unnoticed. `auth/core.py` is **not** in
-the closure and does not ship.
+databases — names, never values, but names are the internal model an attacker would
+otherwise have to guess. Both edges were cut in genetics-mcp-server: uniprot's `Settings`
+import is behind `if TYPE_CHECKING` with a string annotation, and the executor resolves
+settings through `_resolve_settings()` at first use, falling back to a frozen
+`_PrunedInstallSettings` carrying `Settings`' own defaults when the module is absent —
+which is exactly this image, and which is correct there because the sandbox pod holds no
+internal secret (`4h6.9`). The secret is hard-coded empty in that fallback rather than
+read from the environment, so the variable's *name* does not come back into the image
+through the replacement. `tests/test_sdk_import_closure.py` in genetics-mcp-server pins
+the 11-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
+build-time backstop.
+
+**`tools/executor.py` still ships, and remains a residual disclosure.** `sdk/client.py`
+imports `ToolExecutor` directly and every SDK method delegates to it, so it cannot leave
+the closure without a rewrite of the SDK. With it ship the f-string SQL interpolation
+sites recorded as blocking `4h6.14`, and these environment-variable names — re-derive this
+list by grepping the eleven closure modules, not by trusting it:
+
+| name | where | kind |
+|---|---|---|
+| `GENETICS_API_URL`, `GENETICS_PUBLIC_API_URL`, `BIGQUERY_API_URL` | `tools/executor.py`, the `base_url` / `public_url` / `bigquery_url` properties | live `os.environ.get` |
+| `PERPLEXITY_API_KEY`, `TAVILY_API_KEY`, `LITERATURE_SEARCH_BACKEND` | `tools/executor.py`, the literature-search tools | live `os.environ.get` |
+| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read |
+
+The three endpoint names are a map of the injection sites in the one backend the sandbox
+may reach. The three literature-search names are live reads whose values the sandbox pod
+does not hold; removing them would change the behaviour of those tools and is out of scope
+here.
+
+`INTERNAL_API_SECRET` in the SDK docstrings and the shipped stubs is an **accepted
+residual**, not an oversight (`4h6.13` recorded the exfiltration note in `client.pyi` as
+operational knowledge the agent is meant to read). It is kept, named, for three reasons.
+The stubs exist to be read by the model writing sandbox code, and "endpoint URLs are not
+configurable because the client attaches `INTERNAL_API_SECRET` to every request" is the
+only form of that warning that lets the reader connect it to the deployment's actual
+configuration; genericised to "an internal credential" it stops being checkable and starts
+being ignorable. It also discloses nothing the reader cannot already derive: the SDK it is
+being handed authenticates on its behalf, and the header rides on every request it makes.
+And the sandbox pod does not hold the value (`4h6.9`), so `os.environ.get("INTERNAL_API_SECRET")`
+inside the sandbox returns nothing — the name is not a key to anything present. This is a
+different calculus from `config/settings.py`, which named a dozen *unrelated* variables and
+so handed over the shape of the whole internal surface rather than the one credential the
+caller is already using.
+
+What is *not* in the residual list: `config/settings.py` and `auth/core.py` are both out of
+the closure and neither ships, so no LLM provider key, allow-list, OAuth audience or
+database path is named anywhere in the image. No values of any kind ship — every entry
+above is a name.
 
 **Build-time assertions** (`sandbox/build-checks.py`, run in the builder stage against the
 artefacts the final stage copies, because the final stage has no shell to check anything
