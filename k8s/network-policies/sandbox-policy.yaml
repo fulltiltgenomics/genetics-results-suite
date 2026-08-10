@@ -1,0 +1,152 @@
+# ============================================================================
+# LABEL CONTRACT — read this before writing k8s/deployments/sandbox.yaml (4h6.7)
+#
+#   pod label:      app: sandbox      (Deployment .spec.template.metadata.labels)
+#   container port: 8080/TCP
+#   Service name:   sandbox           (ClusterIP, port 8080 -> targetPort 8080)
+#
+# Every rule below selects `app: sandbox`. A NetworkPolicy whose podSelector matches
+# no pod is NOT an error — it is silent no-coverage, and the sandbox would then run
+# with unrestricted egress because nothing else in this namespace declares an Egress
+# policy at all. If 4h6.7 picks a different label or port, this file is decoration.
+# scripts/test-network-policies.py asserts the contract against sandbox.yaml once
+# that file exists.
+# ============================================================================
+#
+# THIS IS THE FIRST AND ONLY EGRESS POLICY IN THE NAMESPACE.
+#
+# `policies.yaml` declares a namespace-wide `default-deny-ingress` but there is no
+# corresponding default-deny-egress: every other pod here has unrestricted egress.
+# Egress becomes deny-by-default for a pod only once at least one policy selecting
+# that pod lists `Egress` in policyTypes. That is what the `sandbox-egress` object
+# below does, and it is the sole reason a script cannot `pip install`, cannot fetch a
+# mining payload, and cannot `pl.write_parquet('s3://...')` — polars ships the Rust
+# `object_store` with its own HTTP/TLS stack (4h6.6), so no image-level control closes
+# that path. This policy is the control.
+#
+# NetworkPolicies are ADDITIVE (union). Any future policy that selects `app: sandbox`
+# and adds an ingress source or egress destination widens this boundary; it does not
+# replace it. In particular `k8s/network-policies/monitor-policy.yaml` must NOT be
+# extended to cover the sandbox — liveness is the kubelet's job, and kubelet probes are
+# exempt from NetworkPolicy on this cluster's ADVANCED_DATAPATH (Dataplane V2), which is
+# also why no probe rule appears here.
+#
+# Design of record: docs/code-execution-security.md sections 3 and 5.
+---
+# Ingress: chat-backend only.
+#
+# This is layer 2 of the three MCP-exclusion layers (docs/code-execution-security.md
+# section 5). The user's requirement is that code execution must not be reachable via
+# MCP; omitting `run_analysis` from mcp-server's tool registration (layer 1) is a
+# runtime-assembled set and one refactor away from being undone, so mcp-server is denied
+# here at the network layer as well. Note the precedent this exists to avoid: mcp-server
+# sits on BOTH sides of `allow-ingress-db-api`, so "anything that can drive mcp-server
+# can reach BigQuery behind it" — the same shape applied to code execution would mean
+# anything that can drive mcp-server can run code.
+#
+# Deliberately absent, each load-bearing: mcp-server, auth-gateway (the sandbox has no
+# Ingress backend and no browser-facing route), bff, results-api, rag-service, monitor.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-sandbox
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chat-backend
+    ports:
+    - port: 8080
+      protocol: TCP
+  policyTypes:
+  - Ingress
+---
+# Egress: db-api:8080 and results-api:4000, nothing else.
+#
+# Two separate rules rather than one rule listing both destinations and both ports —
+# a single rule would cross-product them and also permit sandbox -> db-api:4000 and
+# sandbox -> results-api:8080.
+#
+# `to: podSelector` matches the DESTINATION POD, not the Service, and that is sufficient
+# here — settled, not assumed. This cluster runs Dataplane V2 (Cilium v1.18.7-gke1.35)
+# with `bpf-lb-sock-hostns-only: "true"` in cilium-config, so ClusterIP translation for a
+# pod happens in that pod's veth eBPF program: bpf_lxc DNATs to a backend pod IP before it
+# resolves the destination identity and before egress policy is evaluated. The policy
+# therefore sees the db-api / results-api pod, not 10.20.x.x, and no Service-CIDR ipBlock
+# is needed. (`enable-cilium-network-policy` is "false" with no CRD installed, so no second
+# policy engine can widen this.)
+#
+# A Service-CIDR ipBlock (10.20.0.0/20) MUST NEVER be added here under any circumstances:
+# it is every Service in the cluster, kube-dns included, and would reopen the DNS
+# exfiltration path described below — the path this entire design exists to close. In the
+# event some future dataplane change does drop to a 10.20.x.x address, the only admissible
+# contingency is a /32 ipBlock per allowed Service IP, paired with its own port rule.
+#
+# NO DNS RULE — this is deliberate and is the design of record, not an omission.
+# docs/code-execution-security.md "On DNS": a pod with egress to CoreDNS sustains
+# ~10^3 queries/s at ~200 usable base32 bytes per query name, i.e. ~200 KB/s — tens of
+# megabytes inside the 120s wall clock, needing no POST and no response. That is a
+# working exfiltration pipe, not a side channel, and it is how a ~1 KB stolen GCP token
+# leaves the cluster in five queries. Name resolution is done with `hostAliases` on the
+# pod instead (4h6.7), pinning db-api and results-api to their ClusterIPs in all four
+# name forms. Two hard consequences of dropping 53/UDP here rather than rejecting it:
+#   - /etc/nsswitch.conf MUST list `files` before `dns` (asserted at image build time,
+#     4h6.6). Absent that file, glibc defaults to DNS-first and every lookup stalls
+#     through the full resolver timeout budget before falling back to /etc/hosts — a
+#     hang, not an error, and unrepairable at runtime under readOnlyRootFilesystem.
+#   - anything reaching google.auth.default() probes metadata.google.internal BY NAME
+#     and stalls the same way, which is why the image pins GCE_METADATA_HOST to a
+#     literal IP so the probe fails fast against this policy instead.
+# Reverting to a kube-dns rule is a decision to accept bulk exfiltration at ~200 KB/s,
+# not a convenience tweak; section 6.2 control #1 and section 6.4 control #2 both
+# depend on there being no sink.
+#
+# Denied by omission, each load-bearing: the entire internet (no ipBlock of any kind),
+# keycloak and keycloak-postgres, chat-backend and rag-service (the sandbox is a leaf —
+# it is called, it does not call back, so a script cannot re-enter the chat API with the
+# caller's session), mcp-server (which would launder access to db-api and its full tool
+# surface), the Kubernetes API server, and every other pod in the namespace.
+#
+# 169.254.169.254 (the GCE metadata server) — READ THIS BEFORE RELYING ON IT.
+# No rule here permits it, so under standard NetworkPolicy semantics it is denied. But
+# link-local / node-local traffic is precisely the class already proven EXEMPT from
+# NetworkPolicy on this dataplane in the ingress direction (kubelet probes from
+# 169.254.4.6 reach pods whose policies admit only podSelectors). Whether the egress
+# direction to a link-local address is enforced by Dataplane V2 has NOT been verified on
+# this cluster and must not be assumed. Treat this policy as providing NO metadata-server
+# coverage until that is tested. The metadata defence that is actually load-bearing lives
+# elsewhere: the node pool runs in GKE_METADATA mode with no Workload Identity binding
+# for the sandbox KSA (4h6.10), and the pod sets automountServiceAccountToken: false
+# (4h6.7) — note that the last of these is a Kubernetes-API control and has no bearing on
+# the metadata server at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: db-api
+    ports:
+    - port: 8080
+      protocol: TCP
+  - to:
+    - podSelector:
+        matchLabels:
+          app: results-api
+    ports:
+    - port: 4000
+      protocol: TCP
+  policyTypes:
+  - Egress

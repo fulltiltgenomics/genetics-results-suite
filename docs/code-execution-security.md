@@ -518,8 +518,23 @@ default-deny.
 
 ### Decisions
 
-`k8s/network-policies/sandbox-policy.yaml`, selector `app: sandbox`,
-`policyTypes: ["Ingress", "Egress"]`.
+`k8s/network-policies/sandbox-policy.yaml`, selector `app: sandbox`.
+
+**As built (`4h6.8`).** Two objects rather than one, following the namespace's
+`allow-ingress-<target>` naming: `allow-ingress-sandbox` (`policyTypes: ["Ingress"]`) and
+`sandbox-egress` (`policyTypes: ["Egress"]`). They union to the single
+`["Ingress", "Egress"]` object specified above; splitting them keeps the file's names
+consistent with the eight existing ingress policies. The file is applied by
+`deploy.sh`'s existing `kubectl apply -f network-policies/`, which takes the whole
+directory — no `deploy.sh` change was needed.
+
+**Label contract, declared here and repeated at the top of the policy file and in the
+`4h6.7` bead notes:** pod label `app: sandbox` on the Deployment's
+`.spec.template.metadata.labels`, container port **8080/TCP**, Service named `sandbox`
+(ClusterIP 8080 → targetPort 8080). NetworkPolicy `ports` are **pod** ports, not Service
+ports. A podSelector that matches no pod is not an error — it is silent no-coverage, and
+since this is the only egress policy in the namespace, a label mismatch in `4h6.7` yields a
+sandbox with *unrestricted* egress and no signal anywhere.
 
 **Egress — allow exactly two, deny everything else:**
 
@@ -545,8 +560,17 @@ below. This is a change from an earlier draft, which allowed 53/UDP+TCP to
 - **mcp-server.** Denying this closes the obvious laundering route — a script that could
   reach mcp-server would inherit mcp-server's own permission through the
   `allow-ingress-db-api` policy and its full 60-tool surface.
-- **`169.254.169.254`** (the GCE/GKE metadata server). Covered by default-deny. Belt and
-  braces behind it: the node pool runs in `GKE_METADATA` mode and the sandbox KSA has no
+- **`169.254.169.254`** (the GCE/GKE metadata server). **Amended by `4h6.8` — the original
+  "covered by default-deny" is an over-claim and the policy must not be relied on here.**
+  No rule permits it, so under standard NetworkPolicy semantics it is denied; but
+  link-local / node-local traffic is exactly the class already proven **exempt** from
+  NetworkPolicy on this dataplane in the ingress direction (kubelet probes from
+  `169.254.4.6` reach pods whose policies list only podSelectors — this is the same
+  observation that lets every other rule in the namespace skip a probe ipBlock). Whether
+  Dataplane V2 enforces *egress* to a link-local address has not been tested on this
+  cluster. Assume no coverage from the policy until it is; `genetics-results-suite-4h6.26`
+  carries the test. What is actually load-bearing: the node pool runs in
+  `GKE_METADATA` mode and the sandbox KSA has no
   Workload Identity binding, so even a policy-engine gap yields no usable GCP credential.
   Note precisely what does *not* help here — `automountServiceAccountToken: false` is a
   Kubernetes-API control and has no bearing on the metadata server, and Workload Identity
@@ -572,7 +596,7 @@ allow on the sandbox side is necessary but not sufficient:
 8080. Every sandbox → db-api connection is therefore dropped at the *receiving* end no
 matter what the sandbox's own policy says.
 
-`4h6.8` must make exactly one edit to the existing `allow-ingress-db-api` rule: add
+`4h6.8` adds
 
 ```yaml
 - podSelector:
@@ -580,15 +604,31 @@ matter what the sandbox's own policy says.
       app: sandbox
 ```
 
-to the existing `from:` list. Nothing else in that file changes.
+to the existing `from:` list of `allow-ingress-db-api`.
 
-**Do not copy the pattern used by `allow-ingress-results-api` in the same file.** That
-policy contains a rule with a `- ports:` block and **no `from:`** — which in NetworkPolicy
-semantics admits *all* sources, so any pod in the namespace reaches results-api on 4000
-directly and bypasses auth-gateway entirely. It looks like a working example sitting a few
-lines away in the file the implementer is editing, and it is a hole, not a pattern: it is
-one half of pre-existing bug `genetics-results-suite-fad` (section 4, results-api
-subsection). Every rule added for the sandbox carries an explicit `from:`.
+**Amended by `4h6.8`: the same edit is required on `allow-ingress-results-api`, and this
+paragraph used to say the opposite.** The original text said "nothing else in that file
+changes" and warned against copying `allow-ingress-results-api`, because at the time that
+policy carried a rule with `- ports:` and **no `from:`** — which admits *all* sources, so
+the sandbox would have reached results-api on 4000 without an explicit entry. That hole
+was one half of `genetics-results-suite-fad` and it is now **closed**: `fad` and
+`genetics-results-suite-k4t` between them scoped every from-less rule in the namespace, so
+`allow-ingress-results-api` is now an explicit podSelector list (auth-gateway, bff,
+chat-backend, mcp-server). The sandbox must therefore be added to it **explicitly**, or the
+results-api half of the data path is dropped at the receiving end exactly like db-api's.
+The original warning still stands in its general form: every rule added for the sandbox
+carries an explicit `from:`, and `scripts/test-network-policies.py` asserts that none of
+them is from-less.
+
+**Both reverse-direction entries are reachability only; neither path returns data today.**
+db-api 401s any request without `Authorization: Bearer $INTERNAL_API_SECRET`, and since
+`fad` results-api returns 401 for a request carrying neither the trusted-proxy marker nor
+a valid bearer (`REQUIRE_AUTH=true` in production; `get_verified_user` → `None` →
+`auth_required` raises 401). The sandbox holds neither secret **by design**. So after
+`4h6.8` the sandbox can open a TCP connection to both services and every request comes back
+401 until `4h6.9` lands the scoped short-lived credential. That is the expected
+intermediate state, not a regression — and the fix is `4h6.9`, never handing the sandbox
+`INTERNAL_API_SECRET`.
 
 ### On DNS
 
@@ -1027,6 +1067,26 @@ Two further hazards for `4h6.16`:
 The sandbox's ingress rule admits `app: chat-backend` only. mcp-server is denied at the
 network layer.
 
+**Shipped in `4h6.8`** as `allow-ingress-sandbox` in `k8s/network-policies/sandbox-policy.yaml`,
+with an **offline** guard in `scripts/test-network-policies.py`. Because NetworkPolicies are
+additive, "mcp-server cannot reach the sandbox" is a property of every file in
+`k8s/network-policies/` at once, so the guard parses them all and asserts that no rule
+selecting `app: sandbox` admits `app: mcp-server` — including via a from-less rule, which
+admits everything. It runs with no cluster and no network, which is the only kind of test
+available before `4h6.7` and `4h6.10` deploy anything. **The live connection test from the
+mcp-server pod to the sandbox Service is deferred to the deploy window** and tracked as
+`genetics-results-suite-4h6.26` with the other post-deploy verifications; it has not been run.
+
+**What layer 2 does and does not guarantee.** It guarantees that *mcp-server cannot open a
+socket to the sandbox*. It does **not** guarantee that an MCP client cannot cause code to
+execute: `policies.yaml` admits `app: mcp-server` to chat-backend on 8000, mcp-server holds
+both `INTERNAL_API_SECRET` and `CHAT_BACKEND_URL`, and chat-backend is the one pod the
+sandbox admits — so the network layer closes `mcp-server -> sandbox` but leaves
+`mcp-server -> chat-backend -> sandbox` open at the network level by construction. That
+transitive path is held shut by layer 1 (the tools are never registered on mcp-server, so
+no MCP call names them) plus chat-backend's route-level authorization, not by this policy.
+Read layer 2 as a hop-level control, not a capability-level one.
+
 ### Layer 3 — a test (`4h6.16`)
 
 `tests/test_mcp_server.py` asserts that `run_analysis` and `read_artifact` are absent from
@@ -1376,7 +1436,7 @@ abstract.
 |---|---|
 | `4h6.6` (image) | distroless `python3-debian12:nonroot`, uid 65532, no shell, build context `sandbox/` in **this** repo, wired into `build-all.sh`/`build.sh`. **Build-time assertion that `/etc/nsswitch.conf` exists and lists `files` before `dns` for the hosts database** — absent it, glibc defaults to `dns [!UNAVAIL=return] files` and every lookup stalls the full resolver timeout against a dropping egress policy before reaching `hostAliases`, and `readOnlyRootFilesystem: true` makes it unfixable at runtime. **No `google-auth`-based client in the image** (it probes `metadata.google.internal` by name, which is the same stall), or `GCE_METADATA_HOST` pinned to a literal IP if one is unavoidable. Second non-root uid for the child if pids option (a) is taken. |
 | `4h6.7` (manifests) | Full securityContext and resource table in section 2; **one** `emptyDir` (`/scratch`) and no PVC and **no pod-level `/tmp`**; KSA `sandbox` with no Workload Identity and `automountServiceAccountToken: false`; `hostAliases` for db-api and results-api instead of DNS, pinning **all four name forms** per IP (bare, `.genetics`, `.genetics.svc`, `.genetics.svc.cluster.local`) because the `files` NSS module does no search-domain expansion, with the SDK given the FQDN form; `oom_score_adj` on supervisor and child; a second non-root uid for the child if option (a) of the pids row is taken, with the shared-gid ownership contract in section 2; replicas 1; `runtimeClassName: gvisor` + toleration. `deploy.sh`: resolve the ClusterIPs **after** the Services are applied (resolving in the "derive variables" block deadlocks the first deploy to a fresh cluster), validate each as a dotted quad and abort otherwise (headless Services return the literal `None`), and add `DB_API_CLUSTER_IP`/`RESULTS_API_CLUSTER_IP` to the deployments `envsubst` allow-list or they ship unsubstituted. |
-| `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend `allow-ingress-db-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to its `from:` list** — without it the primary data path is dropped at the receiving end. Never copy the `from`-less rule in `allow-ingress-results-api`. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
+| `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **defaults for all requests**, relaxed for a verified non-sandbox principal — on db-api that means the shared secret only; on results-api it means shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
 | `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |

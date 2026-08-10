@@ -57,11 +57,17 @@ spec:
   policyTypes:
   - Ingress
 ---
-# results-api: the four callers admitted BY THIS RULE. auth-gateway reaches it directly through
+# results-api: the five callers admitted BY THIS RULE. auth-gateway reaches it directly through
 # its @api_bearer location (programmatic bearer-token clients), bff through the browser /api/
-# path, chat-backend and mcp-server through the tool executor. It is a ClusterIP service with no
-# Ingress backend, so no load-balancer or health-check source needs to be admitted.
-# These four are NOT the complete set of callers: the monitor CronJob is admitted by a separate,
+# path, chat-backend and mcp-server through the tool executor, and the sandbox through the
+# genetics SDK. It is a ClusterIP service with no Ingress backend, so no load-balancer or
+# health-check source needs to be admitted.
+# The sandbox entry is REACHABILITY ONLY and the path is currently dead: the sandbox holds no
+# INTERNAL_API_SECRET by design, and since genetics-results-suite-fad results-api returns 401
+# for a request carrying neither the marker nor a valid bearer (REQUIRE_AUTH=true in prod).
+# It starts serving real answers when genetics-results-suite-4h6.9 lands the scoped short-lived
+# credential. Do not "fix" it by handing the sandbox the internal secret.
+# These five are NOT the complete set of callers: the monitor CronJob is admitted by a separate,
 # additive policy (allow-ingress-results-api-from-monitor in monitor-policy.yaml, same port).
 # NetworkPolicies union, so that rule is load-bearing — deleting it as "already covered here"
 # would lock the monitor out.
@@ -88,6 +94,9 @@ spec:
     - podSelector:
         matchLabels:
           app: mcp-server
+    - podSelector:
+        matchLabels:
+          app: sandbox
     ports:
     - port: 4000
   policyTypes:
@@ -228,6 +237,12 @@ spec:
   - Ingress
 ---
 # db-api: allow from chat-backend and mcp-server (both run the same BigQuery-backed tool executor)
+# and from the sandbox, whose primary data path this is. WITHOUT THE SANDBOX ENTRY THE SANDBOX'S
+# OWN EGRESS ALLOW-LIST ACHIEVES NOTHING: the namespace-wide default-deny-ingress drops every
+# sandbox -> db-api connection at the receiving end regardless of what sandbox-policy.yaml says.
+# As with results-api, this is reachability only — db-api's middleware 401s any request without
+# `Authorization: Bearer $INTERNAL_API_SECRET`, which the sandbox deliberately does not hold,
+# until genetics-results-suite-4h6.9 lands the scoped credential.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -245,6 +260,9 @@ spec:
     - podSelector:
         matchLabels:
           app: mcp-server
+    - podSelector:
+        matchLabels:
+          app: sandbox
     ports:
     - port: 8080
   policyTypes:

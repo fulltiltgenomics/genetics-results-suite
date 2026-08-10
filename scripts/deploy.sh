@@ -323,6 +323,23 @@ generate_ingress() {
 generate_ingress | kubectl apply -f -
 
 # network policies
+# The union of every file in network-policies/ is what actually decides "mcp-server cannot
+# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". Nothing
+# else in this repo runs that check — there are no git hooks and no CI — so it runs here,
+# before the apply that would put a broken union on the cluster.
+# exit 1 = a control is broken, and the deploy aborts. exit 2 = the harness itself could
+# not run (missing PyYAML); that is not evidence of a broken policy, so it only warns.
+set +e
+python3 "${SCRIPT_DIR}/test-network-policies.py"
+policy_check=$?
+set -e
+if [ "${policy_check}" -eq 1 ]; then
+  echo "ERROR: network-policy checks failed; refusing to apply network-policies/."
+  echo "       See docs/code-execution-security.md sections 3 and 5."
+  exit 1
+elif [ "${policy_check}" -ne 0 ]; then
+  echo "WARNING: scripts/test-network-policies.py could not run (exit ${policy_check}); applying unverified."
+fi
 kubectl apply -f network-policies/
 
 # pod disruption budgets

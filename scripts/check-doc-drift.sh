@@ -47,6 +47,18 @@ check '^scripts/(deploy|rollout|build|build-all|sync-datasets)\.sh$' "$DOCS_SPEC
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
 
+# the CLAUDE.md sandbox row owns two docs, and satisfying one does not satisfy the
+# other — so they are two checks, not one alternation
+SANDBOX_PATHS='^(sandbox/|k8s/deployments/sandbox\.yaml$|k8s/network-policies/sandbox-policy\.yaml$)'
+
+check "$SANDBOX_PATHS" \
+    '^docs/code-execution-security\.md$' \
+    'sandbox image/manifests/policy -> docs/code-execution-security.md (isolation boundary, egress+ingress allow-lists, the three MCP-exclusion layers, sandbox token claims)'
+
+check "$SANDBOX_PATHS" \
+    '^docs/project-spec\.md$' \
+    'sandbox image/manifests/policy -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy)'
+
 check '^(keycloak/|scripts/keycloak-)' '^docs/keycloak-apple-signin\.md$' \
     'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)'
 
