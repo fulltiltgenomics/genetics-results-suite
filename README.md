@@ -258,6 +258,25 @@ only honours `X-Goog-Authenticated-User-Email` from a caller that also presents
 step first. Details and the full state table are in `docs/project-spec.md`, "Ordered rollout:
 the trusted-proxy marker".
 
+The same rule reaches chat-backend — auth-gateway first:
+
+```bash
+./scripts/deploy.sh                                                    # 1. gateway ConfigMap
+./scripts/build.sh chat-backend && ./scripts/rollout.sh chat-backend   # 2. after
+```
+
+- **auth-gateway new, chat-backend old** — safe, and safe to sit in: the gateway carries the
+  marker on its own `X-Internal-Auth` header, which the old chat-backend does not recognise, so
+  it behaves exactly as it did before. The fix simply is not in force yet.
+- **chat-backend new, auth-gateway old** — every browser chat request 401s. This is the order to
+  avoid.
+- Rolling back reverses it: chat-backend first, then auth-gateway; the state in between is the
+  safe one, so a half-finished rollback costs nothing.
+
+auth-gateway is ConfigMap-driven, so it needs `deploy.sh`; `rollout.sh` only swaps images. Full
+state table in `docs/project-spec.md`, "Ordered rollout: the trusted-proxy marker (auth-gateway
+before chat-backend)".
+
 Rolling out `chat-backend` can block for up to ~5 minutes: it waits for any in-flight chat
 stream to finish rather than cutting it off mid-answer. See "chat-backend shutdown and stream
 draining" in `docs/project-spec.md`.
@@ -338,7 +357,8 @@ cannot be replayed here. Google Identity Tokens expire after 1 hour.
 
 The allow-list has a single source of truth in terraform, so both the browser and bearer-token paths
 stay in step — `deploy.sh` renders it into the oauth2-proxy `--authenticated-emails-file` ConfigMap
-and into the `bearer-auth-allowed` ConfigMap that results-api and mcp-server consume via `envFrom`:
+and into the `bearer-auth-allowed` ConfigMap that results-api, mcp-server and chat-backend consume
+via `envFrom`:
 
 - `oauth_email_domain` — comma-separated domains (e.g. `broadinstitute.org,finngen.fi`) whose Google
   accounts have access by default.

@@ -37,6 +37,14 @@ spec:
                   "--timeout-graceful-shutdown", "280"]
         ports:
         - containerPort: 8000
+        # ALLOWED_EMAILS / ALLOWED_EMAIL_DOMAINS, rendered from the same terraform variables
+        # oauth2-proxy itself uses, so the allow-list chat-backend applies to a proxied identity
+        # (genetics-results-suite-th2) cannot refuse anyone oauth2-proxy already admitted.
+        # Without this the code falls back to its finngen.fi default; it fails open rather than
+        # enforcing that, so a pod missing this ConfigMap loses defence in depth but not access.
+        envFrom:
+        - configMapRef:
+            name: bearer-auth-allowed
         env:
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"
