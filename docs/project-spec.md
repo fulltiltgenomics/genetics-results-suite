@@ -13,8 +13,7 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — unauthenticated
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 Authorization: Bearer requests bypass both and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld instead proxies out
-                     │                 to the external LD API (see "Frontend CSP and the LD proxy")
+                     │                 (FastAPI, port 4000) directly
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth;
                      │                 /.well-known/oauth-protected-resource[/mcp] served unauthenticated
@@ -42,7 +41,7 @@ Internal only (ClusterIP + NetworkPolicy):
 | Service | Source Repo | Port | Description |
 |---------|-----------|------|-------------|
 | frontend | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld`, and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
+| bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
 | auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also serves the keycloak login path `<domain>/auth` |
 | oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | 8080 | Identity broker: Google + Apple sign-in, single OIDC issuer |
@@ -70,42 +69,6 @@ in-code defaults, so they are tuning knobs, not requirements:
 The container entrypoint (`genetics-results-api`'s `start.sh`) also raises `ulimit -n`
 to 65536 as defense-in-depth. Keep `TABIX_FILTER_WORKERS` in step with the deployment's
 CPU `limits` if you change them.
-
-### Frontend CSP and the LD proxy
-
-The frontend nginx (`genetics-results-browser/nginx.prod.conf`) serves a Content-Security-Policy
-with `connect-src 'self'`, so the SPA can only issue XHR/fetch to its own origin. The LD lookup
-view used to call `https://api.finngen.fi/api/ld` straight from the browser; once the CSP shipped,
-every lookup failed with `TypeError: Failed to fetch`.
-
-The call is therefore proxied server-side: the browser requests `GET /api/v1/ld` (bff
-`ldRoute.ts`), which validates `variant`/`window`/`panel`/`r2_thresh` and forwards them to
-`LD_API_URL` (default `https://api.finngen.fi/api/ld`, set explicitly in
-`k8s/deployments/bff.yaml`). The route is mounted ahead of the generic passthrough so it never
-reaches results-api. `window` is bounded to the LD server's own 100,000–5,000,000 bp range and
-`panel` to `[A-Za-z0-9_-]+`; the query string is assembled with `URLSearchParams`, so a variant id
-is encoded rather than spliced in; upstream 400/404 pass through, everything else becomes 502 (60s
-timeout → 504). The bff has no egress NetworkPolicy, so this outbound call is permitted.
-
-That window is the **total** width, centred on the query variant (`window=1000000` returns
-±500 kb), so a pairwise lookup must ask for twice the distance between the two variants, and no
-setting reaches a partner more than 2.5 Mb away. The UI clamps its request at 5 Mb and refuses a
-pair further apart than 2.5 Mb up front (both derived from one `MAX_LD_WINDOW` constant in
-`LDContainer.tsx`). Before that, pairs 2.5-5 Mb apart asked for a window the server rejects and
-failed with a bare 400.
-
-Note that `/api/v1/ld` is browser-only: auth-gateway sends `Authorization: Bearer` requests under
-`/api/` straight to results-api (`@api_bearer`), which has no such route, so a programmatic client
-gets a 404 there and should call the LD API itself.
-
-Two consequences worth keeping in mind when editing either side:
-
-- Any **new external host the browser must reach directly** needs an explicit CSP source added in
-  `nginx.prod.conf` — the alternative (and the default choice here) is to proxy it through the bff.
-  `media-src 'self' https://sound.peal.io` is the one such exception, for the remote mp3s
-  `Header.tsx` plays; without it they fall back to `default-src 'self'` and are blocked.
-- The CSP lives in the frontend image, the proxy in the bff image. They share a repo and tag, so
-  ship them together (`build.sh frontend` + `build.sh bff`, then `rollout.sh` both).
 
 ### chat-backend shutdown and stream draining
 
@@ -145,11 +108,16 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── configs/              # k8s config manifests (bearer-auth allow-list; the oauth2-proxy
 │   │                         #   allow-list ConfigMap is generated by deploy.sh, no manifest)
 │   ├── cronjobs/             # cronjobs applied only when Keycloak is enabled (postgres backup)
+│   ├── disruption-budgets/   # PodDisruptionBudgets (chat-backend, results-api)
 │   ├── network-policies/     # network isolation rules
 │   └── volumes/              # persistent volume claims
 ├── keycloak/                 # Keycloak image build context (official image + Apple IdP and
 │                             #   email-allowlist extension JARs), realm/client/IdP templates,
 │                             #   and the `genetics` login theme
+├── sandbox/                  # sandbox image build context (distroless, no shell, uid 65532)
+│                             #   for model-authored Python; SDK pip-installed from
+│                             #   genetics-mcp-server at build time. See
+│                             #   docs/code-execution-security.md
 ├── scripts/
 │   ├── build-all.sh          # build and push all Docker images
 │   ├── build.sh              # build and push one service's image
@@ -162,8 +130,6 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── keycloak-register-brainzzz.sh  # the brainzzz client specifically
 │   ├── keycloak-bind-allowlist.sh     # bind the email allow-list authenticator + realm attrs
 │   ├── keycloak-get-token.sh          # browser auth-code+PKCE flow, prints an access token
-│   ├── lib/env.sh            # resolves DEPLOY_ENV -> tfvars/tfbackend/.env; sourced by
-│   │                         #   deploy.sh, create-secrets.sh, build*.sh and rollout.sh
 │   └── monitor/              # monitoring CronJob (Python)
 │       ├── Dockerfile
 │       ├── requirements.txt
@@ -184,17 +150,17 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── kubernetes.tf         # namespace, k8s service account
 │   ├── variables.tf          # input variables
 │   ├── outputs.tf            # output values
-│   ├── {daly,daly-staging,finngen}.tfbackend  # per-environment GCS state backends
+│   ├── {daly,finngen}.tfbackend       # per-profile GCS state backends
 │   ├── terraform.tfvars.example
-│   └── terraform.tfvars.{daly,daly-staging,finngen}  # per-environment values (not committed);
-│                             #   selected by DEPLOY_ENV. A bare terraform.tfvars is the legacy
-│                             #   single-deployment form and must not coexist with these.
+│   ├── terraform.tfvars.{daly,finngen}  # per-deployment values (not committed)
+│   └── terraform.tfvars      # active variable values (not committed)
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
-    ├── environments.md       # the three deployments, DEPLOY_ENV, and the staging runbook
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
+    ├── code-execution-security.md # threat model and security design of record for the
+    │                         #   model-authored-code sandbox (isolation, egress, credentials,
+    │                         #   MCP exposure, residual risk)
     ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
-    ├── mcp-oauth-onboarding.md  # runbook for onboarding an external customer app to /mcp
     ├── genegenie-migration.md   # record of the finngenie → genegenie legacy-hostname redirect
     ├── local-dev-vm.md       # running the whole suite from source on a GCE VM (no docker/k8s)
     ├── nginx-setup.md        # notes for the legacy VM nginx setup
@@ -320,17 +286,64 @@ results-api has no by-gene open-chromatin endpoint, so they work only where the 
 db-api — both chat-backend and the standalone mcp-server (mcp-server sets `BIGQUERY_API_URL`
 and is admitted by the `allow-ingress-db-api` NetworkPolicy; fixed in `genetics-results-suite-v1n`).
 
+### Phenotype and dataset metadata in BigQuery
+
+Trait/phenotype metadata and the dataset registry also exist as BigQuery tables, `phenotypes`
+and `datasets`, exposed as `phenotypes_v` / `datasets_v` (both in the db-api `VIEWS`
+allowlist) and documented for agents by their `tables.*` blocks in `configs/datasets.yaml`.
+Before this, the only way to turn `AB1_ACTINOMYCOSIS` into "Actinomycosis", or to filter
+traits by case count or ICD chapter, was a results-api round trip — which is why a phenotype
+question cost a search call, a lookup call and then the real query. It is now a JOIN inside
+the same query.
+
+- `phenotypes` — one row per `(dataset, trait_original)`, 35,327 rows. **Join on
+  `trait_original`, never on `trait`**: in every results view that has both columns
+  `trait_original` is the phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
+  `Height,_inverse-rank_normalized`; `continuous_30040_both_sexes__irnt` vs `Mean corpuscular
+  volume`), so joining on `trait` returns zero rows silently. `hla_associations_v` is the
+  exception with neither column: it spells its phenocode `phenotype`, so its join is
+  `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
+  QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
+  `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
+  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. Use a `LEFT JOIN` when the dataset
+  is not known in advance.
+- `datasets` — one row per results-view `dataset` value (~890, of which 841 are eQTL
+  Catalogue QTD sub-studies), unique on `dataset` so the join never fans results out, plus a
+  `dataset IS NULL` row for each registry entry with no BigQuery presence. Carries
+  `pseudo_credible_sets`, which must be checked before `pip`/`cs_size` are interpreted.
+
+**Ranked fuzzy phenotype search stays on results-api.** BigQuery cannot replace an in-memory
+ranked index, and search is the entry point of most conversations; these tables serve exact
+resolution and SQL-expressible filtering only.
+
+Both are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh` from
+`configs/datasets.yaml` and the `metadata_file` sources it references — see
+[adding-datasets.md](adding-datasets.md) for the registry-key → `dataset`-value map that the
+builder owns and that a new dataset must be added to.
+
 ## Authentication
 
 - **Keycloak** is the identity broker, **enabled per deployment profile** (`ENABLE_KEYCLOAK` in `deploy.sh`, defaulting on for `daly`, off for `finngen`). When enabled it presents the provider chooser and federates **Google** and **Apple** (Sign in with Apple), exposing one OIDC issuer at `https://${KEYCLOAK_HOST}/realms/genetics`. It runs in-cluster (`k8s/deployments/keycloak.yaml`) behind the auth-gateway under the **`/auth` path on the primary domain** (`KEYCLOAK_HOST` defaults to `<domain>/auth`), so it reuses the existing DNS record, managed cert and ingress rather than needing an `auth.<domain>` subdomain; it is backed by an in-cluster Postgres (`keycloak-postgres`) with daily `pg_dump` backups to GCS. The image (`keycloak/`) is the official Keycloak plus a bundled Apple identity-provider extension. Setup, Apple Developer prerequisites, secret rotation and restore are documented in `docs/keycloak-apple-signin.md`.
 - **oauth2-proxy** handles browser sessions. Its provider is profile-driven (`OAUTH2_PROXY_PROVIDER`): `oidc` against Keycloak where the broker is enabled (daly), or `google` directly otherwise (finngen). Either way it authorizes against an allow-list: one or more **domains** (`OAUTH2_PROXY_EMAIL_DOMAINS`, comma-separated) **or** specific **addresses** (the `--authenticated-emails-file`). Both lists come from terraform — `oauth_email_domain` (comma-separated, e.g. `broadinstitute.org,finngen.fi`) and `oauth_allowed_emails` (specific addresses, e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
 - **auth-gateway** (nginx) uses `auth_request` to validate requests against oauth2-proxy before proxying; a `location /auth/` block (injected by `deploy.sh` via `${KEYCLOAK_SERVER}`, and served without the `auth_request` since it *is* the auth endpoint) strips the prefix and proxies to Keycloak. The email returned by oauth2-proxy is passed to backends in the `X-Goog-Authenticated-User-Email` header (the `accounts.google.com:` prefix is legacy and provider-agnostic — backends read only the address after the colon).
 - **results-api** also accepts `Authorization: Bearer` tokens (Google Identity Tokens or internal shared secret)
+- **`X-Goog-Authenticated-User-Email` is not a credential on its own.** It is trivially settable by anything with network reach, so results-api trusts it only when the request *also* carries `Authorization: Bearer $INTERNAL_API_SECRET` — the trusted-proxy marker. bff attaches it on both of its upstream paths: `bff/upstream.ts` for the three assembled variants routes, and `bff/passthrough.ts` for everything else under `/api`, which is where the browser's identity header is forwarded, so the header and the marker now always travel together on that hop. (The passthrough never overwrites an `Authorization` the caller already sent; in practice nginx diverts anything carrying one to `@api_bearer` before it reaches bff, and that location blanks the identity header before proxying.) Without the marker the header is ignored outright (fail closed → 401), and the asserted address is additionally held to the same `ALLOWED_EMAILS`/`ALLOWED_EMAIL_DOMAINS` allow-list as the Google-JWT path. The same rule — marker **and** allow-list — gates the `endpoint_access` usage log, so a forged header cannot mis-attribute a request and an address the auth path refuses is not logged as the requester either. The marker is only as strong as `INTERNAL_API_SECRET`, which four workloads mount (bff, chat-backend, mcp-server, results-api); it is not a boundary against those four, it is a boundary against everything else in the namespace — notably the code-execution sandbox, which has egress to results-api but no secret.
+- **Identity precedence in results-api** (`app/core/auth.py:get_verified_user`), in the order it is evaluated. The asserted identity is checked *before* the bearer is mapped to a service identity, so a browser request keeps naming its real user rather than collapsing to the generic `mcp-tool`:
+  1. marker **+** allow-listed identity header → **that email** (browser traffic via bff)
+  2. marker **+** identity header that is *not* allow-listed → **401**, deliberately *not* downgraded to `mcp-tool` — a downgrade would let anything holding the shared secret launder a refused identity into a working request, i.e. the weaker credential would silently rescue what the stronger claim just failed
+  3. marker alone, no identity header → **`mcp-tool`** (auth-gateway `@api_bearer`, chat-backend, mcp-server)
+  4. Google Identity Token or user API token → that identity (unchanged)
+  5. identity header alone, no marker → **401** — the hole this closes
+
+  An empty oauth2-proxy `$email` does **not** land in case 3. nginx drops a header whose value is the empty string (that is how `@api_bearer` blanks it), so `proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email"` cannot emit an empty value — it emits the bare prefix `accounts.google.com:`, which is truthy and therefore asserts the empty address: case 2, **401**, not a downgrade to `mcp-tool`. It is unreachable in production because oauth2-proxy cannot return 200 for `/oauth2/auth` without an email (its own domain check needs one).
+- **Allow-list comparison** is case-insensitive on both sides (oauth2-proxy lower-cases the address before its own domain check, so a mixed-case `User@FinnGen.fi` it admits must not be rejected downstream), and a literal `*` in `ALLOWED_EMAIL_DOMAINS` means "any domain", matching oauth2-proxy's reading of the same value — without that, setting `oauth_email_domain = "*"` would authenticate everyone at the proxy and reject everyone at results-api. `*` also opens the Google-JWT path to any verified Google account, leaving `GOOGLE_TOKEN_AUDIENCE` as the only narrowing; it is a deliberate "open deployment" switch, not a default. Because matching tolerates case and surrounding whitespace, the resolved identity is **returned trimmed and lower-cased** by both `get_authenticated_user` and the usage-log extractor, so `User@FinnGen.fi` and `" user@finngen.fi "` attribute to one identity in `endpoint_access` rather than three.
 - **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via **four** paths: the `MCP_API_KEY` shared secret(s); Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list); per-user API tokens issued via the chat API; and **Keycloak OAuth 2.1 access tokens** (see below). NOTE: the Google JWT path validates **Google** Identity Tokens only — programmatic access for Apple-only identities is a known follow-up.
-- **MCP OAuth (resource-server) path**: when `OAUTH_ISSUER` + `OAUTH_RESOURCE_URL` are set (daly/genegenie; empty for finngen, so the path is inert there), the mcp-server acts as an OAuth 2.1 **resource server**. It validates Keycloak-issued JWT access tokens (RS256 signature via the realm JWKS, `iss`/`aud`/`exp`, then the same email/domain allow-list), and advertises RFC 9728 discovery at `/.well-known/oauth-protected-resource` (routed unauthenticated through auth-gateway; returns `WWW-Authenticate: Bearer resource_metadata=…` on 401), so MCP clients auto-discover the Keycloak authorization server. The Keycloak issuer is **path-based** (`https://<host>/auth/realms/genetics`); tokens must carry `aud` = `OAUTH_RESOURCE_URL` (`https://<host>/mcp`), enforced per client via an audience mapper. Each external app is its own Keycloak client (registered manually — no open Dynamic Client Registration); onboard one with `scripts/keycloak-register-client.sh <clientId> <redirect-uri>…` (brainzzz is the first, via `keycloak/brainzzz-client.json.template` + `scripts/keycloak-register-brainzzz.sh`). Setup is documented in `docs/keycloak-apple-signin.md`; the end-to-end customer onboarding runbook — client registration, the email allow-list, and adding a Microsoft/Entra IdP — is `docs/mcp-oauth-onboarding.md`.
-- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` and `GOOGLE_TOKEN_AUDIENCE` (used for Google Identity Token JWT validation in both results-api and mcp-server) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), populated from `oauth_allowed_emails`/`oauth_email_domain` plus the `GOOGLE_TOKEN_AUDIENCE` export in `deploy.sh`, consumed by both deployments via `envFrom: configMapRef` to prevent config drift
+- **MCP OAuth (resource-server) path**: when `OAUTH_ISSUER` + `OAUTH_RESOURCE_URL` are set (daly/genegenie; empty for finngen, so the path is inert there), the mcp-server acts as an OAuth 2.1 **resource server**. It validates Keycloak-issued JWT access tokens (RS256 signature via the realm JWKS, `iss`/`aud`/`exp`, then the same email/domain allow-list), and advertises RFC 9728 discovery at `/.well-known/oauth-protected-resource` (routed unauthenticated through auth-gateway; returns `WWW-Authenticate: Bearer resource_metadata=…` on 401), so MCP clients auto-discover the Keycloak authorization server. The Keycloak issuer is **path-based** (`https://<host>/auth/realms/genetics`); tokens must carry `aud` = `OAUTH_RESOURCE_URL` (`https://<host>/mcp`), enforced per client via an audience mapper. Each external app is its own Keycloak client (registered manually — no open Dynamic Client Registration); onboard one with `scripts/keycloak-register-client.sh <clientId> <redirect-uri>…` (brainzzz is the first, via `keycloak/brainzzz-client.json.template` + `scripts/keycloak-register-brainzzz.sh`). Setup is documented in `docs/keycloak-apple-signin.md`.
+- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` and `GOOGLE_TOKEN_AUDIENCE` (used for Google Identity Token JWT validation in results-api and mcp-server, and for chat-backend's own allow-list check on the identity header) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), populated from `oauth_allowed_emails`/`oauth_email_domain` plus the `GOOGLE_TOKEN_AUDIENCE` export in `deploy.sh`, consumed by all three deployments (`results-api`, `mcp-server`, `chat-backend`) via `envFrom: configMapRef` to prevent config drift
 - **Google token audience**: `GOOGLE_TOKEN_AUDIENCE` is the `aud` claim a Google Identity Token must carry. `id_token.verify_oauth2_token` skips the audience check when none is supplied, so while it is unset **any** Google-signed id_token with an allow-listed email is accepted — including one minted for an unrelated application, which that application's operator could replay here. It defaults to the gcloud CLI's OAuth client id (`32555940559.apps.googleusercontent.com`), because the documented flow is `gcloud auth print-identity-token` and user credentials cannot request a custom audience. This blocks cross-application replay; it is not an identity gate on its own (anyone with a Google account can mint a token with that audience), so the email allow-list remains the access control. Add further client ids, comma-separated, if service accounts call the API with audience-scoped tokens.
-- **db-api** is internal-only (NetworkPolicy) **and** requires `Authorization: Bearer $INTERNAL_API_SECRET` on every endpoint except `/health`. The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is itself reachable from outside, so anything that could drive mcp-server could reach BigQuery behind it. Fails open (with a startup warning) if the env var is unset, so local runs and mid-rollout clusters keep working.
+- **db-api** is internal-only (NetworkPolicy) **and** requires `Authorization: Bearer $INTERNAL_API_SECRET` on every endpoint except `/health`. The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is itself reachable from outside, so anything that could drive mcp-server could reach BigQuery behind it. That path fails open (with a startup warning) if the env var is unset, so local runs and mid-rollout clusters keep working — **the sandbox token path below does not inherit that**.
+- **Sandbox execution tokens** (`genetics-results-suite-4h6.9`, design: `docs/code-execution-security.md` §4). The code-execution sandbox must never hold `INTERNAL_API_SECRET`, which authenticates the *service*, never expires, and would let a model-authored script reach both backends forever. Instead chat-backend mints a **short-lived HS256 JWT per audience per execution**, signed with a *separate* key `SANDBOX_TOKEN_SIGNING_KEY` (`genetics-secrets` key `sandbox-token-signing-key`, generated by `create-secrets.sh`) that chat-backend, db-api and results-api mount and the sandbox does not. Claims: `iss=chat-backend`, `aud` = `db-api` **or** `results-api` (so a token captured from one cannot be replayed at the other), `sub` = the authenticated user, `sid` = the chat session id (this is what makes `endpoint_access` lines attributable to a conversation), `jti` = the execution id (also the `/scratch/<id>` directory name, joining logs across chat-backend, the sandbox SDK and db-api), `iat`/`exp` 5 minutes apart, and a `scope` whose presence is required and whose value is not yet interpreted. Both validators **discriminate on the JOSE `alg` header, never on dot count** — three-segment JWTs are also what every Google Identity Token looks like, and routing on dots would 401 that entire class of results-api caller. A sandbox-shaped bearer is validated only as a sandbox token: hard 401 on failure, never a fallthrough to the shared-secret comparison (which would degrade a malformed token into "is this string equal to the secret") and never on to `verify_oauth2_token`. Reading the unverified header is safe because it only *selects* a validator — each branch pins its own algorithm and key. In db-api the branch sits **ahead of** the fail-open early return; in results-api it is a new case 0 ahead of the four `genetics-results-suite-fad` precedence cases, and reports the caller as `sandbox:<user>` so a script is never mistaken for a verified human. `SANDBOX_ENABLED` (a separate required input, true once the sandbox Deployment exists) makes both services `sys.exit(1)` rather than warn when either secret is unset — without it, a script could simply omit the `Authorization` header and be served by the fail-open branch with nothing to attribute it to. Both validators also assert the minter's invariants rather than trusting them: an **empty** `sub`, `sid` or `jti` is rejected (PyJWT's `require` catches only missing/null, and a blank one attributes the query to nobody), and `aud` must be a **string**, because PyJWT reads a list `aud` as membership and `["db-api","results-api"]` would otherwise validate at both services. Both pass `leeway=5` to `jwt.decode` for minter/verifier clock skew — the 300s ttl covers skew only in the past direction, while PyJWT ≥ 2.10 rejects `iat > now` outright — and the separate 300s `iat` age check stays exact. The principal each validator resolves is left on `request.state` (`request.state.principal` in db-api — a `SandboxPrincipal`, the string `"internal"`, or `None`; `request.state.sandbox_principal` in results-api), which is the hook the caps below key on.
+- **Per-credential row and byte caps** (`genetics-results-suite-4h6.28`, design: `docs/code-execution-security.md` §4). The tight limits are the **default**, relaxed only for a *verified non-sandbox* credential — the inverse of keying them on the sandbox audience, which would let a caller widen its limits by presenting a weaker credential or none at all. **db-api**: `maximum_bytes_billed` 50 GB per query (vs the operator's `MAX_BYTES_BILLED`, 100 GB), a 25 000-row response cap (vs `MAX_ROWS`, 100 000), and an aggregate **200 GB per `jti`** enforced by a bounded in-process LRU counter — over budget is a **429, never a truncated result**. The budget spans **all four** of db-api's BigQuery paths: `/query` charges the dry run's estimate *before* the bytes are spent and reconciles afterwards, while `/schema`'s distinct-value scans, `/stats` and `/tables/{t}/sample` — none of them cached at the HTTP layer, and none with a dry run to price them — go through one shared helper that refuses to start a job once the budget is spent and charges what the job processed once it finishes, so the budget can be overshot by at most one query's `maximum_bytes_billed`. `/schema`'s scans run at the **triggering** caller's ceiling and are charged to it; previously they passed no request and so ran at the relaxed 100 GB ceiling, twice the sandbox per-query cap, for free. That does not contaminate the shared `_get_categorical_values` cache across callers, because a job over the triggering caller's ceiling fails and leaves the cache unpopulated for the next caller to retry. Charge and reconcile are in `total_bytes_processed`, not `total_bytes_billed`: a dry run reports only the former, so it is the one figure available on both sides of the correction. A query that raises between the charge and the reconcile is refunded in a `finally`, so syntax errors do not consume a budget they never spent. The relax condition here is exactly one thing, a successful `hmac.compare_digest` against `INTERNAL_API_SECRET`; the fail-open branch's `None` principal stays tight. The row cap is clamped **in the handler**: `QueryRequest.max_rows` carries a class-level `le=MAX_ROWS` evaluated once at model-definition time, so it cannot vary per credential, and tightening the module-level `MAX_ROWS` would move that bound for every caller in the process. The counter is in-process and db-api runs `replicas: 1` with no HPA, so today it is exact — **at more than one replica it would bound spend per replica, not globally**; `k8s/deployments/db-api.yaml` carries a comment on `replicas: 1` saying so, and a cross-replica budget needs shared state and is deliberately not in v1. **results-api** carries its own response-**byte** cap (16 MiB) and **no row cap**, enforced by `SandboxResponseCapMiddleware` innermost of GZip so it measures the payload the caller decodes; a capped response is buffered precisely so the answer can be a 429 rather than a truncated stream, the buffer is handed downstream without a copy, and a relaxed response is never buffered or inspected. The row cap was removed deliberately: counting rows meant `json.loads` over the whole body on the event loop — a memory amplifier only a sandbox caller could trigger, on a `replicas: 1` pod — and it never bound TSV, the default `format` of every bulk range endpoint, while the byte cap was already the binding one. Exceeding the cap now **tears the producer down** by raising out of `send`, rather than discarding chunks a generator keeps producing; that generator is GCS range reads plus the tabix filter pool on the real endpoints. Its relax condition is **broader** — *any* verified non-sandbox principal (shared secret, Google id_token, or per-user chat API token) — because auth-gateway's `@api_bearer` location routes programmatic clients straight here with their own token and deliberately no shared secret, so an hmac-only rule would put verified humans on the sandbox caps on the bulkiest endpoints in the suite. Two cases reach a handler with no principal resolved and are decided on their own terms rather than by defaulting: an `@is_public` route — re-derive the set with `grep -rn "@is_public" app/`; today **seven**: `/api/v1/rsid/variants` GET and POST, `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, `/api/v1/auth` (the route the code registers; this doc previously called it `/auth/status`), plus `/api/v1` and `/healthz` in `app/server.py` — where `auth_required` returns before `get_verified_user`, and `REQUIRE_AUTH=false` (dev only; the shipped `results-api.yaml` sets `"true"`). Both are **relaxed**. Measured, tight caps there would truncate nothing today — the largest possible public response is 888 rows / 18.6 KB (`variant_sets/FinnGen_enriched_202505`) against a 16 MiB cap. What makes that exception carry **zero security delta** is not the caps but that every public route bounds its own response **for every caller**: `POST /rsid/variants` used to read an unbounded body and answer one object per id, so a script omitting its sandbox token got a strictly looser limit than the same script presenting it — the core invariant, broken — and it now enforces `MAX_RSIDS` (5 000) uniformly, with no sandbox special case, plus a bounded body read. 5 000 comes from the GET's own ceiling: h11 caps the request line and headers at 16 KiB and the shortest id costs 4 bytes in the query string, so no working GET carries more than 4 096. The measurements are in `docs/code-execution-security.md` §4. The sandbox principal is also resolved **before** both short circuits in `app/dependencies.py:auth_required`, so a sandbox token is capped on a public route and under `REQUIRE_AUTH=false` too — necessary, but not sufficient on its own, since it only tightens the caller that chose to identify itself.
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
 - **External MCP servers**: chat-backend proxies tools from external MCP servers (gnomAD, Open Targets) configured via `EXTERNAL_MCP_SERVERS` secret; `EXTERNAL_MCP_EXCLUDE_TOOLS` excludes specific tools by name (comma-separated)
 - **Third-party live resources called natively**: separately from the proxied MCP servers, genetics-mcp-server calls several public APIs directly over its own unauthenticated HTTP client (never the internal secret): MouseMine/MGI (`search_mgi`), UniProt + EBI Proteins (`get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`), myvariant.info (`get_myvariant_annotations`), cBioPortal (`search_cbioportal`), and the literature/web backends (Europe PMC, Perplexity, Tavily). All are chat-backend only — excluded from the standalone mcp-server via `_mcp_disabled`. None needs an API key except Perplexity and Tavily. Per-tool behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`.
@@ -356,51 +369,192 @@ explicitly: pin the build, or match on something build-independent.
 
 ## Infrastructure
 
-- **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
-- **Region**: Configured via `region` in the deployment's tfvars
+- **GCP Project**: Configured via `project_id` in `terraform/terraform.tfvars`
+- **Region**: Configured via `region` in `terraform/terraform.tfvars`
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
-- **Node pool**: pinned at `min_node_count == max_node_count == 2` on `e2-standard-4` (see "Node pool sizing" below) — the autoscaler is deliberately given no room to move
+- **Node pool**: `e2-standard-4`, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`max = 2` on the daly profile); one node is running today. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
-- **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
+- **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
-- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`). Both filters are scoped to `resource.labels.cluster_name` — a project can host more than one deployment of the suite, and a namespace/container-only filter would route both clusters into the same dataset
+- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
-- **Terraform state**: Per-environment GCS backends selected by `DEPLOY_ENV` — `daly.tfbackend` and `daly-staging.tfbackend` → `genetics-results-terraform-daly` (prefixes `genetics-results-suite` and `genetics-results-suite-staging`), `finngen.tfbackend` → `genetics-results-terraform`. With `DEPLOY_ENV` unset the legacy path applies: bare `terraform.tfvars`, backend derived from its `config_profile`
-- **Deployment environments**: `daly` (production), `daly-staging` and `finngen`. `daly` and `daly-staging` are separate clusters **inside the same GCP project**, so every project-scoped resource name carries `resource_suffix` (empty vs `-staging`): the Artifact Registry repo, the Workload Identity GSA, the chat-data snapshot policy, the Keycloak backup bucket, and the log sinks with their BigQuery datasets. Cluster-scoped names (VPC, subnet, firewall, node pool) already derive from `cluster_name`. See `docs/environments.md`
+- **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
 
 ### Node pool sizing
 
-`min_node_count` and `max_node_count` in each deployment's tfvars are **pinned equal** (both `2`).
-This is not a cost-tuning choice — an autoscaler with room to move breaks chat.
+The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
+`terraform.tfvars` profile (`max = 2` on daly), on `e2-standard-4`. One node is running today.
 
-A full `deploy.sh` rolls every deployment at once. All of them except chat-backend, postgres
-and rag-service (which are `strategy: Recreate`) surge by one extra pod, adding 1300m CPU and
-5.69 GiB on top of the ~2651m / 7.91 GiB steady-state requests:
+> An earlier version of this section claimed the pool was pinned at
+> `min_node_count == max_node_count == 2`. That pinning was written into
+> `terraform.tfvars.example` by commit 6db94e8 but **never applied to any live profile**
+> (`genetics-results-suite-262`). The decision has since been to keep autoscaling and handle
+> the eviction case with graceful shutdown, which also covers node auto-upgrade — something
+> pinning never did. PodDisruptionBudgets are declared for the two expensive workloads but,
+> at `replicas: 1`, do not currently block anything (see below).
 
-| | steady state | + rollout surge | one e2-standard-4 allocatable |
-|---|---|---|---|
-| CPU | 2651m | **3951m** | 3920m |
-| Memory | 7.91 GiB | **13.60 GiB** | 12.97 GiB |
+**Why the surge matters.** A full `deploy.sh` rolls every deployment at once. All of them
+except chat-backend, keycloak-postgres and rag-service (which are `strategy: Recreate`) use
+the default `RollingUpdate`, so with `replicas: 1` each surges by one extra pod. Figures below
+are re-derived from `k8s/deployments/*.yaml` and from the live node (2026-08-07); "system"
+is the per-node GKE overhead (`kube-system`, `gmp-system`, `gke-managed-cim`) measured at
+876m / 1.33 GiB.
 
-So a full deploy overshoots a single node on *both* axes (`results-api` at 500m / 4Gi, doubling
-to 8Gi mid-roll, dominates the memory term). With `min < max` the autoscaler reliably added a
-second node for the rollout, the scheduler placed pods on it, and ~15 minutes later the now-idle
-node was scaled down — evicting those pods with `ScaleDown: deleting pod for node scale down`.
-For chat-backend that kills an in-flight SSE response mid-answer. Pinning removes the scale-down
-event entirely.
+RAG is **not** profile-derived: `scripts/deploy.sh` sets `ENABLE_RAG="${ENABLE_RAG:-false}"`
+unconditionally, so rag-service is off on *every* profile unless the operator exports it. Only
+Keycloak is profile-derived (on for daly). A default daly deploy is therefore **10**
+deployments, not 11.
 
-Consequences to keep in mind:
+| | CPU | Memory |
+|---|---|---|
+| one `e2-standard-4` allocatable | **3920m** | **12.96 GiB** |
+| app requests, daly **as deployed by default** (Keycloak on, RAG off — 10 deployments) | 1650m | 6.44 GiB |
+| app requests, daly **with `ENABLE_RAG=true`** (11 deployments) | 1900m | 6.94 GiB |
+| app requests, finngen profile (no Keycloak, no RAG) | 1300m | 5.69 GiB |
+| + per-node GKE system overhead | 876m | 1.33 GiB |
+| rollout surge, daly (either variant — rag-service is `Recreate`, so it never surges) | +1300m | +5.69 GiB |
+| rollout surge, finngen (no Keycloak) | +1050m | +5.19 GiB |
+| **peak during a full deploy — daly, default** | **3826m** | **13.45 GiB** |
+| **peak during a full deploy — daly, RAG enabled** | **4076m** | **13.95 GiB** |
+| **peak during a full deploy — finngen** | 3226m | 12.20 GiB |
 
-- **Raising any deployment's requests, or adding a service, can re-break this.** Re-derive the
-  surge total against 2 × 3920m / 12.97 GiB before merging such a change.
-- The `chat-data` PVC is `ReadWriteOnce`, so with two nodes a `Recreate` rollout can land
-  chat-backend on the *other* node and stall ~20s on `Multi-Attach error` while the volume
+So the **daly** profile as actually deployed overshoots a single node on **memory only** —
+13.45 GiB against 12.96 GiB, while its 3826m CPU peak stays under the 3920m allocatable. It
+still must get a second node; only the reason is narrower than "both axes". Turning RAG on
+pushes CPU over as well. The **finngen** profile fits, but with under 1 GiB of memory
+headroom — and that margin disappears if the analyze-conversations (512Mi) or monitor (256Mi)
+CronJob overlaps the rollout. `results-api` at 500m / 4Gi, doubling to 8Gi mid-roll, dominates
+the memory term either way.
+
+When the autoscaler does add a node for a rollout, the scheduler places pods on it and ~15
+minutes later reaps the now-idle node, evicting them with `ScaleDown: deleting pod for node
+scale down`. For chat-backend that killed an in-flight SSE response mid-answer.
+
+> **Open question — the arithmetic above does not explain the eviction that prompted this
+> work.** The live cluster runs the **finngen** profile on one node, and by the re-derived
+> table finngen fits (12.20 GiB peak vs 12.96 GiB allocatable). If it fits, no surge node
+> should be created, and the reap-the-surge-node mechanism narrated above should not fire on
+> the live profile at all. The original narrative is kept because the eviction was observed;
+> what is missing is a verified trigger. Plausible candidates, none confirmed: a transient
+> CronJob overlapping the rollout and consuming the sub-1 GiB margin; a node auto-upgrade or
+> auto-repair drain rather than an autoscaler scale-down (the log line would differ — check
+> which was actually recorded); or a resource request that has been lowered since. This is
+> **open**. Do not treat the table as having explained the incident.
+
+**One mitigation is actually in place, and it is not the pinning.**
+
+Graceful shutdown on chat-backend (`k8s/deployments/chat-backend.yaml`):
+`terminationGracePeriodSeconds: 300`, a `preStop` sleep of 10s, and uvicorn
+`--timeout-graceful-shutdown 280`. An evicted pod finishes the stream it is serving. This is
+the whole of the live protection for a mid-stream eviction.
+
+**The PodDisruptionBudgets** (`k8s/disruption-budgets/budgets.yaml`) on **chat-backend** and
+**results-api** are set to `maxUnavailable: 1` and are **declarative only today**. Both
+deployments are `replicas: 1`, so `desiredHealthy = replicas - maxUnavailable = 0` and
+`disruptionsAllowed = 1` whenever the pod is healthy: every eviction is admitted immediately.
+The budgets record which two workloads are expensive to interrupt — results-api because its
+`startupProbe` allows ~5 minutes for a cold start with no second replica to serve tool calls
+meanwhile, chat-backend because of the SSE stream — and they become a real constraint the
+moment a second replica exists. They do not prevent the reap-the-surge-node eviction now.
+
+**Why `maxUnavailable: 0` was rejected.** It is the value that would make these budgets bite at
+`replicas: 1`, and it is a trap. With one replica `maxUnavailable: 0` and `minAvailable: 1` are
+the same constraint and both forbid voluntary eviction outright — the budget can never be
+satisfied while the pod exists. The cost is **not** symmetric across the two GKE drain paths,
+and the expensive one is the autoscaler:
+
+- **cluster autoscaler — no time bound at all, this is the dominant cost.** The autoscaler
+  documents two separate branches. "If there are Pods on a node that cannot move to other
+  nodes in the cluster, cluster autoscaler does not attempt to scale down that node." Only
+  *separately*, for a node it has already selected: "If Pods can be moved to other nodes, but
+  the node cannot be drained gracefully after a timeout period, the node is forcibly
+  terminated. This timeout period is one hour for GKE versions 1.32.7-gke.1079000 or later"
+  ([cluster autoscaler](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler)).
+  A permanently unsatisfiable PDB puts the node in the **first** branch: it is never selected,
+  so the one-hour force-termination never applies and there is no bound. The node stays.
+- **node upgrade — one hour, but only for the SURGE strategy.** This pool uses surge
+  (`terraform/gke.tf` sets no `upgrade_settings`), and surge upgrades drain "respecting
+  PodDisruptionBudget and GracefulTerminationPeriod settings for up to one hour", after which
+  "any remaining Pods are forcefully evicted so that the upgrade can proceed". Under
+  **BLUE_GREEN** the bound is different: pods go away in the delete-blue-pool phase, gated by
+  a configurable soak that defaults to 1 hour and can be extended to 7 days
+  ([node upgrade strategies](https://cloud.google.com/kubernetes-engine/docs/concepts/node-pool-upgrade-strategies)).
+- **node auto-repair — UNCONFIRMED.** Google documents a one-hour drain bound for repair, but
+  does not state that PDBs are honoured during it. Do not rely on the one-hour figure holding
+  for this path either way.
+
+**The permanent-ratchet consequence that `0` would have produced.** results-api is
+`RollingUpdate`, so during a rollout its replacement pod is scheduled onto the surge node
+before the old pod dies. The old pod then goes away and node 1 frees up — but the new pod
+stays on node 2, and under a blocking budget node 2 would host a pod that can never be
+selected for scale-down. **The pool would ratchet to two nodes and stay there** — a permanent
+cost arrived at as a side effect, and effectively the `min == max == 2` pinning that was
+explicitly rejected. That is the reason for choosing `1` over `0` (bead
+`genetics-results-suite-0v5`), accepting that the budgets are protectively inert until a second
+replica exists. At `maxUnavailable: 1` this ratchet does not occur.
+
+**Which workload would have driven that ratchet.**
+
+- **results-api** is `RollingUpdate` with no volume or affinity holding it to a node, so it
+  migrates to the surge node on every rollout. It would have been the reliable cause.
+- **chat-backend** is `strategy: Recreate`, so it never runs alongside its own old pod and
+  never *creates* a surge node. Its `chat-data` PVC is `ReadWriteOnce` on `standard-rwo`,
+  which is **zonal, not node-scoped** — it does not pin the pod to a node, it only forces a
+  detach/reattach (and the ~20s `Multi-Attach error` noted below). So chat-backend *can* be
+  rescheduled onto a surge node that some other deployment created, and a blocking budget would
+  then pin that node too. Less frequent than results-api, not impossible.
+
+Neither PDB blocks `deploy.sh` itself: the Deployment controller deletes pods directly rather
+than going through the Eviction API, so rollouts are unaffected.
+
+Both budgets set `unhealthyPodEvictionPolicy: AlwaysAllow`. At `maxUnavailable: 1` over one
+replica the budget blocks nothing, so this field **has no effect today** — it is not fixing an
+active deadlock. It is kept because it is the correct setting once a second replica exists, and
+because removing it would leave that deadlock unguarded once the budget can actually reach its
+limit — every replica unhealthy at `maxUnavailable: 1`, or *any* unhealthy pod under
+`minAvailable` or `maxUnavailable: 0`. (At `replicas: 2, maxUnavailable: 1` a single unhealthy
+pod beside a healthy one still leaves `currentHealthy >= desiredHealthy`, so `IfHealthyBudget`
+admits its eviction; raising `replicas` alone does not recreate the block.) Under the default
+`IfHealthyBudget`, a running-but-unhealthy pod
+may be evicted only if the guarded application is not disrupted, so under a blocking budget a
+**CrashLoopBackOff pod cannot be evicted either** — serving nothing while still blocking any
+eviction-API drain (`kubectl drain`, surge upgrade). `AlwaysAllow` lets an unhealthy pod "be
+evicted regardless of whether the criteria in a PDB is met"
+([configure a PDB](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)). That
+relief is confirmed only for the Eviction API path; whether cluster-autoscaler's scale-down
+candidate simulation models the field at all is **unconfirmed**, so do not assume a
+crashlooping pod releases the scale-down ratchet a blocking budget would create. The field is accepted at `policy/v1` on
+this cluster's 1.35.6-gke.1250000, verified with
+`kubectl explain pdb.spec.unhealthyPodEvictionPolicy` and a client-side dry-run.
+
+**`AlwaysAllow` would carry a cost once the budgets bite, and it lands on results-api's own
+justification.** "Healthy" here means `status.conditions[type=Ready].status == "True"`, so a
+pod that is merely *starting* is also unhealthy for this purpose and is freely evictable.
+results-api's `startupProbe` is `failureThreshold: 60, periodSeconds: 5` — about five minutes —
+so even at `replicas: 2` the budget would give **no** protection for ~5 minutes after every
+restart: the pod can be evicted and its node is drainable. That is exactly the cold-start
+window the results-api budget is justified by, so any future guarantee begins when the
+`startupProbe` passes, not when the pod is created. `AlwaysAllow` stays anyway — the
+alternative is an unbounded crashloop deadlock.
+
+So a *blocking* budget buys protection for an in-flight request and costs a node that may never
+be reclaimed. That is arguably the right trade for a long-lived SSE stream and a 5-minute cold
+start once there are two replicas to make it satisfiable; it is **not** the right trade for a
+cheap-to-restart service, and at `replicas: 1` it is not available at all without the ratchet.
+Do not blanket the namespace with PDBs — db-api, mcp-server, bff, auth-gateway, frontend and
+oauth2-proxy deliberately have none, because eviction already runs their `preStop`/SIGTERM path
+and they come back in seconds. Symptom of an over-restrictive PDB: `gke_cluster` log entries
+reading `Cannot evict pod as it would violate the pod's disruption budget`.
+
+Other consequences to keep in mind:
+
+- **Raising any deployment's requests, or adding a service, changes the table above.**
+  Re-derive the surge total against 3920m / 12.96 GiB per node before merging such a change.
+- The `chat-data` PVC is `ReadWriteOnce`, so once a second node exists a `Recreate` rollout can
+  land chat-backend on the *other* node and stall ~20s on `Multi-Attach error` while the volume
   detaches. That is a slower deploy, not a dropped request.
-- The analyze-conversations CronJob already carries a podAffinity onto chat-backend's node for
-  the same PVC reason (see "Conversation analysis pipeline"); that keeps working with two nodes.
-- There is still **no PodDisruptionBudget** in the namespace, and every deployment is
-  `replicas: 1`. Node auto-upgrade or repair will therefore still interrupt chat. Pinning
-  addresses the autoscaler, not voluntary drains.
+- The analyze-conversations CronJob carries a podAffinity onto chat-backend's node for the same
+  PVC reason (see "Conversation analysis pipeline"); that keeps working with several nodes.
 
 To consolidate onto one larger node instead, note that `node_config.machine_type` is ForceNew on
 `google_container_node_pool` — changing it in place destroys and recreates the pool. Do it as a
@@ -416,21 +570,17 @@ new pool plus cordon/drain migration, not a tfvars edit.
 
 ### Monitor CronJob
 
-A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule `0 8 * * *`, i.e. 08:00 UTC — after the 02:00 Keycloak backup and 02:30 conversation analysis, so their output falls inside the same report) and sends results to Slack. Deployed as a Kubernetes CronJob in the `genetics` namespace. The report interval, `ALERT_LOOKBACK_HOURS` and `ALERT_DEDUP_TTL_HOURS` are coupled and must be changed together — see the env-var table below.
-
-**Job semantics:** `main.py` returns 0 whenever the run *completed*, including days it found failed health checks or new log alerts — those are an ordinary outcome and are already carried by the Slack report, so a `Failed` Job means the monitor itself broke. It did not always: returning 1 for findings marked the Job `Failed` on every day with alerts and spent the `backoffLimit: 1` retry re-running the whole report, whose second pass then contradicted the first with "No new alerts" because its own findings were by then inside the `ALERT_DEDUP_TTL_HOURS` window. The retry is kept for genuine crashes, and `restartPolicy: OnFailure` holds it inside the same pod so it reuses the existing attachment of the ReadWriteOnce `monitor-data` PVC rather than waiting on a detach and re-attach.
-
-One gap is deliberately left open: `send_slack_message` swallows its own errors and returns a bool that `main.py` ignores, while `LogAlerter._is_new` commits each alert's dedup key at read time, *before* any send. A failed Slack delivery therefore neither exits non-zero nor is recoverable by the next run, and simply making it exit non-zero would be worse than the gap — the retry would re-post health and BigQuery but report "No new alerts", a false all-clear. Fixing it means deferring the dedup write until after a successful post. Relatedly, `ALERT_LOOKBACK_HOURS` tracks the schedule interval rather than the last *successful* run, so a run lost entirely is a blind spot the next run does not backfill.
+A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hours, schedule `0 */8 * * *`) and sends results to Slack. Deployed as a Kubernetes CronJob in the `genetics` namespace.
 
 **What it checks:**
 
 - **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
 - **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`, `mpra_v`) for row counts and distinct resources. For credible_sets/exome/gene_based/asm_qtl/mpra views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
-- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace **of its own cluster** over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts. The cluster clause matters because Cloud Logging is project-wide and two deployments in one project (daly + daly-staging) both use the `genetics` namespace — without `K8S_CLUSTER` each would alert on the other's errors.
+- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 8h). Groups by container, deduplicates via SQLite, and only reports new alerts.
 
-**Severity reclassification:** GKE's logging agent tags *everything a container writes to stderr* as `severity=ERROR` regardless of content, so the Cloud Logging severity is meaningless for the many services that log normally to stderr (uvicorn, postgres, batch scripts). The alerter therefore recovers the level the application itself reported by matching the message text against `_LEVEL_PATTERNS` (python/uvicorn `INFO:`, nginx `[error]`, postgres `[27] LOG:`), ranks it via `_LEVEL_RANK`, and drops anything below WARNING. Messages carrying no recognizable level fall back to the Cloud Logging severity (fail open, so unknown formats still alert). Blank and whitespace-only lines are dropped before any of this, since the same stderr tagging arrives them as ERROR while they carry nothing to alert on. The count of dropped entries is logged to the CronJob's stdout so the suppression is never silent. Services that log progress to stderr must prefix it with a level (see `analyze_conversations.py`) or it will be reported as an error. Third-party tools whose output cannot be prefixed must be silenced at the source instead of added to the ignore list, so that their *real* errors still alert: `keycloak-postgres-backup` sets `DEBIAN_FRONTEND=noninteractive` (else debconf warns about the missing TTY on every run), buffers apt output to a temp file and replays it to stderr only when the install fails, and passes `gsutil -q` to drop the upload progress meter. Before that, one nightly backup in two surfaced ~10 phantom `[ERROR]` lines in Slack — intermittently, because the 02:00 UTC job is only inside the lookback window of the 08:00 monitor run and the 24h dedup TTL expires at almost exactly the backup's own 24h cadence.
+**Severity reclassification:** GKE's logging agent tags *everything a container writes to stderr* as `severity=ERROR` regardless of content, so the Cloud Logging severity is meaningless for the many services that log normally to stderr (uvicorn, postgres, batch scripts). The alerter therefore recovers the level the application itself reported by matching the message text against `_LEVEL_PATTERNS` (python/uvicorn `INFO:`, nginx `[error]`, postgres `[27] LOG:`), ranks it via `_LEVEL_RANK`, and drops anything below WARNING. Messages carrying no recognizable level fall back to the Cloud Logging severity (fail open, so unknown formats still alert). The count of dropped entries is logged to the CronJob's stdout so the suppression is never silent. Services that log progress to stderr must prefix it with a level (see `analyze_conversations.py`) or it will be reported as an error.
 
-**Ignore list:** `_IGNORE_PATTERNS` drops known-benign `(container, message regex)` pairs outright. Three sources are on it. **oauth2-proxy** probe/callback noise: invalid redirects, unparseable OAuth2 state, and `Error while parsing OAuth2 callback` (the IdP returned `?error=...`; observed as `invalid_scope`/`unsupported_response_type` from crawlers and scanners hitting `/oauth2/callback`, and `temporarily_unavailable` when a real user leaves the Keycloak login page open too long). **nginx** `upstream prematurely closed connection` on `/mcp` only: mcp-server's streamable-HTTP SSE streams are long-lived, so each pod restart kills the open ones mid-response and nginx logs one line per connection — a crash-looping mcp-server is caught by the `/healthz` check instead, and the same error on any other route (e.g. a chat-backend stream dying mid-answer) still alerts. The mcp-server query-parameter-token warning was deliberately removed from the list: the query-token fallback is off by default in genetics-mcp-server, so if it fires again someone enabled `MCP_ALLOW_QUERY_TOKEN` and credentials are travelling in URLs — that must reach Slack. **Rolling-restart signatures**: a deploy, or a GKE node upgrade recreating the pool, restarts every pod in dependency order and each service logs its own side of the one event — postgres `terminating connection due to administrator command` (only ever emitted on an orderly shutdown; an unplanned death logs something else), mcp-server `ASGI callable returned without completing response` (the uvicorn half of the `/mcp` SSE teardown already ignored above), nginx `connect() failed (111: Connection refused)` and `upstream timed out (110: Operation timed out)` **while connecting to** upstream, and the HTML markup fragments oauth2-proxy echoes out of an upstream error body (one alert per line of `<body>`/`</html>`/…). The 2026-08-30 06:32–06:41 UTC node upgrade produced ~30 such alerts, all stale by the time the 08:00 report was read. The nginx pattern is deliberately scoped to the *connect* phase: `while reading response header from upstream` means the upstream answered and then stalled, which is a real fault and still alerts. Two lines that also fire during a restart are deliberately **not** ignored — oauth2-proxy `Failed to initialise OAuth2 Proxy` and mcp-server `Error validating user API token via chat backend`. Both mean nobody can log in, and nothing else here covers them: the health checks call ClusterIP URLs directly and so never traverse nginx or oauth2-proxy, and no check watches pod restart counts.
+**Ignore list:** `_IGNORE_PATTERNS` drops known-benign `(container, message regex)` pairs outright — currently only oauth2-proxy probe/callback noise. The mcp-server query-parameter-token warning was deliberately removed from the list: the query-token fallback is off by default in genetics-mcp-server, so if it fires again someone enabled `MCP_ALLOW_QUERY_TOKEN` and credentials are travelling in URLs — that must reach Slack.
 
 **Deduplication:** The alerter normalizes log messages (stripping timestamps, UUIDs, IPs, request IDs) and hashes `container|normalized_message` into a dedup key. Seen keys are stored in a SQLite database on a PVC (`/data/monitor.db`) with a 24-hour TTL. Expired entries are cleaned up at the start of each run.
 
@@ -448,11 +598,10 @@ One gap is deliberately left open: `send_slack_message` swallows its own errors 
 | `INTERNAL_API_SECRET` | `genetics-secrets` | — | Bearer token for results-api |
 | `SLACK_WEBHOOK_URL` | `genetics-secrets` | — | Slack incoming webhook URL |
 | `K8S_NAMESPACE` | CronJob manifest | `genetics` | Namespace for log queries |
-| `K8S_CLUSTER` | CronJob manifest (envsubst); exported by `deploy.sh` from the terraform `cluster_name` output | — (unset = no cluster clause) | Restricts log queries to this cluster. Required when a GCP project hosts more than one deployment |
 | `MONITOR_DB_PATH` | CronJob manifest | `/data/monitor.db` | SQLite dedup database path (on PVC) |
 | `RESULTS_API_URL` | — | `http://results-api....:4000` | Override results-api URL |
-| `ALERT_LOOKBACK_HOURS` | CronJob manifest | `24` | How far back to query logs. Must equal the schedule interval: shorter leaves a blind spot between runs, longer re-reports what the previous run covered |
-| `ALERT_DEDUP_TTL_HOURS` | CronJob manifest | `24` (manifest sets `23`) | How long to suppress duplicate alerts. Set just under the schedule interval so an ongoing problem re-alerts once per run; at exactly the interval, whether yesterday's dedup row has expired races cron start jitter |
+| `ALERT_LOOKBACK_HOURS` | — | `8` | How far back to query logs |
+| `ALERT_DEDUP_TTL_HOURS` | — | `24` | How long to suppress duplicate alerts |
 
 **Manual trigger:** `kubectl create job --from=cronjob/monitor monitor-$(date +%s) -n genetics`
 
@@ -460,15 +609,43 @@ One gap is deliberately left open: `send_slack_message` swallows its own errors 
 
 ## Security
 
-- Network policies enforce db-api is only reachable from chat-backend and mcp-server, and rag-service only from chat-backend and mcp-server
+- Network policies enforce db-api is only reachable from chat-backend, mcp-server and the sandbox, and rag-service only from chat-backend and mcp-server
+- **Every ingress rule is source-scoped; none is `from`-less.** A rule carrying `ports` with no `from:` admits *every* pod in the namespace, and six of them did. `genetics-results-suite-fad` fixed results-api and bff, `genetics-results-suite-k4t` fixed the other four. Current admitted sources (`k8s/network-policies/policies.yaml`):
+
+  | target | port | admitted by this file |
+  |---|---|---|
+  | frontend | 3000 | auth-gateway (`location /`) |
+  | bff | 5000 | auth-gateway (`location /api/`) |
+  | results-api | 4000 | auth-gateway (`@api_bearer`), bff, chat-backend, mcp-server, sandbox |
+  | chat-backend | 8000 | auth-gateway (`/chat/v1/`, `= /status`), results-api, mcp-server (both POST `/chat/v1/tokens/validate`) |
+  | mcp-server | 8080 | auth-gateway (`/mcp`, the two `/.well-known/oauth-protected-resource` paths) |
+  | auth-gateway | 8080 | `ipBlock` 35.191.0.0/16 and 130.211.0.0/22 — **not** a podSelector |
+  | oauth2-proxy | 4180 | auth-gateway |
+  | db-api | 8080 | chat-backend, mcp-server, sandbox |
+  | rag-service | 8000 | chat-backend, mcp-server |
+  | sandbox | 8080 | chat-backend — **and nothing else**; see the sandbox bullet below (`sandbox-policy.yaml`) |
+
+  The monitor CronJob is admitted **additively** by `monitor-policy.yaml` for results-api, chat-backend, mcp-server, db-api and frontend. NetworkPolicies union, so those rules are load-bearing: they are not redundant with the table above and deleting them locks the monitor out. The monitor never dials auth-gateway, which is why that one has no monitor rule.
+
+  Only auth-gateway needs an `ipBlock`. Everything else is ClusterIP with no Ingress backend, and kubelet probes are exempt from NetworkPolicy on this cluster's ADVANCED_DATAPATH (Dataplane V2) — proven by db-api and oauth2-proxy, which have httpGet probes, podSelector-only policies and no restarts.
+- **The sandbox: the namespace's only egress policy** (`k8s/network-policies/sandbox-policy.yaml`, `genetics-results-suite-4h6.8`; full rationale in `docs/code-execution-security.md` sections 3 and 5). Every other pod here has unrestricted egress — `default-deny-ingress` has no egress counterpart, and egress becomes deny-by-default for a pod only once a policy selecting it lists `Egress` in `policyTypes`. Two objects, both selecting `app: sandbox`:
+  - `allow-ingress-sandbox` — **chat-backend only**, 8080/TCP. This is **layer 2 of the three MCP-exclusion layers**: the user's requirement is that code execution must not be reachable via MCP, and omitting `run_analysis`/`read_artifact` from mcp-server's tool registration (layer 1) is a runtime-assembled set one refactor away from being undone, so mcp-server is denied at the network layer too. The precedent is in this very table — mcp-server sits on both sides of the db-api rule, so "anything that can drive mcp-server can reach BigQuery behind it"; the same shape applied to code execution would mean anything that can drive mcp-server can run code. `monitor-policy.yaml` is deliberately **not** extended to the sandbox.
+  - `sandbox-egress` — **db-api:8080 and results-api:4000 only**, as two separate rules so the destinations and ports do not cross-product. No `ipBlock` of any kind: no internet, so no `pip install`, no mining payload, and no `pl.write_parquet('s3://…')` — polars ships the Rust `object_store` with its own HTTP/TLS stack, so this policy is the *only* control that closes s3. Also denied: keycloak, keycloak-postgres, chat-backend and rag-service (the sandbox is a leaf — it is called, it does not call back, so a script cannot re-enter the chat API with the caller's session), mcp-server, and the Kubernetes API server.
+  - **No DNS rule, deliberately.** Egress to CoreDNS sustains ~200 KB/s of exfiltration through query names alone (~10³ queries/s × ~200 usable base32 bytes), needing no POST and no response — tens of megabytes inside the 120 s wall clock, and a ~1 KB stolen token in five queries. Name resolution is done with `hostAliases` pinning db-api and results-api to their ClusterIPs in all four name forms instead. Two hard consequences: the image must ship `/etc/nsswitch.conf` with `files` before `dns` (otherwise glibc defaults to DNS-first and every lookup *hangs* through the resolver timeout budget, unrepairable under `readOnlyRootFilesystem`), and `GCE_METADATA_HOST` is pinned to a literal IP so any `google.auth.default()` probe fails fast instead of stalling.
+  - **The metadata server (169.254.169.254) is NOT demonstrably covered by this policy.** No rule permits it, but link-local/node-local traffic is exactly the class already proven *exempt* from NetworkPolicy on this dataplane in the ingress direction (kubelet probes), and the egress direction has not been tested here. The load-bearing metadata defence is the node pool's `GKE_METADATA` mode with no Workload Identity binding for the sandbox KSA, not this file.
+  - **Label contract, owned by this policy:** pod label `app: sandbox`, container port **8080/TCP**, Service `sandbox` (8080 → targetPort 8080). NetworkPolicy `ports` are pod ports, not Service ports. A podSelector matching no pod is not an error — it is silent no-coverage, and here it would yield a sandbox with *unrestricted* egress.
+  - **Reverse direction, and why it is currently a dead path.** An egress allow-list is necessary but not sufficient: `default-deny-ingress` drops the connection at the *receiving* end, so db-api's and results-api's own ingress rules both gained an explicit `app: sandbox` entry (that is why both rows above changed). The sandbox holds neither shared secret **by design**. Since `genetics-results-suite-4h6.9` the path is opened by a *credential*, not by widening the network rule: both services now also accept a short-lived, audience-bound sandbox token minted per execution by chat-backend (see the sandbox-execution-token bullet under Authentication). Without one, db-api still 401s a request lacking `Authorization: Bearer $INTERNAL_API_SECRET`, and results-api still 401s a request carrying neither the trusted-proxy marker nor a valid bearer.
+  - **`scripts/test-network-policies.py`** asserts all of the above offline, with no cluster and no network: it parses every file in `k8s/network-policies/` (union semantics — the mcp-server property cannot be read off one file), and checks that no rule selecting the sandbox admits mcp-server or the monitor, that no sandbox rule is `from:`-less, that the egress allow-list is exactly the two destinations with no `ipBlock` and no port 53, and that db-api and results-api admit the sandbox on the right ports. It also cross-checks `k8s/deployments/sandbox.yaml` against the label contract once that file exists, and — once it exists — that **both `db-api.yaml` and `results-api.yaml` set `SANDBOX_ENABLED: "true"`**: nothing else couples the flag to the sandbox existing, and with the sandbox deployed and the flag still `"false"` the `sys.exit(1)` assertion never fires and a script that simply omits `Authorization` lands in db-api's fail-open branch. Both sandbox.yaml-dependent checks are inert with a printed note while the file is absent. Two properties of the parser are load-bearing: `policyTypes` is **inferred** when a policy omits it (the API server does the same — an `egress:` section implies Egress, and every spec implies Ingress), otherwise a policy admitting mcp-server with the field left off would be enforced by the cluster and invisible to the harness; and any peer that is not `podSelector`-only is **refused rather than interpreted**, because `- namespaceSelector: {}` admits every pod in every namespace and cannot be resolved without live Namespace objects. `scripts/deploy.sh` runs the harness immediately before `kubectl apply -f network-policies/` and **aborts the deploy on exit 1** (a broken control), warning only on exit 2 (harness could not run, e.g. no PyYAML) — this is the only place it runs, as the repo has no CI and no installed git hooks. The **live** test — opening a connection from the mcp-server pod to the sandbox Service and confirming it fails — is deferred to the deploy window and has not been run (`genetics-results-suite-4h6.26`, which also covers the metadata-server and ClusterIP-translation questions).
+- **Why auth-gateway takes an `ipBlock` and no node CIDR.** It is the only Ingress backend (both `genetics-suite` rules point at it) and the only NodePort Service, but it is fronted by a **NEG** (`cloud.google.com/neg: {"ingress":true}`, NEG `k8s1-35278419-genetics-auth-gateway-8080-ec38d214` reported HEALTHY on the Ingress). Container-native load balancing means the GFE connects straight to the pod IP, so there is no NodePort hop and nothing is SNAT'd to the node address — the intuitive "add the node CIDR for NodePort SNAT" is wrong here. Confirmed from the nginx access log: health checks *and* real user traffic both arrive from 35.191.0.0/16, kube-probe arrives from the link-local 169.254.4.6, and nothing else appears at all. Note that this is the GFE's own address, not the client's — the GFE does not preserve the client IP (an external scanner logged as 35.191.151.104), and the real client is only in `X-Forwarded-For`, so no client IP can be source-filtered at this layer. The NEG path is what keeps the source out of the node CIDR, not source preservation. `130.211.0.0/22` is Google's other documented LB/health-check range and is admitted defensively. The node subnet is `finngenie-subnet` **10.0.0.0/20** (pods 10.16.0.0/14, Services 10.20.0.0/20); it is recorded only because losing the NEG annotation would make it suddenly required, and losing the site is the failure mode.
+- **chat-backend applies the same trusted-proxy marker rule** (`genetics-results-suite-th2`, was a P1 hole). `auth/core.py:get_authenticated_user` honours `X-Goog-Authenticated-User-Email` only when the request also carries the marker, and holds the asserted address to `ALLOWED_EMAILS`/`ALLOWED_EMAIL_DOMAINS`; `auth/dependencies.py:auth_required` follows results-api's precedence exactly (marker + allow-listed header → that user; marker + non-allow-listed header → 401, never a downgrade to `mcp-tool`; marker alone → `mcp-tool`; header alone → 401). `auth/core.py:is_internal_caller` is the single place the secret is compared, and it accepts the marker in either transport: `X-Internal-Auth: $INTERNAL_API_SECRET` (auth-gateway's, on the only two locations that proxy to chat-backend — `location /chat/v1/` and `location = /status`) or `Authorization: Bearer $INTERNAL_API_SECRET` (results-api's and mcp-server's, unchanged). Both compare as bytes, since `hmac.compare_digest` on `str` raises `TypeError` — a 500 — for a non-ASCII value. `POST /chat/v1/tokens/validate` is the one route with no auth dependency; it calls the same helper and additionally refuses any request that carries an identity header at all, since its genuine callers are service-to-service and never assert one. Before this, forging the header granted admin (`ENABLE_ADMIN_PAGE=true`, membership tested against `ADMIN_USERS` on the forged string), read every user's chat transcripts, and minted a plaintext per-user API token via `POST /chat/v1/tokens` — which mcp-server and results-api both accept, so it pivoted into both. `GET /chat/v1/auth` is `@is_public` and reflects the identity, so it was an unauthenticated admin-membership oracle; it needed no change of its own because it resolves through the same `get_authenticated_user`. **mcp-server does not share this bug and is untouched**: it reads no identity header on any path and its ASGI gate fails closed to 401 without a `Bearer`. Two deliberate deviations from results-api:
+  - `REQUIRE_AUTH=false` (local dev only; prod sets `true`) still honours the header as-is. That mode already authenticated everyone as `anonymous`, so a marker would protect nothing and only break developing as a named user.
+  - The allow-list **fails open when neither `ALLOWED_EMAILS` nor `ALLOWED_EMAIL_DOMAINS` is set**, warning as it does. chat-backend only started reading them here, and the code default is `finngen.fi`; enforcing that default on a pod that had not yet picked up the `bearer-auth-allowed` ConfigMap would lock out every user of any other deployment. `k8s/deployments/chat-backend.yaml` now `envFrom`s that ConfigMap (the same terraform-rendered values oauth2-proxy itself uses, so it cannot refuse anyone oauth2-proxy admitted), which is what makes the check live in production. The marker is the half that closes the hole; the allow-list is defence in depth against a compromised holder of `INTERNAL_API_SECRET`.
 - **Container privileges**: every application container sets `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and the `RuntimeDefault` seccomp profile. `db-api` and `bff` additionally run `runAsNonRoot` (uid 10001 / 1000) since they write nothing outside their image; results-api, chat-backend and mcp-server still run as root because they raise `ulimit`, shell out to `gcloud`, cache tabix indexes, or own root-owned files on the `chat-data` PVC. chat-backend sets `fsGroup: 1032` so the pre-existing SQLite files stay writable once `CAP_DAC_OVERRIDE` is dropped.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - All services output structured JSON logs, captured by GKE fluentbit and sent to Cloud Logging
 
 ## Operational procedures
-
-**Choosing the deployment:** every entry-point script (`deploy.sh`, `create-secrets.sh`, `build.sh`, `build-all.sh`, `rollout.sh`) resolves its target through `scripts/lib/env.sh`. `DEPLOY_ENV=<name>` selects `terraform/terraform.tfvars.<name>` (passed with `-var-file`), `terraform/<name>.tfbackend` and `.env.<name>`; `REGISTRY` defaults to that environment's own Artifact Registry repo. Known names: `daly`, `daly-staging`, `finngen`. Three guardrails exist because a mis-selection deploys across environments: `.env.<name>` **never** falls back to a bare `.env` (that would push one deployment's secrets into another's cluster), a bare `terraform/terraform.tfvars` is **refused** while `DEPLOY_ENV` is set (terraform auto-loads it *in addition to* `-var-file`, so variables the per-environment file omits would silently come from it); and an inherited `REGISTRY` that disagrees with the selected environment is **refused** (`unset REGISTRY`, or `REGISTRY_FORCE=1`) rather than allowed to push one deployment's images over another's `:latest` tags. With `DEPLOY_ENV` unset the original single-deployment behaviour applies. See `docs/environments.md`.
 
 **Important:** `deploy.sh` does NOT build images. To ship new service code you must build first, then deploy. The typical workflow is:
 
@@ -477,11 +654,163 @@ One gap is deliberately left open: `send_slack_message` swallows its own errors 
 
 If you only run `deploy.sh` without building, the rollout restart will re-pull whatever `:latest` currently points to in the registry (i.e. the last build), so no code changes from upstream service repos will be picked up.
 
-- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from the terraform `registry` output (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
-- **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (via `tfvar app_name` from `scripts/lib/env.sh`, reading the tfvars `DEPLOY_ENV` selected) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
-- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (`REGISTRY` defaults to the selected environment's repo; `tag` defaults to `latest`). It only sets the image reference — the cluster acted on is whatever kubectl's current context points at, which the script echoes. Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
-- **Build all images**: `./scripts/build-all.sh` — clones the service repos and builds/pushes all Docker images to Artifact Registry, including the local `monitor` and `keycloak` build contexts (those two have no branch: they build from this repo's working tree). Per-service branches come from `FRONTEND_BRANCH`, `RESULTS_API_BRANCH`, `MCP_SERVER_BRANCH`, `DB_API_BRANCH`, `RAG_SERVICE_BRANCH` — all default `master` except rag-service (`deploy_jk`), and they are set per deployment in `.env.<DEPLOY_ENV>` (daly-staging sets them all to `staging`). `REGISTRY` defaults to the selected environment's repo
-- **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (same `DEPLOY_ENV`, `REGISTRY` and branch env vars as build-all.sh)
+- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
+- **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (grepping `terraform.tfvars` directly, like `deploy.sh` does for `config_profile`) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
+### Ordered rollout: the trusted-proxy marker (bff before results-api)
+
+The identity-header trust rule spans two repos and **the rollout order is load-bearing**. bff
+must ship first.
+
+| state | bff sends the bearer on `/api` passthrough? | results-api honours the identity header over the bearer? | browser result |
+|---|---|---|---|
+| neither shipped (old) | no | no (bearer wins → `mcp-tool`) | works, but the header alone authenticates — the vulnerability |
+| **bff only** (transitional) | yes | no | **works.** Old results-api checks the bearer first, matches `INTERNAL_API_SECRET` and authenticates as `mcp-tool`; the usage log reads the header directly, so attribution is still the real user |
+| **results-api only** | no | yes | **total lockout.** Every non-variants browser request arrives with the identity header and no bearer → 401 |
+| both shipped | yes | yes | works, and the real user is the authenticated identity again |
+
+So:
+
+```bash
+./scripts/build.sh bff       && ./scripts/rollout.sh bff        # first, and let it settle
+./scripts/build.sh results-api && ./scripts/rollout.sh results-api  # only after bff is serving
+```
+
+### Ordered rollout: the sandbox execution token (no code ordering, one config lockout)
+
+By contrast with the two rollouts above, the sandbox credential (`genetics-results-suite-4h6.9`)
+has **no code ordering hazard**: nothing sends an HS256 bearer until `4h6.7` and `4h6.14` land
+the sandbox and `run_analysis`, so minter-first and validators-first are both safe, and every
+existing credential type is untouched in either single-sided state.
+
+| state | chat-backend mints | db-api / results-api verify | result |
+|---|---|---|---|
+| neither shipped | no | no | current behaviour |
+| **validators only** | no | yes | **safe** — no caller produces an HS256 bearer, the branch never fires |
+| **minter only** | yes | no | **safe today** — nothing calls the minter yet; a token sent to an old validator would 401, never authorize |
+| both shipped | yes | yes | the sandbox path works once the sandbox exists |
+
+The ordering that *is* load-bearing is the **secret**: chat-backend, db-api and results-api all
+mount `sandbox-token-signing-key`, so `create-secrets.sh` must run before the manifests are
+applied or the pods sit in `CreateContainerConfigError`. `deploy.sh` now verifies that key and
+`internal-api-secret` are non-empty before applying anything, and on a miss prints a targeted
+`kubectl patch secret genetics-secrets --type=merge` for **that one key** rather than telling
+the operator to re-run `create-secrets.sh` — that script reuses-or-generates only a handful of
+keys and writes `--from-literal=x="${X:-}"` for the rest, so re-running it without every
+optional secret exported blanks the OpenAI/Tavily/Perplexity/Cohere/MCP keys,
+`external-mcp-servers`, `admin-users` and `slack-webhook-url`. The single lockout is
+`SANDBOX_ENABLED=true` with either secret missing — both services `sys.exit(1)` by design, so
+that crash-loops db-api and results-api. Both manifests ship `SANDBOX_ENABLED: "false"`; the
+deploy that creates the sandbox Deployment flips it, after `create-secrets.sh`. **Rollback:
+set `SANDBOX_ENABLED=false` and restart** — it disables only the startup assertion, never the
+token validation.
+
+`deploy.sh` restarts every deployment at once, so a **full deploy carrying both images is not
+safe on its own** — it gives no ordering between the two rollouts and can leave results-api
+new while bff pods are still terminating. Roll bff out on its own first, confirm
+`kubectl get pods -n genetics -l app=bff` is fully `Running` on the new image, then deploy the
+rest.
+
+Rolling **back** reverses the constraint: results-api first, bff second. Reverting bff alone
+while the new results-api is live reproduces the lockout row.
+
+The transitional bff-only state is genuinely safe rather than merely brief — it is a valid
+resting state, so a rollout can stop there indefinitely. Its only cost is that during the
+window `request.state.authenticated_user` is `mcp-tool`; that field is a *fallback* for the
+`endpoint_access` log, which prefers the header, so logs still name the real user. No
+transitional feature flag or dual-accept mode is needed.
+
+### Ordered rollout: the trusted-proxy marker (auth-gateway before chat-backend)
+
+The same rule reaches chat-backend in `genetics-results-suite-th2`. auth-gateway must ship
+**first**, but unlike the bff pair the leading state is a safe resting state — the marker rides
+its own header, `X-Internal-Auth`, precisely so that a chat-backend which has not yet rolled
+simply does not recognise it.
+
+| state | auth-gateway sends `X-Internal-Auth` on the chat locations? | chat-backend requires the marker for the identity header? | browser result |
+|---|---|---|---|
+| neither shipped (old) | no | no | works, but the header alone authenticates — the vulnerability |
+| **auth-gateway only** (transitional) | yes | no | **works, byte for byte as before.** The old chat-backend reads no such header and its `auth_required` finds no `Authorization` to match, so it takes the plain identity-header path. Safe to sit in: the pre-fix vulnerability is still open, but nothing is mis-attributed and no rollback is needed to leave it |
+| **chat-backend only** | no | yes | **total lockout.** Every browser chat request arrives with the identity header and no marker → 401. This is the order to avoid |
+| both shipped | yes | yes | works, and the real user is the authenticated identity |
+
+Only one of the four states is harmful, and it is the one gateway-first never enters. Rolling
+**back** is the mirror image: revert chat-backend first, auth-gateway second, and the state in
+between is the safe "auth-gateway only" row again — a rollback that stalls half-done costs
+nothing. Reverting the gateway alone while the new chat-backend is live is the one move that
+reproduces the lockout row.
+
+auth-gateway is ConfigMap-driven, so `rollout.sh` (image swap only) cannot ship it — it needs
+`deploy.sh`:
+
+```bash
+./scripts/deploy.sh                                                    # 1. gateway ConfigMap
+./scripts/build.sh chat-backend && ./scripts/rollout.sh chat-backend   # 2. after
+```
+
+Collapsing this into a single `deploy.sh` carrying a freshly built chat-backend image is no
+longer a data hazard, but it is still not ordered: `deploy.sh` fires every `rollout restart`
+before waiting on any, so which service reaches its new pod first is a race, not a guarantee.
+chat-backend's `Recreate` strategy plus its 300s termination grace *usually* makes it the slower
+of the two — but that grace is an upper bound, and a chat-backend with no in-flight streams
+terminates in seconds, while the gateway now has an extra initContainer in front of it. The
+worst case is therefore a short "chat-backend only" window: browser chat 401s until the gateway
+lands, inside a deploy that is already interrupting chat. Use the two-step above, which removes
+the race rather than betting on it.
+
+The transport deliberately differs between the two services: results-api takes the marker on
+`Authorization: Bearer $INTERNAL_API_SECRET` (its callers are service-to-service and have no
+`Authorization` of their own), while the browser-facing chat locations use `X-Internal-Auth`.
+chat-backend's `is_internal_caller` accepts either, so results-api and mcp-server keep calling
+it with the bearer unchanged. Two conventions is the accepted price of a rollout with no window
+in which browser sessions, downloads and API tokens could be written under the shared `mcp-tool`
+identity — which is exactly what an `Authorization`-borne marker would have caused, since the
+old chat-backend checks the bearer *before* it looks at the identity header.
+
+nginx cannot read environment variables from config directives, and a Secret must not be baked
+into a ConfigMap, so `auth-gateway.yaml` keeps a literal `${INTERNAL_API_SECRET}` placeholder in
+the ConfigMap — `deploy.sh`'s `envsubst` whitelist deliberately omits that name, so it survives
+verbatim — and a `render-config` initContainer substitutes it from `genetics-secrets` into a
+`medium: Memory` emptyDir that nginx mounts as `/etc/nginx/nginx.conf`. It substitutes that one
+name only, which is what keeps `envsubst` away from nginx's own `$host`/`$email`/`$request_uri`.
+
+That initContainer then **validates what it rendered**, because the secret lands inside an nginx
+string literal and `create-secrets.sh` lets an operator supply their own value:
+
+- the secret is checked against a **whitelist** before it is rendered: non-empty and
+  `[A-Za-z0-9+/=_.-]` only, which is a superset of the `openssl rand -base64 32` alphabet
+  `create-secrets.sh` generates, so it rejects nothing the tooling produces. This is the check
+  that actually holds, because `nginx -t` on the rendered file catches much less than it looks
+  like it does — measured against `nginx:1.27-alpine`:
+  - `\` and a bare newline in the secret both render a **valid** config. nginx unescapes `\t`,
+    `\r`, `\n`, `\"`, `\'` and `\\` inside a quoted string, so `abc\tdef` ships a marker with a
+    literal tab in it and `nginx -t` is happy.
+  - a `;` inside the quoted string is not syntax at all — `ab"; #` simply renders a header value
+    that ends at the quote, i.e. a silently truncated marker from a config that validates.
+  - an empty secret renders an empty header value, which nginx drops from the request entirely.
+  - `nginx -t` *does* reject most `$` values as an unknown variable (`abc$zzz`, `abc${FOO}`), but
+    misses any whose suffix happens to spell a real nginx variable: `abc$http_foo` and `abc$arg_x`
+    both validate and both deliver `abc`. The open-ended `$http_*`/`$arg_*`/`$cookie_*` families
+    make that impossible to enumerate, which is the other reason the guard exists.
+
+  Every one of those cases ends the same way: the initContainer reports success and every browser
+  chat request 401s, because the marker chat-backend receives is not the marker it holds.
+- `nginx -t` against the rendered file is still run, as a check on the **template** (and on the
+  few secret values it does catch) rather than as the secret's guard.
+- on failure it re-renders with a placeholder secret and re-tests, to say whether the secret or
+  the template is at fault. nginx's own message is printed **only** for the placeholder run:
+  `[emerg]` output quotes the offending token, which for the rendered file would put a fragment
+  of the secret into Cloud Logging.
+
+`nginx -t` resolves the upstream names and the `resolver` host, both of which the main container
+already resolves at startup, so this adds no dependency the pod did not have. A failing
+initContainer stalls the rollout; without the check the pod becomes a crash-looping nginx, which
+slips past `deploy.sh`'s `kubectl rollout status ... || true` and still prints "Deployment
+complete".
+
+- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (requires `REGISTRY` env var; `tag` defaults to `latest`). Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
+- **Build all images**: `./scripts/build-all.sh` — clones the service repos (branch overridable per service, all default `master` except rag-service) and builds/pushes all Docker images to Artifact Registry, including the local `monitor`, `keycloak` and `sandbox` build contexts (requires `REGISTRY` env var)
+- **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh). `sandbox` is also accepted: it builds the local `sandbox/` context rather than a clone, but still clones genetics-mcp-server for the SDK.
+- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today; `genetics-results-suite-4h6.11` has landed only on `worktree-db-only-architecture`), so a suite build stays green while the sandbox is unshippable. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py`, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds), and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source is staged — it never skips silently. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` is written with fully qualified `genetics_results.<view>` table names: db-api sets no default dataset and its unqualified-name fallback is a regular expression that cannot tell a table position from a string literal. The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files (`genetics-results-suite-4h6.13`, now landed). See `docs/code-execution-security.md`, "Where the image lives".
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor)
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
@@ -606,13 +935,7 @@ The analyzer is staleness-based: it only (re)analyzes sessions that are missing,
 messages (continued conversations, `updated_at > analyzed_at`), or were analyzed by an older
 `ANALYZER_VERSION` — unchanged conversations are skipped, so the nightly run only spends LLM
 budget on what actually changed. Results are written into the `conversation_analysis`/
-`conversation_issue` tables in `chat_history.db`. The issue-text → category sidecar at
-`/data/analysis_output/.cache/issue_categories.json` carries a fingerprint of the taxonomy
-it was built with and is discarded on mismatch, so a taxonomy change in the image
-re-categorizes every issue on the next run by itself. A failed categorization batch is
-not cached (it would never be retried) and exits the run non-zero so the `OnFailure`
-restart below redoes it; the failure shows up as a failed Job and as an ERROR line in
-the monitor's log scan.
+`conversation_issue` tables in `chat_history.db`.
 
 - **Storage / RWO co-scheduling**: the job mounts the same `chat-data` PVC at `/data` as
   chat-backend so it reads/writes the same `chat_history.db`. Because that PVC is `ReadWriteOnce`,

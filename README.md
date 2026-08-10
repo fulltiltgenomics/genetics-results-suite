@@ -12,9 +12,7 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 identity broker is enabled (see docs/keycloak-apple-signin.md)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
-                     │                 the BFF proxies it out to the external LD API (LD_API_URL),
-                     │                 because the frontend CSP forbids off-origin fetches
+                     │                 (FastAPI, port 4000) directly
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
@@ -38,26 +36,6 @@ export GCP_PROJECT="your-gcp-project-id"
 export GCP_REGION="europe-west1"
 export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 ```
-
-`REGISTRY` is optional once terraform is configured — the scripts derive it from the selected
-deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
-stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
-
-## Deployment environments
-
-This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
-`DEPLOY_ENV`, which selects `terraform/terraform.tfvars.<env>`, `terraform/<env>.tfbackend` and
-`.env.<env>`:
-
-```bash
-DEPLOY_ENV=daly-staging ./scripts/build-all.sh
-DEPLOY_ENV=daly-staging ./scripts/deploy.sh
-```
-
-`daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
-resource names carry `resource_suffix`. The setup below describes a single deployment; see
-[docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
-against deploying across environments, and the staging bring-up runbook.
 
 ## Setup
 
@@ -117,13 +95,10 @@ gcloud auth application-default login --impersonate-service-account=terraform@$G
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars.<env>  # set project_id and other values
-terraform init -backend-config=<env>.tfbackend
-terraform apply -var-file=terraform.tfvars.<env>    # review the plan before confirming
+cp terraform.tfvars.example terraform.tfvars  # set project_id and other values
+terraform init
+terraform apply                               # review the plan before confirming
 ```
-
-(`deploy.sh` does all of this for you from `DEPLOY_ENV`. For a single-deployment instance you
-may instead keep a bare `terraform.tfvars` and leave `DEPLOY_ENV` unset.)
 
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
@@ -229,7 +204,7 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 There is no checked-in `ingress.yaml` or `managed-certs.yaml` — `deploy.sh` generates both from the
 terraform `domains` list, emitting one `ManagedCertificate` (`managed-cert`) covering every domain as
 a SAN and one Ingress host rule per domain, all pointing at `auth-gateway`. So serving several
-hostnames only means listing them in the deployment's tfvars and redeploying:
+hostnames only means listing them in `terraform.tfvars` and redeploying:
 
 ```hcl
 domains = ["primary.example.com", "secondary.example.com"]
@@ -263,16 +238,73 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+### Deploying the trusted-proxy marker
+
+**Roll out `bff` before `results-api`, and never both in the same `deploy.sh`.** results-api
+only honours `X-Goog-Authenticated-User-Email` from a caller that also presents
+`INTERNAL_API_SECRET`, and it is the BFF that attaches that bearer.
+
+```bash
+./scripts/build.sh bff && ./scripts/rollout.sh bff            # 1. must land first
+./scripts/build.sh results-api && ./scripts/rollout.sh results-api  # 2. only once bff is Running
+```
+
+- **bff new, results-api old** — safe, and safe to sit in indefinitely: the old API accepts the
+  bearer as an internal service call, and the usage log still names the real user.
+- **results-api new, bff old** — **every browser request 401s.** This is the order to avoid.
+- Rolling back reverses it: results-api first, then bff.
+
+`deploy.sh` restarts everything at once and gives no ordering, so use `rollout.sh` for the bff
+step first. Details and the full state table are in `docs/project-spec.md`, "Ordered rollout:
+the trusted-proxy marker".
+
+The same rule reaches chat-backend — auth-gateway first:
+
+```bash
+./scripts/deploy.sh                                                    # 1. gateway ConfigMap
+./scripts/build.sh chat-backend && ./scripts/rollout.sh chat-backend   # 2. after
+```
+
+- **auth-gateway new, chat-backend old** — safe, and safe to sit in: the gateway carries the
+  marker on its own `X-Internal-Auth` header, which the old chat-backend does not recognise, so
+  it behaves exactly as it did before. The fix simply is not in force yet.
+- **chat-backend new, auth-gateway old** — every browser chat request 401s. This is the order to
+  avoid.
+- Rolling back reverses it: chat-backend first, then auth-gateway; the state in between is the
+  safe one, so a half-finished rollback costs nothing.
+
+auth-gateway is ConfigMap-driven, so it needs `deploy.sh`; `rollout.sh` only swaps images. Full
+state table in `docs/project-spec.md`, "Ordered rollout: the trusted-proxy marker (auth-gateway
+before chat-backend)".
+
 Rolling out `chat-backend` can block for up to ~5 minutes: it waits for any in-flight chat
 stream to finish rather than cutting it off mid-answer. See "chat-backend shutdown and stream
 draining" in `docs/project-spec.md`.
+
+`build-all.sh` also builds the local `monitor`, `keycloak` and `sandbox` contexts.
+`./scripts/build.sh sandbox` builds the sandbox alone. The sandbox image (distroless, no
+shell, no pip, uid 65532) runs model-authored Python and pip-installs the genetics SDK
+from genetics-mcp-server at build time, pruned to the SDK's import closure; **it is skipped
+by `build-all.sh`, with a loud message, while that repo has no
+`src/genetics_mcp_server/sdk/`** — which is the case on `master` today. Both build scripts
+first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schema markdown
+(`sandbox/schema/`, one file per BigQuery view in `configs/datasets.yaml`) and the SDK
+signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
+`/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
+copies are current, that every view and column reaches a file, and that the stubs cover
+exactly the SDK's exported surface. `build.sh sandbox` fails on a non-zero exit; `build-all.sh`
+folds it into the same skip branch as the generator. Exit 1 = a property broke, 2 = the
+harness could not run (no staged SDK source).
+The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. There
+is no sandbox Deployment yet. See
+[docs/code-execution-security.md](docs/code-execution-security.md).
 
 ## Services
 
 | Service | Source Repo | Image | Port | Notes |
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
+| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, passes other `/api/*` calls through |
 | auth-gateway | — | nginx:1.27-alpine | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google + Apple), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
@@ -282,14 +314,14 @@ draining" in `docs/project-spec.md`.
 | mcp-server | genetics-mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (every 8h): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
 
 ## Authentication
 
-Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header.
+Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header. That header is not itself a credential — results-api honours it only when the request also carries `Authorization: Bearer $INTERNAL_API_SECRET`, proving it came from an in-cluster proxy, and then still checks the address against the shared email allow-list; without the bearer the header is ignored and the request is unauthenticated. The BFF attaches that bearer on every upstream call, including the generic `/api` passthrough that forwards the identity header, so the two always arrive together on the browser path. **Shipping the two halves of that change in the wrong order locks all browser users out** — see [Deploying the trusted-proxy marker](#deploying-the-trusted-proxy-marker) under Updating Services.
 
 Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` provider against Keycloak
 (which in turn federates Google and Apple); otherwise it talks to Google directly. See
@@ -300,6 +332,7 @@ Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` prov
 - **MCP server**: Not behind oauth2-proxy. Uses bearer token auth via `MCP_API_KEY`, user-created tokens, Google Identity Tokens, or — where the broker is enabled — Keycloak OAuth 2.1 access tokens.
 - **DB API**: Internal only (NetworkPolicy restricts access to chat-backend and mcp-server), and additionally requires the `INTERNAL_API_SECRET` bearer token on every endpoint except `/health` — the NetworkPolicy alone is not a sufficient boundary, since mcp-server is allowed through it and is itself reachable from outside.
 - **Internal service calls**: The chat-backend authenticates to results-api using a shared secret (`INTERNAL_API_SECRET`), auto-generated by `create-secrets.sh`.
+- **Code-execution sandbox**: never holds `INTERNAL_API_SECRET`. chat-backend mints a short-lived (5 minute), audience-bound HS256 token per script execution, signed with a separate key (`SANDBOX_TOKEN_SIGNING_KEY`, also auto-generated by `create-secrets.sh`); db-api and results-api verify it, fail closed when the key is missing, and refuse to start at all when `SANDBOX_ENABLED=true` and either secret is unset. See `docs/code-execution-security.md` §4.
 
 ### Programmatic API access with Google Identity Token
 
@@ -334,14 +367,15 @@ cannot be replayed here. Google Identity Tokens expire after 1 hour.
 
 The allow-list has a single source of truth in terraform, so both the browser and bearer-token paths
 stay in step — `deploy.sh` renders it into the oauth2-proxy `--authenticated-emails-file` ConfigMap
-and into the `bearer-auth-allowed` ConfigMap that results-api and mcp-server consume via `envFrom`:
+and into the `bearer-auth-allowed` ConfigMap that results-api, mcp-server and chat-backend consume
+via `envFrom`:
 
 - `oauth_email_domain` — comma-separated domains (e.g. `broadinstitute.org,finngen.fi`) whose Google
   accounts have access by default.
 - `oauth_allowed_emails` — comma-separated individual addresses allowed in addition to those domains
   (e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
 
-Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
+Set them in `terraform.tfvars` and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
 [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)).
@@ -360,7 +394,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 
 ## Security
 
-- Network policies enforce that db-api and rag-service are only reachable from chat-backend and mcp-server
+- Network policies source-scope **every** service: db-api and rag-service only from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend and mcp-server; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server. The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
 - Application containers run with `allowPrivilegeEscalation: false`, all capabilities dropped and the `RuntimeDefault` seccomp profile; db-api and bff additionally run as non-root
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect

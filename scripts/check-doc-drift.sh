@@ -41,17 +41,26 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/((deploy|rollout|build|build-all|sync-datasets)\.sh|lib/)' "$DOCS_SPEC" \
-    'deploy/rollout/build scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
-
-check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
-    'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
+check '^scripts/(deploy|rollout|build|build-all|sync-datasets)\.sh$' "$DOCS_SPEC" \
+    'deploy/rollout/build scripts -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
 
-check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
-    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (onboarding commands, IdP list)'
+# the CLAUDE.md sandbox row owns two docs, and satisfying one does not satisfy the
+# other — so they are two checks, not one alternation
+SANDBOX_PATHS='^(sandbox/|k8s/deployments/sandbox\.yaml$|k8s/network-policies/sandbox-policy\.yaml$)'
+
+check "$SANDBOX_PATHS" \
+    '^docs/code-execution-security\.md$' \
+    'sandbox image/manifests/policy -> docs/code-execution-security.md (isolation boundary, egress+ingress allow-lists, the three MCP-exclusion layers, sandbox token claims)'
+
+check "$SANDBOX_PATHS" \
+    '^docs/project-spec\.md$' \
+    'sandbox image/manifests/policy -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy)'
+
+check '^(keycloak/|scripts/keycloak-)' '^docs/keycloak-apple-signin\.md$' \
+    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)'
 
 if [ "$found" -eq 1 ]; then
     printf '\n  Update the doc in this commit, or note why it does not apply.\n' >&2
