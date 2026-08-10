@@ -12,10 +12,8 @@ scipy==1.17.1
 polars==1.40.1
 matplotlib==3.10.9
 httpx==0.28.1
-# not an analysis library: genetics_mcp_server.config.settings does `from dotenv import
-# load_dotenv` at module level, and it is in the SDK's import closure (sdk.client ->
-# tools.executor -> tools.uniprot -> config.settings), so `import genetics_mcp_server.sdk`
-# raises ModuleNotFoundError without it. Pinned to genetics-mcp-server's own pin so the
-# two copies of this closure cannot disagree. This is the drift the --no-deps decision
-# accepts: the build fails loudly rather than shipping a broken SDK.
-python-dotenv==1.2.2
+# python-dotenv was pinned here purely because config.settings did `from dotenv import
+# load_dotenv` at module level and was in the SDK's import closure. l41 removed
+# config.settings from that closure, and genetics-mcp-server's
+# tests/test_sdk_import_closure.py asserts the SDK imports with dotenv unavailable, so
+# the pin is gone rather than dormant.

@@ -35,14 +35,19 @@ SITE = os.path.join(VENV, "lib/python3.11/site-packages")
 PKG = os.path.join(SITE, "genetics_mcp_server")
 
 # The import closure of `genetics_mcp_server.sdk`, as module paths relative to the
-# genetics_mcp_server package root. config/settings.py is in it *unavoidably*:
-# sdk/client.py imports tools.executor, whose module-level `from
-# genetics_mcp_server.tools.uniprot import UniProtClient` pulls
-# `from genetics_mcp_server.config.settings import Settings`, and ToolExecutor.__init__
-# calls get_settings() at runtime. It therefore ships, and with it the *names* of the
-# suite's internal env vars. Narrowing that needs a change in genetics-mcp-server
-# (a TYPE_CHECKING guard in uniprot.py plus a lazy get_settings in the executor), not
-# here.
+# genetics_mcp_server package root. config/settings.py used to be in it — sdk/client.py
+# imports tools.executor, whose module-level `from genetics_mcp_server.tools.uniprot
+# import UniProtClient` pulled `from genetics_mcp_server.config.settings import
+# Settings` — so the image shipped a file naming every internal env var of the suite.
+# genetics-results-suite-l41 cut that in genetics-mcp-server: the Settings import in
+# uniprot.py is now behind `if TYPE_CHECKING`, and ToolExecutor resolves settings at
+# first use (falling back to Settings' defaults when the module is absent, which is
+# exactly this install) rather than in __init__. That repo's
+# tests/test_sdk_import_closure.py pins the closure so it cannot regrow silently.
+#
+# tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK
+# method delegates to it. Its f-string SQL interpolation sites therefore still ship —
+# see docs/code-execution-security.md, genetics-results-suite-4h6.14.
 SDK_ALLOWLIST = frozenset(
     {
         "__init__.py",
@@ -56,8 +61,6 @@ SDK_ALLOWLIST = frozenset(
         "tools/phewas_categories.py",
         "tools/sql_safety.py",
         "tools/uniprot.py",
-        "config/__init__.py",
-        "config/settings.py",
     }
 )
 
