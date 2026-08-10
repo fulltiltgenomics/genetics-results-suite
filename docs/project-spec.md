@@ -339,7 +339,7 @@ builder owns and that a new dataset must be added to.
 - **Allow-list comparison** is case-insensitive on both sides (oauth2-proxy lower-cases the address before its own domain check, so a mixed-case `User@FinnGen.fi` it admits must not be rejected downstream), and a literal `*` in `ALLOWED_EMAIL_DOMAINS` means "any domain", matching oauth2-proxy's reading of the same value — without that, setting `oauth_email_domain = "*"` would authenticate everyone at the proxy and reject everyone at results-api. `*` also opens the Google-JWT path to any verified Google account, leaving `GOOGLE_TOKEN_AUDIENCE` as the only narrowing; it is a deliberate "open deployment" switch, not a default. Because matching tolerates case and surrounding whitespace, the resolved identity is **returned trimmed and lower-cased** by both `get_authenticated_user` and the usage-log extractor, so `User@FinnGen.fi` and `" user@finngen.fi "` attribute to one identity in `endpoint_access` rather than three.
 - **mcp-server** is not behind oauth2-proxy; it accepts `Authorization: Bearer` tokens via **four** paths: the `MCP_API_KEY` shared secret(s); Google Identity Tokens (JWT validated against `email_verified` plus the configured email/domain allow-list); per-user API tokens issued via the chat API; and **Keycloak OAuth 2.1 access tokens** (see below). NOTE: the Google JWT path validates **Google** Identity Tokens only — programmatic access for Apple-only identities is a known follow-up.
 - **MCP OAuth (resource-server) path**: when `OAUTH_ISSUER` + `OAUTH_RESOURCE_URL` are set (daly/genegenie; empty for finngen, so the path is inert there), the mcp-server acts as an OAuth 2.1 **resource server**. It validates Keycloak-issued JWT access tokens (RS256 signature via the realm JWKS, `iss`/`aud`/`exp`, then the same email/domain allow-list), and advertises RFC 9728 discovery at `/.well-known/oauth-protected-resource` (routed unauthenticated through auth-gateway; returns `WWW-Authenticate: Bearer resource_metadata=…` on 401), so MCP clients auto-discover the Keycloak authorization server. The Keycloak issuer is **path-based** (`https://<host>/auth/realms/genetics`); tokens must carry `aud` = `OAUTH_RESOURCE_URL` (`https://<host>/mcp`), enforced per client via an audience mapper. Each external app is its own Keycloak client (registered manually — no open Dynamic Client Registration); onboard one with `scripts/keycloak-register-client.sh <clientId> <redirect-uri>…` (brainzzz is the first, via `keycloak/brainzzz-client.json.template` + `scripts/keycloak-register-brainzzz.sh`). Setup is documented in `docs/keycloak-apple-signin.md`.
-- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` and `GOOGLE_TOKEN_AUDIENCE` (used for Google Identity Token JWT validation in both results-api and mcp-server) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), populated from `oauth_allowed_emails`/`oauth_email_domain` plus the `GOOGLE_TOKEN_AUDIENCE` export in `deploy.sh`, consumed by both deployments via `envFrom: configMapRef` to prevent config drift
+- **Shared bearer-auth allow-list**: `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` and `GOOGLE_TOKEN_AUDIENCE` (used for Google Identity Token JWT validation in results-api and mcp-server, and for chat-backend's own allow-list check on the identity header) are sourced from a single Kubernetes ConfigMap `bearer-auth-allowed` (manifest: `k8s/configs/bearer-auth-allowed.yaml`), populated from `oauth_allowed_emails`/`oauth_email_domain` plus the `GOOGLE_TOKEN_AUDIENCE` export in `deploy.sh`, consumed by all three deployments (`results-api`, `mcp-server`, `chat-backend`) via `envFrom: configMapRef` to prevent config drift
 - **Google token audience**: `GOOGLE_TOKEN_AUDIENCE` is the `aud` claim a Google Identity Token must carry. `id_token.verify_oauth2_token` skips the audience check when none is supplied, so while it is unset **any** Google-signed id_token with an allow-listed email is accepted — including one minted for an unrelated application, which that application's operator could replay here. It defaults to the gcloud CLI's OAuth client id (`32555940559.apps.googleusercontent.com`), because the documented flow is `gcloud auth print-identity-token` and user credentials cannot request a custom audience. This blocks cross-application replay; it is not an identity gate on its own (anyone with a Google account can mint a token with that audience), so the email allow-list remains the access control. Add further client ids, comma-separated, if service accounts call the API with audience-scoped tokens.
 - **db-api** is internal-only (NetworkPolicy) **and** requires `Authorization: Bearer $INTERNAL_API_SECRET` on every endpoint except `/health`. The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is itself reachable from outside, so anything that could drive mcp-server could reach BigQuery behind it. Fails open (with a startup warning) if the env var is unset, so local runs and mid-rollout clusters keep working.
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
@@ -626,7 +626,9 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs 3x/day (every 8 hour
 
   Only auth-gateway needs an `ipBlock`. Everything else is ClusterIP with no Ingress backend, and kubelet probes are exempt from NetworkPolicy on this cluster's ADVANCED_DATAPATH (Dataplane V2) — proven by db-api and oauth2-proxy, which have httpGet probes, podSelector-only policies and no restarts.
 - **Why auth-gateway takes an `ipBlock` and no node CIDR.** It is the only Ingress backend (both `genetics-suite` rules point at it) and the only NodePort Service, but it is fronted by a **NEG** (`cloud.google.com/neg: {"ingress":true}`, NEG `k8s1-35278419-genetics-auth-gateway-8080-ec38d214` reported HEALTHY on the Ingress). Container-native load balancing means the GFE connects straight to the pod IP, so there is no NodePort hop and nothing is SNAT'd to the node address — the intuitive "add the node CIDR for NodePort SNAT" is wrong here. Confirmed from the nginx access log: health checks *and* real user traffic both arrive from 35.191.0.0/16, kube-probe arrives from the link-local 169.254.4.6, and nothing else appears at all. Note that this is the GFE's own address, not the client's — the GFE does not preserve the client IP (an external scanner logged as 35.191.151.104), and the real client is only in `X-Forwarded-For`, so no client IP can be source-filtered at this layer. The NEG path is what keeps the source out of the node CIDR, not source preservation. `130.211.0.0/22` is Google's other documented LB/health-check range and is admitted defensively. The node subnet is `finngenie-subnet` **10.0.0.0/20** (pods 10.16.0.0/14, Services 10.20.0.0/20); it is recorded only because losing the NEG annotation would make it suddenly required, and losing the site is the failure mode.
-- **KNOWN OPEN HOLE — chat-backend trusts a forgeable identity header** (`genetics-results-suite-th2`, P1). `genetics_mcp_server/auth/dependencies.py:auth_required` treats `INTERNAL_API_SECRET` as an *alternative* identity (`mcp-tool`) rather than as results-api's trusted-proxy *marker*, so when the bearer is absent it falls through to `auth/core.py:get_authenticated_user`, which returns whatever `X-Goog-Authenticated-User-Email` says with no signature and — unlike the old results-api bug — **no allow-list check at all** (`allowed_emails`/`allowed_email_domains` are parsed in `config/settings.py` and never read by chat-backend). Forging the header grants admin (`ENABLE_ADMIN_PAGE=true`, membership tested against `ADMIN_USERS` on the same forged string), reads every user's chat transcripts, and mints a plaintext per-user API token via `POST /chat/v1/tokens` — which mcp-server and results-api then accept, so it pivots into both. `GET /chat/v1/auth` is unauthenticated and reflects the forged identity, an admin-membership oracle. **mcp-server does not share this bug**: it reads no identity header on any path and its ASGI gate fails closed to 401 without a `Bearer`. The network fix above is the current containment — only auth-gateway, results-api and mcp-server can reach :8000 — but it is containment, not a fix, and the real fix needs auth-gateway to start sending the internal bearer on `/chat/v1/` and `= /status` first, so it carries the same ordered-rollout hazard as the bff/results-api pair.
+- **chat-backend applies the same trusted-proxy marker rule** (`genetics-results-suite-th2`, was a P1 hole). `auth/core.py:get_authenticated_user` honours `X-Goog-Authenticated-User-Email` only when the request also carries the marker, and holds the asserted address to `ALLOWED_EMAILS`/`ALLOWED_EMAIL_DOMAINS`; `auth/dependencies.py:auth_required` follows results-api's precedence exactly (marker + allow-listed header → that user; marker + non-allow-listed header → 401, never a downgrade to `mcp-tool`; marker alone → `mcp-tool`; header alone → 401). `auth/core.py:is_internal_caller` is the single place the secret is compared, and it accepts the marker in either transport: `X-Internal-Auth: $INTERNAL_API_SECRET` (auth-gateway's, on the only two locations that proxy to chat-backend — `location /chat/v1/` and `location = /status`) or `Authorization: Bearer $INTERNAL_API_SECRET` (results-api's and mcp-server's, unchanged). Both compare as bytes, since `hmac.compare_digest` on `str` raises `TypeError` — a 500 — for a non-ASCII value. `POST /chat/v1/tokens/validate` is the one route with no auth dependency; it calls the same helper and additionally refuses any request that carries an identity header at all, since its genuine callers are service-to-service and never assert one. Before this, forging the header granted admin (`ENABLE_ADMIN_PAGE=true`, membership tested against `ADMIN_USERS` on the forged string), read every user's chat transcripts, and minted a plaintext per-user API token via `POST /chat/v1/tokens` — which mcp-server and results-api both accept, so it pivoted into both. `GET /chat/v1/auth` is `@is_public` and reflects the identity, so it was an unauthenticated admin-membership oracle; it needed no change of its own because it resolves through the same `get_authenticated_user`. **mcp-server does not share this bug and is untouched**: it reads no identity header on any path and its ASGI gate fails closed to 401 without a `Bearer`. Two deliberate deviations from results-api:
+  - `REQUIRE_AUTH=false` (local dev only; prod sets `true`) still honours the header as-is. That mode already authenticated everyone as `anonymous`, so a marker would protect nothing and only break developing as a named user.
+  - The allow-list **fails open when neither `ALLOWED_EMAILS` nor `ALLOWED_EMAIL_DOMAINS` is set**, warning as it does. chat-backend only started reading them here, and the code default is `finngen.fi`; enforcing that default on a pod that had not yet picked up the `bearer-auth-allowed` ConfigMap would lock out every user of any other deployment. `k8s/deployments/chat-backend.yaml` now `envFrom`s that ConfigMap (the same terraform-rendered values oauth2-proxy itself uses, so it cannot refuse anyone oauth2-proxy admitted), which is what makes the check live in production. The marker is the half that closes the hole; the allow-list is defence in depth against a compromised holder of `INTERNAL_API_SECRET`.
 - **Container privileges**: every application container sets `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and the `RuntimeDefault` seccomp profile. `db-api` and `bff` additionally run `runAsNonRoot` (uid 10001 / 1000) since they write nothing outside their image; results-api, chat-backend and mcp-server still run as root because they raise `ulimit`, shell out to `gcloud`, cache tabix indexes, or own root-owned files on the `chat-data` PVC. chat-backend sets `fsGroup: 1032` so the pre-existing SQLite files stay writable once `CAP_DAC_OVERRIDE` is dropped.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
@@ -676,6 +678,94 @@ resting state, so a rollout can stop there indefinitely. Its only cost is that d
 window `request.state.authenticated_user` is `mcp-tool`; that field is a *fallback* for the
 `endpoint_access` log, which prefers the header, so logs still name the real user. No
 transitional feature flag or dual-accept mode is needed.
+
+### Ordered rollout: the trusted-proxy marker (auth-gateway before chat-backend)
+
+The same rule reaches chat-backend in `genetics-results-suite-th2`. auth-gateway must ship
+**first**, but unlike the bff pair the leading state is a safe resting state — the marker rides
+its own header, `X-Internal-Auth`, precisely so that a chat-backend which has not yet rolled
+simply does not recognise it.
+
+| state | auth-gateway sends `X-Internal-Auth` on the chat locations? | chat-backend requires the marker for the identity header? | browser result |
+|---|---|---|---|
+| neither shipped (old) | no | no | works, but the header alone authenticates — the vulnerability |
+| **auth-gateway only** (transitional) | yes | no | **works, byte for byte as before.** The old chat-backend reads no such header and its `auth_required` finds no `Authorization` to match, so it takes the plain identity-header path. Safe to sit in: the pre-fix vulnerability is still open, but nothing is mis-attributed and no rollback is needed to leave it |
+| **chat-backend only** | no | yes | **total lockout.** Every browser chat request arrives with the identity header and no marker → 401. This is the order to avoid |
+| both shipped | yes | yes | works, and the real user is the authenticated identity |
+
+Only one of the four states is harmful, and it is the one gateway-first never enters. Rolling
+**back** is the mirror image: revert chat-backend first, auth-gateway second, and the state in
+between is the safe "auth-gateway only" row again — a rollback that stalls half-done costs
+nothing. Reverting the gateway alone while the new chat-backend is live is the one move that
+reproduces the lockout row.
+
+auth-gateway is ConfigMap-driven, so `rollout.sh` (image swap only) cannot ship it — it needs
+`deploy.sh`:
+
+```bash
+./scripts/deploy.sh                                                    # 1. gateway ConfigMap
+./scripts/build.sh chat-backend && ./scripts/rollout.sh chat-backend   # 2. after
+```
+
+Collapsing this into a single `deploy.sh` carrying a freshly built chat-backend image is no
+longer a data hazard, but it is still not ordered: `deploy.sh` fires every `rollout restart`
+before waiting on any, so which service reaches its new pod first is a race, not a guarantee.
+chat-backend's `Recreate` strategy plus its 300s termination grace *usually* makes it the slower
+of the two — but that grace is an upper bound, and a chat-backend with no in-flight streams
+terminates in seconds, while the gateway now has an extra initContainer in front of it. The
+worst case is therefore a short "chat-backend only" window: browser chat 401s until the gateway
+lands, inside a deploy that is already interrupting chat. Use the two-step above, which removes
+the race rather than betting on it.
+
+The transport deliberately differs between the two services: results-api takes the marker on
+`Authorization: Bearer $INTERNAL_API_SECRET` (its callers are service-to-service and have no
+`Authorization` of their own), while the browser-facing chat locations use `X-Internal-Auth`.
+chat-backend's `is_internal_caller` accepts either, so results-api and mcp-server keep calling
+it with the bearer unchanged. Two conventions is the accepted price of a rollout with no window
+in which browser sessions, downloads and API tokens could be written under the shared `mcp-tool`
+identity — which is exactly what an `Authorization`-borne marker would have caused, since the
+old chat-backend checks the bearer *before* it looks at the identity header.
+
+nginx cannot read environment variables from config directives, and a Secret must not be baked
+into a ConfigMap, so `auth-gateway.yaml` keeps a literal `${INTERNAL_API_SECRET}` placeholder in
+the ConfigMap — `deploy.sh`'s `envsubst` whitelist deliberately omits that name, so it survives
+verbatim — and a `render-config` initContainer substitutes it from `genetics-secrets` into a
+`medium: Memory` emptyDir that nginx mounts as `/etc/nginx/nginx.conf`. It substitutes that one
+name only, which is what keeps `envsubst` away from nginx's own `$host`/`$email`/`$request_uri`.
+
+That initContainer then **validates what it rendered**, because the secret lands inside an nginx
+string literal and `create-secrets.sh` lets an operator supply their own value:
+
+- the secret is checked against a **whitelist** before it is rendered: non-empty and
+  `[A-Za-z0-9+/=_.-]` only, which is a superset of the `openssl rand -base64 32` alphabet
+  `create-secrets.sh` generates, so it rejects nothing the tooling produces. This is the check
+  that actually holds, because `nginx -t` on the rendered file catches much less than it looks
+  like it does — measured against `nginx:1.27-alpine`:
+  - `\` and a bare newline in the secret both render a **valid** config. nginx unescapes `\t`,
+    `\r`, `\n`, `\"`, `\'` and `\\` inside a quoted string, so `abc\tdef` ships a marker with a
+    literal tab in it and `nginx -t` is happy.
+  - a `;` inside the quoted string is not syntax at all — `ab"; #` simply renders a header value
+    that ends at the quote, i.e. a silently truncated marker from a config that validates.
+  - an empty secret renders an empty header value, which nginx drops from the request entirely.
+  - `nginx -t` *does* reject most `$` values as an unknown variable (`abc$zzz`, `abc${FOO}`), but
+    misses any whose suffix happens to spell a real nginx variable: `abc$http_foo` and `abc$arg_x`
+    both validate and both deliver `abc`. The open-ended `$http_*`/`$arg_*`/`$cookie_*` families
+    make that impossible to enumerate, which is the other reason the guard exists.
+
+  Every one of those cases ends the same way: the initContainer reports success and every browser
+  chat request 401s, because the marker chat-backend receives is not the marker it holds.
+- `nginx -t` against the rendered file is still run, as a check on the **template** (and on the
+  few secret values it does catch) rather than as the secret's guard.
+- on failure it re-renders with a placeholder secret and re-tests, to say whether the secret or
+  the template is at fault. nginx's own message is printed **only** for the placeholder run:
+  `[emerg]` output quotes the offending token, which for the rendered file would put a fragment
+  of the secret into Cloud Logging.
+
+`nginx -t` resolves the upstream names and the `resolver` host, both of which the main container
+already resolves at startup, so this adds no dependency the pod did not have. A failing
+initContainer stalls the rollout; without the check the pod becomes a crash-looping nginx, which
+slips past `deploy.sh`'s `kubectl rollout status ... || true` and still prints "Deployment
+complete".
 
 - **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (requires `REGISTRY` env var; `tag` defaults to `latest`). Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
 - **Build all images**: `./scripts/build-all.sh` — clones the service repos (branch overridable per service, all default `master` except rag-service) and builds/pushes all Docker images to Artifact Registry, including the local `monitor`, `keycloak` and `sandbox` build contexts (requires `REGISTRY` env var)
