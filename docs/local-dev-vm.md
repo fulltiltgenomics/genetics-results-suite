@@ -3,7 +3,9 @@
 How to run the whole suite from source on a single Ubuntu VM, in reload mode, and reach it
 from a laptop over an SSH tunnel. Nothing here goes through Docker, Kubernetes or the
 auth-gateway — services talk to each other over `localhost` and there is no oauth2-proxy,
-so no login is needed.
+so no login is needed. That also means this setup does **not** exercise any of the auth chain;
+if that is what you are changing, see [step 8](#8-testing-an-auth-change-the-setup-above-does-not-exercise-it),
+which runs the real gateway image locally.
 
 ## What runs where
 
@@ -17,6 +19,15 @@ so no login is needed.
 
 Data flow: browser → vite `:3000` → BFF `:5000` → results-api `:2000`; the chat views bypass
 the BFF and call `:4000` directly. db-api is only used server-side, so it needs no tunnel.
+
+**Running a second copy:** a dev VM often already has the suite running from the main clones on
+exactly these ports. If you are bringing up a second copy (from a worktree, a branch, a second
+checkout), pick a disjoint port for every service and set `GENETICS_API_URL`, `BFF_PORT`,
+`BIGQUERY_API_URL`, `CORS_ORIGINS` and `.env.local` to match — the numbers above are the
+defaults, not a requirement. One verification run used 12000/12001, 15000-15003, 18000/18001 and
+18080; any free block works. Afterwards, confirm the original five ports are still listening
+(`ss -ltnp | grep -E ':(2000|3000|4000|5000|8080)'`) so you know you did not disturb the copy
+someone else is using.
 
 ## 1. Create the VM
 
@@ -94,10 +105,28 @@ for r in genetics-results-suite genetics-results-api genetics-results-browser \
 done
 ```
 
-`configs/datasets.yaml` is committed in `genetics-results-api` and
-`genetics-results-db`. If the canonical copy in this repo is newer or
-unsure, refresh them:
-`./genetics-results-suite/scripts/sync-datasets.sh`.
+### `configs/datasets.yaml` is NOT in a fresh clone
+
+`configs/datasets.yaml` is committed **only in this repo** (`genetics-results-suite`). Both
+`genetics-results-api` and `genetics-results-db` gitignore it (see their `.gitignore`), so a
+fresh clone of either has no `configs/datasets.yaml` and the server aborts at startup. Populate
+it before step 6:
+
+```bash
+~/suite/genetics-results-suite/scripts/sync-datasets.sh
+```
+
+That script resolves its targets as `<dir containing scripts/>/../genetics-results-{db,api}`, so
+it only works from a **normal clone** of this repo. Run from a `git worktree` it is
+worktree-unaware: it looks for the siblings next to the worktree
+(`.../.claude/worktrees/<name>/../genetics-results-db`), prints
+`WARN: repo not found, skipping: ...` for both, and **exits 0 having copied nothing** — verified.
+From a worktree, copy manually:
+
+```bash
+cp ~/suite/genetics-results-suite/configs/datasets.yaml ~/suite/genetics-results-api/configs/
+cp ~/suite/genetics-results-suite/configs/datasets.yaml ~/suite/genetics-results-db/configs/
+```
 
 ## 4. Install dependencies
 
@@ -107,6 +136,10 @@ cd ~/suite/genetics-mcp-server    && uv sync                                # py
 cd ~/suite/genetics-results-db    && uv venv && uv pip install -r pyproject.toml
 cd ~/suite/genetics-results-browser && npm install
 ```
+
+The `npm install` is a hard prerequisite, not an optimisation: both the BFF (`bff/`, run with
+`tsx watch`) and the vite frontend live in `genetics-results-browser`, and neither start command
+bootstraps `node_modules`. Without it both windows in step 6 fail immediately.
 
 ## 5. Environment variables that are not in the repos
 
@@ -218,10 +251,78 @@ curl localhost:4000/healthz          # chat-backend
 curl localhost:8080/health           # db-api
 ```
 
+## 8. Testing an auth change: the setup above does NOT exercise it
+
+Everything above deliberately skips the auth chain — no auth-gateway, no oauth2-proxy, requests
+arrive at the BFF, results-api and chat-backend straight from `localhost`. That is fine for data
+and UI work, and wrong for anything touching identity, because **`X-Goog-Authenticated-User-Email`
+originates in auth-gateway's nginx and nowhere else**: `k8s/deployments/auth-gateway.yaml` takes
+`$email` from the `auth_request /oauth2/auth` subrequest's `X-Auth-Request-Email` response header
+and sets `X-Goog-Authenticated-User-Email "accounts.google.com:$email"` on the way to the BFF,
+chat-backend and frontend, clearing it to `""` on the bearer-token path. The bearer divert itself
+(`if ($http_authorization ~* "^Bearer ")` in `location /api/`, which jumps to `@api_bearer` via
+`error_page 418`) is likewise a gateway-only behaviour, and it is the partition any backend guard
+has to agree with. Run a guard change against the doc's default setup and you have tested the
+guard's default branch, not the code under test.
+
+To actually exercise it, run the real gateway locally. This recipe was verified end to end on
+this VM:
+
+1. **Real image, host network.** `docker run --network host nginx:1.27-alpine`. Not a
+   hand-written nginx.conf — the point is to test the shipped one.
+2. **Extract the config with a YAML parser**, not `sed`: it is the `nginx.conf` key of the
+   `auth-gateway-config` ConfigMap in `k8s/deployments/auth-gateway.yaml`, a block scalar whose
+   body contains `#`, `$` and `{}` that line-based extraction mangles.
+3. **Render pass 1 — `deploy.sh`'s whitelist, exactly.** Copy the `envsubst '...'` argument from
+   the deployments loop in `scripts/deploy.sh` verbatim. It is a whitelist, and it deliberately
+   omits `${INTERNAL_API_SECRET}` — confirmed: that placeholder survives pass 1 untouched, which
+   is what keeps the secret out of the ConfigMap.
+4. **Render pass 2 — the `render-config` initContainer, verbatim.** Take `args[0]` of that
+   initContainer as-is and run it inside the image with `INTERNAL_API_SECRET` set. Do not
+   paraphrase it: it carries the character whitelist that rejects a secret nginx would
+   reinterpret inside a header string, and the `nginx -t` that catches a broken render. Keep the
+   `nginx -t`; it is the step that tells you the template still parses.
+5. **The only local edits needed** are the ones that assume a cluster: the cluster-DNS
+   `proxy_pass` upstreams (six distinct services — oauth2-proxy, mcp-server, results-api, bff,
+   chat-backend, frontend — across ten `proxy_pass` directives) repointed at your local ports,
+   the `resolver kube-dns.kube-system.svc.cluster.local` line (no kube-dns locally), and
+   `listen 8080` moved to a free port. That was 24 changed lines in the verified run. Everything
+   else — the `auth_request` chain, the bearer divert, the `X-Internal-Auth` headers, the log
+   redaction map — runs as shipped.
+6. **Stub oauth2-proxy** with any responder that answers the `/oauth2/auth` subrequest with `202`
+   and an `X-Auth-Request-Email: you@example.com` header. nginx reads only that header, so the
+   stub is enough to drive the whole authenticated path; return `401` from it to exercise the
+   `@oauth2_login` redirect instead.
+
+Point the browser (or `curl`) at the gateway port rather than at the BFF/chat-backend ports and
+the requests now carry the same headers production sends.
+
+## What this VM cannot verify
+
+Two things look testable here and are not. Do not record either as verified from a local run.
+
+- **NetworkPolicy enforcement.** There is no local Kubernetes here, and standing one up does not
+  help: kind/minikube's default CNI does not enforce NetworkPolicy at all, so policies appear to
+  "pass" while nothing is enforcing them. Worse, the production cluster runs `ADVANCED_DATAPATH`
+  (Dataplane V2), and the finding that kubelet probes bypass NetworkPolicy is specific to that
+  datapath — a local Calico or Cilium answer would be a different implementation's behaviour and
+  would mislead rather than inform. The offline parser `scripts/test-network-policies.py` checks
+  the policy *files*; live enforcement is deferred to the deploy window under
+  `genetics-results-suite-4h6.26`.
+- **gVisor isolation.** `runsc` is not installed on this VM, so the sandbox image runs under
+  plain `runc` locally. Building the image and seeing the ten checks in
+  `sandbox/build-checks.py` pass is genuine
+  verification **of the image**; it says nothing about the isolation boundary, which is the
+  `gvisor` RuntimeClass plus seccomp on the cluster.
+
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
+| results-api or db-api aborts complaining about `configs/datasets.yaml` | the file is gitignored in both service repos — sync or copy it (step 3) |
+| `sync-datasets.sh` prints `WARN: repo not found` twice and copies nothing | it was run from a git worktree, where the sibling repos are not one level up — copy manually (step 3) |
+| BFF or vite window exits instantly | `npm install` never ran in `genetics-results-browser` (step 4) |
+| An auth/identity change behaves differently locally than in the cluster | the default setup has no auth-gateway, so `X-Goog-Authenticated-User-Email` is never produced and the bearer divert never runs (step 8) |
 | results-api aborts at startup listing `gs://` files | ADC identity has no read access to the data bucket, or `CONFIG_PROFILE` points at data you cannot see |
 | `tabix: ... unknown URL scheme` / GCS errors | htslib built without `--enable-libcurl --enable-gcs` |
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
