@@ -68,9 +68,14 @@ TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 TF_OAUTH_ALLOWED_EMAILS=$(terraform output -raw oauth_allowed_emails 2>/dev/null || true)
 export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}"
-# audience accepted on Google Identity Tokens. Defaults to the gcloud CLI's OAuth client id,
-# which is what `gcloud auth print-identity-token` (the documented programmatic flow) mints;
-# user credentials cannot request a custom audience. Override to add service-account clients.
+# audience accepted on Google Identity Tokens — a deprecated access path; per-user API keys are the
+# documented programmatic flow. Defaults to the gcloud CLI's *public* OAuth client id, which is what
+# `gcloud auth print-identity-token` mints; user credentials cannot request a custom audience, so a
+# project-owned client id here would reject every human caller. Worth exactly cross-OAuth-client replay
+# protection, not identity: it rejects a token minted for a different client id, but NOT one the same
+# user handed to another service documenting this same `gcloud auth print-identity-token` flow, since
+# that token carries the identical aud. The email allow-list is the access control. Override to add
+# service-account clients.
 export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-32555940559.apps.googleusercontent.com}"
 TF_KEYCLOAK_BACKUP_BUCKET=$(terraform output -raw keycloak_backup_bucket 2>/dev/null || true)
 export KEYCLOAK_BACKUP_BUCKET="${KEYCLOAK_BACKUP_BUCKET:-${TF_KEYCLOAK_BACKUP_BUCKET}}"

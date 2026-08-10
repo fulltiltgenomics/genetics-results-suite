@@ -7,6 +7,12 @@ data:
   ALLOWED_EMAILS: "${OAUTH_ALLOWED_EMAILS}"
   ALLOWED_EMAIL_DOMAINS: "${OAUTH_EMAIL_DOMAIN}"
   # `aud` a Google Identity Token must carry. Without it results-api and mcp-server accept
-  # any Google-signed id_token with an allow-listed email, including one minted for an
-  # unrelated app the user signed into — that app's operator could replay it here.
+  # any Google-signed id_token with an allow-listed email, including one minted for a
+  # different OAuth client (ADC's 764086051850-..., an unrelated app's own client).
+  # That cross-OAuth-client replay protection is all it buys: the value is the gcloud CLI's
+  # *public* client id, which everyone's `gcloud auth print-identity-token` carries, so a
+  # token the same user gave to another service documenting that same flow has this exact
+  # `aud` and still passes — it binds no identity, and ALLOWED_EMAIL_DOMAINS above is the
+  # access control. The id_token path is deprecated in favour of per-user API keys;
+  # see docs/project-spec.md, "Programmatic credentials".
   GOOGLE_TOKEN_AUDIENCE: "${GOOGLE_TOKEN_AUDIENCE}"
