@@ -46,6 +46,17 @@ if [ -z "${INTERNAL_API_SECRET:-}" ]; then
 fi
 INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(openssl rand -base64 32)}"
 
+# signing key for the per-execution sandbox tokens (docs/code-execution-security.md section 4).
+# Deliberately a distinct key from INTERNAL_API_SECRET: chat-backend signs, db-api and
+# results-api verify, and the sandbox holds neither. Same reuse-or-generate rule as above —
+# regenerating it would invalidate every token in flight, which is at most one execution.
+if [ -z "${SANDBOX_TOKEN_SIGNING_KEY:-}" ]; then
+  SANDBOX_TOKEN_SIGNING_KEY="$(kubectl get secret genetics-secrets \
+    --namespace="${NAMESPACE}" \
+    -o jsonpath='{.data.sandbox-token-signing-key}' 2>/dev/null | base64 -d || true)"
+fi
+SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(openssl rand -base64 32)}"
+
 kubectl create secret generic genetics-secrets \
   --namespace="${NAMESPACE}" \
   --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}" \
@@ -57,6 +68,7 @@ kubectl create secret generic genetics-secrets \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
+  --from-literal=sandbox-token-signing-key="${SANDBOX_TOKEN_SIGNING_KEY}" \
   --from-literal=slack-webhook-url="${SLACK_WEBHOOK_URL:-}" \
   --dry-run=client -o yaml | kubectl apply -f -
 

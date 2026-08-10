@@ -57,6 +57,15 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
+        # signs the per-execution sandbox tokens. chat-backend is the only minter: it is the
+        # sole caller of the sandbox and the only component that knows the end user and the
+        # chat session. The sandbox holds neither this nor internal-api-secret; the tokens
+        # travel in the body of the POST that submits a script and expire in 5 minutes.
+        - name: SANDBOX_TOKEN_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: sandbox-token-signing-key
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:

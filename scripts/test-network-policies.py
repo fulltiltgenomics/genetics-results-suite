@@ -319,6 +319,51 @@ def _():
             )
 
 
+@check("SANDBOX_ENABLED is true on db-api and results-api once the sandbox exists")
+def _():
+    """The fail-closed rules are opt-in until this flag is on.
+
+    Both verifiers key `require_sandbox_config()` on `SANDBOX_ENABLED`, not on the signing key
+    being present, so with the sandbox deployed and the flag still `"false"` the startup
+    assertion never fires — and a script that simply omits `Authorization` lands in db-api's
+    pre-existing unset-`INTERNAL_API_SECRET` fail-open branch, authorized with no `sub`, `sid`
+    or `jti`. docs/code-execution-security.md section 4, rule 6.
+    """
+    if not os.path.exists(os.path.join(DEPLOY_DIR, "sandbox.yaml")):
+        notes.append(
+            "k8s/deployments/sandbox.yaml does not exist yet (genetics-results-suite-4h6.7); "
+            "the SANDBOX_ENABLED check is inert until it does"
+        )
+        return
+    for fname in ("db-api.yaml", "results-api.yaml"):
+        path = os.path.join(DEPLOY_DIR, fname)
+        assert os.path.exists(path), f"{fname} is missing from {DEPLOY_DIR}"
+        with open(path) as fh:
+            docs = [d for d in yaml.safe_load_all(fh) if d]
+        found = []
+        for d in docs:
+            if d.get("kind") != "Deployment":
+                continue
+            for container in d["spec"]["template"]["spec"].get("containers") or []:
+                for env in container.get("env") or []:
+                    if env.get("name") == "SANDBOX_ENABLED":
+                        found.append(env.get("value"))
+        assert found, (
+            f"{fname} declares no SANDBOX_ENABLED env var, but k8s/deployments/sandbox.yaml "
+            "exists. Unset reads as false in both services, so the startup assertion that "
+            "makes the sandbox credential mandatory never fires."
+        )
+        for value in found:
+            # the services parse this with .strip().lower() against {1, true, yes}; anything
+            # else — including a valueFrom with no literal value — is off
+            assert str(value).strip().lower() in {"1", "true", "yes"}, (
+                f"{fname} sets SANDBOX_ENABLED={value!r} while k8s/deployments/sandbox.yaml "
+                "exists. Flip it to \"true\" in the same deploy that creates the sandbox, "
+                "after create-secrets.sh has run — see the deploy-ordering table in "
+                "docs/code-execution-security.md section 4."
+            )
+
+
 for note in notes:
     print(f"note: {note}")
 if failures:

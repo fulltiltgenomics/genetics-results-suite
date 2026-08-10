@@ -776,7 +776,18 @@ does not permit and which inverts the dependency direction. A JWT validates offl
 
 **Lifetime:** `exp = iat + 300` (5 minutes). The hard wall clock is 120s; the slack covers
 a slow BigQuery job started at the last moment. Short enough that a captured token is worth
-almost nothing, long enough that clock skew is not an operational problem.
+almost nothing.
+
+**Clock skew, and why the ttl only covers half of it.** The 300s ttl absorbs skew in the
+*past* direction — a verifier whose clock runs ahead of the minter's still sees `exp` in the
+future, with minutes to spare. It does nothing in the *forward* direction: PyJWT ≥ 2.10
+raises `ImmatureSignatureError` as soon as `iat > now`, so a verifier whose clock runs even a
+fraction of a second behind the minter's rejects a freshly minted token outright, and the ttl
+cannot help. The minter and the two verifiers are separate pods and the sandbox is headed for
+a dedicated node pool (`4h6.10`), so they are not even guaranteed the same node clock. Both
+verifiers therefore pass `leeway=5` to `jwt.decode`, which applies to `exp`, `nbf` and `iat`
+alike. It does **not** loosen the 300s bound: the `MAX_TOKEN_AGE_SECONDS` check is separate
+code, compares `iat` against `time.time()` directly, and stays exact.
 
 **One token per audience.** chat-backend mints two per execution. A token captured from a
 results-api request cannot be replayed at db-api.
@@ -1011,6 +1022,178 @@ is closed.**
 **What the sandbox does *not* get:** `INTERNAL_API_SECRET`, `MCP_API_KEY`, any GCP
 credential, any Keycloak client secret, any Perplexity/Tavily key, and no Kubernetes
 service account token.
+
+### As built (`4h6.9`) — what shipped, and where it departs from the above
+
+Everything in this subsection is code that exists; everything above it that is not repeated
+here is still design. Three files carry the mechanism:
+
+| repo | file | role |
+|---|---|---|
+| genetics-mcp-server | `src/genetics_mcp_server/sandbox_token.py` | mint |
+| genetics-results-db | `api/sandbox_auth.py` | verify (`aud: db-api`) |
+| genetics-results-api | `app/core/sandbox_token.py` | verify (`aud: results-api`) |
+
+**The minting contract `4h6.14` calls.** One call produces the pair for an execution:
+
+```python
+from genetics_mcp_server.sandbox_token import mint_execution_tokens
+
+minted = mint_execution_tokens(user=<authenticated email>, session_id=<chat session id>)
+minted.execution_id   # uuid4 — the jti of both tokens AND the /scratch/<id> directory name
+minted.db_api         # aud: db-api
+minted.results_api    # aud: results-api
+minted.expires_at     # iat + 300
+```
+
+`execution_id` may be passed in when the caller has already chosen the `/scratch` directory
+name; the two must be the same value or the log join in `4h6.12` does not close. Minting
+raises `SandboxTokenUnavailable` when `SANDBOX_TOKEN_SIGNING_KEY` is unset — deliberately an
+exception rather than a `None`, because every fallback from "no sandbox token" is either
+"send no credential" or "send the shared secret", which are the two outcomes this whole
+mechanism exists to prevent. `4h6.14` owns everything downstream of the return value: the
+POST body, the mode-0600 file under `/scratch/<id>`, and the child's environment.
+
+**Deviations from the design above, all deliberate:**
+
+1. **`iss` is required, not optional.** The design said routing may "optionally also require
+   `iss == "chat-backend"`". Both validators pass `issuer="chat-backend"` to the decoder, so a
+   token signed with the right key but issued by anything else is rejected. Routing still keys
+   on `alg` alone; `iss` is a validation rule, not a routing rule.
+2. **`iat` is checked explicitly.** PyJWT accepts an arbitrarily old `iat` as long as `exp` is
+   in the future, so a token minted with a long TTL would outlive the 5-minute window. Both
+   validators reject `iat` older than 300s, as rule 4 requires.
+3. **`scope` is required to be present** but is not in the decoder's `require` list, because
+   its absence is a distinct rejection reason worth logging separately. Its *value* is still
+   uninterpreted, exactly as the table says.
+4. **The per-credential caps are not implemented here.** Everything from "Implementation note
+   for the caps" to the end of the numbers table — the 50 GB per-query ceiling, the 200 GB
+   per-`jti` aggregate budget, the 25 000-row response cap, and results-api's response-byte
+   ceiling — is **deferred to `genetics-results-suite-4h6.28`**. `4h6.9` ships the credential
+   and the hook it needs: db-api leaves the resolved principal on `request.state.principal`
+   (a `SandboxPrincipal`, the string `"internal"` for a shared-secret caller, or `None` for
+   the fail-open and `/health` cases), and results-api leaves it on
+   `request.state.sandbox_principal`. The "defaults-not-penalty" inversion is a behaviour
+   change for *every* caller of both services and is not a credential change; keeping it out
+   of this bead keeps the fail-closed work reviewable on its own.
+5. **results-api reports a sandbox execution as `sandbox:<user>`, not as the bare email.**
+   `get_verified_user` returns one string and it feeds both authorization and the
+   `endpoint_access` log. Returning the bare email would make a sandbox request
+   indistinguishable from a verified human, which is exactly the distinction `4h6.28`'s relax
+   condition needs. The `sid` and `jti` are added to the `endpoint_access` line from
+   `request.state.sandbox_principal`.
+6. **db-api's `require_auth` no longer early-returns on `/health` *before* clearing state.**
+   It sets `request.state.principal = None` first, so no handler can read a stale principal.
+7. **Minter invariants are asserted by the verifiers, not assumed.** `options={"require": …}`
+   rejects only *missing* or null claims, so both validators additionally reject an empty
+   `sub`, `sid` or `jti` (a token attributing the query to nobody defeats the point of the
+   credential), and require `aud` to be exactly a **string** — PyJWT treats a list `aud` as
+   membership, so `{"aud": ["db-api", "results-api"]}` would otherwise validate at *both*
+   services and one-token-per-audience would be a minter property only.
+8. **`leeway=5` on both `jwt.decode` calls**, for the forward-direction skew the ttl cannot
+   cover — see "Clock skew" above. The `MAX_TOKEN_AGE_SECONDS` check is unaffected.
+9. **Rule 5's logging works differently on the two services.** db-api logs a *dict* message,
+   which its formatter merges into `jsonPayload` verbatim. results-api's `GCPJsonFormatter`
+   copies `extra=` fields only for names on the `EXTRA_LOG_FIELDS` allow-list when the message
+   is a string, so `sub`, `sid` and `jti` were added to that list — without them the
+   "sandbox request authorized" line reached the sink with no attribution at all. The
+   `endpoint_access` line's `sid`/`jti` come from `request.state` on the middleware's dict
+   path and were never affected.
+
+**Where the token sits in each validator's precedence.**
+
+- **db-api** — `require_auth`: `/health` → sandbox-shaped bearer (hard 401 on failure) →
+  unset-`INTERNAL_API_SECRET` fail-open → `hmac.compare_digest`. The sandbox branch is
+  ahead of the fail-open early return, which is rule 1.
+- **results-api** — `get_verified_user`, as a new **case 0** ahead of the four cases
+  `genetics-results-suite-fad` established: sandbox token → `sandbox:<user>`; then internal
+  marker + identity header; then internal marker alone → `mcp-tool`; then Google id_token /
+  user API token; then identity header alone → `None`. The same check is also first inside
+  `get_bearer_token_user`, so a direct caller of that function cannot skip it. A sandbox
+  caller holds no shared secret, so it cannot present the trusted-proxy marker and any
+  identity header it sets is already discarded by case 5.
+
+**No collision with `genetics-results-suite-fdd`.** That bead is about
+`GOOGLE_TOKEN_AUDIENCE` being the public gcloud CLI client id, so the `aud` check on the
+Google path binds nothing. The sandbox path never reaches `verify_oauth2_token`: an HS256
+bearer is routed away before it, and an RS256 bearer is never routed to the sandbox
+validator. The two audience checks are separate code, separate keys and separate claim
+spaces; `4h6.9` neither fixes nor worsens `fdd`.
+
+**A known gap, left open deliberately — and it is an attribution gap as much as an
+authorization one.** results-api's `auth_required` returns before any credential check when
+`REQUIRE_AUTH` is false or the route is `@is_public`. A sandbox token therefore proves nothing
+on a public route — the sandbox reaches those as an anonymous caller, exactly as any other pod
+with network reach does. Less obviously: because `auth_required` returns *before*
+`get_verified_user` runs, no sandbox principal is ever resolved on those routes, so
+`request.state.sandbox_principal` is unset and the `endpoint_access` line carries **no `sid`
+and no `jti`**. Section 6.2's control 3 — "what did that script actually read?" — is therefore
+blind on the `@is_public` route set, and `4h6.28`'s per-credential caps, which key on the
+resolved principal, will not apply there either. That is the pre-existing shape of
+results-api's public endpoints, not something this token changes, and closing it is a question
+about the public-route set rather than about the credential.
+
+### Deploy ordering: there is no ordering hazard, and one configuration lockout
+
+Unlike `fad` (bff before results-api) and `th2` (auth-gateway before chat-backend), **the
+sandbox credential path is entirely new: no caller sends an HS256 bearer today, and none will
+until `4h6.7` and `4h6.14` land the sandbox and `run_analysis`.** The sending and receiving
+sides can therefore ship in either order, and the table is short:
+
+| state | chat-backend mints | db-api / results-api verify | result |
+|---|---|---|---|
+| neither shipped | no | no | current behaviour, unchanged |
+| **validators only** | no | yes | **safe.** Nothing sends an HS256 bearer, so the new branch never fires. Every existing credential type is unaffected — shared secret, Google id_token, per-user API token, trusted-proxy marker |
+| **minter only** | yes | no | **safe today**, because nothing calls the minter until `4h6.14`. Were a token sent, an old db-api would 401 it at `compare_digest` and an old results-api would 401 it at `verify_oauth2_token` — a failed request, never an authorization |
+| both shipped | yes | yes | the sandbox path works |
+
+The real ordering constraint is **the secret, not the code**: all three Deployments mount
+`sandbox-token-signing-key` from `genetics-secrets`, so `create-secrets.sh` must run before
+the manifests are applied or the pods sit in `CreateContainerConfigError`. `deploy.sh` now
+checks that key (and `internal-api-secret`) is non-empty before applying anything, so an
+older `genetics-secrets` that predates this work fails at deploy time rather than at pod
+start.
+
+The one lockout is **`SANDBOX_ENABLED=true` with either secret missing**, which is
+`sys.exit(1)` in both services by design — a crash-looping db-api and results-api is the
+whole suite down. Both manifests therefore ship it as `"false"`; the deploy that creates the
+sandbox Deployment (`4h6.7`) flips it, and must do so only after `create-secrets.sh` has run.
+**Rollback direction: set `SANDBOX_ENABLED=false` and restart** — that restores service
+immediately without touching secrets or images, and only disables the startup assertion, not
+the token validation.
+
+**Rotating the signing key — not atomic, and it is an outage window, not one lost execution.**
+`create-secrets.sh` reuses the value already in the cluster and only generates on first
+install, like `internal-api-secret`. But all three Deployments read the key from the
+environment, which freezes at *pod start*: updating the Secret changes nothing until each pod
+restarts, and a rolling restart of three Deployments is not simultaneous. For the whole
+restart window the minter and a verifier disagree about the key, and **every sandbox execution
+routed to a pod on the other side of the rotation 401s** — not just the tokens in flight at
+the moment of the change. Sequence it deliberately: patch the Secret, restart all three, and
+treat sandbox executions as failing until the last pod is Ready. Nothing else breaks (the
+shared-secret, Google id_token and user-API-token paths are untouched), and the rollback is
+the same operation in reverse.
+
+**If a Deployment's env is missing the key entirely**, the fix is a targeted
+`kubectl patch secret genetics-secrets --type=merge` on that one key, *not* a re-run of
+`create-secrets.sh` — that script writes every key it knows about and blanks the optional ones
+(`openai-api-key`, `tavily-api-key`, `perplexity-api-key`, `cohere-api-key`, `mcp-api-key`,
+`external-mcp-servers`, `admin-users`, `slack-webhook-url`) that are not exported in the
+operator's shell. `deploy.sh`'s secret gate prints the patch command for exactly this reason.
+
+**Accepted residual: a symmetric key means db-api and results-api can mint.** HS256 is one
+secret shared by all three services, so verification and *minting* are the same capability.
+A compromise of db-api or results-api yields a key that forges tokens impersonating
+chat-backend with any `sub`, `sid` and `jti` — attribution in the `endpoint_access` log is
+only as trustworthy as the least-trusted holder of the key. This is accepted for v1: both
+verifiers are first-party services in the same namespace, and a compromise of either already
+gives an attacker direct query access without needing a token at all. The clean fix is
+**asymmetric signing** — Ed25519 (or RS256) with the private half mounted only on
+chat-backend and the public half on the verifiers — which removes the mint capability from the
+verifiers while keeping validation fully offline, the property that ruled out introspection in
+the first place. Deliberately not done here: it is a claims-compatible swap of algorithm and
+key material that can land on its own, and folding it into `4h6.9` would make the fail-closed
+work harder to review.
 
 ---
 
