@@ -9,7 +9,13 @@ spec:
   policyTypes:
   - Ingress
 ---
-# frontend: allow from load balancer (GKE health checks + external traffic)
+# frontend: only auth-gateway calls it (nginx "location /" -> frontend:3000). It is a ClusterIP
+# service with no Ingress backend, so despite the old comment nothing from the load balancer
+# ever reaches it — external traffic arrives at auth-gateway and is proxied here. Kubelet probes
+# are exempt from NetworkPolicy on this cluster (Dataplane V2), so they need no rule.
+# The monitor CronJob is admitted by a separate, additive policy
+# (allow-ingress-frontend-from-monitor in monitor-policy.yaml, same port). NetworkPolicies union,
+# so that rule is load-bearing — deleting it as "already covered here" would lock the monitor out.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -20,7 +26,11 @@ spec:
     matchLabels:
       app: frontend
   ingress:
-  - ports:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    ports:
     - port: 3000
   policyTypes:
   - Ingress
@@ -83,7 +93,17 @@ spec:
   policyTypes:
   - Ingress
 ---
-# chat-backend: allow from load balancer
+# chat-backend: the three callers admitted BY THIS RULE. auth-gateway proxies the browser's
+# "location /chat/v1/" and "location = /status" here; results-api and mcp-server both POST
+# /chat/v1/tokens/validate to it to check per-user API tokens (CHAT_BACKEND_URL in their
+# Deployments). It is a ClusterIP service with no Ingress backend, so the old "from load
+# balancer" comment was wrong and no load-balancer or health-check source needs admitting.
+# The analyze-conversations CronJob is NOT a caller: it opens /data/chat_history.db on the
+# shared PVC directly and makes no HTTP call here.
+# These three are NOT the complete set: the monitor CronJob is admitted by a separate, additive
+# policy (allow-ingress-chat-backend-from-monitor in monitor-policy.yaml, same port).
+# NetworkPolicies union, so that rule is load-bearing — deleting it as "already covered here"
+# would lock the monitor out.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -94,12 +114,31 @@ spec:
     matchLabels:
       app: chat-backend
   ingress:
-  - ports:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    - podSelector:
+        matchLabels:
+          app: results-api
+    - podSelector:
+        matchLabels:
+          app: mcp-server
+    ports:
     - port: 8000
   policyTypes:
   - Ingress
 ---
-# mcp-server: allow from load balancer
+# mcp-server: only auth-gateway calls it, through three locations — "/mcp", and the two
+# RFC 9728 discovery paths under "/.well-known/oauth-protected-resource". It is a ClusterIP
+# service with no Ingress backend, so the old "from load balancer" comment was wrong.
+# chat-backend does NOT call it: it runs the same tool executor in-process (GENETICS_API_URL /
+# BIGQUERY_API_URL point straight at results-api and db-api), and its EXTERNAL_MCP_SERVERS
+# secret points at an out-of-cluster Cloud Run MCP, not at this Service.
+# The monitor CronJob is admitted by a separate, additive policy
+# (allow-ingress-mcp-server-from-monitor in monitor-policy.yaml, same port). NetworkPolicies
+# union, so that rule is load-bearing — deleting it as "already covered here" would lock the
+# monitor out.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -110,12 +149,44 @@ spec:
     matchLabels:
       app: mcp-server
   ingress:
-  - ports:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: auth-gateway
+    ports:
     - port: 8080
   policyTypes:
   - Ingress
 ---
-# auth-gateway: allow from load balancer and health checks
+# auth-gateway: the ONLY real load-balancer backend in the suite, and the only rule here that
+# needs an ipBlock rather than a podSelector. Both rules of the `genetics-suite` Ingress
+# (finngenie.finngen.fi and finngenie.fi) backend auth-gateway:8080.
+#
+# NO NODE CIDR IS NEEDED, and adding one would be a mistake. The Service carries
+# `cloud.google.com/neg: {"ingress":true}` with a live NEG
+# (k8s1-35278419-genetics-auth-gateway-8080-ec38d214, reported HEALTHY in the Ingress
+# `ingress.kubernetes.io/backends` annotation), so this is container-native load balancing: the
+# GFE opens connections straight to the pod IP and there is no NodePort hop to SNAT the source
+# to the node address. The nodePort (32012) exists only because GKE Ingress requires the
+# Service type; nothing dials it. For the record, the node subnet is 10.0.0.0/20
+# (finngenie-subnet, node internal IP 10.0.0.41); pods are 10.16.0.0/14 and Services
+# 10.20.0.0/20. If this Service ever loses its NEG annotation and falls back to instance-group
+# backends, traffic WOULD arrive SNAT'd from 10.0.0.0/20 and this rule must gain that block or
+# the site goes down.
+#
+# Verified empirically before scoping: ~20k lines of nginx access log showed exactly three
+# kinds of source and nothing else — 35.191.0.0/16 for both GoogleHC/1.0 health checks and real
+# proxied user traffic, and 169.254.4.6 for kube-probe. The GFE does NOT preserve the client IP:
+# nginx always sees the GFE's own address in 35.191.0.0/16 (an external scanner showed up as
+# 35.191.151.104, not its own IP), and the real client survives only in X-Forwarded-For — so no
+# real client IP can be source-filtered at this layer. What the NEG path buys is that the source
+# is never a node IP. 130.211.0.0/22 did not appear in that window; it is Google's other documented
+# load-balancer/health-check range and is admitted defensively.
+# 169.254.4.6 is deliberately NOT in the ipBlock: kubelet probes are exempt from NetworkPolicy
+# on this cluster's ADVANCED_DATAPATH (Dataplane V2) — db-api and oauth2-proxy both have httpGet
+# probes, podSelector-only ingress policies and zero restarts over days.
+# No in-cluster workload calls auth-gateway; the monitor CronJob dials each backend Service
+# directly (scripts/monitor/health.py), never the gateway, so it needs no rule here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -126,7 +197,12 @@ spec:
     matchLabels:
       app: auth-gateway
   ingress:
-  - ports:
+  - from:
+    - ipBlock:
+        cidr: 35.191.0.0/16
+    - ipBlock:
+        cidr: 130.211.0.0/22
+    ports:
     - port: 8080
   policyTypes:
   - Ingress
