@@ -1,53 +1,52 @@
-# PodDisruptionBudgets for the workloads where an interrupted in-flight request is
-# expensive. Every deployment here is replicas: 1, so maxUnavailable: 0 and
-# minAvailable: 1 are the same constraint: NO voluntary eviction is ever allowed.
-# That is deliberate — see "Node pool sizing" in docs/project-spec.md.
+# PodDisruptionBudgets for the workloads where an interrupted in-flight request is expensive.
 #
-# OPERATIONAL CONSEQUENCE — read before adding another PDB here.
-# The dominant cost is NOT extra upgrade time. It is that a node hosting one of these pods
-# becomes permanently ineligible for autoscaler scale-down, with no time bound at all:
-# "If there are Pods on a node that cannot move to other nodes in the cluster, cluster
-# autoscaler does not attempt to scale down that node." A maxUnavailable: 0 PDB over a
-# replicas: 1 deployment is permanently unsatisfiable, so the node is never even selected.
-# The documented one-hour force-termination applies only to a node already selected for
-# scale-down that then fails to drain — a state these pods never reach
+# READ THIS BEFORE CHANGING maxUnavailable — especially before "fixing" it back to 0.
+#
+# Both deployments are replicas: 1, so with maxUnavailable: 1 the budget computes
+# desiredHealthy = replicas - maxUnavailable = 1 - 1 = 0, which means disruptionsAllowed = 1
+# whenever the pod is healthy. EVERY eviction is admitted immediately. These budgets therefore
+# do NOT protect a running stream today. They exist to record intent and they become a real
+# constraint the moment a second replica exists — at replicas: 2 the same value keeps one pod
+# serving through a drain.
+#
+# What actually cushions a mid-stream eviction today is NOT here. It is in the Deployment
+# manifests, live since commit 6db94e8: k8s/deployments/chat-backend.yaml sets
+# terminationGracePeriodSeconds: 300, a preStop sleep of 10s, and uvicorn
+# --timeout-graceful-shutdown 280. An evicted chat-backend pod finishes the stream it is
+# serving. If you need the eviction path to be safer, change those, not this file.
+#
+# WHY NOT maxUnavailable: 0. It looks strictly stronger and is in practice a trap. Over a
+# replicas: 1 deployment it is permanently unsatisfiable, and GKE's autoscaler has a branch for
+# exactly that: "If there are Pods on a node that cannot move to other nodes in the cluster,
+# cluster autoscaler does not attempt to scale down that node." The node is never even
+# SELECTED for scale-down, so the documented one-hour force-termination — which applies only to
+# a node already selected that then fails to drain — never comes into play. There is no time
+# bound at all
 # (https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler).
-# Practical effect: once a rollout surge puts a protected pod on a second node, the pool
-# ratchets to two nodes and stays there.
+# Practical effect: the first rollout that puts a protected pod on a surge node ratchets the
+# pool to two nodes permanently, silently reproducing the min == max == 2 pinning that was
+# explicitly rejected. See "Node pool sizing" in docs/project-spec.md.
 #
-# The upgrade path IS bounded, but only for the strategy this pool actually uses:
-# SURGE upgrades drain "respecting PodDisruptionBudget ... for up to one hour", then
-# forcefully evict (terraform/gke.tf sets no upgrade_settings, so surge is in effect).
-# Under BLUE_GREEN the bound is different — pods are deleted in the delete-blue-pool phase,
-# gated by a configurable soak defaulting to 1h and extendable to 7 days
-# (https://cloud.google.com/kubernetes-engine/docs/concepts/node-pool-upgrade-strategies).
-# For node auto-repair Google documents a one-hour drain bound but does NOT state that PDBs
-# are honoured during it — treat that path as UNCONFIRMED.
-#
-# ASYMMETRY between the two budgets below: results-api is RollingUpdate, so its replacement
-# pod can land on the surge node and pin it forever. chat-backend is Recreate, so it never
-# occupies a surge node concurrently with its own old pod — but its chat-data PVC is
-# ReadWriteOnce/standard-rwo, which is zonal, not node-scoped, so it does NOT pin the pod to
-# a node. A Recreate rollout can still reschedule chat-backend onto an existing surge node
-# and pin it there. results-api is the reliable ratchet; chat-backend is the occasional one.
-#
-# Do not add a PDB here for a workload that restarts cheaply — the price is a node that may
-# never go away.
+# Do not add a PDB here for a workload that restarts cheaply.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: chat-backend
   namespace: genetics
 spec:
-  maxUnavailable: 0
-  # without this, IfHealthyBudget (the default) also blocks eviction of a CrashLoopBackOff
-  # pod: it serves nothing and still blocks any eviction-API drain (kubectl drain, surge
-  # upgrade). AlwaysAllow lets an unhealthy pod be evicted regardless of the budget. It is
-  # NOT confirmed that autoscaler scale-down simulation models this field at all, so do not
-  # assume a crashlooping pod releases the scale-down ratchet described above.
+  maxUnavailable: 1
+  # INERT TODAY — this field is not fixing an active deadlock. At maxUnavailable: 1 over one
+  # replica the budget never blocks any eviction, healthy or not, so the policy has nothing to
+  # relax. It is kept because it is the correct setting for the replicas: 2 case this budget is
+  # written for: under the default IfHealthyBudget a CrashLoopBackOff pod serves nothing and can
+  # still block eviction-API drains (kubectl drain, surge upgrade). That blocking needs the
+  # budget to be AT ITS LIMIT — at maxUnavailable: 1 that means every replica unhealthy, since
+  # one unhealthy pod beside a healthy one still satisfies desiredHealthy. Switching to
+  # minAvailable (or back to maxUnavailable: 0) makes ANY unhealthy pod block. Removing the
+  # field leaves both of those deadlocks unguarded.
   #
-  # CAVEAT — "healthy" here is status.conditions[type=Ready] == "True", so a pod that is
-  # merely still STARTING counts as unhealthy and is freely evictable. See results-api below.
+  # CAVEAT for that future: "healthy" is status.conditions[type=Ready] == "True", so a pod that
+  # is merely still STARTING counts as unhealthy and is freely evictable. See results-api below.
   # The field is accepted at policy/v1 on this cluster (v1.35.6-gke.1250000), verified with
   # `kubectl explain pdb.spec.unhealthyPodEvictionPolicy` and a client-side dry-run.
   unhealthyPodEvictionPolicy: AlwaysAllow
@@ -57,20 +56,22 @@ spec:
 ---
 # results-api holds warm in-memory indices; its startupProbe allows ~5 minutes for a cold
 # start (failureThreshold: 60, periodSeconds: 5), and with replicas: 1 that is 5 minutes of
-# failed tool calls for every chat turn.
+# failed tool calls for every chat turn. That is the reason a budget is declared for it — but
+# as above, at replicas: 1 this budget admits every eviction, so it does not currently prevent
+# that cold start. It states the intent for when a second replica exists.
 #
-# Note the hole this leaves: for that same ~5 minutes the pod is not yet Ready, so under
-# AlwaysAllow it is evictable regardless of this budget and its node is drainable (and,
-# possibly, scale-down eligible). The guarantee below begins when the startupProbe passes,
-# not when the pod is created — precisely the window the budget was justified by. Keeping
-# AlwaysAllow is still correct: the alternative is an unbounded crashloop deadlock.
+# Note the additional hole that would remain at replicas: 2: for those same ~5 minutes the pod
+# is not yet Ready, so under AlwaysAllow it stays evictable regardless of the budget. The
+# guarantee would begin when the startupProbe passes, not when the pod is created — precisely
+# the window the budget is justified by. AlwaysAllow is still the right choice: the alternative
+# is an unbounded crashloop deadlock.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: results-api
   namespace: genetics
 spec:
-  maxUnavailable: 0
+  maxUnavailable: 1
   unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
