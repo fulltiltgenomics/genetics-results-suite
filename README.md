@@ -364,7 +364,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 
 ## Security
 
-- Network policies enforce that db-api and rag-service are only reachable from chat-backend and mcp-server; results-api (4000) only from auth-gateway, bff, chat-backend and mcp-server (plus the monitor, via its own policy); bff (5000) only from auth-gateway
+- Network policies source-scope **every** service: db-api and rag-service only from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend and mcp-server; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server. The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
 - Application containers run with `allowPrivilegeEscalation: false`, all capabilities dropped and the `RuntimeDefault` seccomp profile; db-api and bff additionally run as non-root
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
