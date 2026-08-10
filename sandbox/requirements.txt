@@ -1,0 +1,21 @@
+# analysis dependencies for the sandbox image, installed into /opt/venv in the
+# builder stage. pinned exactly: the image is a security boundary and an
+# unpinned resolve would change the syscall surface silently between builds.
+#
+# nothing google-auth-based may appear here or in any transitive closure —
+# docs/code-execution-security.md section 3(c): google.auth.default() probes
+# metadata.google.internal by name, and the sandbox has no DNS, so the probe
+# stalls the full resolver timeout instead of failing fast. build-checks.py
+# fails the build if it reappears.
+numpy==2.4.6
+scipy==1.17.1
+polars==1.40.1
+matplotlib==3.10.9
+httpx==0.28.1
+# not an analysis library: genetics_mcp_server.config.settings does `from dotenv import
+# load_dotenv` at module level, and it is in the SDK's import closure (sdk.client ->
+# tools.executor -> tools.uniprot -> config.settings), so `import genetics_mcp_server.sdk`
+# raises ModuleNotFoundError without it. Pinned to genetics-mcp-server's own pin so the
+# two copies of this closure cannot disagree. This is the drift the --no-deps decision
+# accepts: the build fails loudly rather than shipping a broken SDK.
+python-dotenv==1.2.2

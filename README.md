@@ -242,6 +242,15 @@ Rolling out `chat-backend` can block for up to ~5 minutes: it waits for any in-f
 stream to finish rather than cutting it off mid-answer. See "chat-backend shutdown and stream
 draining" in `docs/project-spec.md`.
 
+`build-all.sh` also builds the local `monitor`, `keycloak` and `sandbox` contexts.
+`./scripts/build.sh sandbox` builds the sandbox alone. The sandbox image (distroless, no
+shell, no pip, uid 65532) runs model-authored Python and pip-installs the genetics SDK
+from genetics-mcp-server at build time, pruned to the SDK's import closure; **it is skipped
+by `build-all.sh`, with a loud message, while that repo has no
+`src/genetics_mcp_server/sdk/`** — which is the case on `master` today. The build also
+fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. There is no sandbox
+Deployment yet. See [docs/code-execution-security.md](docs/code-execution-security.md).
+
 ## Services
 
 | Service | Source Repo | Image | Port | Notes |

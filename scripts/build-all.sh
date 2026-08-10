@@ -21,8 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
+SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
+
 WORK_DIR=$(mktemp -d)
-trap 'rm -rf "${WORK_DIR}"' EXIT
+trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src"' EXIT
 
 clone_repo() {
   local name=$1 branch=$2
@@ -90,6 +92,38 @@ build_and_push monitor "${MONITOR_DIR}" "${TAG}"
 KEYCLOAK_DIR="${SCRIPT_DIR}/../keycloak"
 TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
 build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
+
+# sandbox (local build context: distroless image that runs model-authored Python).
+# The genetics SDK is not vendored here — it is staged out of the genetics-mcp-server
+# clone above and pip-installed at build time, so the sandbox and mcp-server can never
+# drift apart. See docs/code-execution-security.md, "Where the image lives".
+MCP_DIR="${WORK_DIR}/genetics-mcp-server"
+# the schema docs and SDK stubs (genetics-results-suite-4h6.13) gate the image the same
+# way the SDK does: build-checks.py refuses to build with them, because a sandbox whose
+# /genetics/schema says "PLACEHOLDER — not the real schema documentation" degrades
+# silently. Detected here so a suite build still skips rather than fails, as it does for
+# the SDK.
+SANDBOX_PLACEHOLDERS=$(find "${SANDBOX_DIR}/schema" "${SANDBOX_DIR}/stubs" -name 'PLACEHOLDER*' 2>/dev/null | tr '\n' ' ')
+if [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
+  echo ""
+  echo "!!! SKIPPING sandbox: placeholders still staged (${SANDBOX_PLACEHOLDERS})."
+  echo "!!! The image is not shippable with placeholder schema docs or SDK stubs"
+  echo "!!! (genetics-results-suite-4h6.13). Every other image was built."
+elif [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
+  rm -rf "${SANDBOX_DIR}/.sdk-src"
+  mkdir -p "${SANDBOX_DIR}/.sdk-src"
+  cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
+  cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
+  TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+  build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" \
+    --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)"
+  rm -rf "${SANDBOX_DIR}/.sdk-src"
+else
+  echo ""
+  echo "!!! SKIPPING sandbox: ${MCP_SERVER_BRANCH} of genetics-mcp-server has no"
+  echo "!!! src/genetics_mcp_server/sdk. The sandbox image is not shippable without"
+  echo "!!! the SDK (genetics-results-suite-4h6.11). Every other image was built."
+fi
 
 echo ""
 echo "All images built and pushed."
