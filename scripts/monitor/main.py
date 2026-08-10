@@ -234,7 +234,7 @@ def main() -> int:
     if alert_results is not None:
         _print_alerts(alert_results)
 
-    # drives the @mention only — deliberately not the exit status, see the return below
+    # detect failures that warrant @mention (health and alerts only, not BQ)
     has_failure = False
     if health_results is not None:
         has_failure = has_failure or any(r.status == "fail" for r in health_results)
@@ -270,21 +270,7 @@ def main() -> int:
     elif not webhook_url:
         logger.info("SLACK_WEBHOOK_URL not set, skipping slack notification")
 
-    # Exit status reports whether this run worked, not what it found. Alerts and failed
-    # health checks are an ordinary outcome already carried by the Slack report and by
-    # stdout; returning 1 for them marked the Job Failed on any day with findings and
-    # spent the retry budget re-running the whole report, whose second pass then
-    # contradicted the first with "No new alerts" — its own findings were by then inside
-    # the dedup TTL. A genuine crash still propagates out of main() and exits non-zero,
-    # so the retry stays available for the case it is meant for.
-    #
-    # Note this does not yet cover a failed Slack delivery: send_slack_message swallows
-    # its errors and returns a bool, and the dedup key of every alert is committed by
-    # LogAlerter._is_new at read time, before any send. Retrying a failed delivery would
-    # therefore re-post health and BQ but report "No new alerts", which is a false
-    # all-clear. Making delivery failure retryable needs the dedup write deferred until
-    # after a successful post.
-    return 0
+    return 1 if has_failure else 0
 
 
 if __name__ == "__main__":

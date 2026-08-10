@@ -3,19 +3,20 @@ set -euo pipefail
 
 # update a single service's container image
 # usage: rollout.sh <service-name> [tag]
+#
+# ORDERING: roll out `bff` before `results-api`. results-api honours the
+# X-Goog-Authenticated-User-Email header only from a caller that also presents
+# INTERNAL_API_SECRET, and bff is what attaches it — a new results-api in front of an old bff
+# 401s every browser request. The reverse order is safe to sit in. Rollback reverses it
+# (results-api first). See README "Deploying the trusted-proxy marker".
 
 SERVICE="${1:?Usage: rollout.sh <service-name> [tag]}"
 TAG="${2:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# resolve the target deployment (DEPLOY_ENV) so REGISTRY defaults to that deployment's own
-# repository. This only sets the image reference — the cluster acted on is whatever kubectl's
-# current context points at, which is why it is echoed below.
-. "${SCRIPT_DIR}/lib/env.sh"
-resolve_deploy_env
-resolve_registry
-echo "Context: $(kubectl config current-context 2>/dev/null || echo unknown) (env: ${DEPLOY_ENV:-default})"
+if [ -z "${REGISTRY:-}" ]; then
+  echo "ERROR: REGISTRY must be set (e.g. \$GCP_REGION-docker.pkg.dev/\$GCP_PROJECT/genetics-results)"
+  exit 1
+fi
 
 declare -A IMAGE_MAP=(
   [frontend]=genetics-results-browser

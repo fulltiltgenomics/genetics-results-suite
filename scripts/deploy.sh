@@ -2,22 +2,36 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="${SCRIPT_DIR}/.."
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
-# resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
-. "${SCRIPT_DIR}/lib/env.sh"
-resolve_deploy_env
-load_deploy_env
+# load deploy-time config that must stay out of version control (.env is gitignored)
+if [ -f "${ROOT_DIR}/.env" ]; then
+  set -a; . "${ROOT_DIR}/.env"; set +a
+fi
 
-echo "Deploying genetics-results-suite (env: ${DEPLOY_ENV:-default}, tag: ${TAG})"
+echo "Deploying genetics-results-suite (tag: ${TAG})"
 
+# determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
-echo "Using tfvars:  ${TFVARS##*/}"
-echo "Using backend: ${BACKEND_FILE##*/}"
+if [ -n "${CONFIG_PROFILE:-}" ]; then
+  PROFILE="${CONFIG_PROFILE}"
+elif [ -f terraform.tfvars ]; then
+  PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')"
+else
+  echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
+  exit 1
+fi
+BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
+if [ ! -f "${BACKEND_FILE}" ]; then
+  echo "ERROR: Backend config not found: ${BACKEND_FILE}"
+  echo "Expected one of: daly.tfbackend, finngen.tfbackend"
+  exit 1
+fi
+echo "Using backend config: ${PROFILE}.tfbackend"
 
 # apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
@@ -26,13 +40,12 @@ if [ "${SKIP_TERRAFORM}" = "true" ]; then
 else
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
-  terraform apply -auto-approve "${TF_VAR_FILE_ARGS[@]}"
+  terraform apply -auto-approve
 fi
 
 # configure kubectl
 echo "=== Configuring kubectl ==="
 CLUSTER_NAME=$(terraform output -raw cluster_name)
-export CLUSTER_NAME
 eval "$(terraform output -raw kubectl_command)"
 
 # derive variables from terraform (all overridable via env vars)
@@ -46,8 +59,7 @@ export GCP_REGION="${GCP_REGION:-${TF_REGION}}"
 export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
 DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
-TF_REGISTRY=$(terraform output -raw registry)
-resolve_registry "${TF_REGISTRY}"
+export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
 export BQ_DATASET="${BQ_DATASET:-genetics_results}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
@@ -148,6 +160,36 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
   echo "ERROR: genetics-secrets not found. Run create-secrets.sh first."
   exit 1
 }
+
+# Every deployment below mounts sandbox-token-signing-key. Missing, the pods stay in
+# CreateContainerConfigError rather than starting degraded, so catch it here instead: an older
+# genetics-secrets predating the sandbox work simply has no such key.
+#
+# Deliberately NOT "re-run create-secrets.sh": that script only reuses-or-generates a few keys
+# and writes `--from-literal=x="${X:-}"` for the rest, so re-running it with an incomplete
+# environment blanks openai/tavily/perplexity/cohere/mcp keys, external-mcp-servers,
+# admin-users and slack-webhook-url. Patch in just the missing key instead.
+for key in internal-api-secret sandbox-token-signing-key; do
+  if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
+       -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
+    cat >&2 <<EOF
+ERROR: genetics-secrets is missing '${key}'.
+
+Add ONLY that key, leaving every other key in the secret untouched:
+
+  kubectl patch secret genetics-secrets -n ${NAMESPACE} --type=merge \\
+    -p "{\"stringData\":{\"${key}\":\"\$(openssl rand -base64 32)\"}}"
+
+(Substitute your own value for \$(openssl rand -base64 32) if the key already exists elsewhere
+and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
+results-api, and internal-api-secret on every internal caller.)
+
+Do NOT re-run create-secrets.sh to fix this unless you have the full set of optional secrets
+exported in your shell: it rewrites the whole secret and blanks any key you do not export.
+EOF
+    exit 1
+  fi
+done
 
 # volumes
 for f in volumes/*.yaml; do
@@ -311,7 +353,27 @@ generate_ingress() {
 generate_ingress | kubectl apply -f -
 
 # network policies
+# The union of every file in network-policies/ is what actually decides "mcp-server cannot
+# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". Nothing
+# else in this repo runs that check — there are no git hooks and no CI — so it runs here,
+# before the apply that would put a broken union on the cluster.
+# exit 1 = a control is broken, and the deploy aborts. exit 2 = the harness itself could
+# not run (missing PyYAML); that is not evidence of a broken policy, so it only warns.
+set +e
+python3 "${SCRIPT_DIR}/test-network-policies.py"
+policy_check=$?
+set -e
+if [ "${policy_check}" -eq 1 ]; then
+  echo "ERROR: network-policy checks failed; refusing to apply network-policies/."
+  echo "       See docs/code-execution-security.md sections 3 and 5."
+  exit 1
+elif [ "${policy_check}" -ne 0 ]; then
+  echo "WARNING: scripts/test-network-policies.py could not run (exit ${policy_check}); applying unverified."
+fi
 kubectl apply -f network-policies/
+
+# pod disruption budgets
+kubectl apply -f disruption-budgets/
 
 # deployments (substitute variables and image tags)
 for f in deployments/*.yaml; do
@@ -324,7 +386,7 @@ for f in deployments/*.yaml; do
     echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

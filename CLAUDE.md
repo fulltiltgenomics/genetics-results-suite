@@ -38,10 +38,10 @@ violate this; it runs from the `pre-commit` hook.
 | `configs/datasets.yaml` | `docs/datasets-yaml-schema.md`, `docs/adding-datasets.md` | `data_type` enum, dataset/rule/table fields, the `ALL_VIEWS` list |
 | `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
-| `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `scripts/lib/**` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
-| `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
+| `scripts/deploy.sh`, `rollout.sh`, `build*.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
-| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
+| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
+| `sandbox/**`, `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md`, `docs/project-spec.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers |
 
 A doc is stale the moment it *enumerates* something the code no longer matches.
 Counts and lists rot silently — view lists, endpoint tables, env-var tables,
