@@ -777,12 +777,31 @@ existing credential type is untouched in either single-sided state.
 The ordering that *is* load-bearing is the **secret**: chat-backend, db-api and results-api all
 mount `sandbox-token-signing-key`, so `create-secrets.sh` must run before the manifests are
 applied or the pods sit in `CreateContainerConfigError`. `deploy.sh` now verifies that key and
-`internal-api-secret` are non-empty before applying anything, and on a miss prints a targeted
-`kubectl patch secret genetics-secrets --type=merge` for **that one key** rather than telling
-the operator to re-run `create-secrets.sh` — that script reuses-or-generates only a handful of
-keys and writes `--from-literal=x="${X:-}"` for the rest, so re-running it without every
-optional secret exported blanks the OpenAI/Tavily/Perplexity/Cohere/MCP keys,
-`external-mcp-servers`, `admin-users` and `slack-webhook-url`. The single lockout is
+`internal-api-secret` are non-empty before applying anything, and on a miss offers both a
+targeted `kubectl patch secret genetics-secrets --type=merge` for **that one key** and a re-run
+of `create-secrets.sh`. That re-run used to be the trap — the script reused-or-generated only a
+handful of keys and wrote `--from-literal=x="${X:-}"` for the rest, so re-running it without
+every optional secret exported blanked the OpenAI/Tavily/Perplexity/Cohere/MCP keys,
+`external-mcp-servers`, `admin-users` and `slack-webhook-url`. Fixed in
+`genetics-results-suite-4pj`: every key the script writes **except `anthropic-api-key`** is now
+reused from the cluster when its env var is unset. The three fallbacks differ by what an absent
+value would mean: the shared secrets and passwords are reuse-then-*generate*; the eight optional
+keys are reuse-then-*empty*, because a random value for an API key is a plausible-looking string
+that fails only at call time and `admin-users`/`external-mcp-servers` have no random value at
+all; the keycloak usernames are reuse-then-*default* (`keycloak`/`admin`), since an empty
+username is useless and overwriting a customised `db-user` while faithfully reusing `db-password`
+would leave Keycloak unable to reach Postgres. `ANTHROPIC_API_KEY` is the deliberate exception —
+never read back, always required, and the script aborts before writing anything without it, which
+is the one caveat the `deploy.sh` and `docs/code-execution-security.md` remediation text carries.
+The reuse read also separates "kubectl worked, key absent" from "kubectl failed" and aborts
+loudly on the latter — previously `kubectl get … 2>/dev/null | base64 -d || true` made an RBAC
+denial or a wrong kubeconfig context indistinguishable from "never set", which would silently
+rotate `internal-api-secret` (breaking every service) against a perfectly healthy cluster.
+kubectl's stderr is captured to a scratch file and read **only when it exits non-zero**, never
+merged into stdout: kubectl exits 0 while printing auth-plugin deprecation warnings, and merging
+those into the base64 payload would abort the script on GNU coreutils and, on a busybox `base64`
+that skips non-alphabet bytes, write a corrupted value back over the live secret.
+The single lockout is
 `SANDBOX_ENABLED=true` with either secret missing — both services `sys.exit(1)` by design, so
 that crash-loops db-api and results-api. Both manifests ship `SANDBOX_ENABLED: "false"`; the
 deploy that creates the sandbox Deployment flips it, after `create-secrets.sh`. **Rollback:

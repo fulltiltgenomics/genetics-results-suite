@@ -1392,12 +1392,15 @@ treat sandbox executions as failing until the last pod is Ready. Nothing else br
 shared-secret, Google id_token and user-API-token paths are untouched), and the rollback is
 the same operation in reverse.
 
-**If a Deployment's env is missing the key entirely**, the fix is a targeted
-`kubectl patch secret genetics-secrets --type=merge` on that one key, *not* a re-run of
-`create-secrets.sh` — that script writes every key it knows about and blanks the optional ones
+**If a Deployment's env is missing the key entirely**, either fix works. Re-running
+`create-secrets.sh` is safe for the optional keys — it reuses whatever is already in the cluster
+for every key it is not given in the environment, so the ones you have not exported
 (`openai-api-key`, `tavily-api-key`, `perplexity-api-key`, `cohere-api-key`, `mcp-api-key`,
-`external-mcp-servers`, `admin-users`, `slack-webhook-url`) that are not exported in the
-operator's shell. `deploy.sh`'s secret gate prints the patch command for exactly this reason.
+`external-mcp-servers`, `admin-users`, `slack-webhook-url`) survive untouched. It does require
+`ANTHROPIC_API_KEY` to be exported: that key alone is never read back from the cluster, and
+without it the script aborts before writing anything. Without that key to hand, use the targeted
+`kubectl patch secret genetics-secrets --type=merge` on the one missing key instead —
+`deploy.sh`'s secret gate prints both options.
 
 **Accepted residual: a symmetric key means db-api and results-api can mint.** HS256 is one
 secret shared by all three services, so verification and *minting* are the same capability.
