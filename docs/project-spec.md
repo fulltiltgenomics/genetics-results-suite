@@ -390,7 +390,8 @@ explicitly: pin the build, or match on something build-independent.
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
-- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
+- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (`endpoint_access` records from the in-cluster services → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`). **A BigQuery sink names its destination table after the log ID, not after the service**, and every GKE container logs to stdout, so all `endpoint_access` rows from results-api *and* db-api land in one table, `genetics_api_logs.stdout` — that is the table to query for API usage. **Identity is available for results-api rows only**: db-api's `endpoint_access` payload (`genetics-results-db/api/main.py`) carries no user or principal key at all, so its 1,101 rows have zero non-null `user_email` structurally, not incidentally. The two are separable because db-api rows also have `endpoint_path` NULL. The sibling table `genetics_api_logs.genetics_results_api` is the `genetics-results-api-dev1` **GCE VM**, which reached the sink because the filter used to be project-wide. It is not decommissioned and not usage: it is a developer machine running the results-api **test suite** (`sourceLocation.file` points inside a checkout under `/home/jkarjala/suite/genetics-results-api`, and it emitted 1,638 entries within a single second), still producing rows today — 1,377 on 2026-08-11. Narrowing the sink filter to `resource.type="k8s_container"` in namespace `genetics` **stops that feed deliberately and with no replacement**; that is the point, since it is test noise. Neither table ever carries `httpRequest` — the middleware emits a `jsonPayload`-only record, so `httpRequest.responseSize` is structurally NULL and no response-size data exists in this sink at all
+  - **Query hazard — `log_source` was renamed.** Inside `genetics_api_logs.stdout`, results-api rows carried `log_source='genetics-results-api-prod'` (40,958 rows, only 95 non-null `user_email`) up to 2026-06-03; after that results-api emits `log_source='finngenie_prod'` (12,258 rows, 12,026 non-null `user_email` — the current value). db-api rows carry `log_source` NULL. A query still filtering on the old value returns **nothing after 2026-06-03 and no error**, which is the same silent-empty-result trap as reading the wrong table
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
 
@@ -658,9 +659,12 @@ both `/api` and `/mcp`.
 
 **This is a migration, not a removal.** The Google-id_token verification branch stays in place and
 `GOOGLE_TOKEN_AUDIENCE` keeps its value; only the *guidance* changed. Measured 2026-08-10 from
-**Cloud Logging** (not the BigQuery `endpoint_access` sink — that sink drops `user_email` and lags,
-so re-deriving these numbers from it gives a different and wrong answer; open bead in
-`genetics-results-suite`): over the preceding 90 days, non-`mcp-tool` traffic was 1,943 requests
+**Cloud Logging** (an earlier attempt to re-derive these numbers from the BigQuery `endpoint_access`
+sink disagreed, but only because it queried the wrong table: `genetics_api_logs.genetics_results_api`
+is the dev VM's test suite, where `user_email` is always NULL. The sink neither drops `user_email`
+nor lags — `genetics_api_logs.stdout` carries it on 12,121 of 53,216 results-api rows and lands rows
+within ~90 seconds of wall clock — so `stdout` is the table to cross-check against, mind the
+`log_source` rename noted under "Log sinks"): over the preceding 90 days, non-`mcp-tool` traffic was 1,943 requests
 from six `@finngen.fi` people, at least three of them programmatic — and the request logs record no
 credential type, so it is impossible to tell which of them are on the id_token path. Deleting it
 would strand callers we cannot enumerate. Nothing automated depends on
