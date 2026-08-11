@@ -208,10 +208,24 @@ SNP-level results there effectively uninterpretable, and the classical allele is
 literature and the clinic use.
 
 Two fields need care and are documented everywhere they surface: `pval` **underflows to 0**
-for the strongest signals (coeliac `DQB1*02:01` is mlogp 1596), so ranking must use
-`mlogp`; and each row carries the allele's imputation `info`, because rare alleles imputed
+for the strongest signals (coeliac `DQB1*02:01` is mlog10p 1596), so ranking must use
+`mlog10p`; and each row carries the allele's imputation `info`, because rare alleles imputed
 below ~0.5 produce enormous unstable betas that read as spectacular findings but are
 artifacts.
+
+Both serving paths spell the statistics the same way — `mlog10p`, `se`, `af`, `af_cases`,
+`af_controls` — so per-column access is uniform and no renaming is ever needed. The column
+*sets* still differ, and a script that concatenates the two directions has to account for
+it: the by-allele path (`hla_associations_v`, via the MCP SDK) returns the 11 columns common
+to both — `phenotype`, `gene`, `allele`, `mlog10p`, `pval`, `beta`, `se`, `af`, `af_cases`,
+`af_controls`, `info` — while the by-phenotype path (results-api `_HLA_HEADER_SCHEMA`)
+returns those plus `resource`, `version`, `chr` and `pos`, 15 in all. A bare `pl.concat` of
+the two frames fails on width; select the shared 11 on both sides first. The staged
+file and the `hla_associations` table keep FinnGen's native `mlogp`/`sebeta`/`af_alt`/
+`af_alt_cases`/`af_alt_controls`; `hla_associations_v` renames them 1:1 to the house
+spelling that results-api's `_HLA_HEADER_SCHEMA` already used. See
+[HLA column rename rollout](#hla-column-rename-rollout-hla_associations_v) for the ordering
+constraint that rename imposes.
 
 Served two ways, because the data has two query axes and neither storage layout serves both:
 
@@ -828,6 +842,101 @@ it with the bearer unchanged. Two conventions is the accepted price of a rollout
 in which browser sessions, downloads and API tokens could be written under the shared `mcp-tool`
 identity — which is exactly what an `Authorization`-borne marker would have caused, since the
 old chat-backend checks the bearer *before* it looks at the identity header.
+
+### HLA column rename rollout (`hla_associations_v`)
+
+`genetics-results-suite-5wm` renamed the statistic columns of `hla_associations_v` to the
+suite's house spelling — `mlogp`→`mlog10p`, `sebeta`→`se`, `af_alt`→`af`,
+`af_alt_cases`→`af_cases`, `af_alt_controls`→`af_controls` — so that both branches of the SDK's
+`hla()` and both HLA MCP tools return one set of names. The rename lives entirely in the view;
+the staged file and the `hla_associations` table keep FinnGen's native spelling, and the values
+are byte-identical.
+
+**This is not two commands. It is one view plus THREE code artifacts, each with its own
+apply mechanism — and the third is `deploy.sh`, which the other two never invoke.**
+
+| part | artifact | what applies it |
+|---|---|---|
+| the view | `genetics-results-db/schemas/hla_associations_v.sql` | `genetics-results-db/scripts/setup_bigquery.sh`, run by hand against `PROJECT_ID`/`DATASET_ID`. It sed-substitutes the project into every `schemas/*_v.sql` and issues the `CREATE OR REPLACE VIEW`. Nothing in `deploy.sh`, `build.sh` or `rollout.sh` touches a BigQuery object |
+| code 1/3 | mcp-server's `get_hla_by_allele` SQL (`tools/executor.py`), the tool descriptions, the SDK docstring | `scripts/build.sh mcp-server && scripts/rollout.sh mcp-server` |
+| code 2/3 | the sandbox image's generated `sandbox/schema/hla_associations_v.md` and `sandbox/stubs/*.pyi` | a **separate image** from mcp-server: `scripts/build.sh sandbox && scripts/rollout.sh sandbox <tag>`. Rolling mcp-server does not roll it |
+| code 3/3 | `configs/datasets.yaml`, which reaches the pods as the `datasets-config` ConfigMap | **only `scripts/deploy.sh` refreshes it** (`kubectl create configmap datasets-config --from-file=…`). Neither `build.sh` nor `rollout.sh` recreates that ConfigMap at all |
+
+Code 3/3 is the one that gets forgotten and the one that matters most for this rename:
+`configs/datasets.yaml` is the schema the model reads when it composes **ad-hoc** SQL, so a
+rollout that ships only the mcp-server image leaves the LLM confidently writing `mlogp`
+against a view that no longer has it. The tool's own hardcoded SQL is fixed by code 1/3; the
+model's improvised SQL is only fixed by code 3/3.
+
+| state | view emits house names? | mcp-server SQL asks for house names? | result |
+|---|---|---|---|
+| neither applied (old) | no | no | works — the divergence `5wm` describes, but functional |
+| **view only** | yes | no | **broken.** Every `get_hla_by_allele` call and every `hla(allele=)` script selects `mlogp`/`sebeta`/`af_alt` from a view that no longer has them → BigQuery `Unrecognized name` on every request. So does any hand-written `query_bigquery` SQL the model composed from the old schema doc |
+| **code only** | no | yes | **broken, in mirror image.** The new SQL selects `mlog10p`/`se`/`af` from a view that still emits the native names → the same error on every request |
+| both applied | yes | yes | works, and the two `hla()` branches agree |
+
+**Neither single-sided state is safe** — unlike the `bff`/`results-api` and
+`auth-gateway`/`chat-backend` pairs, where one leading order has a benign transitional row.
+A rename is not additive on either side, so applying the committed view directly gives no
+order that avoids a broken window; there is only a choice of which half is broken first.
+
+**Use expand/contract. Do not apply the committed view directly.** It costs one extra
+BigQuery application and removes the broken window entirely:
+
+1. **Expand** — replace the view with one emitting **both** spellings (SQL below). Every
+   state from here on serves old and new readers simultaneously.
+2. **Ship the code** — all three artifacts above, in any order, at any pace.
+3. **Contract** — apply the committed `schemas/hla_associations_v.sql` as-is.
+
+The expanded view is a safe resting state, verified against every consumer: the TSV header
+is built from the query's own `columns` so extra columns cannot desync it; the only
+`SELECT *` consumer is model-composed sandbox SQL, whose schema doc names the house spelling
+only; `scripts/monitor/` issues just `COUNT(*)` and `DISTINCT resource`;
+`generate_resource_sql.py --lint` reads only the `CASE` block; and `gen-sandbox-docs.py
+--check` compares against `configs/datasets.yaml`, not the live view.
+
+What settles it is **rollback**. While expanded, the view serves both generations, so the
+code half rolls back with a plain `kubectl rollout undo` and **no BigQuery action at all**.
+Applying the committed view directly makes every rollback a two-sided, time-critical
+operation under exactly the pressure that causes mistakes.
+
+The expand-phase statement, in full — do not improvise it. The `CASE … AS resource` block is
+the reason this view exists (`resource` would otherwise be the wrong `'finngen_hla'`), and it
+is what an improvised `SELECT *` plus five aliases silently drops:
+
+```sql
+CREATE OR REPLACE VIEW `genetics_results.hla_associations_v` AS
+SELECT
+  *,
+  mlogp AS mlog10p,
+  sebeta AS se,
+  af_alt AS af,
+  af_alt_cases AS af_cases,
+  af_alt_controls AS af_controls,
+  CASE
+    WHEN LOWER(dataset) LIKE 'finngen_hla%' THEN 'finngen'
+    ELSE LOWER(dataset)
+  END AS resource
+FROM `genetics_results.hla_associations`;
+```
+
+This emits the base table's 14 columns, the 5 aliases and `resource` — 20 in all — so both
+spellings resolve. Note it is `SELECT *`, which is precisely what the committed contracted
+definition deliberately abandons; the expand phase is the one time that is wanted, because
+it is what makes the state transitional rather than a new resting shape.
+
+If the broken window is accepted anyway (a rename applied in one shot), apply the view and
+roll all three code artifacts back to back, and treat the gap as an outage of the
+HLA-by-allele path rather than as a resting state. Rolling **back** from that state is the
+mirror image: revert the view and all three code artifacts, in either order, as close
+together as possible.
+
+**This changes the live MCP tool output shape.** `get_hla_by_allele` returns named rows built
+from the view's column list, and its TSV download carries the same header, so any external
+consumer — a saved script, a notebook, a downstream agent reading `mlogp`/`sebeta`/`af_alt` out
+of the tool result — breaks at the moment the view is replaced, not at some later opt-in. The
+`min_mlogp` **parameter** name is deliberately unchanged: it is part of the tool's public input
+schema, renaming it would break callers for no gain, and it is not a column.
 
 nginx cannot read environment variables from config directives, and a Secret must not be baked
 into a ConfigMap, so `auth-gateway.yaml` keeps a literal `${INTERNAL_API_SECRET}` placeholder in
