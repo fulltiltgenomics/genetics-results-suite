@@ -40,7 +40,7 @@ violate this; it runs from the `pre-commit` hook.
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
-| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
+| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
 
 A doc is stale the moment it *enumerates* something the code no longer matches.
 Counts and lists rot silently — view lists, endpoint tables, env-var tables,
