@@ -181,10 +181,11 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
 # CreateContainerConfigError rather than starting degraded, so catch it here instead: an older
 # genetics-secrets predating the sandbox work simply has no such key.
 #
-# Deliberately NOT "re-run create-secrets.sh": that script only reuses-or-generates a few keys
-# and writes `--from-literal=x="${X:-}"` for the rest, so re-running it with an incomplete
-# environment blanks openai/tavily/perplexity/cohere/mcp keys, external-mcp-servers,
-# admin-users and slack-webhook-url. Patch in just the missing key instead.
+# create-secrets.sh now reuses every key it does not get from the environment, so re-running it
+# is a safe fix here and no longer blanks the optional keys. Its one requirement is an exported
+# ANTHROPIC_API_KEY — that key alone is never read back from the cluster, and without it the
+# script aborts before writing anything. The targeted patch below stays as the alternative for
+# operators who do not have that key to hand.
 for key in internal-api-secret sandbox-token-signing-key; do
   if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
        -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
@@ -200,8 +201,10 @@ Add ONLY that key, leaving every other key in the secret untouched:
 and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
 results-api, and internal-api-secret on every internal caller.)
 
-Do NOT re-run create-secrets.sh to fix this unless you have the full set of optional secrets
-exported in your shell: it rewrites the whole secret and blanks any key you do not export.
+Re-running create-secrets.sh also fixes this and is safe for the optional keys: it reuses every
+value already in the cluster instead of blanking the ones you have not exported. It does still
+require ANTHROPIC_API_KEY to be exported — that is the one key it never reads back from the
+cluster, and without it the script aborts (safely, writing nothing).
 EOF
     exit 1
   fi
