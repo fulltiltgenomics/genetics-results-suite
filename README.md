@@ -423,7 +423,7 @@ user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after
 
 ## Logging
 
-All services output structured JSON to stdout, automatically captured by GKE's fluentbit agent and sent to Cloud Logging. With `enable_log_sinks = true`, `terraform/logging.tf` also creates two Cloud Logging → BigQuery sinks: the results API's usage logs (stripped of variant, gene, phenotype etc. information) into `genetics_api_logs`, and chat-backend container logs at severity ≥ INFO into `genetics_chat_logs`. `scripts/chat_usage_stats.sh` reports chat usage counts from the latter.
+All services output structured JSON to stdout, automatically captured by GKE's fluentbit agent and sent to Cloud Logging. With `enable_log_sinks = true`, `terraform/logging.tf` also creates two Cloud Logging → BigQuery sinks: the `endpoint_access` usage logs of both results-api and db-api (stripped of variant, gene, phenotype etc. information), scoped to `k8s_container` resources in the `genetics` namespace, into `genetics_api_logs` — both services share the table `genetics_api_logs.stdout`, see `docs/project-spec.md` → Log sinks — and chat-backend container logs at severity ≥ INFO into `genetics_chat_logs`. `scripts/chat_usage_stats.sh` reports chat usage counts from the latter.
 
 ## Security
 
