@@ -38,6 +38,17 @@ if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
   terraform init -input=false -backend-config="${BACKEND_FILE}" -reconfigure > /dev/null
 else
+  # CONFIG_PROFILE alone is not enough to apply: without terraform.tfvars every other variable
+  # falls back to its default (log sinks off, manage_iam on, daly profile), which destroys and
+  # replaces live infrastructure. terraform itself also refuses (require_tfvars), this is the
+  # earlier and clearer failure.
+  if [ ! -f terraform.tfvars ]; then
+    echo "ERROR: terraform/terraform.tfvars not found — refusing to 'terraform apply'."
+    echo "It is gitignored and lives only in the main checkout; from a git worktree terraform"
+    echo "would use variable defaults and destroy live resources."
+    echo "Deploy from the main checkout, or set SKIP_TERRAFORM=true to deploy k8s manifests only."
+    exit 1
+  fi
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
   terraform apply -auto-approve

@@ -121,6 +121,12 @@ variable "keycloak_backup_retention_days" {
   default     = 14
 }
 
+variable "require_tfvars" {
+  description = "Refuse to plan/apply unless terraform/terraform.tfvars is present next to the config. Guards against a worktree or fresh clone silently using variable defaults. Set false only when supplying values another way (-var-file elsewhere, TF_VAR_*, CI)."
+  type        = bool
+  default     = true
+}
+
 variable "enable_log_sinks" {
   description = "Whether to create BigQuery log sinks (e.g. chat-backend logs to genetics_chat_logs)"
   type        = bool

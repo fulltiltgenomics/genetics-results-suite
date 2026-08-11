@@ -100,6 +100,13 @@ terraform init
 terraform apply                               # review the plan before confirming
 ```
 
+> `terraform.tfvars` is gitignored and lives only in your main checkout. Terraform refuses to plan
+> or apply without it (`require_tfvars`, default `true`) — otherwise a run from a git worktree or a
+> fresh clone would use variable defaults and destroy the log sinks and replace the node pool.
+> `apply -target=...` bypasses the guard entirely, and `destroy` does too (deliberately). If
+> you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`. `deploy.sh` enforces
+> the same before applying; `SKIP_TERRAFORM=true` (k8s manifests only) is unaffected.
+
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
 ```bash
