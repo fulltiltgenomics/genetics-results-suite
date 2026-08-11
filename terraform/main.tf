@@ -41,4 +41,19 @@ check "iam_config" {
 # reference existing static IP
 data "google_compute_global_address" "static_ip" {
   name = var.static_ip_name
+
+  # fail closed when terraform.tfvars is missing. the file is gitignored and lives only in the
+  # main checkout, so a run from a git worktree would otherwise silently fall back to variable
+  # defaults (enable_log_sinks=false, manage_iam=true, config_profile=daly, ...) and plan a
+  # destroy of live infrastructure that reads like an ordinary small change.
+  lifecycle {
+    precondition {
+      condition     = !var.require_tfvars || fileexists("${path.module}/terraform.tfvars")
+      error_message = <<-EOT
+        terraform.tfvars not found at ${path.module}/terraform.tfvars. It is gitignored and exists only in the main checkout, so a run from a git worktree (.claude/worktrees/*) or a fresh clone falls back to variable defaults instead.
+        Those defaults are destructive: enable_log_sinks=false DESTROYS both BigQuery log sinks, manage_iam=true with an empty node_service_account REPLACES the GKE node pool, and config_profile/oauth_email_domain revert to the daly/Broad values.
+        Fix: run terraform from the main checkout, or copy terraform.tfvars.example and fill it in. To supply values another way, pass both -var-file=/path/to/terraform.tfvars and -var require_tfvars=false.
+      EOT
+    }
+  }
 }
