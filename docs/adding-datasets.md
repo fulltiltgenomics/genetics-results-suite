@@ -356,7 +356,12 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
 4. `genetics-results-db`: `schemas/hla_associations{,_v}.sql`, `scripts/load_hla.sh`, the
    `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view added
    to the `VIEWS` allowlist in `api/main.py` **and** to `ALL_VIEWS` in
-   `generate_resource_sql.py` so the linter covers it.
+   `generate_resource_sql.py` so the linter covers it. `hla_associations_v` lists its
+   columns explicitly instead of `SELECT *`, because it renames five to the suite's house
+   spelling (`mlogp`→`mlog10p`, `sebeta`→`se`, `af_alt`→`af`, `af_alt_cases`→`af_cases`,
+   `af_alt_controls`→`af_controls`); a column added to `hla_associations` therefore has to
+   be added to the view too, which `tests/test_hla_view_columns.py` enforces against
+   `SCHEMAS["hla_associations"]`.
 5. `genetics-mcp-server`: `get_hla_by_phenotype` (results-api) and `get_hla_by_allele`
    (BigQuery), plus an HLA section in the chat system prompt.
 6. `genetics-results-suite`: `hla_associations_v` added to the monitor's `VIEWS` and
