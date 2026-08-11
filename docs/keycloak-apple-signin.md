@@ -139,6 +139,11 @@ the issuer string keeps matching token `iss`.
 
 ## MCP OAuth clients (e.g. brainzzz)
 
+> For the full customer-onboarding runbook — both gates (client + email allow-list), handoff
+> details, verification and adding a Microsoft/Entra identity provider — see
+> [mcp-oauth-onboarding.md](mcp-oauth-onboarding.md). This section covers the Keycloak
+> mechanics only.
+
 External apps can reach the MCP server (`/mcp`) via a standard OAuth flow instead of a shared
 API token: the mcp-server validates Keycloak-issued access tokens as a fourth bearer path and
 advertises discovery at `/.well-known/oauth-protected-resource` (see the Authentication section

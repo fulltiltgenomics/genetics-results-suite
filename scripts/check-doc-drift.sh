@@ -47,8 +47,8 @@ check '^scripts/(deploy|rollout|build|build-all|sync-datasets)\.sh$' "$DOCS_SPEC
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
 
-check '^(keycloak/|scripts/keycloak-)' '^docs/keycloak-apple-signin\.md$' \
-    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)'
+check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
+    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (onboarding commands, IdP list)'
 
 if [ "$found" -eq 1 ]; then
     printf '\n  Update the doc in this commit, or note why it does not apply.\n' >&2
