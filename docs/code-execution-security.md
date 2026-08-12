@@ -87,11 +87,15 @@ chat-backend's `SUBAGENT_ALLOWED_PATHS`; see the `read_artifact` subsection in s
 
 ## 2. Isolation boundary
 
-The baseline in this cluster is: every application container sets
-`allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and `RuntimeDefault`
-seccomp. `db-api` (uid 10001) and `bff` (uid 1000) additionally run `runAsNonRoot`. The
-sandbox must exceed that baseline, because it is the only workload in the cluster that
-executes attacker-influenceable code *by design*.
+The **suite baseline** referred to in the table below is what the suite's *own* service
+containers set: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and
+`RuntimeDefault` seccomp, with `db-api` (uid 10001) and `bff` (uid 1000) additionally
+`runAsNonRoot`. It is **not** a cluster-wide property and never was: eight third-party and
+support workloads set none of it, and `auth-gateway` adds `CHOWN`/`SETUID`/`SETGID` back
+on top of its drop-ALL, so even `drop: ["ALL"]` is not flatly true of the containers that
+do set it. `docs/project-spec.md` → Security holds the authoritative per-workload list —
+do not duplicate that enumeration here. The sandbox must exceed this baseline, because it
+is the only workload in the cluster that executes attacker-influenceable code *by design*.
 
 ### Decisions
 

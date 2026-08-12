@@ -314,6 +314,19 @@ spec:
           readOnly: true
         - name: rendered-config
           mountPath: /etc/nginx/rendered
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+            # `nginx -t` is not a dry run: it creates the compiled-in temp paths under
+            # /var/cache/nginx and chowns them to the worker uid, so the validation step
+            # above dies with `chown(...) failed (1: Operation not permitted)` on a bare
+            # drop-ALL — a failing initContainer that stalls every rollout. Verified by
+            # running this image under `--cap-drop=ALL`, with and without
+            # `--security-opt=no-new-privileges`; NNP made no difference either way.
+            add: ["CHOWN"]
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "10m"
@@ -343,6 +356,24 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+            # NET_BIND_SERVICE is deliberately absent: the only `listen` is 8080, and neither
+            # fragment deploy.sh injects (${LEGACY_REDIRECT}, ${KEYCLOAK_SERVER}) adds one.
+            # The three below are not optional. This image's master starts as root and its
+            # nginx build defaults to `--user=nginx`, which the mounted config does not
+            # override, so startup chowns /var/cache/nginx/*_temp to uid 101 (CHOWN) and each
+            # worker setgid/setuid's to it (SETGID/SETUID). Verified against nginx:1.27-alpine:
+            # a bare drop-ALL aborts at chown; adding only CHOWN leaves `setgid(101) failed`
+            # with no worker respawnable, i.e. a master that holds the port and answers
+            # nothing — the liveness probe then restarts the internet-facing gateway forever.
+            # Running as uid 101 instead would need /var/cache/nginx made writable (an emptyDir
+            # the pod does not have), so the capability grant is the smaller change.
+            add: ["CHOWN", "SETUID", "SETGID"]
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "50m"
