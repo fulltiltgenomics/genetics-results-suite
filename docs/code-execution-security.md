@@ -934,7 +934,15 @@ because the sandbox is the one caller whose input is attacker-influenced. Concre
    `options={"require": ["iss", "aud", "sub", "sid", "jti", "iat", "exp"]}`. Reject `iat`
    more than 300s in the past.
 5. Log `sid`, `sub` and `jti` on every request authorized this way, into the existing
-   structured log line that feeds the `genetics_api_logs` sink.
+   structured log line that feeds the `genetics_api_logs` sink — whose production table is
+   `phewas-development.genetics_api_logs.stdout` (named after the log ID, not the service; the
+   similarly named `genetics_api_logs.genetics_results_api` is a developer VM's test output).
+   **Caveat: those three fields are not queryable in BigQuery today.** That table's
+   `jsonPayload` schema has no `sid`, `sub` or `jti` column, because no sandbox-authorized
+   request has ever reached the sink to grow it — there is no sandbox Deployment and
+   `SANDBOX_ENABLED` is `"false"` on both services. Until one lands, sandbox attribution is
+   readable in Cloud Logging and container stdout only, and any claim here about attributing an
+   execution must be checked against the schema rather than assumed.
 6. **db-api refuses to start** — `sys.exit(1)`, not a `logger.warning` — when the sandbox
    is deployed and `INTERNAL_API_SECRET` is unset. Rules 1-5 all fire on "a sandbox-shaped
    bearer", and **nothing in this design obliges the sandbox to send one**. A script that
@@ -1110,30 +1118,76 @@ The first question was whether tight caps there would truncate or 429 a real bro
 Measured, they would not, and the numbers are worth recording because they are the reason this
 is a judgement call rather than a forced one:
 
-| public route | calls, 30 d | largest response possible | vs the 16 MiB cap |
+| public route | production calls, `timestamp >= "2026-07-13" AND timestamp < "2026-08-12"` | largest response possible | vs the 16 MiB cap |
 |---|---|---|---|
-| `GET /api/v1/rsid/variants` | 140 | ~700–1 300 rows, bounded by URL length (nginx `large_client_header_buffers` 8k, h11's 16 KiB) rather than by code | <1% |
-| `POST /api/v1/rsid/variants` | 14 | was **unbounded in code**; now 5 000 ids (`app/routers/rsid.py` `MAX_RSIDS`), enforced for every caller | <1% |
-| `GET /api/v1/variant_sets/{name}` | 14 | 888 rows / 18.6 KB (`FinnGen_enriched_202505`, the largest configured file) | 0.1% |
-| `GET /api/v1/variant_sets` | 7 | 3 rows / 74 B | — |
-| `GET /api/v1/auth` | 0 (last hit 2026-03-14) | 1 object / ~90 B | — |
-| `GET /api/v1`, `GET /healthz` | not in the sink | a fixed object of a few hundred bytes | — |
+| `GET /api/v1/rsid/variants` | 64 | ~700–1 300 rows, bounded by URL length (nginx `large_client_header_buffers` 8k, h11's 16 KiB) rather than by code | <1% |
+| `POST /api/v1/rsid/variants` | 0 (never seen in production) | was **unbounded in code**; now 5 000 ids (`app/routers/rsid.py` `MAX_RSIDS`), enforced for every caller | <1% |
+| `GET /api/v1/variant_sets/{name}` | 3 | 888 rows / 18.6 KB (`FinnGen_enriched_202505`, the largest configured file) | 0.1% |
+| `GET /api/v1/variant_sets` | 0 (never seen in production) | 3 rows / 74 B | — |
+| `GET /api/v1/auth` | 0 (1 hit ever, 2026-03-07) | 1 object / ~90 B | — |
+| `GET /api/v1` | 0 (4 hits ever, last 2026-05-20) | a fixed object of a few hundred bytes | — |
+| `GET /healthz` | unmeasurable — excluded from usage logging by design | a fixed object of a few hundred bytes | — |
 
-Counts from `phewas-development.genetics_api_logs.genetics_results_api` (the `endpoint_access`
-sink); sizes measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
+**Where these numbers come from, so they can be re-run.** `phewas-development.genetics_api_logs.stdout`
+— the GKE production table — over the **fixed window `[2026-07-13 00:00 UTC, 2026-08-12 00:00 UTC)`**;
+the "ever" figures are the same table unbounded (it starts 2026-03-06). The bounds are **literal
+on purpose**: an earlier draft printed `TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)` while
+labelling the window as calendar dates, so the query drifted a day per day away from the numbers
+beside it and re-running it produced a different table every time (55 rather than 64 on the top
+row, the whole of the disagreement). Re-run this query verbatim and you get the table above; change
+the bounds and you are measuring something else, so change the counts with them. Query:
+
+```sql
+SELECT jsonPayload.http_method, jsonPayload.endpoint_path, COUNT(*) AS n, MAX(timestamp) AS last_hit
+FROM `phewas-development.genetics_api_logs.stdout`
+WHERE timestamp >= "2026-07-13" AND timestamp < "2026-08-12"
+  AND jsonPayload.log_type = "endpoint_access"
+GROUP BY 1, 2 ORDER BY n DESC
+```
+
+Add `AND jsonPayload.service = "results-api"` to exclude db-api's rows, which land in this same
+table — but only for rows written on or after 2026-08-12; before that, see the three eras under
+`docs/project-spec.md` → "Log sinks". Do **not** filter on
+`jsonPayload.log_source = 'genetics-results-api-prod'`: results-api renamed
+that value to `finngenie_prod` on 2026-06-03, so the old value returns nothing after that date and
+no error — which is exactly why `service` exists and `log_source` is not the discriminator. Do
+**not** query `genetics_api_logs.genetics_results_api`, which earlier drafts of this
+table used — despite its name it is not the production service (see below).
+
+An earlier draft's row asserting "`GET /api/v1`, `GET /healthz` — not in the sink" was wrong for
+one and right for the other, for different reasons. `/api/v1` **is** logged; it simply gets
+almost no traffic (4 hits in the table's whole history). `/healthz` is genuinely absent, but by
+design rather than by disuse: it is in `usage_logging_excluded_paths`
+(`app/config/common.py`, alongside `/api/v1/docs`, `/api/v1/redoc`, `/api/v1/openapi.json`,
+`/favicon.ico`), so no volume of kubelet probes would ever appear. Its call count is therefore
+not measurable from this sink at all — but it returns a fixed object either way, so nothing in
+the argument turns on it.
+
+The remaining zeroes are real and unsurprising: these public routes are the browser's, and the
+browser is a small share of a service whose traffic is dominated by `mcp-tool` calls to
+authenticated routes.
+
+Sizes are measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
 (external traffic only — bff and mcp-server reach results-api in-cluster and bypass the
-gateway, so **no response size is logged for the dominant caller**; `httpRequest.responseSize`
-is non-NULL on 0 of the 2 812 rows, and `full_path`, which would reveal rsid counts, is stripped
-before Cloud Logging).
+gateway, so **no response size is logged for the dominant caller**). The middleware emits a
+`jsonPayload`-only record, so `httpRequest.responseSize` is structurally NULL on every row of
+this sink — there is no response-size data in it at all — and `full_path`, which would reveal
+rsid counts, is stripped before Cloud Logging.
 
-*What this table cannot show.* An earlier draft added "`user_email` is NULL on every one of
-these rows, confirming no principal is resolved". **That inference is withdrawn as
-unreproducible.** `phewas-development.genetics_api_logs.genetics_results_api` returns 0 rows for
-the last two days while Cloud Logging carries `endpoint_access` entries from today, and across
-30 days all 2 812 of its rows have a NULL `user_email` while a live entry from today carries
-`"mcp-tool"`. That is a sink artifact, not a fact about principals, so the table cannot support
-any claim about *who* called. The no-truncation conclusion below therefore rests on the caps
-being unreachable by the largest response this code can produce, not on logged size data.
+*What this table cannot show, and why an earlier draft got it wrong.* An earlier draft sourced
+these counts from `phewas-development.genetics_api_logs.genetics_results_api` and added
+"`user_email` is NULL on every one of these rows, confirming no principal is resolved". **Both
+the counts and that inference are withdrawn.** The reason is not a sink artifact, a lag, or
+anything about principals: **that table is a different machine's log.** A BigQuery log sink names
+its table after the *log ID*, not after the service, so the table carrying the service's name is
+the decoy — it is fed by the `genetics-results-api-dev1` GCE VM running the results-api **test
+suite** (`sourceLocation.file` points inside a developer checkout; 1,638 entries within a single
+second), while the production GKE rows are in `stdout`. Every number in the old table therefore
+measured a developer's tests, and its all-NULL `user_email` was a property of test traffic, not
+of production principals. See `docs/project-spec.md` → "Log sinks" for the full account. The
+table above is re-measured against `stdout`; sizes are still not available from any sink, so the
+no-truncation conclusion below rests — as it already did — on the caps being unreachable by the
+largest response this code can produce, not on logged size data.
 
 So capping them would not regress anything today. They are nonetheless **relaxed**, because the
 exception costs nothing and the alternative does not: these routes already answer the open
