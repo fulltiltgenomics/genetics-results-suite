@@ -49,7 +49,7 @@ repairs it anyway rather than trusting that.
 | `configs/datasets.yaml` | `docs/datasets-yaml-schema.md`, `docs/adding-datasets.md` | `data_type` enum, dataset/rule/table fields, the `ALL_VIEWS` list |
 | `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
-| `scripts/deploy.sh`, `rollout.sh`, `build*.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed |
+| `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
 | `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
 | `sandbox/**`, `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md`, `docs/project-spec.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers |
