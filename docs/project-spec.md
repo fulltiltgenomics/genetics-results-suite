@@ -191,7 +191,7 @@ client-side reconnect and no persistence of partial assistant turns.
 
 `configs/datasets.yaml` is the single source of truth for dataset and resource definitions consumed by both results-api and db-api. At deploy time, `deploy.sh` creates a Kubernetes ConfigMap (`datasets-config`) from this file and volume-mounts it into both service pods at `/app/configs/datasets.yaml`. Each service reads the path from the `DATASETS_CONFIG_PATH` environment variable.
 
-For local development, `scripts/sync-datasets.sh` copies the canonical file to sibling service repos so they can run standalone. Each service's YAML loader defaults to `./configs/datasets.yaml` when `DATASETS_CONFIG_PATH` is not set. The sibling copies are **generated and untracked** — `configs/datasets.yaml` is gitignored in both `genetics-results-api` and `genetics-results-db`, and committed only here. Two consequences: a fresh sibling clone has no `configs/datasets.yaml` at all and the service aborts at startup until `sync-datasets.sh` (or an explicit `DATASETS_CONFIG_PATH`) provides one; and because the copies are untracked there is nothing to diff, so no check detects a stale sibling copy — divergence shows up only as a service reading yesterday's config. `deploy.sh` also runs `sync-datasets.sh` (best-effort) before building the ConfigMap, but this is not a reliable sync: the script derives `SUITE_DIR` as the parent of `scripts/`, so when run from a git worktree it looks for `<worktree>/../genetics-results-{db,api}`, prints `WARN: repo not found, skipping:` for both targets and **exits 0 having copied nothing**. Only the ConfigMap built from the canonical file governs what the deployed pods read; the sibling copies matter for local runs only. Note that this only keeps `datasets.yaml` in sync — the results-api product configs (`app/config/profiles/*/credible_sets.py`, `summary_stats.py`, `common.py`, etc., which hold the actual GCS file paths and the `dataset_to_resource` map) live only in genetics-results-api and are baked into its image at build time, so changes there require rebuilding and rolling out the results-api image.
+For local development, `scripts/sync-datasets.sh` copies the canonical file to sibling service repos so they can run standalone. Each service's YAML loader defaults to `./configs/datasets.yaml` when `DATASETS_CONFIG_PATH` is not set. The sibling copies are **generated and untracked** — `configs/datasets.yaml` is gitignored in both `genetics-results-api` and `genetics-results-db`, and committed only here. Two consequences: a fresh sibling clone has no `configs/datasets.yaml` at all and the service aborts at startup until `sync-datasets.sh` (or an explicit `DATASETS_CONFIG_PATH`) provides one; and because the copies are untracked there is nothing to diff, so no check detects a stale sibling copy — divergence shows up only as a service reading yesterday's config. `deploy.sh` also runs `sync-datasets.sh` (best-effort) before building the ConfigMap. The script resolves the siblings from the **git common dir** (`git rev-parse --git-common-dir`, absolutised, twice up), which is the main checkout's `.git` even from a worktree — so a run from `<repo>/.claude/worktrees/<name>` syncs the same `~/suite/genetics-results-{db,api}` a main-checkout run would, and a same-named directory sitting next to the worktree is reported as ignored rather than written to (genetics-results-suite-e47; it previously derived `SUITE_DIR` as the parent of `scripts/`, warned, and **exited 0 having copied nothing**). Failure modes are split deliberately: a sibling that is simply not checked out prints `SKIP:` and exits 0, while an unresolvable sibling root, or a resolved directory whose `pyproject.toml` does not name that repo, prints `ERROR:` and exits 1. Nonzero is loud without breaking a deploy — `deploy.sh` calls it `|| echo WARN ... (continuing)`. `SUITE_SIBLING_ROOT` overrides the resolution for layouts the `.git`-next-to-the-root assumption does not fit. Only the ConfigMap built from the canonical file governs what the deployed pods read; the sibling copies matter for local runs only. Note that this only keeps `datasets.yaml` in sync — the results-api product configs (`app/config/profiles/*/credible_sets.py`, `summary_stats.py`, `common.py`, etc., which hold the actual GCS file paths and the `dataset_to_resource` map) live only in genetics-results-api and are baked into its image at build time, so changes there require rebuilding and rolling out the results-api image.
 
 Both services load all dataset/resource metadata exclusively from the YAML -- there are no hardcoded fallback dicts. In genetics-results-api, the profile `datasets.py` files are empty placeholders (datasets come from YAML via `app.config.yaml_loader`). The `dataset_to_resource` mapping in `profiles/*/common.py` is still hardcoded as the YAML schema does not yet support exact BQ dataset name to (resource, version) tuples.
 
@@ -820,16 +820,18 @@ installer.
 A recurring failure class in this repo: **a tool run from a git worktree resolves a
 path into the MAIN checkout, then degrades without erroring**. The tool exits 0, prints
 nothing alarming, and the absence of an error is read as success. Four instances have
-been found, each by accident and each after the silent degradation had already happened:
+been found, each by accident and each after the silent degradation had already happened.
+Three are still only *detected* here; the fourth was fixed in the offending script:
 
 | what resolves to the main checkout | how it degrades from a worktree |
 |---|---|
 | `.beads/issues.jsonl` — bd writes the export next to the Dolt store, and the store is in the main checkout | the worktree's copy is **tracked but never written**, so `git add .beads/issues.jsonl && git commit` stages nothing and git answers "nothing to commit, working tree clean" |
-| sibling repos for `scripts/sync-datasets.sh` — resolved as `../genetics-results-{db,api}` next to the invoking checkout | prints `WARN: repo not found, skipping` for both and **exits 0 having copied nothing** |
+| ~~sibling repos for `scripts/sync-datasets.sh`~~ — **fixed**: the script resolves them from the git common dir, so a worktree run syncs the real siblings, refuses a directory whose `pyproject.toml` does not name that repo, and exits nonzero when it cannot resolve them at all. `check-worktree-paths.sh` no longer checks this case | (was: printed `WARN: repo not found, skipping` for both and **exited 0 having copied nothing**) |
 | `terraform/terraform.tfvars` — gitignored, so it exists only in the main checkout | terraform falls back to destructive variable **defaults**; `build.sh`/`build-all.sh` silently fall back to `APP_NAME=FinnGenie` |
 | `core.hooksPath` — local git config, shared by every worktree | hooks run from the main checkout's copies, so an edit to `.beads/hooks/*` on a branch is inert for commits made there |
 
-`scripts/check-worktree-paths.sh` is one preflight for all four. It compares the path
+`scripts/check-worktree-paths.sh` is one preflight for the three still-detected cases
+(the sync-datasets one was fixed at source and dropped from it). It compares the path
 each tool will actually use against the path inside the current worktree and reports
 **only where they differ** — an alert that fires unconditionally is one nobody reads.
 It exits 0 in silence from the main checkout (where `git rev-parse --git-common-dir`'s
@@ -869,6 +871,24 @@ tracked copy from the same live database — measured byte-identical to the main
 checkout's export. That is the command the preflight now prints, so its warning is
 actionable rather than merely informative. What is never true is that a worktree's
 `git add .beads/issues.jsonl` did anything on its own.
+
+### The same class in Python: which tree the tests actually import
+
+`check-worktree-paths.sh` covers shell tools. The service repos have their own instance of
+the failure, and it is enforced in each repo's `tests/conftest.py` rather than here, because
+only the interpreter that runs the tests can see it. The three repos differ in install mode,
+so the guard differs in shape:
+
+| repo | install mode | what can silently import another tree | guard |
+|---|---|---|---|
+| `genetics-mcp-server` | **editable install** — `.venv/…/_editable_impl_genetics_mcp_server.pth` points at ONE tree's `src/` | in a fresh worktree `uv run pytest` falls through to the pyenv shim, whose interpreter has the MAIN checkout installed; worktree tests then run main-checkout source and report green (genetics-results-suite-6o3) | `pytest_configure` aborts unless `genetics_mcp_server.__file__` is under the pytest rootdir |
+| `genetics-results-api` | **not installed** — `app` is a namespace package, `tests/conftest.py` puts the repo root first on `sys.path` | the foreign-interpreter case cannot happen (the insert is anchored to the conftest's own location), but a namespace package **merges** every matching `sys.path` entry, so `PYTHONPATH=<other checkout>` — what a bare `python scripts/…` run needs — adds that tree's `app/` to `app.__path__` | `pytest_configure` aborts unless every `app.__path__` entry is under the rootdir |
+| `genetics-results-db` | **not installed** — no `[build-system]`, so `uv sync` installs dependencies only; `api` is a namespace package each test module puts on `sys.path` | same namespace-merge exposure as results-api | `tests/conftest.py` (added for this) makes the same `api.__path__` assertion |
+
+All three fail in `pytest_configure` — before collection, with the resolved paths and the
+fix in the message — not as a test failure inside a run. The fix for the mcp-server case is
+`uv sync --extra dev` **in the worktree** followed by the resolution one-liner the message
+prints; for the other two it is unsetting or repointing `PYTHONPATH`.
 
 ### Ordered rollout: the trusted-proxy marker (bff before results-api)
 

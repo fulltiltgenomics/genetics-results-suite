@@ -331,10 +331,12 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
     -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 fi
 
-# keep the sibling service repos' committed datasets.yaml in sync with the canonical
-# copy (best-effort: skips repos that aren't checked out next to this one). The pods
-# below get the canonical file via the ConfigMap regardless, but this prevents the
-# committed copies (used for local dev and baked into freshly built images) from drifting.
+# refresh the sibling service repos' LOCAL datasets.yaml from the canonical copy. Those
+# copies are gitignored and untracked in both siblings, so they exist only on a developer's
+# machine and never reach an image (build.sh clones from GitHub). Best-effort: prints SKIP
+# for a sibling that isn't cloned here and exits 0; it only fails if it cannot resolve the
+# sibling root or finds a directory that isn't that repo. The pods below get the canonical
+# file via the ConfigMap regardless — this is purely so local dev isn't stale.
 if [ -x "${SCRIPT_DIR}/sync-datasets.sh" ]; then
   echo "=== Syncing datasets.yaml to sibling service repos ==="
   "${SCRIPT_DIR}/sync-datasets.sh" || echo "  WARN: dataset sync reported an issue (continuing)"

@@ -116,16 +116,15 @@ it before step 6:
 ~/suite/genetics-results-suite/scripts/sync-datasets.sh
 ```
 
-That script resolves its targets as `<dir containing scripts/>/../genetics-results-{db,api}`, so
-it only works from a **normal clone** of this repo. Run from a `git worktree` it is
-worktree-unaware: it looks for the siblings next to the worktree
-(`.../.claude/worktrees/<name>/../genetics-results-db`), prints
-`WARN: repo not found, skipping: ...` for both, and **exits 0 having copied nothing** — verified.
-From a worktree, copy manually:
+That script resolves its targets from the **git common dir** — the main checkout's `.git` even
+when the script is invoked from `<repo>/.claude/worktrees/<name>` — so it works the same from a
+worktree and from a normal clone, and it prints the resolved root as its first line. A sibling
+that is not cloned here prints `SKIP:` and the run still exits 0; only an unresolvable sibling
+root, or a directory whose `pyproject.toml` does not name that repo, is an `ERROR:` and exit 1.
+If your layout does not put the siblings next to the main checkout, point it at them:
 
 ```bash
-cp ~/suite/genetics-results-suite/configs/datasets.yaml ~/suite/genetics-results-api/configs/
-cp ~/suite/genetics-results-suite/configs/datasets.yaml ~/suite/genetics-results-db/configs/
+SUITE_SIBLING_ROOT=~/elsewhere ~/suite/genetics-results-suite/scripts/sync-datasets.sh
 ```
 
 ## 4. Install dependencies
@@ -320,7 +319,10 @@ Two things look testable here and are not. Do not record either as verified from
 | Symptom | Cause |
 |---|---|
 | results-api or db-api aborts complaining about `configs/datasets.yaml` | the file is gitignored in both service repos — sync or copy it (step 3) |
-| `sync-datasets.sh` prints `WARN: repo not found` twice and copies nothing | it was run from a git worktree, where the sibling repos are not one level up — copy manually (step 3) |
+| `sync-datasets.sh` prints `SKIP: <repo> is not checked out on this machine` | that sibling really is not cloned here; clone it or ignore the line (it exits 0) |
+| `sync-datasets.sh` exits 1 with `ERROR: cannot resolve where the sibling repos live` | it was run from a directory that is not a git checkout; set `SUITE_SIBLING_ROOT` to the directory holding the sibling repos |
+| `sync-datasets.sh` exits 1 with `ERROR: <path> exists but is not the <repo> repo` | a directory of the right name sits where the sibling should be but its `pyproject.toml` does not name that repo — usually a stale or partial clone, or `SUITE_SIBLING_ROOT` pointing one level off. The script refuses to copy into it; point it at the real checkout |
+| `sync-datasets.sh` exits 1 with `ERROR: SUITE_SIBLING_ROOT is set to '<path>', which is not a directory` | the override is a typo, a file, or a path that does not exist; unset it to fall back to the git-common-dir resolution |
 | BFF or vite window exits instantly | `npm install` never ran in `genetics-results-browser` (step 4) |
 | An auth/identity change behaves differently locally than in the cluster | the default setup has no auth-gateway, so `X-Goog-Authenticated-User-Email` is never produced and the bearer divert never runs (step 8) |
 | results-api aborts at startup listing `gs://` files | ADC identity has no read access to the data bucket, or `CONFIG_PROFILE` points at data you cannot see |

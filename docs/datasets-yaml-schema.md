@@ -349,10 +349,13 @@ if needed.
 Each service reads datasets.yaml from the path in the `DATASETS_CONFIG_PATH` env var,
 defaulting to `./configs/datasets.yaml` when unset.
 
-**Committed local copy**
+**Gitignored local copy**
 
-The local copy of datasets.yaml should be committed to each service repo as a
-known-good snapshot. This simplifies onboarding (clone and run, no extra sync step)
-and lets CI compare the committed copy against the suite repo's canonical version to
-detect drift. The deploy pipeline always delivers the canonical version at deploy time,
-so a stale local copy only affects local dev.
+The local copy of datasets.yaml is gitignored in both `genetics-results-api` and
+`genetics-results-db` and is never committed. `scripts/sync-datasets.sh` (or
+deploy.sh calling it) places it for local dev only; it is never baked into a
+deployed image. At runtime the ConfigMap generated from this repo's canonical
+`configs/datasets.yaml` is authoritative, so a stale or missing local copy only
+affects local dev. Committing the copies so CI could compare them against the
+canonical version was once written down as the intent, but was never
+implemented and would first require these repos to have CI at all.
