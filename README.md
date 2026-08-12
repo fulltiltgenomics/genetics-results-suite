@@ -341,10 +341,10 @@ first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schem
 (`sandbox/schema/`, one file per BigQuery view in `configs/datasets.yaml`) and the SDK
 signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 `/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
-copies are current, that every view and column reaches a file, and that the stubs cover
-exactly the SDK's exported surface. `build.sh sandbox` fails on a non-zero exit; `build-all.sh`
-folds it into the same skip branch as the generator. Exit 1 = a property broke, 2 = the
-harness could not run (no staged SDK source).
+copies are current, that every view and column reaches a file **with its BigQuery type**,
+and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
+a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
+Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. There
 is no sandbox Deployment yet. See
 [docs/code-execution-security.md](docs/code-execution-security.md).

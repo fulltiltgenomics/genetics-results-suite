@@ -245,6 +245,30 @@ tables:
       maf: "Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
+    column_types:
+      dataset: STRING
+      data_type: STRING
+      trait: STRING
+      trait_original: STRING
+      cell_type: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      mlog10p: FLOAT64
+      beta: FLOAT64
+      se: FLOAT64
+      pip: FLOAT64
+      cs_id: STRING
+      cs_size: INT64
+      cs_min_r2: FLOAT64
+      aaf: FLOAT64
+      most_severe: STRING
+      gene_most_severe: STRING
+      variant: STRING
+      maf: FLOAT64
+      resource: STRING
+
     examples:
       - description: "Everything a variant is fine-mapped for, across all resources and data types. Always add the chr filter next to variant — the table is partitioned by chr and without it the same query scans ~20x more data and can hit the bytes-billed limit."
         sql: |-
@@ -381,6 +405,47 @@ tables:
       resource1: "Data source for study 1 (lowercase)"
       resource2: "Data source for study 2 (lowercase)"
 
+    column_types:
+      dataset1: STRING
+      dataset2: STRING
+      data_type1: STRING
+      data_type2: STRING
+      trait1: STRING
+      trait1_original: STRING
+      trait2: STRING
+      trait2_original: STRING
+      cell_type1: STRING
+      cell_type2: STRING
+      cs1_id: STRING
+      cs2_id: STRING
+      hit1: STRING
+      hit2: STRING
+      hit1_beta: FLOAT64
+      hit1_mlog10p: FLOAT64
+      hit2_beta: FLOAT64
+      hit2_mlog10p: FLOAT64
+      chr: INT64
+      region_start_min: INT64
+      region_end_max: INT64
+      PP_H0_abf: FLOAT64
+      PP_H1_abf: FLOAT64
+      PP_H2_abf: FLOAT64
+      PP_H3_abf: FLOAT64
+      PP_H4_abf: FLOAT64
+      nsnps: INT64
+      nsnps1: INT64
+      nsnps2: INT64
+      cs1_log10bf: FLOAT64
+      cs2_log10bf: FLOAT64
+      clpp: FLOAT64
+      clpa: FLOAT64
+      cs1_size: INT64
+      cs2_size: INT64
+      cs_overlap: INT64
+      topInOverlap: STRING
+      resource1: STRING
+      resource2: STRING
+
     examples:
       - description: "What molecular QTLs colocalize with a GWAS phenotype — the usual 'what is the likely mechanism' query"
         sql: |-
@@ -490,6 +555,24 @@ tables:
       variant: "Variant identifier as chr:pos:ref:alt"
       resource: "Data source identifier (lowercase)"
 
+    column_types:
+      dataset: STRING
+      data_type: STRING
+      trait: STRING
+      trait_original: STRING
+      cell_type: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      mlog10p: FLOAT64
+      beta: FLOAT64
+      se: FLOAT64
+      pip: FLOAT64
+      cs_id: STRING
+      variant: STRING
+      resource: STRING
+
     examples:
       - description: "Both credible sets behind a colocalization. Carry trait_original and cell_type through the CTE and into the join — (dataset, cs_id) alone matches every other trait fine-mapped in the same region: on the pair this query picks it returns 18 credible sets and 18 rows instead of the 2 and 2 below. SELECT DISTINCT because this view repeats rows. PP_H4_abf ties (many pairs sit at exactly 1.0), so the ORDER BY names further columns to make the pick reproducible."
         sql: |-
@@ -571,6 +654,29 @@ tables:
       variant: "Variant identifier as chr:pos:ref:alt"
       resource: "Data source identifier (lowercase)"
 
+    column_types:
+      dataset: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      gene: STRING
+      annotation: STRING
+      mlog10p: FLOAT64
+      beta: FLOAT64
+      se: FLOAT64
+      af_overall: FLOAT64
+      af_cases: FLOAT64
+      af_controls: FLOAT64
+      ac: INT64
+      an: INT64
+      n_cases: INT64
+      n_controls: INT64
+      trait: STRING
+      trait_original: STRING
+      variant: STRING
+      resource: STRING
+
     examples:
       - description: "Predicted loss-of-function variant associations in a gene. annotation values differ per resource: genebass uses pLoF/missense/LC, ibd_exome_2026 uses VEP terms such as frameshift_variant."
         sql: |-
@@ -627,6 +733,26 @@ tables:
       trait_original: "Original trait name in the respective dataset"
       flags: "Quality or analysis flags (NA if none)"
       resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
+
+    column_types:
+      dataset: STRING
+      trait: STRING
+      gene: STRING
+      gene_id: STRING
+      chr: INT64
+      gene_start_pos: INT64
+      gene_end_pos: INT64
+      annotation: STRING
+      mlog10p_burden: FLOAT64
+      beta: FLOAT64
+      se: FLOAT64
+      total_variants: INT64
+      total_variants_pheno: INT64
+      n_cases: INT64
+      n_controls: INT64
+      trait_original: STRING
+      flags: STRING
+      resource: STRING
 
     examples:
       - description: "All burden tests for a gene across every exome study and phenotype — the usual starting point for 'is this gene implicated anywhere'"
@@ -702,6 +828,31 @@ tables:
       maf: "Minor allele frequency = LEAST(af, 1-af)"
       resource: "Data source identifier (lowercase)"
 
+    column_types:
+      dataset: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      rsid: STRING
+      beta: FLOAT64
+      se: FLOAT64
+      mlog10p: FLOAT64
+      af: FLOAT64
+      most_severe: STRING
+      gene_most_severe: STRING
+      target_start: INT64
+      target_end: INT64
+      ref_methylrate: FLOAT64
+      alt_methylrate: FLOAT64
+      n_haplotypes: INT64
+      variant_rank: STRING
+      ld_count: INT64
+      vartype: STRING
+      variant: STRING
+      maf: FLOAT64
+      resource: STRING
+
     examples:
       - description: "ASM-QTL associations for variants near a gene"
         sql: >-
@@ -755,6 +906,27 @@ tables:
       version: "Data release version"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
+    column_types:
+      chr: INT64
+      peak_start: INT64
+      peak_end: INT64
+      peak_id: STRING
+      dataset: STRING
+      cell_type: STRING
+      tissue: STRING
+      life_stage: STRING
+      condition: STRING
+      assay: STRING
+      score: FLOAT64
+      score_type: STRING
+      n_cells: INT64
+      cell_ontology_id: STRING
+      uberon_id: STRING
+      target_gene: STRING
+      target_gene_id: STRING
+      version: STRING
+      resource: STRING
+
     examples:
       - description: "Cell types/tissues where a genomic position is open chromatin"
         sql: >-
@@ -805,6 +977,27 @@ tables:
       is_significant: "Whether the predicted effect passes the model's significance threshold"
       version: "Data release version"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      variant: STRING
+      rsid: STRING
+      dataset: STRING
+      model: STRING
+      cell_type: STRING
+      tissue: STRING
+      life_stage: STRING
+      score: FLOAT64
+      score_type: STRING
+      mlog10p: FLOAT64
+      predicted_direction: STRING
+      quantile_rank: FLOAT64
+      is_significant: BOOL
+      version: STRING
+      resource: STRING
 
     examples:
       - description: "Predicted accessibility effect of a variant per cell type"
@@ -861,6 +1054,26 @@ tables:
       mean_RNA_alt: "Mean reporter RNA level for the alt allele. Populated only for per-cell-line rows; NULL for meta rows"
       dataset: "Source dataset identifier (constant 'siraj_mpra')"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      variant: STRING
+      ref: STRING
+      alt: STRING
+      cohort: STRING
+      cell_line: STRING
+      emVar: BOOL
+      active: BOOL
+      log2Skew: FLOAT64
+      log2Skew_se: FLOAT64
+      log2Skew_mlog10p: FLOAT64
+      log2FC: FLOAT64
+      log2FC_mlog10p: FLOAT64
+      mean_RNA_ref: FLOAT64
+      mean_RNA_alt: FLOAT64
+      dataset: STRING
+      resource: STRING
 
     examples:
       - description: "MPRA calls for a variant across all cell lines (and the meta summary)"
@@ -944,6 +1157,23 @@ tables:
       info: "Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations"
       dataset: "Source dataset identifier (constant 'finngen_hla')"
       resource: "Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      gene: STRING
+      allele: STRING
+      phenotype: STRING
+      pval: FLOAT64
+      mlog10p: FLOAT64
+      beta: FLOAT64
+      se: FLOAT64
+      af: FLOAT64
+      af_cases: FLOAT64
+      af_controls: FLOAT64
+      info: FLOAT64
+      dataset: STRING
+      resource: STRING
 
     examples:
       - description: "The HLA profile of one phenotype, strongest allele first"
@@ -1029,6 +1259,26 @@ tables:
       download_date: "Date the source data was downloaded/built"
       resource: "Data source identifier, constant 'hgnc'"
 
+    column_types:
+      hgnc_id: STRING
+      symbol: STRING
+      name: STRING
+      prev_symbols: STRING
+      alias_symbols: STRING
+      ensembl_gene_id: STRING
+      ncbi_gene_id: STRING
+      chr: INT64
+      gene_start: INT64
+      gene_end: INT64
+      strand: STRING
+      locus_type: STRING
+      gene_group_ids: ARRAY<INT64>
+      gene_group_names: ARRAY<STRING>
+      gencode_version: STRING
+      hgnc_version: STRING
+      download_date: DATE
+      resource: STRING
+
     examples:
       - description: "Coordinates for a set of genes, to drive window queries against the result views. A symbol can have several rows, so aggregate to one interval per gene; chr is INT64 here and in the result views, so joins need no casting."
         sql: |-
@@ -1102,6 +1352,24 @@ tables:
       GENOME_enrichment_nfe: "Finnish vs non-Finnish European allele-frequency ratio from gnomAD genomes"
       index: "Row index in the source annotation file, not a genetic quantity"
       resource: "Data source identifier, constant 'finngen' (FinnGen R14)"
+
+    column_types:
+      variant: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      INFO: FLOAT64
+      AF: FLOAT64
+      AC_Het: INT64
+      AC_Hom: INT64
+      most_severe: STRING
+      gene_most_severe: STRING
+      rsid: STRING
+      EXOME_enrichment_nfe: FLOAT64
+      GENOME_enrichment_nfe: FLOAT64
+      index: INT64
+      resource: STRING
 
     examples:
       - description: "Translate an rsID to the chr:pos:ref:alt identifier the association views use. rsid is neither partitioned nor clustered, so this scans the whole table — add a chr filter whenever the chromosome is already known."
@@ -1181,6 +1449,30 @@ tables:
       dataset: "Source dataset identifier (FinnGen_ATACseq)"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
+    column_types:
+      chr: INT64
+      peak_start: INT64
+      peak_end: INT64
+      peak_id: STRING
+      gene_id: STRING
+      symbol: STRING
+      cell_type: STRING
+      total_cell_num: INT64
+      expr_cell_num: INT64
+      open_cell_num: INT64
+      hurdle_zero_beta: FLOAT64
+      hurdle_zero_se: FLOAT64
+      hurdle_zero_z: FLOAT64
+      hurdle_zero_nlog10p: FLOAT64
+      hurdle_count_beta: FLOAT64
+      hurdle_count_se: FLOAT64
+      hurdle_count_z: FLOAT64
+      hurdle_count_nlog10p: FLOAT64
+      hurdle_aic: FLOAT64
+      hurdle_bic: FLOAT64
+      dataset: STRING
+      resource: STRING
+
     examples:
       - description: "caQTL signals for a gene, per cell type (variant -> peak -> gene)"
         sql: >-
@@ -1259,6 +1551,22 @@ tables:
       publication_date: "Publication date; NULL rather than invented when the source gives only a year"
       version: "Dataset version label (R14, R12, 26.06, ...)"
       coloc_partner_only: "TRUE for traits whose dataset exists only as a colocalization partner (FinnGen R12 core and R12 Kanta). They appear in colocalization_v but not credible_sets_v; add `AND NOT coloc_partner_only` to mirror what phenotype search returns"
+
+    column_types:
+      dataset: STRING
+      trait_original: STRING
+      trait_name: STRING
+      trait_type: STRING
+      category: STRING
+      n_samples: INT64
+      n_cases: INT64
+      n_controls: INT64
+      dataset_id: STRING
+      resource: STRING
+      author: STRING
+      publication_date: DATE
+      version: STRING
+      coloc_partner_only: BOOL
 
     examples:
       - description: "Name the traits behind credible sets at a locus, in one query"
@@ -1346,6 +1654,25 @@ tables:
       coloc_partner_only: "TRUE when the dataset exists only as a colocalization partner and ships no independently queryable product"
       collection: "TRUE for a collection whose sub-studies carry subdataset_of = its dataset_id (eQTL Catalogue). A collection row never appears as a dataset value itself"
       subdataset_of: "Parent collection's dataset_id for sub-studies (QTD ids under eqtl_catalogue); NULL otherwise"
+
+    column_types:
+      dataset: STRING
+      dataset_id: STRING
+      dataset_ids: ARRAY<STRING>
+      resource: STRING
+      resource_label: STRING
+      resource_aliases: ARRAY<STRING>
+      version: STRING
+      description: STRING
+      author: STRING
+      publication_date: DATE
+      data_type: STRING
+      trait_type: STRING
+      n_samples: INT64
+      pseudo_credible_sets: BOOL
+      coloc_partner_only: BOOL
+      collection: BOOL
+      subdataset_of: STRING
 
     examples:
       - description: "Flag pseudo credible sets in the same result set, not after the fact"

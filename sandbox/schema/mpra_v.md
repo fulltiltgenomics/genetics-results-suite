@@ -13,26 +13,30 @@ predictions and from endogenous eQTL/caQTL. Always filter by resource, not datas
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome number (GRCh38; X=23, Y=24, M=25). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
-| `pos` | Genomic position (GRCh38) |
-| `variant` | Variant identifier as chr:pos:ref:alt (chromosome X=23) |
-| `ref` | Reference allele |
-| `alt` | Alternative (tested) allele |
-| `cohort` | Fine-mapping cohort the variant was drawn from: GTEx, UKBB, or BBJ (all fine-mapped trait variants), or control (matched controls). NA if the variant had no meta-analysis row |
-| `cell_line` | MPRA context — 'meta' (cross-cell-line meta-analysis summary) or one of K562, HEPG2, SKNSH, HCT116, A549. One row per variant per cell_line |
-| `emVar` | Whether the allele modulates reporter expression in this context (allelic skew significant) |
-| `active` | Whether the element drives reporter expression above background in this context |
-| `log2Skew` | Signed allelic effect, log2(alt/ref) of reporter activity (positive = alt drives higher expression) |
-| `log2Skew_se` | Standard error of log2Skew. Populated only for cell_line='meta' rows; NULL for per-cell-line rows |
-| `log2Skew_mlog10p` | -log10 p for allelic skew. RAW -log10 p for meta rows, but adjusted -log10 p for per-cell-line rows (per-line has no raw p) — note this meta-vs-per-line asymmetry |
-| `log2FC` | Element activity vs background, log2 fold change of reporter expression over background |
-| `log2FC_mlog10p` | -log10 p for element activity. RAW -log10 p for meta rows, Bonferroni-adjusted -log10 p for per-cell-line rows — same meta-vs-per-line asymmetry as log2Skew_mlog10p |
-| `mean_RNA_ref` | Mean reporter RNA level for the ref allele. Populated only for per-cell-line rows; NULL for meta rows |
-| `mean_RNA_alt` | Mean reporter RNA level for the alt allele. Populated only for per-cell-line rows; NULL for meta rows |
-| `dataset` | Source dataset identifier (constant 'siraj_mpra') |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome number (GRCh38; X=23, Y=24, M=25). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt (chromosome X=23) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative (tested) allele |
+| `cohort` | `STRING` | Fine-mapping cohort the variant was drawn from: GTEx, UKBB, or BBJ (all fine-mapped trait variants), or control (matched controls). NA if the variant had no meta-analysis row |
+| `cell_line` | `STRING` | MPRA context — 'meta' (cross-cell-line meta-analysis summary) or one of K562, HEPG2, SKNSH, HCT116, A549. One row per variant per cell_line |
+| `emVar` | `BOOL` | Whether the allele modulates reporter expression in this context (allelic skew significant) |
+| `active` | `BOOL` | Whether the element drives reporter expression above background in this context |
+| `log2Skew` | `FLOAT64` | Signed allelic effect, log2(alt/ref) of reporter activity (positive = alt drives higher expression) |
+| `log2Skew_se` | `FLOAT64` | Standard error of log2Skew. Populated only for cell_line='meta' rows; NULL for per-cell-line rows |
+| `log2Skew_mlog10p` | `FLOAT64` | -log10 p for allelic skew. RAW -log10 p for meta rows, but adjusted -log10 p for per-cell-line rows (per-line has no raw p) — note this meta-vs-per-line asymmetry |
+| `log2FC` | `FLOAT64` | Element activity vs background, log2 fold change of reporter expression over background |
+| `log2FC_mlog10p` | `FLOAT64` | -log10 p for element activity. RAW -log10 p for meta rows, Bonferroni-adjusted -log10 p for per-cell-line rows — same meta-vs-per-line asymmetry as log2Skew_mlog10p |
+| `mean_RNA_ref` | `FLOAT64` | Mean reporter RNA level for the ref allele. Populated only for per-cell-line rows; NULL for meta rows |
+| `mean_RNA_alt` | `FLOAT64` | Mean reporter RNA level for the alt allele. Populated only for per-cell-line rows; NULL for meta rows |
+| `dataset` | `STRING` | Source dataset identifier (constant 'siraj_mpra') |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

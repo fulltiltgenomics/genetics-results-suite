@@ -10,27 +10,31 @@ filter by resource, not dataset.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome number (GRCh38, chromosome X is 23) |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative allele |
-| `variant` | Variant identifier as chr:pos:ref:alt, chromosome X is 23 |
-| `rsid` | dbSNP rsID |
-| `dataset` | Source dataset identifier |
-| `model` | Prediction model (chrombpnet, flare) |
-| `cell_type` | Cell-type context (NA for pan-context FLARE predictions) |
-| `tissue` | Harmonized tissue (e.g. brain, heart, immune) |
-| `life_stage` | Developmental stage (fetal, adult, unknown) |
-| `score` | Predicted effect magnitude on accessibility |
-| `score_type` | Meaning of score (chrombpnet_abs_logfc, flare_score) |
-| `mlog10p` | -log10(p) per-context significance (ChromBPNet; NA for FLARE) |
-| `predicted_direction` | Predicted direction of the accessibility effect |
-| `quantile_rank` | Effect-strength rank (how strongly the variant is predicted to act) |
-| `is_significant` | Whether the predicted effect passes the model's significance threshold |
-| `version` | Data release version |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome number (GRCh38, chromosome X is 23) |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative allele |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt, chromosome X is 23 |
+| `rsid` | `STRING` | dbSNP rsID |
+| `dataset` | `STRING` | Source dataset identifier |
+| `model` | `STRING` | Prediction model (chrombpnet, flare) |
+| `cell_type` | `STRING` | Cell-type context (NA for pan-context FLARE predictions) |
+| `tissue` | `STRING` | Harmonized tissue (e.g. brain, heart, immune) |
+| `life_stage` | `STRING` | Developmental stage (fetal, adult, unknown) |
+| `score` | `FLOAT64` | Predicted effect magnitude on accessibility |
+| `score_type` | `STRING` | Meaning of score (chrombpnet_abs_logfc, flare_score) |
+| `mlog10p` | `FLOAT64` | -log10(p) per-context significance (ChromBPNet; NA for FLARE) |
+| `predicted_direction` | `STRING` | Predicted direction of the accessibility effect |
+| `quantile_rank` | `FLOAT64` | Effect-strength rank (how strongly the variant is predicted to act) |
+| `is_significant` | `BOOL` | Whether the predicted effect passes the model's significance threshold |
+| `version` | `STRING` | Data release version |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

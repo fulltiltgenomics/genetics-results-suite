@@ -34,23 +34,27 @@ values are unchanged.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
-| `pos` | Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000 |
-| `gene` | HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5 |
-| `allele` | Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name |
-| `phenotype` | FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. THE TRAIT COLUMN — this view has no `trait` or `trait_original`, so the join to phenotypes_v is `p.dataset = h.dataset AND p.trait_original = h.phenotype`, never `= h.trait` |
-| `pval` | Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlog10p, never on pval |
-| `mlog10p` | -log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3) |
-| `beta` | Effect size (log odds ratio for binary endpoints) per copy of the allele |
-| `se` | Standard error of beta |
-| `af` | Allele frequency in the full cohort |
-| `af_cases` | Allele frequency in cases. NULL for quantitative endpoints |
-| `af_controls` | Allele frequency in controls. NULL for quantitative endpoints |
-| `info` | Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations |
-| `dataset` | Source dataset identifier (constant 'finngen_hla') |
-| `resource` | Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
+| `pos` | `INT64` | Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000 |
+| `gene` | `STRING` | HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5 |
+| `allele` | `STRING` | Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name |
+| `phenotype` | `STRING` | FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. THE TRAIT COLUMN — this view has no `trait` or `trait_original`, so the join to phenotypes_v is `p.dataset = h.dataset AND p.trait_original = h.phenotype`, never `= h.trait` |
+| `pval` | `FLOAT64` | Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlog10p, never on pval |
+| `mlog10p` | `FLOAT64` | -log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3) |
+| `beta` | `FLOAT64` | Effect size (log odds ratio for binary endpoints) per copy of the allele |
+| `se` | `FLOAT64` | Standard error of beta |
+| `af` | `FLOAT64` | Allele frequency in the full cohort |
+| `af_cases` | `FLOAT64` | Allele frequency in cases. NULL for quantitative endpoints |
+| `af_controls` | `FLOAT64` | Allele frequency in controls. NULL for quantitative endpoints |
+| `info` | `FLOAT64` | Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations |
+| `dataset` | `STRING` | Source dataset identifier (constant 'finngen_hla') |
+| `resource` | `STRING` | Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 
