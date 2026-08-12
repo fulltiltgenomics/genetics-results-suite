@@ -6,9 +6,11 @@
 # found so far, each by accident, each after the silent degradation had already
 # happened:
 #
-#   genetics-results-suite-e47  sync-datasets.sh resolves ../genetics-results-{db,api}
-#                               from the checkout it runs in, finds nothing in a
-#                               worktree, warns and exits 0 having copied nothing
+#   genetics-results-suite-e47  sync-datasets.sh resolved ../genetics-results-{db,api}
+#                               from the checkout it ran in, found nothing in a worktree,
+#                               warned and exited 0 having copied nothing. FIXED in the
+#                               script itself — it resolves from the git common dir now,
+#                               so this file no longer checks it
 #   genetics-results-suite-82s  terraform.tfvars is gitignored and exists only in the
 #                               main checkout, so terraform from a worktree falls back
 #                               to destructive variable defaults
@@ -90,16 +92,11 @@ if [ -f "$toplevel/.beads/issues.jsonl" ] &&
         bd export -o .beads/issues.jsonl"
 fi
 
-# --- sync-datasets.sh: sibling repos are resolved next to the invoking checkout ---
-# Not handled: the inverse, where a directory of that name DOES exist next to the
-# worktree — sync then copies into the wrong tree and this check stays silent.
-for sib in genetics-results-db genetics-results-api; do
-    if [ ! -d "$toplevel/../$sib" ] && [ -d "$main_root/../$sib" ]; then
-        note "scripts/sync-datasets.sh looks for '../$sib' next to the checkout it runs from.
-    $toplevel/../$sib does not exist; $main_root/../$sib does.
-    From here it prints 'WARN: repo not found, skipping' and exits 0 having copied nothing."
-    fi
-done
+# --- sync-datasets.sh: fixed at the source, nothing to check ---
+# It now resolves the siblings from the git COMMON dir, so from a worktree it finds the
+# same repos the main checkout would, ignores a same-named directory sitting next to the
+# worktree, and exits nonzero if it cannot resolve the sibling root at all. A check here
+# would have nothing left to compare.
 
 # --- terraform.tfvars: gitignored, so it exists only in the main checkout ---
 if [ ! -f "$toplevel/terraform/terraform.tfvars" ] &&

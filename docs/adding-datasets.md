@@ -49,10 +49,13 @@ Consequences:
   override to `DATASET_LABEL_OVERRIDES` in `src/features/table/utils/tableutil.tsx`
   (e.g. `UKB_PPP` → "UKBB PPP (Olink 3K)"). Optional, and only for display clarity.
 
-Both `genetics-results-api` and `genetics-results-db` keep a committed copy of
-`datasets.yaml` under `configs/`, refreshed by `scripts/sync-datasets.sh` (and by
-`deploy.sh`, best-effort). These committed copies are for local dev and CI drift checks;
-the deploy-time ConfigMap is authoritative at runtime.
+Both `genetics-results-api` and `genetics-results-db` read `configs/datasets.yaml` from
+their own checkout when run locally, but that file is **gitignored and untracked** in
+both repos (`genetics-results-api/.gitignore`, `genetics-results-db/.gitignore`) — it
+exists only as a local copy, placed there by `scripts/sync-datasets.sh` (and by
+`deploy.sh`, best-effort). It is a local-dev convenience so a developer's sibling
+checkout is not stale; it is never committed and never part of an image. The
+deploy-time ConfigMap is authoritative at runtime.
 
 ## 3. First decide: new resource, or new data for an existing resource?
 
