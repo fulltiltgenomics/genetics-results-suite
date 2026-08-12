@@ -240,7 +240,9 @@ it: the by-allele path (`hla_associations_v`, via the MCP SDK) returns the 11 co
 to both — `phenotype`, `gene`, `allele`, `mlog10p`, `pval`, `beta`, `se`, `af`, `af_cases`,
 `af_controls`, `info` — while the by-phenotype path (results-api `_HLA_HEADER_SCHEMA`)
 returns those plus `resource`, `version`, `chr` and `pos`, 15 in all. A bare `pl.concat` of
-the two frames fails on width; select the shared 11 on both sides first. The staged
+the two frames fails on width; select the shared 11 on both sides first. Both directions
+now keep their column names through an **empty** result — see "SDK empty-result contract"
+below; the by-phenotype one did not until `genetics-results-suite-6uk`. The staged
 file and the `hla_associations` table keep FinnGen's native `mlogp`/`sebeta`/`af_alt`/
 `af_alt_cases`/`af_alt_controls`; `hla_associations_v` renames them 1:1 to the house
 spelling that results-api's `_HLA_HEADER_SCHEMA` already used. See
@@ -995,6 +997,51 @@ it with the bearer unchanged. Two conventions is the accepted price of a rollout
 in which browser sessions, downloads and API tokens could be written under the shared `mcp-tool`
 identity — which is exactly what an `Authorization`-borne marker would have caused, since the
 old chat-backend checks the bearer *before* it looks at the identity header.
+
+### SDK empty-result contract (`genetics-results-suite-6uk`)
+
+A script in the code-execution sandbox filters whatever frame the SDK hands it, so an empty
+result must keep its **column names** — otherwise a perfectly ordinary no-hit query raises
+`ColumnNotFoundError` and costs the agent a retry iteration. The two backends reach that
+guarantee by different routes, and the difference is a property of the wire format, not of
+the SDK:
+
+- **db-api** returns `{"columns": [...], "rows": [[...]]}`. `columns` comes from the
+  BigQuery job schema, which is populated for a zero-row result, so the SDK has always been
+  able to build a named empty frame. `columns` is also **required** here: the rows are
+  positional and handing them to a dict constructor silently produces a transposed,
+  stringified frame.
+- **results-api** returns a **bare JSON array** of named row objects. An empty one is `[]`
+  and carries no schema at all. `range_response` now advertises the file's own header line
+  in an **`X-Columns` response header** (`genetics-results-api app/core/responses.py`),
+  which covers all 11 routers that serve JSON range responses in one place — credible sets,
+  colocalization, exome, expression, HLA, MPRA, open chromatin, chromatin peaks, summary
+  stats, variant annotation, variant effect. The names come from the TSV header, **not**
+  from the router's `header_schema`: that schema is a validating superset (see
+  `genetics-results-suite-7yg`) and would over-claim on files that carry fewer columns.
+
+Three properties are load-bearing and each is pinned by a test:
+
+1. **The change is additive.** The JSON body is byte-identical — the browser and the MCP
+   server parse the array and neither can observe an added response header. Wrapping the
+   array in an envelope would have been a breaking change for both. The header is JSON-only:
+   on the TSV path the header line is already the first line of the body, and `7yg`
+   established that path must not buffer the stream to inspect it.
+2. **MCP tool output is unchanged.** A `ToolExecutor` result dict *is* the MCP tool payload
+   and the chat backend's model input, which this epic freezes. The executor therefore takes
+   `expose_columns=False` by default and only the SDK's own executor asks for it; when it is
+   off — or the endpoint does not advertise — the result dict is byte-identical to before.
+3. **The two keys stay separate.** results-api's list arrives as `column_names`, never as
+   db-api's `columns`, because those rows are already named dicts: routing them through the
+   positional constructor would give up `pl.from_dicts`' `strict=False` fallback for the
+   mixed-type columns upstream does produce. `column_names` is consulted **only** when the
+   result is empty.
+
+What this does *not* cover: results-api endpoints outside the `range_response` family —
+fuzzy search, gene annotations, gene groups, rsID lookup, LD, gene–disease, and gene-based /
+gene-burden results (`gene_based.py`, which returns `StreamingResponse`/`TimedJSONResponse`
+directly) — which compute their JSON rather than streaming a TSV and so have no header to
+advertise. Those degrade to the previous behaviour (a bare `pl.DataFrame()`), they do not break.
 
 ### HLA column rename rollout (`hla_associations_v`)
 
