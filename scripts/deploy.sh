@@ -18,6 +18,11 @@ fi
 # no beads export, silently. warn here; never block a deploy over it.
 "${SCRIPT_DIR}/install-git-hooks.sh" --check || true
 
+# same class, one level up: several paths this script depends on (terraform.tfvars,
+# the sibling repos sync-datasets.sh copies into, the beads export) resolve into the
+# MAIN checkout when this runs from a worktree, and degrade without erroring.
+"${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
+
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection

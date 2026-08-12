@@ -791,6 +791,61 @@ their own `scripts/check-doc-drift.sh` wired into `.beads/hooks/pre-commit` the 
 way, and share the same `core.hooksPath`-not-tracked gap; none of them has the
 installer.
 
+### Worktree path resolution: `scripts/check-worktree-paths.sh`
+
+A recurring failure class in this repo: **a tool run from a git worktree resolves a
+path into the MAIN checkout, then degrades without erroring**. The tool exits 0, prints
+nothing alarming, and the absence of an error is read as success. Four instances have
+been found, each by accident and each after the silent degradation had already happened:
+
+| what resolves to the main checkout | how it degrades from a worktree |
+|---|---|
+| `.beads/issues.jsonl` — bd writes the export next to the Dolt store, and the store is in the main checkout | the worktree's copy is **tracked but never written**, so `git add .beads/issues.jsonl && git commit` stages nothing and git answers "nothing to commit, working tree clean" |
+| sibling repos for `scripts/sync-datasets.sh` — resolved as `../genetics-results-{db,api}` next to the invoking checkout | prints `WARN: repo not found, skipping` for both and **exits 0 having copied nothing** |
+| `terraform/terraform.tfvars` — gitignored, so it exists only in the main checkout | terraform falls back to destructive variable **defaults**; `build.sh`/`build-all.sh` silently fall back to `APP_NAME=FinnGenie` |
+| `core.hooksPath` — local git config, shared by every worktree | hooks run from the main checkout's copies, so an edit to `.beads/hooks/*` on a branch is inert for commits made there |
+
+`scripts/check-worktree-paths.sh` is one preflight for all four. It compares the path
+each tool will actually use against the path inside the current worktree and reports
+**only where they differ** — an alert that fires unconditionally is one nobody reads.
+It exits 0 in silence from the main checkout (where `git rev-parse --git-common-dir`'s
+parent equals the top level, so nothing can diverge), 1 from a worktree with
+divergences, and 2 outside a git repository. `scripts/deploy.sh` and
+`scripts/build-all.sh` call it `--check || true`, the same warn-never-block pattern as
+`install-git-hooks.sh`.
+
+Three refinements worth keeping: the `core.hooksPath` case fires **only when the hook
+files actually differ** (pointing at the main checkout is intended, and the files are
+tracked so they normally match); a *relative* `core.hooksPath` is skipped outright,
+because git resolves relative values against the working tree the hook runs from and
+they are therefore already per-worktree; and the beads case likewise fires **only when
+the two `issues.jsonl` files actually differ** (`cmp -s`). The structural facts it used
+to key on — a worktree has a tracked `issues.jsonl` and no `.beads/embeddeddolt` of its
+own — are true in every worktree permanently, so keying on them made it fire on every
+deploy and every build regardless of whether the export was stale.
+
+**On the beads case specifically — bd's behaviour is correct and must not be
+"fixed".** One Dolt database is shared by every worktree (a worktree gets no
+`.beads/embeddeddolt` of its own; a bead created from a worktree lands in the main
+store), so a single canonical export next to that store is right. Making bd export per
+worktree would put N snapshots of one shared database into N branches — each one
+*complete*, since they all read the same store, and differing only in **when** it was
+taken. That is worse than it sounds: N committed files that look authoritative, diverge
+purely by staleness, and conflict on every merge.
+**Measured** against bd 1.0.3: the `post-checkout` and `post-merge` hooks do **not**
+import from `issues.jsonl` — after closing an issue and then restoring an older
+committed jsonl, neither hook nor a real `git merge` that changed the file reverted the
+live state. But an explicit `bd import` upserts blindly and **did** revert a closed
+issue to open. So a stale committed jsonl is inert until someone runs `bd import`, at
+which point it silently rewinds live state.
+
+Refreshing it does **not** require the main checkout. Because the Dolt store is shared,
+`bd export -o .beads/issues.jsonl` run from inside a worktree writes that worktree's
+tracked copy from the same live database — measured byte-identical to the main
+checkout's export. That is the command the preflight now prints, so its warning is
+actionable rather than merely informative. What is never true is that a worktree's
+`git add .beads/issues.jsonl` did anything on its own.
+
 ### Ordered rollout: the trusted-proxy marker (bff before results-api)
 
 The identity-header trust rule spans two repos and **the rollout order is load-bearing**. bff

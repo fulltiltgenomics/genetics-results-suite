@@ -216,6 +216,29 @@ script sets it and repairs the doc-drift block if it has gone missing; it is
 idempotent and safe to re-run, and works from a worktree. `deploy.sh` and
 `build-all.sh` run it with `--check` and warn (never block) if it was skipped.
 
+### Working from a git worktree
+
+```bash
+./scripts/check-worktree-paths.sh
+```
+
+Several things resolve to the **main checkout** even when you run them from a worktree,
+and they degrade silently rather than erroring: `terraform.tfvars` (gitignored, main
+checkout only), the sibling repos `sync-datasets.sh` copies into, `core.hooksPath`, and
+bd's `.beads/issues.jsonl` export. The last one is the most misleading — the worktree's
+copy is tracked but nothing writes it, so `git add .beads/issues.jsonl && git commit`
+stages nothing and git replies "nothing to commit, working tree clean". Bead state
+itself is safe: the shared Dolt database is authoritative, and the git hooks never
+import from the jsonl. You can refresh the committed export **from the worktree** —
+one Dolt database is shared by every worktree, so `bd export -o .beads/issues.jsonl`
+run from here writes the same current snapshot the main checkout would produce
+(verified byte-identical). Running it in the main checkout works equally well; what
+does not work is assuming a `git add` from here refreshed anything.
+
+This script reports only the paths that actually diverge; it is silent in the main
+checkout. `deploy.sh` and `build-all.sh` run it with `--check`, warn, and never block.
+See `docs/project-spec.md`, "Worktree path resolution".
+
 ### 6. Deploy
 
 ```bash
