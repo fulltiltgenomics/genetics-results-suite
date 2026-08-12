@@ -570,6 +570,19 @@ def _():
 
 @check("sandbox egress allow-list is exactly db-api:8080 and results-api:4000")
 def _():
+    # This pins the allow-list in BOTH directions, and the "not narrower" half is the one that
+    # needs explaining. genetics-results-suite-0lf proposed dropping results-api:4000 so that
+    # sandbox traffic could be forced down a path that always carries the per-execution token.
+    # It cannot be dropped: the SDK's `search(rsids=...)` calls GET /v1/rsid/variants on
+    # results-api, 16 of its 25 public functions are results-api-only (census in
+    # genetics-results-suite-6uk), and there is no other path — the sandbox is denied
+    # auth-gateway by design and auth-gateway would not validate a sandbox HS256 token anyway.
+    # What makes keeping this entry safe is NOT in this file and cannot be: results-api shrinks
+    # its anonymous surface to /healthz once SANDBOX_ENABLED is true, so an anonymous request
+    # from this pod gets a 401 rather than an unaccounted 200. That control is a route
+    # decorator, invisible to a manifest reader, and is pinned by results-api's
+    # tests/test_anonymous_surface.py. Deleting this entry here would break the SDK; deleting
+    # that test there would reopen the hole. Neither is a cleanup.
     allowed = set()
     for p in sandbox_policies():
         for rule in p["spec"].get("egress") or []:
