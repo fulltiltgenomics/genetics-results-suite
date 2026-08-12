@@ -203,7 +203,20 @@ Build and push images:
 ./scripts/build-all.sh
 ```
 
-### 5. Deploy
+### 5. Wire up git hooks (once per clone)
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The hook files under `.beads/hooks/` are tracked, but `core.hooksPath` — the local
+git config that points git at them — is not, so a fresh clone runs **no** hooks:
+no `check-doc-drift.sh` warning on commits and no beads export, silently. This
+script sets it and repairs the doc-drift block if it has gone missing; it is
+idempotent and safe to re-run, and works from a worktree. `deploy.sh` and
+`build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+
+### 6. Deploy
 
 ```bash
 ./scripts/deploy.sh

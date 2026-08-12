@@ -13,6 +13,11 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   set -a; . "${ROOT_DIR}/.env"; set +a
 fi
 
+# the hook FILES are tracked (.beads/hooks/*) but core.hooksPath is local config a
+# clone does not carry, so an unwired checkout commits with no doc-drift warning and
+# no beads export, silently. warn here; never block a deploy over it.
+"${SCRIPT_DIR}/install-git-hooks.sh" --check || true
+
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection
@@ -392,9 +397,10 @@ generate_ingress | kubectl apply -f -
 
 # network policies
 # The union of every file in network-policies/ is what actually decides "mcp-server cannot
-# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". Nothing
-# else in this repo runs that check — there are no git hooks and no CI — so it runs here,
-# before the apply that would put a broken union on the cluster.
+# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". The
+# pre-commit hook only runs the doc-drift check, and there is no CI, so nothing else in
+# this repo runs this check — it runs here, before the apply that would put a broken
+# union on the cluster.
 # exit 1 = a control is broken, and the deploy aborts. exit 2 = the harness itself could
 # not run (missing PyYAML); that is not evidence of a broken policy, so it only warns.
 set +e
