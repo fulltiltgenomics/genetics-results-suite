@@ -33,6 +33,17 @@ Changing a path on the left makes the doc on the right wrong until it is updated
 the same commit. `scripts/check-doc-drift.sh` warns (never blocks) on commits that
 violate this; it runs from the `pre-commit` hook.
 
+The hook lives in `.beads/hooks/pre-commit`, which is **tracked**, and git finds it
+via `core.hooksPath` — **local config that no clone carries**. So a fresh clone has
+the hook file and no hooks running. Run `scripts/install-git-hooks.sh` once after
+cloning; it sets `core.hooksPath` and re-appends the doc-drift block if it has gone
+missing, and is idempotent. `scripts/deploy.sh` and `scripts/build-all.sh` call it
+with `--check`, which warns loudly (never blocks) when the checkout is unwired.
+Beads owns the top of that hook file between its `BEGIN/END BEADS INTEGRATION`
+markers and patches between them rather than rewriting the file, so the appended
+doc-drift block survives a beads upgrade (measured against bd 1.0.3); the installer
+repairs it anyway rather than trusting that.
+
 | changed path | doc to update | what to check |
 |---|---|---|
 | `configs/datasets.yaml` | `docs/datasets-yaml-schema.md`, `docs/adding-datasets.md` | `data_type` enum, dataset/rule/table fields, the `ALL_VIEWS` list |

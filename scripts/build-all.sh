@@ -17,6 +17,9 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# see deploy.sh: core.hooksPath is not tracked, so warn if this checkout is unwired
+"${SCRIPT_DIR}/install-git-hooks.sh" --check || true
+
 # product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
 APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
 APP_NAME="${APP_NAME:-FinnGenie}"
