@@ -34,24 +34,28 @@ inflates up to 4x.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Study/release name |
-| `data_type` | Association type (GWAS, eQTL, pQTL, etc.) |
-| `trait` | Trait/phenotype name |
-| `trait_original` | Original trait name in the respective dataset, e.g. phenotype code |
-| `cell_type` | Cell/tissue context |
-| `chr` | Chromosome number, chromosome X is 23 |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative (effect) allele |
-| `mlog10p` | -log10(p-value) |
-| `beta` | Effect size estimate (log-OR for binary traits) |
-| `se` | Standard error of beta |
-| `pip` | Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal |
-| `cs_id` | Credible set identifier. Matches cs1_id/cs2_id in colocalization_v, but only as part of (dataset, trait_original, cell_type, cs_id): the same cs_id occurs in many datasets and, because it names the fine-mapped region rather than the trait, under many traits within one dataset. See the join rule in this view's description. |
-| `variant` | Variant identifier as chr:pos:ref:alt |
-| `resource` | Data source identifier (lowercase) |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Study/release name |
+| `data_type` | `STRING` | Association type (GWAS, eQTL, pQTL, etc.) |
+| `trait` | `STRING` | Trait/phenotype name |
+| `trait_original` | `STRING` | Original trait name in the respective dataset, e.g. phenotype code |
+| `cell_type` | `STRING` | Cell/tissue context |
+| `chr` | `INT64` | Chromosome number, chromosome X is 23 |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative (effect) allele |
+| `mlog10p` | `FLOAT64` | -log10(p-value) |
+| `beta` | `FLOAT64` | Effect size estimate (log-OR for binary traits) |
+| `se` | `FLOAT64` | Standard error of beta |
+| `pip` | `FLOAT64` | Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal |
+| `cs_id` | `STRING` | Credible set identifier. Matches cs1_id/cs2_id in colocalization_v, but only as part of (dataset, trait_original, cell_type, cs_id): the same cs_id occurs in many datasets and, because it names the fine-mapped region rather than the trait, under many traits within one dataset. See the join rule in this view's description. |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt |
+| `resource` | `STRING` | Data source identifier (lowercase) |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

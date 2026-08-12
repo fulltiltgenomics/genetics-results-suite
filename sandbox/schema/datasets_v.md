@@ -17,25 +17,29 @@ credible_sets_v. Small table, so an unfiltered scan is cheap.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Source dataset identifier; joins the dataset column of every results view. NULL when the dataset has no BigQuery presence |
-| `dataset_id` | Primary registry key: the FIRST contributor where entries were merged, so it does NOT match every phenotypes_v.dataset_id. Join phenotypes_v on `dataset`, or on `p.dataset_id IN UNNEST(d.dataset_ids)` |
-| `dataset_ids` | ARRAY of every registry key merged into this row — more than one when several registry entries share a dataset value (pgc_scz + pgc_bip inside 'PGC', the two Genebass products inside 'genebass') |
-| `resource` | Data source identifier (lowercase). Always filter results views by this column, not dataset |
-| `resource_label` | Display label for the resource (FinnGen, Open Targets Genetics, ...) |
-| `resource_aliases` | ARRAY of alternative names users write for the resource; UNNEST to resolve a free-text mention |
-| `version` | Dataset version label (R14, 26.06, PPP, ...) |
-| `description` | What the dataset is, its cohort and caveats. Merged entries are concatenated with ' \| ' |
-| `author` | Producing consortium or study; for QTD sub-studies the source study label (Alasoo_2018) |
-| `publication_date` | Release/publication date; NULL where the registry records none |
-| `data_type` | gwas, eQTL, sQTL, pqtl, caqtl, gene_based, ... NOTE this is the lower-case registry vocabulary, NOT the upper-case data_type of the results views (GWAS, eQTL) |
-| `trait_type` | binary, quantitative or mixed at the dataset level; per-trait resolution lives in phenotypes_v.trait_type |
-| `n_samples` | Dataset-level sample size where the registry states one; per-trait sizes live in phenotypes_v |
-| `pseudo_credible_sets` | TRUE when this dataset's credible sets are PSEUDO credible sets (LD-clumped proxies), not SuSiE fine-mapping. Their pip and cs_size are not posterior quantities and must not be compared with fine-mapped ones |
-| `coloc_partner_only` | TRUE when the dataset exists only as a colocalization partner and ships no independently queryable product |
-| `collection` | TRUE for a collection whose sub-studies carry subdataset_of = its dataset_id (eQTL Catalogue). A collection row never appears as a dataset value itself |
-| `subdataset_of` | Parent collection's dataset_id for sub-studies (QTD ids under eqtl_catalogue); NULL otherwise |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Source dataset identifier; joins the dataset column of every results view. NULL when the dataset has no BigQuery presence |
+| `dataset_id` | `STRING` | Primary registry key: the FIRST contributor where entries were merged, so it does NOT match every phenotypes_v.dataset_id. Join phenotypes_v on `dataset`, or on `p.dataset_id IN UNNEST(d.dataset_ids)` |
+| `dataset_ids` | `ARRAY<STRING>` | ARRAY of every registry key merged into this row — more than one when several registry entries share a dataset value (pgc_scz + pgc_bip inside 'PGC', the two Genebass products inside 'genebass') |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter results views by this column, not dataset |
+| `resource_label` | `STRING` | Display label for the resource (FinnGen, Open Targets Genetics, ...) |
+| `resource_aliases` | `ARRAY<STRING>` | ARRAY of alternative names users write for the resource; UNNEST to resolve a free-text mention |
+| `version` | `STRING` | Dataset version label (R14, 26.06, PPP, ...) |
+| `description` | `STRING` | What the dataset is, its cohort and caveats. Merged entries are concatenated with ' \| ' |
+| `author` | `STRING` | Producing consortium or study; for QTD sub-studies the source study label (Alasoo_2018) |
+| `publication_date` | `DATE` | Release/publication date; NULL where the registry records none |
+| `data_type` | `STRING` | gwas, eQTL, sQTL, pqtl, caqtl, gene_based, ... NOTE this is the lower-case registry vocabulary, NOT the upper-case data_type of the results views (GWAS, eQTL) |
+| `trait_type` | `STRING` | binary, quantitative or mixed at the dataset level; per-trait resolution lives in phenotypes_v.trait_type |
+| `n_samples` | `INT64` | Dataset-level sample size where the registry states one; per-trait sizes live in phenotypes_v |
+| `pseudo_credible_sets` | `BOOL` | TRUE when this dataset's credible sets are PSEUDO credible sets (LD-clumped proxies), not SuSiE fine-mapping. Their pip and cs_size are not posterior quantities and must not be compared with fine-mapped ones |
+| `coloc_partner_only` | `BOOL` | TRUE when the dataset exists only as a colocalization partner and ships no independently queryable product |
+| `collection` | `BOOL` | TRUE for a collection whose sub-studies carry subdataset_of = its dataset_id (eQTL Catalogue). A collection row never appears as a dataset value itself |
+| `subdataset_of` | `STRING` | Parent collection's dataset_id for sub-studies (QTD ids under eqtl_catalogue); NULL otherwise |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

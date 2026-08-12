@@ -195,6 +195,40 @@ Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (crea
 view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
 `genetics_results` placeholder with `<project>.<dataset>`.
 
+### Column types (`tables.<view>.column_types`)
+
+Every column documented in a view's `columns:` block must also appear in its
+`column_types:` block, with the column's BigQuery type. The sandbox schema docs
+(`sandbox/schema/<view>.md`, generated into the code-execution image) are the only
+description of these views a sandboxed agent gets, and without the type it writes SQL that
+cannot run — `chr` is `INT64`, so `chr = 'chr5'` and `chr = '5'` are both errors, and
+`gene_annotations_v.gene_group_ids` is `ARRAY<INT64>`, so it needs `UNNEST`.
+
+**Do not type them by hand.** Once the view exists (or has been re-applied after a column
+change), read the types back out of BigQuery:
+
+```bash
+bq query --project_id=<project> --use_legacy_sql=false --format=csv \
+  'SELECT table_name, ordinal_position, column_name, data_type
+   FROM genetics_results.INFORMATION_SCHEMA.COLUMNS
+   WHERE table_name = "<view>"
+   ORDER BY ordinal_position'
+```
+
+Copy `data_type` verbatim — that is the spelling BigQuery uses, `ARRAY<...>` and
+`STRUCT<...>` included. Then regenerate and check:
+
+```bash
+python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type
+python3 scripts/test-sandbox-docs.py      # gates scripts/build.sh
+```
+
+The harness fails on a missing entry, on a stale entry naming a column that no longer
+exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted
+description). It does **not** compare the recorded type against live BigQuery — it runs on
+a build host with no credentials — so re-running the query above after a view change is the
+step that keeps them true. See `docs/datasets-yaml-schema.md` for the field reference.
+
 Loading the actual rows into the base tables is a separate step — **not** done by
 `deploy.sh`. The low-level loader is `scripts/load_data.py`; per-data-type wrapper scripts
 drive it (e.g. `load_pseudo.sh` for the shared external/meta pseudo credible-set bundle,
@@ -394,6 +428,11 @@ convenience mirror.
       loader will fail until the map covers them. Skipping this leaves the dataset invisible in
       `datasets_v` and its trait codes unresolvable in `phenotypes_v` — exactly what happened
       to `finngen_hla`.
+- [ ] `datasets.yaml`: if a `tables.<view>` block was added or its `columns:` changed,
+      re-derive `column_types:` from `genetics_results.INFORMATION_SCHEMA.COLUMNS` (query in
+      §6), then `python3 scripts/gen-sandbox-docs.py` and commit the regenerated
+      `sandbox/schema/*.md`. `scripts/test-sandbox-docs.py` (which gates `build.sh`) fails
+      on any documented column without a type.
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
