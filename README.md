@@ -107,6 +107,13 @@ terraform apply                               # review the plan before confirmin
 > you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`. `deploy.sh` enforces
 > the same before applying; `SKIP_TERRAFORM=true` (k8s manifests only) is unaffected.
 
+> **Switching profiles**: the main checkout keeps `terraform.tfvars.daly` and `terraform.tfvars.finngen`
+> beside the active `terraform.tfvars`. `CONFIG_PROFILE` picks the *state backend*, not the values, so
+> switching profiles means copying the file too — `cp terraform.tfvars.daly terraform.tfvars`. Get it
+> wrong and one profile's project, region and domains would be applied into the other's state; both
+> `deploy.sh` (before `terraform init`) and a terraform `precondition` (against the initialized state
+> bucket) now refuse. Leaving `CONFIG_PROFILE` unset makes `deploy.sh` follow the file in place.
+
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
 ```bash

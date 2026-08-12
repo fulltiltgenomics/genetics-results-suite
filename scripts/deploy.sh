@@ -17,10 +17,14 @@ echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
+TFVARS_PROFILE=""
+if [ -f terraform.tfvars ]; then
+  TFVARS_PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)"
+fi
 if [ -n "${CONFIG_PROFILE:-}" ]; then
   PROFILE="${CONFIG_PROFILE}"
 elif [ -f terraform.tfvars ]; then
-  PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')"
+  PROFILE="${TFVARS_PROFILE}"
 else
   echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
   exit 1
@@ -47,6 +51,21 @@ else
     echo "It is gitignored and lives only in the main checkout; from a git worktree terraform"
     echo "would use variable defaults and destroy live resources."
     echo "Deploy from the main checkout, or set SKIP_TERRAFORM=true to deploy k8s manifests only."
+    exit 1
+  fi
+  # existence is not enough: the main checkout keeps terraform.tfvars.daly and .finngen next to the
+  # active terraform.tfvars, and CONFIG_PROFILE picks the BACKEND (so the state, project, cluster and
+  # domains) independently of which one is actually in place. Compare the two identities. When
+  # CONFIG_PROFILE is unset PROFILE was derived from this same file and the check is a no-op by
+  # construction — the mismatch only exists when something outside the file chose the backend.
+  if [ "${TFVARS_PROFILE}" != "${PROFILE}" ]; then
+    echo "ERROR: config profile mismatch — refusing to 'terraform apply'."
+    echo "  backend/state: ${PROFILE}.tfbackend (from CONFIG_PROFILE=${CONFIG_PROFILE:-<unset>})"
+    echo "  terraform/terraform.tfvars: config_profile = \"${TFVARS_PROFILE:-<unset>}\""
+    echo "Applying would write ${TFVARS_PROFILE:-unknown}-profile values (project_id, region, domains,"
+    echo "IAM, static IP) into the ${PROFILE} state — a different GCP project and cluster."
+    echo "Fix: cp terraform.tfvars.${PROFILE} terraform.tfvars, or unset CONFIG_PROFILE to follow the"
+    echo "tfvars file that is in place."
     exit 1
   fi
   echo "=== Applying Terraform ==="
