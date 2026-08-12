@@ -1004,9 +1004,16 @@ has 120 seconds in which to loop. For the sandbox audience:
 | `maximum_bytes_billed` per query | 50 GB | Half the existing default. Bounds one query only — which is the point of the next row. |
 | Aggregate bytes billed per `jti` | 200 GB | Four queries at the per-query ceiling. **The control the per-query cap is not.** A single-pod, 120-second, concurrency-1 token needs no shared state to enforce this: an in-process counter in db-api keyed on `jti`, with a bounded LRU so a flood of distinct `jti`s cannot grow it, is sufficient. Over budget → `429`, not a silent truncation. |
 | Response rows | 25 000 | **db-api only.** A quarter of the existing default, and well above what any legitimate aggregation returns *to a script* — the script aggregates in-pod and returns 64 KiB to the model regardless (section 2). results-api carries **no** row cap; see "As shipped" below for why counting rows there cost more than it bought. |
+| Response bytes per request | 16 MiB | **results-api only** (`SANDBOX_MAX_RESPONSE_BYTES`). Bounds one response, of **any** status — a non-2xx body is caller-controlled too, since FastAPI's 422 handler echoes the offending input. Which is the point of the next four rows. |
+| Aggregate response bytes per `jti` | 1 GiB | **results-api only** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`). 64 responses at the per-response cap, or ~8.5 MB/s sustained across the whole 120 second wall clock. Charged from bytes actually **sent**, so it agrees with the per-response cap's own buffer rather than re-measuring — and charged for every status, not only 2xx. |
+| Requests per `jti` | 1000 | **results-api only** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses, and every request costs a tabix seek or a GCS range read whatever its size. ~8 rps over 120 seconds. |
+| Concurrent requests per `jti` | 4 | **results-api only** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). The one limit here with a **memory** failure mode rather than a cost one: each in-flight capped request buffers up to 16 MiB. 4 × 16 MiB = 64 MiB. |
+| Concurrent sandbox requests per pod | 8 | **results-api only** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply this pod's peak buffer against its 8Gi limit. |
 
-All three are enforced server-side from the token, never requested by the caller, and a
-script cannot widen them by asking.
+All are enforced server-side from the token, never requested by the caller, and a
+script cannot widen them by asking. The db-api values are module constants; the results-api ones
+are env-configurable, because results-api payload sizes vary by dataset and format in a way
+BigQuery byte counts do not and an operator has to be able to move them without a rebuild.
 
 **What the aggregate budget actually bounds — stated rather than left to be inferred.**
 `jti` is the **execution** id, so 200 GB is a per-*execution* budget, not per session and
@@ -1097,12 +1104,105 @@ The exception passes through Starlette's `ExceptionMiddleware` (which handles on
 attempted over the 429 already sent. `tests/test_response_caps.py` counts the generator's
 iterations to pin this, on both ASGI spec versions.
 
-*What results-api still does not have, stated rather than left implicit.* The byte cap bounds
-**one** response. results-api has no per-`jti` aggregate budget, no request-count limit and no
-concurrency limit, so nothing bounds a script that issues many in-cap requests over its 120
-seconds — the db-api counter has no analogue here. That is deliberate scope, filed as
-`genetics-results-suite-4h6.29`, and it must land before a sandbox Deployment exists; production
-impact today is nil, since there is none and `SANDBOX_ENABLED` is `"false"` on both services.
+*The per-execution limits on results-api (`genetics-results-suite-4h6.29`).* The byte cap above
+bounds **one** response; it does not bound a script that issues many in-cap requests over its 120
+seconds, and the producer teardown of `4h6.28` bounds what a single *rejected* request costs to
+produce, not a loop of accepted ones. `app/core/sandbox_budget.py` is the analogue of db-api's
+`_jti_bytes`, deliberately shaped like it — one in-process map keyed on `jti`, checked **before**
+the handler runs, answering 429 rather than truncating. The table above has **five** results-api
+rows and this module holds **four** of them — the aggregate byte budget, the request count and
+the two concurrency bounds; the 16 MiB per-response row lives in `app/core/limits.py` and
+`app/middleware.py` instead. It carries a fifth control of its own that is not a table row,
+`SANDBOX_MAX_TRACKED_EXECUTIONS` (below), which is why it emits **five** rejection codes.
+
+It is admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI
+contract puts after the last byte of the response, a `StreamingResponse` included. An earlier
+draft justified that placement by saying a streaming generator outlives every dependency's
+teardown; **measured on FastAPI 0.136.1 that is false** — a `yield` dependency's exit code runs
+*after* the response body, so for a matched route the two placements are indistinguishable. The
+reason the middleware is nevertheless the only correct place is different and stronger: `admit`
+runs for every request, while a dependency is solved only for a **matched route**. An unmatched
+path 404s out of the router with no dependency ever entered, so a teardown placement strands
+that concurrency slot permanently — and `_sweep_locked` cannot reclaim the entry either, since
+it refuses to evict anything with `in_flight > 0`. That is the mutation
+`tests/test_sandbox_budget.py::test_an_unmatched_route_releases_its_slot` exists to kill.
+
+*Rejection, not queueing, and the reason.* Queueing an over-concurrency request holds it while
+the sandbox's ~120 second clock keeps running, which a script cannot distinguish from slow data
+and cannot act on, and work admitted from a queue can complete after its execution is already
+dead — precisely the wasted production `4h6.28` removed. A fast 429 leaves the script clock to
+narrow the request or back off. Every one of these 429s carries a `code`, a `limit` and an
+`observed` value (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`,
+`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_execution_tracker_full`), so an
+operator reading a log line knows which control fired without inferring it from prose.
+
+*Bytes are counted as **sent**, from the cap middleware's own buffer.* The two therefore cannot
+diverge or double-count. **Every status is buffered, capped and charged, not only 2xx.** An
+earlier draft exempted error responses on the grounds that "an error body is small"; that is
+false, because FastAPI's own 422 handler *echoes the offending input* — measured, a 100 000-char
+query parameter produced a 100 144-byte error body, and a 200 014-byte body was delivered under
+a 500-byte cap with `bytes_sent` left at 0. Uncharged, uncapped error bodies made the real egress
+bound `SANDBOX_MAX_REQUESTS_PER_EXECUTION` × (whatever fits in a URI or a request body) rather
+than the 1 GiB budget. What the status still changes is only the *rejection*: an over-cap 2xx
+becomes a 429, while an over-cap non-2xx keeps its own status and gets the same bounded stub
+body, because rewriting a 404 into a 429 loses the real answer and invites a retry that can only
+404 again. One body remains uncharged — a response *rejected* over the 16 MiB cap, whose bytes
+never went on the wire; a loop of those is what the request-count limit bounds, and each still
+consumes a request slot.
+
+*Cleanup cannot evict a live execution.* db-api trims `_jti_bytes` LRU at 1024 entries, which can
+drop a running execution's counter and silently reset its budget: the fail-open direction. Here
+an entry is evictable only once its token has passed the point where `verify_sandbox_token` would
+still accept it (`exp` plus the verifier's leeway, so no further request can present that `jti`)
+**and** it has nothing in flight — the second condition covering a stream that outlives its own
+token. The map is still hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096, swept lazily when
+a new `jti` arrives), but at the bound it is the *new* execution that is refused, never a running
+one that is evicted. Entries live at most one token lifetime (~305 s), so at the measured peak of
+23 chat turns/hour the bound is a backstop rather than a working limit.
+
+*`replicas: 1` is load-bearing here too.* The counters are in-process, so N replicas give one
+execution N × every limit above — and N × the pod-wide concurrency bound that exists to protect
+this pod's 8Gi against buffered response bodies. `k8s/deployments/results-api.yaml` carries a
+comment on `replicas: 1` saying so, matching db-api's.
+
+*Operator-tunable in fact, not only in principle.* All five env vars are declared at their
+defaults in `k8s/deployments/results-api.yaml`, so tuning one is an edit and a rollout rather
+than a rebuild. They were code-default-only in the first draft, which made "env-configurable"
+true of the code and false in practice. Each is a ceiling compared with `>=`, so a value below 1
+would silently mean "reject every sandbox request" — results-api therefore refuses to start on
+one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, rather
+than failing at the first request where no health check would attribute it to a typo.
+
+**Two limitations, stated because as shipped these controls bound less than the rest of this
+section implies.**
+
+1. *They only bind a request that volunteers a token — this is not yet a complete bound.*
+   `_sandbox_principal` reads the `Authorization` header off the ASGI scope; with no header it
+   returns `None` and `admit` is never called, so the request is counted against **nothing**: no
+   aggregate byte budget, no request count, no concurrency slot. results-api answers 200 with no
+   credential on its seven `@is_public` routes (`/api/v1`, `/healthz`, `/api/v1/auth`,
+   `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, and `/api/v1/rsid/variants` GET and
+   POST — re-derive with `grep -rn "@is_public" app/`), and the sandbox's NetworkPolicy egress
+   reaches `results-api:4000` **directly**, bypassing auth-gateway. Measured: 20 of 20
+   header-less requests were served 200 with the counter map still empty. The invariant
+   `app/core/limits.py` states — that omitting the header cannot buy a *looser* limit — holds
+   for the per-response byte cap only; for these four counters, omitting it buys **no** limit,
+   and that module's docstring now says so. So read this section as bounding an *honest*
+   execution's consumption, which is what it was written for. Closing the gap needs a way to
+   identify sandbox traffic without a token — a design decision filed separately, and
+   deliberately **not** papered over with a rate limiter, a request timeout or an
+   anonymous-traffic bucket, each of which would change the perimeter without deciding it.
+2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
+   surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
+   slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
+   sizing above is an argument about honest volume and says nothing about an attacker, and with
+   limitation 1 unclosed there is no per-tenant fairness behind either number. They are sized far
+   above honest use precisely so an honest execution never meets them, and both fail toward
+   refusing new work rather than corrupting a running execution's accounting.
+
+Production impact today is nil: no sandbox Deployment exists and `SANDBOX_ENABLED` is `"false"` on
+both services, so nothing but `tests/test_sandbox_budget.py` (30 tests, offline lane) will report
+a regression in any of this.
 
 **The departure: `@is_public` routes are relaxed, not tight — and the measurement that
 decided it.** Read literally, "no credential gets the tight limits" would apply the sandbox
@@ -1630,9 +1730,10 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    sink" to "a bandwidth-limited sink", and must be reworded here.
 2. **Byte and row caps** (section 4): on db-api, 50 GB per query, **200 GB aggregate per
    `jti`** across all four of its BigQuery paths, and 25 000 response rows; on results-api, a
-   16 MiB response-byte cap and no row cap — all as defaults, not as a sandbox-only penalty. A
+   16 MiB response-byte cap, no row cap, and per-`jti` aggregate bytes (1 GiB), request count
+   (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
-   aggregate budget rather than running for the full 120 seconds.
+   aggregate budget on either service rather than running for the full 120 seconds.
 3. **Everything is logged.** Every SDK function call emits a structured line carrying
    session id, function, argument summary and row count (`4h6.12`); db-api logs `sid`,
    `sub` and `jti` per request. A dump is visible after the fact and attributable to a

@@ -4,6 +4,12 @@ metadata:
   name: results-api
   namespace: genetics
 spec:
+  # load-bearing for the sandbox per-execution limits, not just for cost: results-api keeps the
+  # aggregate response-byte budget, the request count and the concurrency slots in process memory
+  # (app/core/sandbox_budget.py), so N replicas give one execution N x every one of them. Scaling
+  # up — or adding an HPA — requires moving those counters to shared state first, and would also
+  # multiply the pod-wide concurrency limit that bounds peak buffered response memory against this
+  # pod's 8Gi. See docs/code-execution-security.md § 4.
   replicas: 1
   selector:
     matchLabels:
@@ -53,6 +59,23 @@ spec:
         # true, results-api refuses to start if either secret above is unset.
         - name: SANDBOX_ENABLED
           value: "false"
+        # per-execution (`jti`) limits, all at their in-code defaults. Declared here so an
+        # operator can tune them without a rebuild, which is the reason they are env vars at all
+        # — "env-configurable" was true of the code and false in practice while the manifest
+        # named none of them. Each is a ceiling compared with >=, so results-api refuses to start
+        # on a value below 1, and on TOTAL < per-execution. Raising any of them raises this pod's
+        # peak buffered response memory against its 8Gi limit; see
+        # docs/code-execution-security.md § 4.
+        - name: SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET
+          value: "1073741824"
+        - name: SANDBOX_MAX_REQUESTS_PER_EXECUTION
+          value: "1000"
+        - name: SANDBOX_MAX_CONCURRENT_REQUESTS
+          value: "4"
+        - name: SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL
+          value: "8"
+        - name: SANDBOX_MAX_TRACKED_EXECUTIONS
+          value: "4096"
         - name: CHAT_BACKEND_URL
           value: "http://chat-backend.genetics.svc.cluster.local:8000/chat"
         - name: LOG_SOURCE
