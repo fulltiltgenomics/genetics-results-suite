@@ -1176,27 +1176,68 @@ than failing at the first request where no health check would attribute it to a 
 **Two limitations, stated because as shipped these controls bound less than the rest of this
 section implies.**
 
-1. *They only bind a request that volunteers a token — this is not yet a complete bound.*
-   `_sandbox_principal` reads the `Authorization` header off the ASGI scope; with no header it
-   returns `None` and `admit` is never called, so the request is counted against **nothing**: no
-   aggregate byte budget, no request count, no concurrency slot. results-api answers 200 with no
-   credential on its seven `@is_public` routes (`/api/v1`, `/healthz`, `/api/v1/auth`,
+1. *They only bind a request that volunteers a token — and the thing that makes that sufficient
+   is not in this section.* `_sandbox_principal` reads the `Authorization` header off the ASGI
+   scope; with no header it returns `None` and `admit` is never called, so the request is
+   counted against **nothing**: no aggregate byte budget, no request count, no concurrency slot.
+   Until `genetics-results-suite-0lf` that was an open hole: results-api answered 200 with no
+   credential on seven `@is_public` routes (`/api/v1`, `/healthz`, `/api/v1/auth`,
    `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, and `/api/v1/rsid/variants` GET and
-   POST — re-derive with `grep -rn "@is_public" app/`), and the sandbox's NetworkPolicy egress
-   reaches `results-api:4000` **directly**, bypassing auth-gateway. Measured: 20 of 20
-   header-less requests were served 200 with the counter map still empty. The invariant
-   `app/core/limits.py` states — that omitting the header cannot buy a *looser* limit — holds
-   for the per-response byte cap only; for these four counters, omitting it buys **no** limit,
-   and that module's docstring now says so. So read this section as bounding an *honest*
-   execution's consumption, which is what it was written for. Closing the gap needs a way to
-   identify sandbox traffic without a token — a design decision filed separately, and
-   deliberately **not** papered over with a rate limiter, a request timeout or an
-   anonymous-traffic bucket, each of which would change the perimeter without deciding it.
+   POST — re-derive with `grep -rn "@is_public" app/`, or read the live route table with
+   `app.dependencies.public_route_paths`), the sandbox's NetworkPolicy egress reaches
+   `results-api:4000` **directly**, bypassing auth-gateway, and 20 of 20 header-less requests
+   were measured served 200 with the counter map still empty.
+
+   **Partially closed — the no-credential path only — by shrinking the anonymous surface rather
+   than by identifying the caller.** With `SANDBOX_ENABLED` true,
+   `app.dependencies.is_public_endpoint` treats only `ALWAYS_ANONYMOUS_PATHS` — today `/healthz`
+   alone — as servable with no principal. Every other route answers 401 to a request carrying no
+   credential. results-api still cannot tell a sandbox request from a browser request — both
+   arrive on `:4000` in-cluster — and for this half it does not have to.
+
+   **What is emphatically not true is that "the only way into a handler is to present a
+   credential, and presenting the sandbox's is what calls `admit`."** Earlier drafts of this
+   section, and of both module docstrings, said exactly that. `admit` is reached only from
+   `_sandbox_principal`, which accepts an **HS256 sandbox token and nothing else**.
+   `INTERNAL_API_SECRET` satisfies `is_internal_caller`, so `get_verified_user` resolves
+   `mcp-tool` and the request enters the handler with **`admit` never called**. Measured, driving
+   the real ASGI app with `SANDBOX_ENABLED=true` and `REQUIRE_AUTH=true` and
+   `Authorization: Bearer $INTERNAL_API_SECRET`:
+
+   | request | result | `sandbox_budget._executions` after |
+   |---|---|---|
+   | `GET /api/v1/rsid/variants` | 200, `user_email=mcp-tool` | `{}` |
+   | `GET /api/v1/variant_sets` | 200, `user_email=mcp-tool` | `{}` |
+
+   This is not hypothetical. `sdk/client.py` states that the client attaches `INTERNAL_API_SECRET`
+   to every request and that a script able to import the module can also read `os.environ`. So on
+   the day the flag flips, a sandbox script sheds all four counters by sending the internal secret
+   **instead of** sending no header. The change converts "omit the header" into "send the other
+   header".
+
+   **The residual path closes elsewhere, in two beads, neither of them in results-api's request
+   code:** `genetics-results-suite-4h6.7` must stop giving the sandbox `INTERNAL_API_SECRET` (the
+   Deployment), and `genetics-results-suite-4h6.14` must make the SDK send the per-execution token
+   (the transport). Until both land, limitation 1 is **partially** closed and the four counters
+   bind an honest execution only.
+   `tests/test_anonymous_surface.py::test_an_internal_secret_caller_is_served_but_not_accounted`
+   encodes the residue as current behaviour and is expected to fail when those two land.
+   The invariant `app/core/limits.py` states — that omitting the header cannot buy a *looser*
+   limit — held for the per-response byte cap only; for these four counters, omitting it would
+   buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
+   capped. Both module docstrings now say the partial version.
+   Still deliberately **not** done: no rate limiter, no request timeout, no anonymous-traffic
+   bucket. `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
+   probes bypass NetworkPolicy) and its request rate is unbounded; its handler is a constant
+   document on no data path, so that residue is `genetics-results-suite-8zk`'s, not a
+   per-execution budget any counter here can hold.
 2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
    surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
    slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
    sizing above is an argument about honest volume and says nothing about an attacker, and with
-   limitation 1 unclosed there is no per-tenant fairness behind either number. They are sized far
+   limitation 1 only **partially** closed — a caller presenting `INTERNAL_API_SECRET` is still
+   served with no accounting — there is still no per-tenant fairness behind either number. They
+   are sized far
    above honest use precisely so an honest execution never meets them, and both fail toward
    refusing new work rather than corrupting a running execution's accounting.
 
@@ -1295,6 +1336,100 @@ internet with no credential and bill no BigQuery, so tight caps would constrain 
 browser traffic, while carrying a real regression risk if a curated variant set is ever
 configured with more than 25 000 variants. `REQUIRE_AUTH=false` (local development; the shipped
 `results-api.yaml` sets `"true"`) is relaxed for the same reason.
+
+**And with the sandbox deployed the exception has nothing left to apply to.** Everything above
+is the `SANDBOX_ENABLED=false` shape — today's production, and the reason the relaxation is
+still described rather than deleted. Once `SANDBOX_ENABLED` is true, `is_public_endpoint` answers
+true for `/healthz` only, so six of the seven routes stop being anonymous and get whatever their
+caller's principal earns them: relaxed for the BFF's shared secret and for a verified user,
+tight for a sandbox token. The table above is what says this costs the browser nothing —
+64 + 3 + 0 + 0 + 0 calls in a month.
+
+*How those calls arrived is an architectural claim, not a measured one, and an earlier draft
+overstated it.* That draft said "every one of them arriving through `auth_request /oauth2/auth`
+and then the BFF". **The usage log cannot show that, by construction, on precisely these seven
+routes.** `middleware_usage_logging` attributes a caller two ways: the internal secret plus an
+allow-listed `X-Goog-Authenticated-User-Email`, or a fallback that reads
+`request.state.authenticated_user`. On an `@is_public` route that state is **never set** —
+`auth_required` returns at `is_public_endpoint` before `get_verified_user` runs — so the fallback
+is dead there, and a caller presenting the internal secret logs *identically* to one presenting
+nothing. Measured: `user_email` is NULL on 246 of 246 rows for the rsid route over 90 days, which
+distinguishes nothing.
+
+The guarantee is therefore **architectural**: `k8s/deployments/auth-gateway.yaml` routes every
+browser `/api/` request through `auth_request /oauth2/auth` to the BFF, which attaches the shared
+secret as its own `Authorization: Bearer` on the upstream call (`bff/upstream.ts`; the paths are
+`bff/inputParse.ts:81` and `:215`), and a programmatic client reaches the same routes through
+auth-gateway's `@api_bearer` with its own bearer. Nothing entering the cluster from outside can be
+anonymous at results-api. **No production caller of these routes is anonymous at results-api** is
+a statement about the ingress paths that exist, not an observation from the logs, and it is what
+makes requiring a principal free rather than a trade-off.
+
+*The three alternatives that were rejected, because each looks reasonable until it is checked.*
+
+- **Require the *sandbox* token on all routes.** Cannot be written: results-api sees a browser
+  request and a sandbox request identically on `:4000`, and `/healthz` is probed by the kubelet,
+  which holds no credential at all. Requiring *a* principal instead sidesteps the whole
+  identification problem, which is why that is what shipped.
+- **Take `results-api:4000` off the sandbox's egress allow-list** and force its traffic down a
+  path that always carries the token. This was the preferred option when the work was filed, on
+  the premise that "the sandbox has no reason to call an unauthenticated route". **The premise is
+  false.** `GeneticsClient.search(rsids=...)` calls `ToolExecutor.lookup_variants_by_rsid`, which
+  issues `GET {results-api}/v1/rsid/variants` — one of the seven. And the census in
+  `genetics-results-suite-6uk` puts 16 of the SDK's 25 public functions on results-api alone with
+  5 more branching to it, so the allow-list entry is load-bearing for most of the SDK, not just
+  for that one call. There is also no path with the property the option asks for: the sandbox is
+  denied auth-gateway by design (section 3), and auth-gateway would not validate a sandbox HS256
+  token anyway. A dedicated results-api port would give a discriminator NetworkPolicy can
+  enforce — egress evaluates the destination **pod** port on this dataplane, so it would take a
+  second listening socket in results-api, not a second Service port — and that remains available
+  if a future control needs to distinguish the sandbox at the transport layer. It was not needed
+  to close this hole.
+- **A pod-wide bound on anonymous requests.** Caller-agnostic, but it is a rate limiter by
+  another name (`genetics-results-suite-8zk`), and set low enough to matter it answers 429 to
+  browser traffic on routes the browser owns. Removing the anonymous surface removes the thing
+  the bucket would have had to meter.
+
+*Enforcement, since the control is one boolean in one function.* `results-api`
+`tests/test_anonymous_surface.py` (9 tests, offline lane) reads the **live route table** and pins
+the anonymous surface in both `SANDBOX_ENABLED` states: a new `@is_public` decorator fails
+`test_the_public_route_set_is_what_the_docs_claim`, and one that also survives into the
+sandbox-enabled state fails `test_with_the_sandbox_the_anonymous_surface_is_exactly_healthz`.
+That test asserts against the **literal** `{"/healthz"}` on both sides; an earlier version
+compared the computed surface to `ALWAYS_ANONYMOUS_PATHS` itself, which is tautological — adding
+`/api/v1`, `/api/v1/auth` and `/api/v1/variant_sets` to the constant left all 8 tests passing.
+Re-run against the fixed suite that same widening fails 2 tests. The route set is derived, never
+listed, so it cannot rot the way a count in prose does.
+`scripts/test-network-policies.py` cannot help here — it reads manifests and has no view of a
+Python decorator — which is precisely why the assertion lives with the routes.
+What these tests do **not** pin is accounting: every one of them but
+`test_an_internal_secret_caller_is_served_but_not_accounted` checks a boolean predicate rather
+than driving a request, which is exactly why the `INTERNAL_API_SECRET` bypass above was invisible
+to the suite until it was measured by hand.
+
+*A rollout coupling this creates, and it is not the one an earlier draft described.* That draft
+said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.14` lands makes "every SDK call 401".
+**Measured false.** `sdk/client.py` authenticates with `INTERNAL_API_SECRET` read from the
+environment (the mitigation its own docstring calls insufficient), that secret satisfies
+`is_internal_caller`, and driving the real ASGI app with `SANDBOX_ENABLED=true` and
+`REQUIRE_AUTH=true` returns **200** on `/api/v1/rsid/variants` and `/api/v1/variant_sets` as
+`user_email=mcp-tool`.
+
+The real hazard is the opposite one, and it is worse: **the SDK keeps working while contributing
+nothing to the per-execution budget.** `admit` is reached only from `_sandbox_principal`, which
+accepts an HS256 sandbox token, so an internal-secret caller is served with
+`sandbox_budget._executions` still `{}`. The flip therefore *looks successful* — no 401s, no
+broken calls, nothing in the logs to notice — while the control it was supposed to activate is
+inert. Anyone planning the rollout against the 401 sentence plans against a risk that does not
+exist and misses the one that does.
+
+**The commit that lands the sandbox workload and flips the flag must also land the transport
+(`4h6.14`) and stop giving the sandbox `INTERNAL_API_SECRET` (`4h6.7`)** — not to keep the SDK
+working, which it will do regardless, but because without both the per-execution counters bind
+nothing. This is the same commit `genetics-results-suite-r22` already couples the label contract
+and the flag to; the requirement is additive, not a new one. The flag does enforce `4h6.9`'s
+contract that the SDK must never fall back to "send no credential" — that fallback stops working
+— but "send the internal secret instead" is a fallback it does *not* close.
 
 **Why the exception has zero security delta — and the premise that had to be made true first.**
 The earlier argument was that a sandbox script is capped on these routes either way, so relaxing
@@ -1496,18 +1631,23 @@ bearer is routed away before it, and an RS256 bearer is never routed to the sand
 validator. The two audience checks are separate code, separate keys and separate claim
 spaces; `4h6.9` neither fixes nor worsens `fdd`.
 
-**A known gap, left open deliberately — and it is an attribution gap as much as an
-authorization one.** results-api's `auth_required` returns before any credential check when
-`REQUIRE_AUTH` is false or the route is `@is_public`. A sandbox token therefore proves nothing
-on a public route — the sandbox reaches those as an anonymous caller, exactly as any other pod
-with network reach does. Less obviously: because `auth_required` returns *before*
-`get_verified_user` runs, no sandbox principal is ever resolved on those routes, so
-`request.state.sandbox_principal` is unset and the `endpoint_access` line carries **no `sid`
-and no `jti`**. Section 6.2's control 3 — "what did that script actually read?" — is therefore
-blind on the `@is_public` route set, and `4h6.28`'s per-credential caps, which key on the
-resolved principal, will not apply there either. That is the pre-existing shape of
-results-api's public endpoints, not something this token changes, and closing it is a question
-about the public-route set rather than about the credential.
+**A gap that was an attribution gap as much as an authorization one — now closed, and closed
+where it was said it would have to be: in the public-route set, not in the credential.**
+results-api's `auth_required` returns before any credential check when `REQUIRE_AUTH` is false
+or the route is `@is_public`. With no sandbox principal resolved, `request.state.sandbox_principal`
+is unset and the `endpoint_access` line carries **no `sid` and no `jti`**, so section 6.2's
+control 3 — "what did that script actually read?" — was blind on that route set, and `4h6.28`'s
+per-credential caps, which key on the resolved principal, did not apply there either.
+
+Since `genetics-results-suite-0lf`, `is_public_endpoint` answers true only for
+`ALWAYS_ANONYMOUS_PATHS` (`/healthz`) once `SANDBOX_ENABLED` is true, so with the sandbox
+deployed there is no route a script can reach without presenting its token, and every request it
+makes is both bounded and attributable. Two residues remain, both narrow: `/healthz` itself is
+anonymous and unattributed (a constant document on no data path, excluded from usage logging by
+design), and under `REQUIRE_AUTH=false` — local development only; the shipped `results-api.yaml`
+sets `"true"` — the short circuit still fires. The sandbox principal is nevertheless resolved
+ahead of *both* short circuits in `app/dependencies.py:auth_required`, so a token that is
+presented is still honoured in dev.
 
 ### Deploy ordering: there is no ordering hazard, and one configuration lockout
 
