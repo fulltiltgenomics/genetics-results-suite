@@ -196,12 +196,25 @@ def pod_template_labels(fname, doc):
 def sandbox_tells(fname, doc):
     """The sandbox-only pod-spec properties this workload declares, as human-readable strings.
 
-    These are the tells docs/code-execution-security.md contractually obliges the sandbox to
-    carry, and they are FORCED rather than conventional: GKE taints the gVisor pool
+    These are the sandbox-forced tells that still DISCRIMINATE — a deliberately narrower set
+    than the sandbox contract in docs/code-execution-security.md, which also obliges
+    `automountServiceAccountToken: false`. That one left this list because any pod making no
+    API-server calls should adopt it, so it no longer distinguishes the sandbox from anything
+    else. What remains is FORCED rather than conventional: GKE taints the gVisor pool
     (`sandbox.gke.io/runtime=gvisor:NoSchedule`, doc ~303-305, ~1840), so a sandbox without the
     runtimeClass and the toleration does not schedule there at all, and the doc states at ~1668
     that it is the only pod tolerating that taint. Running as `genetics-suite` would hand the
     sandbox the Workload-Identity-bound GSA the whole isolation story rests on (doc section 2).
+
+    `automountServiceAccountToken: false` USED to be in this list and no longer is
+    (genetics-results-suite-o5i). It stopped being sandbox-only the moment auth-gateway set it:
+    the sandbox needs it, but so does any pod that makes no API-server calls, and it is the
+    control we want other workloads to adopt. Leaving it here would have made "I hardened a pod"
+    arrive as `refusing to apply network-policies/` — the exact failure mode the KNOWN_APPS
+    trigger was deleted for. The THREE remaining tells are unaffected and each is load-bearing:
+    the two gVisor ones are forced by the node pool's taint, so nothing else can carry them by
+    accident, and the third — serviceAccountName, not gVisor-derived — fires on any pod naming a
+    service account other than `genetics-suite`, which is the sandbox alone.
 
     An ABSENT serviceAccountName is not a tell: bff, frontend, keycloak, postgres and
     oauth2-proxy declare none, and counting absence would fire on all of them.
@@ -215,9 +228,6 @@ def sandbox_tells(fname, doc):
     for tol in spec.get("tolerations") or []:
         if isinstance(tol, dict) and tol.get("key") == GVISOR_TAINT_KEY:
             tells.append(f"tolerates {GVISOR_TAINT_KEY}")
-    automount = spec.get("automountServiceAccountToken")
-    if automount is not None and not _is_on(automount):
-        tells.append(f"automountServiceAccountToken: {automount!r}")
     sa = spec.get("serviceAccountName")
     if sa is not None and sa != SUITE_SERVICE_ACCOUNT:
         tells.append(f"serviceAccountName: {sa!r}")

@@ -266,6 +266,23 @@ spec:
       # role is the emptyDir ROOT directories the kubelet creates. The consequence: this depends
       # on runAsUser matching the uid that created the 0700 dirs, so overriding runAsUser on one
       # container breaks the gateway despite fsGroup.
+      #
+      # nginx makes no API-server calls, so the projected `default` ServiceAccount token was pure
+      # attack surface on the internet-facing pod: an RCE here could read
+      # /var/run/secrets/kubernetes.io/serviceaccount/token. MEASURED read-only, so the size of
+      # what this removes is not overstated: no RoleBinding or ClusterRoleBinding in the cluster
+      # names genetics:default, and the SA carries no iam.gke.io/gcp-service-account annotation,
+      # so it reaches GCP not at all. Its only authorisation comes from the built-in bindings that
+      # every authenticated identity gets — system:basic-user, system:discovery,
+      # system:public-info-viewer, system:service-account-issuer-discovery — i.e. self-reviews,
+      # /version, /healthz, the OpenAPI/discovery documents and the OIDC JWKS. So this is
+      # defence-in-depth against a future binding, not the closing of a live escalation path;
+      # what it does deny today is a valid cluster credential to use for reconnaissance.
+      # Verified functionally inert by running the rendered config with the token directory
+      # absent: /healthz, both auth_request outcomes, the Bearer bypass, /api/, /status,
+      # /chat/v1/, the Keycloak fragment, the legacy 301 and /mcp are byte-identical to the run
+      # with the directory mounted.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -276,6 +293,23 @@ spec:
       # keeps envsubst away from nginx's own $host/$email/$request_uri variables, and it is
       # single-quoted so the shell does not expand it before envsubst sees it.
       - name: render-config
+        # TAG, NOT A DIGEST, deliberately — but the tested digest is recorded because a moving tag
+        # is now load-bearing in a way it was not before readOnlyRootFilesystem. The image's
+        # docker-entrypoint.sh runs under `set -e`, so a future 1.27-alpine push adding a
+        # /docker-entrypoint.d script without a read-only guard crash-loops the internet-facing
+        # gateway instead of merely writing a stray file. All four current scripts were read out
+        # of the image and are safe (10-listen-on-ipv6 exit-0s on its own touch failure,
+        # 15-local-resolvers only reads /etc/resolv.conf, 20-envsubst and 30-tune return early).
+        # TESTED AND LIVE, same image both ways:
+        #   nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+        #   (built 2025-04-16; confirmed identical to the digest the running pod reports)
+        # Not pinned because a pin here would be permanent: nothing in this repo bumps image
+        # references (no renovate/dependabot, no .github at all), every other image in k8s/ is a
+        # tag, and freezing an internet-facing HTTP parser at a fixed build means it never picks
+        # up an nginx or musl CVE fix. Note the tag buys less than it looks like: with the default
+        # IfNotPresent, a cached node keeps whatever it already pulled, so the tag is only
+        # re-resolved when the pod lands on a node without the image. If the entrypoint ever does
+        # change, diff against the digest above before assuming a7n's findings still hold.
         image: nginx:1.27-alpine
         command: ["/bin/sh", "-c"]
         args:
@@ -365,6 +399,7 @@ spec:
             memory: "32Mi"
       containers:
       - name: nginx
+        # keep in step with the initContainer's image, and see the tag-vs-digest note there
         image: nginx:1.27-alpine
         ports:
         - containerPort: 8080
@@ -429,6 +464,34 @@ spec:
           medium: Memory
       # node-disk backed on purpose (see the mount comment): nginx's temp paths, which the
       # image leaves unwritable for uid 101, plus /tmp for the pid file under a read-only rootfs
+      #
+      # NO sizeLimit, DELIBERATELY, and the arithmetic is recorded here so the next reader does
+      # not rediscover the question (genetics-results-suite-o5i). A sizeLimit does not produce
+      # ENOSPC inside nginx; the kubelet EVICTS the pod, and this Deployment is replicas: 1 and
+      # internet-facing, so every candidate number is a new whole-site outage path.
+      #   cache: the config's own ceiling is ~1 TiB. worker_processes 1 x worker_connections 1024
+      #     concurrent requests; each can spool a 50M body (client_max_body_size, and anything
+      #     over the ~16k client_body_buffer_size default goes to client_temp) = 51.2 GB, plus
+      #     proxy_max_temp_file_size, which is left at its 1024m DEFAULT and applies per request
+      #     on every buffered location (proxy_buffering is turned off only on /mcp and /chat/v1/)
+      #     = another 1 TiB. The node offers ~43.8 GiB allocatable ephemeral storage, so no limit
+      #     derived from the config can bound the adversarial case — it is ~24x the whole disk.
+      #     Nor is the suggested 1Gi safe for LEGITIMATE traffic: /api/ proxies results-api
+      #     through the BFF with buffering on and 300s timeouts, so one slow client pulling a
+      #     large summary-stats response spools up to 1024m into proxy_temp on its own. 1Gi would
+      #     trade a hypothetical disk-fill for a reachable eviction. A defensible number needs
+      #     proxy_max_temp_file_size bounded in the config FIRST; that is an nginx behaviour
+      #     change (nginx falls back to upstream-paced buffering) and needs its own traffic test.
+      #   tmp: nothing an attacker can reach writes here. The main container writes only
+      #     /tmp/nginx.pid (~6 bytes); the initContainer writes one ~9 KB placeholder config, and
+      #     only on the config-rejected error path. A limit would bound a fill path that does not
+      #     exist while adding an eviction path that does.
+      # What the pod has instead, by omission: no ephemeral-storage request, so under node
+      # DiskPressure the kubelet's eviction ranking (usage above request, request 0) already puts
+      # the pod that filled the disk at the top of the list — without naming a threshold that
+      # normal traffic can cross. That is a ranking, not a shield: the cluster is a single node,
+      # so DiskPressure is cluster-wide and every other workload feels it before the ranking
+      # rescues anything, and the evicted pod reschedules onto the same full node.
       - name: cache
         emptyDir: {}
       - name: tmp
