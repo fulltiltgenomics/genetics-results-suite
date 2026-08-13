@@ -44,8 +44,10 @@ A script running there can read every other user's conversations and can *write*
 text that will later be prepended to somebody else's chat — a persistence primitive, not
 just a read.
 
-**The environment allow-list is scar tissue, not caution.** `sandbox_tools.py` line 21
-carries its own history in a comment:
+**The environment allow-list is scar tissue, not caution.**
+`genetics-mcp-server/src/genetics_mcp_server/skills/sandbox_tools.py` (referred to below as
+just `sandbox_tools.py`) line 17
+carries its own history in a comment above `_ALLOWED_ENV_KEYS`:
 
 > Environment passed to model-authored scripts, as an allow-list. This was previously a
 > deny-list of key prefixes, which missed `INTERNAL_API_SECRET` (the credential that
@@ -106,11 +108,11 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
-| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fourteen workloads use `serviceAccountName: genetics-suite` (the rest name no KSA and fall to the namespace `default`), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
+| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fourteen workloads use `serviceAccountName: genetics-suite` (the rest name no KSA and fall to the namespace `default`), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
 | Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
 | Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 15-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 15 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
-| CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Bounded well under the sandbox node's allocatable so the supervisor stays schedulable. |
+| CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
 | pids | `pod_pids_limit: 256` in the sandbox node pool's `kubelet_config`, plus a child pid budget **meaningfully below** 256 | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold well under 256, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). |
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
@@ -221,6 +223,20 @@ leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 
   move evicts pods, and here it would kill in-flight scripts).
 - `machine_type = "e2-standard-2"`, `sandbox_config { sandbox_type = "gvisor" }`,
   `kubelet_config { pod_pids_limit = 256 }`.
+  **UNVERIFIED, and `4h6.10` must settle it before relying on either number.** Two open
+  questions that cannot be answered from this checkout or read-only from the live project —
+  as of 2026-08-13 the `finngenie` cluster (`europe-west1-b`) has exactly one node pool,
+  `finngenie-pool`, `e2-standard-4`, **no `sandboxConfig`**, so there is no gVisor node
+  anywhere to measure against:
+  (a) the runsc **sentry's** memory footprint. It is charged to the pod's cgroup, so it eats
+  into the 3Gi limit in the Memory row above, and the `RLIMIT_AS` headroom that row asks for
+  must cover supervisor **plus sentry**, not supervisor alone. The figure is workload-shaped
+  (it tracks the app's mapped memory and open fds) and no published constant substitutes for
+  measuring it.
+  (b) whether `e2-standard-2` satisfies GKE Sandbox's machine-type requirements on this
+  cluster's release channel and version. Confirming it needs a real `terraform apply` in a
+  non-production project — the same apply the review gate below already requires — because
+  the constraint is enforced at pool creation, not at plan.
 - **`node_config.workload_metadata_config { mode = "GKE_METADATA" }`, unconditionally.**
   This is not optional and it is not a copy of the primary pool's arrangement.
   `terraform/gke.tf` (primary pool, ~lines 57-72) sets `workload_metadata_config` inside a
@@ -618,7 +634,10 @@ below. This is a change from an earlier draft, which allowed 53/UDP+TCP to
   API with the caller's session.
 - **mcp-server.** Denying this closes the obvious laundering route — a script that could
   reach mcp-server would inherit mcp-server's own permission through the
-  `allow-ingress-db-api` policy and its full 60-tool surface.
+  `allow-ingress-db-api` policy and its whole registered tool surface (deliberately not
+  counted here — re-derive from `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` +
+  `SUBAGENT_TOOL_DEFINITIONS` minus `mcp_server.py`'s `_mcp_disabled`; a number written down
+  here rots silently).
 - **`169.254.169.254`** (the GCE/GKE metadata server). **Amended by `4h6.8` — the original
   "covered by default-deny" is an over-claim and the policy must not be relied on here.**
   No rule permits it, so under standard NetworkPolicy semantics it is denied; but
@@ -809,11 +828,16 @@ results-api directly and forever, from anywhere those services are reachable. Th
 model-authored scripts once.
 
 Note also *why a network policy is not a sufficient substitute*. `docs/project-spec.md`
-records, and `genetics-results-db/api/main.py` repeats in the `require_auth` docstring:
+records:
 
 > The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is
 > itself reachable from outside, so anything that could drive mcp-server could reach
 > BigQuery behind it.
+
+`genetics-results-db/api/main.py`'s `require_auth` docstring makes the same point in its own
+words — that before the shared secret the sole control was the cluster NetworkPolicy, and
+mcp-server sits on *both sides* of that boundary. Same reasoning, different wording; the
+quote above is project-spec's.
 
 The sandbox must not become a second instance of that shape. Its network position and its
 credential must *both* be narrow.
@@ -1952,7 +1976,7 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    `sub` and `jti` per request. A dump is visible after the fact and attributable to a
    person and a conversation.
 4. **The sandbox grants no data the caller lacked.** The same user can already query the
-   same views through the existing 60-tool surface. The sandbox changes the *shape* of
+   same views through the existing tool surface. The sandbox changes the *shape* of
    access, not its scope.
 
 So the residual is: an authorized user extracts, into their own chat window, data they were

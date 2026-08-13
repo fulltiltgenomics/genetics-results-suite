@@ -51,8 +51,23 @@ repairs it anyway rather than trusting that.
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
-| `keycloak/**`, `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
-| `sandbox/**`, `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md`, `docs/project-spec.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers |
+| `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` | client setup, allowlist, backup and restore paths |
+| `sandbox/**` (**including** `sandbox/schema/**` and `sandbox/stubs/**`), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers, what the shipped schema docs and stubs disclose |
+| `sandbox/**` (**including** the generated trees), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/project-spec.md` | services table, isolation-boundary summary, sandbox network policy, what the sandbox exposes |
+
+The **except** clause above is not tidiness, and its narrowness is the point. A rule whose
+path pattern is broader than the doc concern it names fires where it can never apply, and
+that trains people to ignore it (`genetics-results-suite-dqa`) — but the exclusion has to
+be justified against what the doc actually says, not against how the files were produced.
+A stylesheet or message bundle cannot change how Keycloak authenticates anybody, so it is
+exempt; a FreeMarker override or a script under the same directory can, so it is not. The
+generated `sandbox/schema/**` and `sandbox/stubs/**` are **not** exempt for the same
+reason in reverse: `docs/code-execution-security.md` reasons about their shipped content —
+the stubs are where `INTERNAL_API_SECRET` enters its secrets-in-image analysis, and the
+`PLACEHOLDER` build gate is stated over both staged trees — so a regeneration can falsify
+it. When adding a row, check the path pattern is no broader than the doc concern it names,
+and mirror any exclusion into `scripts/check-doc-drift.sh`'s optional 4th `check`
+argument — the table and the script are supposed to match.
 
 A doc is stale the moment it *enumerates* something the code no longer matches.
 Counts and lists rot silently — view lists, endpoint tables, env-var tables,

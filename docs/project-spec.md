@@ -888,6 +888,26 @@ exits 1; `scripts/deploy.sh` and `scripts/build-all.sh` call it that way and war
 without blocking, so an unwired checkout surfaces the first time anyone builds or
 deploys rather than staying silent.
 
+`check()` takes an **optional 4th argument**: a regex of paths to ignore *inside* the
+rule's own path pattern, for files the named doc demonstrably cannot describe. One
+rule uses it (`genetics-results-suite-dqa`) — the `docs/keycloak-apple-signin.md`
+rule ignores the static branding assets under `keycloak/themes/**` (stylesheets,
+`.properties` bundles, images, fonts), which change how the login page looks and reads
+and nothing else. The exemption is written by file extension rather than by directory
+on purpose: `keycloak/themes/genetics/login/` is where a FreeMarker override such as
+`login.ftl` would go, and a template or script there changes how the login page
+behaves, so it stays covered. The sandbox's generated trees are deliberately **not**
+excluded from anything: `docs/code-execution-security.md` reasons about the content
+`sandbox/stubs/**` and `sandbox/schema/**` ship (the stubs are where
+`INTERNAL_API_SECRET` enters its secrets-in-image analysis, and the `PLACEHOLDER`
+build gate is stated over both staged trees), and `docs/project-spec.md` summarises
+what the sandbox exposes, so either doc can be falsified by a regeneration. A rule
+whose path pattern is broader than the doc concern it names fires where it can never
+apply, and a warn-only check that fires when it cannot apply becomes wallpaper — but
+"generated" is not on its own a reason to exclude a path, only "the doc makes no claim
+this file can break" is. Exclusions are recorded in `CLAUDE.md`'s ownership table as
+**except** clauses; the table and the script must match.
+
 **Known limits** (deliberate): the check only warns, and it only knows path → doc
 mappings. It cannot detect a doc that *enumerates* something the code no longer
 matches — a stale view list, row count or endpoint table — which is what most of the
