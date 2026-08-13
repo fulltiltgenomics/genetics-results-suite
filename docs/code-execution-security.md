@@ -618,6 +618,13 @@ sandbox with *unrestricted* egress and no signal anywhere.
 | `podSelector: app: db-api` | 8080/TCP | The primary data path. |
 | `podSelector: app: results-api` | 4000/TCP | Summary statistics, LD, fuzzy search — the things BigQuery cannot serve. |
 
+Read that table as a statement about *data*, not about endpoints: a third-party annotation
+source is unreachable by construction because no rule can match it, whereas **anything
+results-api serves is reachable** — including artefacts it merely relays from GCS, such as the
+phenotype-report markdown — since the sandbox's token is not scoped per route (see "Require the
+*sandbox* token on all routes", rejected below), so a script can reach any of it by hand-rolled
+HTTP whether or not a wrapper exists for it.
+
 **No kube-dns rule.** Name resolution is done with `hostAliases` instead — see "On DNS"
 below. This is a change from an earlier draft, which allowed 53/UDP+TCP to
 `kube-system`/`k8s-app: kube-dns` and booked DNS tunnelling as an accepted residual.
