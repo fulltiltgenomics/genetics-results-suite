@@ -41,7 +41,8 @@ TFVARS="${SCRIPT_DIR}/../terraform/terraform.tfvars"
 if [ -n "${CONFIG_PROFILE:-}" ]; then
   PROFILE="${CONFIG_PROFILE}"
 elif [ -f "${TFVARS}" ]; then
-  PROFILE="$(grep -E '^\s*config_profile\s*=' "${TFVARS}" | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)"
+  # POSIX [[:space:]], not GNU-only \s — see deploy.sh (genetics-results-suite-8wh)
+  PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' "${TFVARS}" | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
 else
   echo "ERROR: terraform/terraform.tfvars not found — refusing to write cluster secrets."
   echo "It is gitignored and lives only in the main checkout; from a git worktree the config"

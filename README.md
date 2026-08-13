@@ -245,7 +245,9 @@ the git common dir, so it works from a worktree and fails loudly when it cannot 
 them — `check-worktree-paths.sh` no longer reports it.
 
 This script reports only the paths that actually diverge; it is silent in the main
-checkout. `deploy.sh` and `build-all.sh` run it with `--check`, warn, and never block.
+checkout. `deploy.sh`, `build-all.sh` and `build.sh` run it with `--check`, warn, and
+never block — a single-service build falls back to `APP_NAME=FinnGenie` from a worktree
+just like a full build does, so it gets the same warning.
 See `docs/project-spec.md`, "Worktree path resolution".
 
 ### 6. Deploy
