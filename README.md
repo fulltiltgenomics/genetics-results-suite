@@ -189,6 +189,11 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 ./scripts/create-secrets.sh
 ```
 
+> **Run it from the main checkout.** It derives the config profile (which decides whether
+> `keycloak-secrets` is written) from `terraform/terraform.tfvars`, which is gitignored and lives
+> only there. From a git worktree it refuses with exit 1 rather than guessing — export
+> `CONFIG_PROFILE=daly` or `CONFIG_PROFILE=finngen` if you really need to run it from one.
+
 ### 4. Build and push Docker images
 
 Authenticate docker:
