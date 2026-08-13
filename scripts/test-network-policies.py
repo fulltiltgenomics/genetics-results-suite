@@ -578,8 +578,10 @@ def _():
     # genetics-results-suite-6uk), and there is no other path — the sandbox is denied
     # auth-gateway by design and auth-gateway would not validate a sandbox HS256 token anyway.
     # What makes keeping this entry safe is NOT in this file and cannot be: results-api shrinks
-    # its anonymous surface to /healthz once SANDBOX_ENABLED is true, so an anonymous request
-    # from this pod gets a 401 rather than an unaccounted 200. That control is a route
+    # its anonymous surface to /healthz whenever ANONYMOUS_SURFACE_MINIMAL is on — which is its
+    # default, and which SANDBOX_ENABLED=true forces regardless (genetics-results-suite-rhh, so
+    # that turning the sandbox off cannot re-widen it) — so an anonymous request from this pod
+    # gets a 401 rather than an unaccounted 200. That control is a route
     # decorator, invisible to a manifest reader, and is pinned by results-api's
     # tests/test_anonymous_surface.py. Deleting this entry here would break the SDK; deleting
     # that test there would reopen the hole. Neither is a cleanup.
