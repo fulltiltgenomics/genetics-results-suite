@@ -59,6 +59,18 @@ spec:
         # true, results-api refuses to start if either secret above is unset.
         - name: SANDBOX_ENABLED
           value: "false"
+        # the anonymous surface: "true" (the in-code default, declared here so it is visible and
+        # tunable without a rebuild) means /healthz is the ONLY route served with no credential;
+        # everything else 401s. SEPARATE from SANDBOX_ENABLED on purpose — that one is the
+        # incident lever, and while the two were the same switch, turning the sandbox off
+        # re-opened six routes to anonymous callers (genetics-results-suite-rhh).
+        # SANDBOX_ENABLED=true FORCES this on regardless of the value here.
+        # Setting it "false" widens the surface back to the full @is_public set; nothing in the
+        # cluster needs that (every caller admitted by k8s/network-policies/policies.yaml already
+        # presents a credential), so treat it as a break-glass for an unforeseen anonymous
+        # in-cluster caller, not a tuning knob.
+        - name: ANONYMOUS_SURFACE_MINIMAL
+          value: "true"
         # per-execution (`jti`) limits, all at their in-code defaults. Declared here so an
         # operator can tune them without a rebuild, which is the reason they are env vars at all
         # — "env-configurable" was true of the code and false in practice while the manifest

@@ -1189,10 +1189,71 @@ section implies.**
    were measured served 200 with the counter map still empty.
 
    **Partially closed — the no-credential path only — by shrinking the anonymous surface rather
-   than by identifying the caller.** With `SANDBOX_ENABLED` true,
+   than by identifying the caller.** With `ANONYMOUS_SURFACE_MINIMAL` on,
    `app.dependencies.is_public_endpoint` treats only `ALWAYS_ANONYMOUS_PATHS` — today `/healthz`
    alone — as servable with no principal. Every other route answers 401 to a request carrying no
-   credential. results-api still cannot tell a sandbox request from a browser request — both
+   credential.
+
+   **That control is its own flag, and it defaults to on** (`genetics-results-suite-rhh`). It
+   was keyed directly on `SANDBOX_ENABLED` in the first draft, which made the incident lever and
+   the security lever the same switch with the security side failing **open**: turning the
+   sandbox off during an incident — the routine action, and one whose variable name advertises
+   nothing about the anonymous surface — silently re-opened all six routes. `SANDBOX_ENABLED`
+   now only *forces* the minimal surface, so the sandbox can never run with the wide one, while
+   `ANONYMOUS_SURFACE_MINIMAL=false` is an explicit, sandbox-overridable widening. The parse is
+   inverted relative to every other boolean in `app/config/common.py` — unset is **on**, only an
+   explicit false-y value turns it off — so a typo fails safe.
+
+   *Defaulting it on changes behaviour at the next deploy rather than at sandbox rollout, and
+   that is deliberate.* The argument never depended on the sandbox existing. Most in-cluster
+   callers admitted to `results-api:4000` by `k8s/network-policies/policies.yaml` already present
+   a credential — auth-gateway's `@api_bearer` forwards the client's own bearer, chat-backend and
+   mcp-server send `INTERNAL_API_SECRET` from their Deployments, the monitor CronJob
+   authenticates and its only other results-api route was never `@is_public`, and the kubelet
+   reaches `/healthz`, which stays anonymous.
+
+   **Two callers do not, and the browser is one of them — this is a three-service ordering
+   constraint, `bff` → `mcp-server` → `results-api`, and nothing enforces it.**
+
+   1. *The browser.* The BFF attaches the shared secret only on its **typed** upstream routes
+      (`bff/upstream.ts`). All six routes this narrows are reached through the BFF's **generic
+      passthrough** (`bff/passthrough.ts`), which attaches nothing. Measured against the live
+      cluster: a header-less request through the **deployed** BFF gets **200** from
+      `/api/v1/auth`. The passthrough change that adds `Authorization` exists only in
+      genetics-results-browser's un-deployed `db-only-architecture` worktree. Deploying
+      results-api first therefore 401s the browser on its login-state probe (`/api/v1/auth`),
+      on `/api/v1/variant_sets` and `/api/v1/variant_sets/{name}`, and on `/api/v1/rsid/variants`.
+      Ship that BFF build first.
+   2. *An mcp-server pod with `INTERNAL_API_SECRET` unset*, whose tool executor's header build
+      fell back to sending nothing at all; `genetics-results-suite-618` made that a startup
+      failure. Be precise about what shipping 618 first buys: **not** a working pod. It converts
+      a bare, unexplained 401 on every tool call into a CrashLoopBackOff naming the variable.
+      Diagnosability, not availability.
+
+   `scripts/rollout.sh`'s `ORDERING:` header carries the sequence. `scripts/deploy.sh` restarts
+   every Deployment in one loop with no waiting and with results-api ahead of chat-backend and
+   mcp-server — i.e. it actively does the adverse order — and now says so next to its `DEPLOYS`
+   list. Neither is a guard.
+
+   *What 618 actually does, since "assert it in the executor" would have been wrong.*
+   `config/settings.py:require_internal_api_secret()` raises with a message naming the variable,
+   and the two **deployed entrypoints** call it: `mcp_server.main()` on the remote transports,
+   beside the existing `MCP_API_KEY` refusal, and `chat_api`'s lifespan when `REQUIRE_AUTH` is
+   true. It is deliberately not enforced at import, in `Settings`, or in `ToolExecutor.__init__`,
+   because two legitimate callers hold no secret: a local run against an unauthenticated
+   results-api (the README documents the variable as optional), and **the sandbox image, which
+   holds no internal credential by design** — `_PrunedInstallSettings` ships the SDK's import
+   closure without `config/settings.py` and the sandbox gets a per-execution token instead
+   (`4h6.9`/`4h6.14`). A full install that builds the client with no secret logs a warning naming
+   the variable, which is the only local signal a developer gets. Note that **only
+   `k8s/deployments/mcp-server.yaml` marks the `internal-api-secret` `secretKeyRef`
+   `optional: true`** — that is exactly how the variable ends up unset with the pod still
+   starting, and mcp-server is therefore the only one of the two that can reach the silently
+   anonymous state the guard exists to catch. `k8s/deployments/chat-backend.yaml` sets no
+   `optional` on that key, so a missing key there never starts the container at all: it is a
+   `CreateContainerConfigError` on the pod, not an unset variable inside a running process. Both
+   still call the guard, because an *empty* value satisfies the kubelet and reaches the process
+   in either Deployment. results-api still cannot tell a sandbox request from a browser request — both
    arrive on `:4000` in-cluster — and for this half it does not have to.
 
    **What is emphatically not true is that "the only way into a handler is to present a
@@ -1241,9 +1302,12 @@ section implies.**
    above honest use precisely so an honest execution never meets them, and both fail toward
    refusing new work rather than corrupting a running execution's accounting.
 
-Production impact today is nil: no sandbox Deployment exists and `SANDBOX_ENABLED` is `"false"` on
-both services, so nothing but `tests/test_sandbox_budget.py` (30 tests, offline lane) will report
-a regression in any of this.
+Production impact today is nil for the counters themselves: no sandbox Deployment exists and
+`SANDBOX_ENABLED` is `"false"` on both services, so nothing but `tests/test_sandbox_budget.py`
+(30 tests, offline lane) will report a regression in any of this. **The anonymous surface is the
+exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
+answered anonymous callers stop doing so at the next results-api deploy (see the ordering
+constraint on `genetics-results-suite-618` above).
 
 **The departure: `@is_public` routes are relaxed, not tight — and the measurement that
 decided it.** Read literally, "no credential gets the tight limits" would apply the sandbox
@@ -1337,11 +1401,12 @@ browser traffic, while carrying a real regression risk if a curated variant set 
 configured with more than 25 000 variants. `REQUIRE_AUTH=false` (local development; the shipped
 `results-api.yaml` sets `"true"`) is relaxed for the same reason.
 
-**And with the sandbox deployed the exception has nothing left to apply to.** Everything above
-is the `SANDBOX_ENABLED=false` shape — today's production, and the reason the relaxation is
-still described rather than deleted. Once `SANDBOX_ENABLED` is true, `is_public_endpoint` answers
-true for `/healthz` only, so six of the seven routes stop being anonymous and get whatever their
-caller's principal earns them: relaxed for the BFF's shared secret and for a verified user,
+**And with the minimal anonymous surface the exception has nothing left to apply to.**
+Everything above is the wide-surface shape — the behaviour that predates the sandbox, and the
+reason the relaxation is still described rather than deleted; it now requires an explicit
+`ANONYMOUS_SURFACE_MINIMAL=false`. With that flag at its default (or forced by
+`SANDBOX_ENABLED`), `is_public_endpoint` answers true for `/healthz` only, so six of the seven
+routes stop being anonymous and get whatever their caller's principal earns them: relaxed for the BFF's shared secret and for a verified user,
 tight for a sandbox token. The table above is what says this costs the browser nothing —
 64 + 3 + 0 + 0 + 0 calls in a month.
 
@@ -1390,11 +1455,14 @@ makes requiring a principal free rather than a trade-off.
   browser traffic on routes the browser owns. Removing the anonymous surface removes the thing
   the bucket would have had to meter.
 
-*Enforcement, since the control is one boolean in one function.* `results-api`
-`tests/test_anonymous_surface.py` (9 tests, offline lane) reads the **live route table** and pins
-the anonymous surface in both `SANDBOX_ENABLED` states: a new `@is_public` decorator fails
-`test_the_public_route_set_is_what_the_docs_claim`, and one that also survives into the
-sandbox-enabled state fails `test_with_the_sandbox_the_anonymous_surface_is_exactly_healthz`.
+*Enforcement, since the control is two booleans in one function.* `results-api`
+`tests/test_anonymous_surface.py` (12 tests, offline lane) reads the **live route table** and
+pins the anonymous surface in both states: a new `@is_public` decorator fails
+`test_the_public_route_set_is_what_the_docs_claim`, and one that also survives the minimal
+surface fails `test_the_minimal_anonymous_surface_is_exactly_healthz`. Three further tests pin
+the flag itself — that an empty environment yields the minimal surface and a typo does not widen
+it, that `SANDBOX_ENABLED` forces it over an explicit `false`, and that turning the sandbox off
+does **not** re-open the surface, which is the regression `genetics-results-suite-rhh` was.
 That test asserts against the **literal** `{"/healthz"}` on both sides; an earlier version
 compared the computed surface to `ALWAYS_ANONYMOUS_PATHS` itself, which is tautological — adding
 `/api/v1`, `/api/v1/auth` and `/api/v1/variant_sets` to the constant left all 8 tests passing.
@@ -1640,8 +1708,9 @@ control 3 — "what did that script actually read?" — was blind on that route 
 per-credential caps, which key on the resolved principal, did not apply there either.
 
 Since `genetics-results-suite-0lf`, `is_public_endpoint` answers true only for
-`ALWAYS_ANONYMOUS_PATHS` (`/healthz`) once `SANDBOX_ENABLED` is true, so with the sandbox
-deployed there is no route a script can reach without presenting its token, and every request it
+`ALWAYS_ANONYMOUS_PATHS` (`/healthz`) whenever `ANONYMOUS_SURFACE_MINIMAL` is on — its default,
+and forced by `SANDBOX_ENABLED` (`genetics-results-suite-rhh`) — so with the sandbox deployed
+there is no route a script can reach without presenting its token, and every request it
 makes is both bounded and attributable. Two residues remain, both narrow: `/healthz` itself is
 anonymous and unattributed (a constant document on no data path, excluded from usage logging by
 design), and under `REQUIRE_AUTH=false` — local development only; the shipped `results-api.yaml`
@@ -1676,7 +1745,12 @@ whole suite down. Both manifests therefore ship it as `"false"`; the deploy that
 sandbox Deployment (`4h6.7`) flips it, and must do so only after `create-secrets.sh` has run.
 **Rollback direction: set `SANDBOX_ENABLED=false` and restart** — that restores service
 immediately without touching secrets or images, and only disables the startup assertion, not
-the token validation.
+the token validation. Since `genetics-results-suite-rhh` it also does **not** re-open
+results-api's anonymous surface, which is what it used to do: that is now
+`ANONYMOUS_SURFACE_MINIMAL`, declared `"true"` in `k8s/deployments/results-api.yaml`, defaulting
+to on when unset, and merely *forced* by `SANDBOX_ENABLED`. The incident lever and the security
+lever are separate, and the security one no longer fails open when the other is flipped under
+pressure.
 
 **Rotating the signing key — not atomic, and it is an outage window, not one lost execution.**
 `create-secrets.sh` reuses the value already in the cluster and only generates on first

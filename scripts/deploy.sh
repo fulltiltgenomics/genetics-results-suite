@@ -453,6 +453,14 @@ echo ""
 echo "=== Forcing rollout restarts ==="
 # Always restart so pods pick up: (a) freshly-built :latest images,
 # (b) ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload).
+# ORDER WARNING: this list is restarted in one loop with no waiting, and results-api comes
+# BEFORE bff's effect lands and before mcp-server — the opposite of the cross-service ordering
+# documented in scripts/rollout.sh's ORDERING header (bff -> mcp-server -> results-api, because
+# results-api's ANONYMOUS_SURFACE_MINIMAL defaults on and the browser reaches /api/v1/auth,
+# /api/v1/variant_sets and /api/v1/rsid/variants through the bff's credential-less generic
+# passthrough). A full deploy from a state where the new bff is not yet built therefore takes a
+# transient browser 401 on those routes. When that matters, roll the three out individually with
+# scripts/rollout.sh in that order instead.
 DEPLOYS="frontend bff results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"
