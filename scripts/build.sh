@@ -17,7 +17,10 @@ RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
-APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+# the `|| true` is load-bearing: tfvars is gitignored and main-checkout-only, so in a worktree
+# grep exits 2, pipefail propagates it and `set -e` killed the whole build with no output
+# before the FinnGenie fallback below was ever reached (genetics-results-suite-1xp)
+APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
 # sandbox: a local build context in this repo (like monitor and keycloak in
