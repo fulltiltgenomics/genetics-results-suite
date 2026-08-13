@@ -54,6 +54,16 @@ tables:
       mlog10p: "-log10(p-value). Higher = more significant. 7.30103 = genome-wide significance (p-value 5e-8)"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
+    column_types:
+      dataset: STRING
+      data_type: STRING
+      trait: STRING
+      pip: FLOAT64
+      cs_id: STRING
+      variant: STRING
+      mlog10p: FLOAT64
+      resource: STRING
+
     examples:
       - description: "Fine-mapped variants for a gene from FinnGen with high PIP"
         sql: >-
@@ -87,6 +97,13 @@ tables:
       mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
       resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
 
+    column_types:
+      dataset: STRING
+      gene: STRING
+      annotation: STRING
+      mlog10p_burden: FLOAT64
+      resource: STRING
+
     examples:
       - description: "Significant gene burden results from BipEx2 bipolar exome study"
         sql: >-
@@ -119,8 +136,17 @@ tables:
       resource1: "Resource identifier for the first dataset"
       resource2: "Resource identifier for the second dataset"
       clpp: "Colocalization posterior probability — probability that both signals share a causal variant"
-      cs_id1: "Credible set identifier for the first signal"
-      cs_id2: "Credible set identifier for the second signal"
+      cs1_id: "Credible set identifier for the first signal"
+      cs2_id: "Credible set identifier for the second signal"
+
+    column_types:
+      dataset1: STRING
+      dataset2: STRING
+      resource1: STRING
+      resource2: STRING
+      clpp: FLOAT64
+      cs1_id: STRING
+      cs2_id: STRING
 
     examples:
       - description: "Colocalization between FinnGen GWAS and eQTL for a gene"

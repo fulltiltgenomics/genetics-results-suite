@@ -10,47 +10,51 @@ the query scans every chromosome.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset1` | Study 1 dataset name |
-| `dataset2` | Study 2 dataset name |
-| `data_type1` | Study 1 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL) |
-| `data_type2` | Study 2 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL) |
-| `trait1` | Trait/phenotype name for study 1 |
-| `trait1_original` | Original trait name for study 1, e.g. phenotype code |
-| `trait2` | Trait/phenotype name for study 2 |
-| `trait2_original` | Original trait name for study 2, e.g. phenotype code |
-| `cell_type1` | Cell/tissue context for trait 1 |
-| `cell_type2` | Cell/tissue context for trait 2 |
-| `cs1_id` | Credible set ID for trait 1 |
-| `cs2_id` | Credible set ID for trait 2 |
-| `hit1` | Variant that coloc predicted to be the most likely causal variant in trait 1 (chr:pos:ref:alt) |
-| `hit2` | Variant that coloc predicted to be the most likely causal variant in trait 2 (chr:pos:ref:alt) |
-| `hit1_beta` | Effect size for lead variant in trait 1 |
-| `hit1_mlog10p` | -log10(p) for lead variant in trait 1 |
-| `hit2_beta` | Effect size for lead variant in trait 2 |
-| `hit2_mlog10p` | -log10(p) for lead variant in trait 2 |
-| `chr` | Chromosome number, chromosome X is 23 |
-| `region_start_min` | Start of the analyzed region (GRCh38) |
-| `region_end_max` | End of the analyzed region (GRCh38) |
-| `PP_H0_abf` | Posterior probability neither trait has association in the region |
-| `PP_H1_abf` | Posterior probability only trait 1 has association |
-| `PP_H2_abf` | Posterior probability only trait 2 has association |
-| `PP_H3_abf` | Posterior probability both traits associate via DIFFERENT causal variants |
-| `PP_H4_abf` | Posterior probability both traits associate and share the SAME causal variant. Generally >0.8 suggests colocalization |
-| `nsnps` | Number of SNPs in the region in both credible sets |
-| `nsnps1` | SNPs in the region for trait 1 |
-| `nsnps2` | SNPs in the region for trait 2 |
-| `cs1_log10bf` | log10 Bayes factor for credible set 1 |
-| `cs2_log10bf` | log10 Bayes factor for credible set 2 |
-| `clpp` | Causal posterior probability |
-| `clpa` | Causal posterior agreement |
-| `cs1_size` | Number of variants in credible set 1 |
-| `cs2_size` | Number of variants in credible set 2 |
-| `cs_overlap` | Number of variants shared between both credible sets |
-| `topInOverlap` | Whether the maximum PIP variant was in overlap of regions or not, for both traits, e.g. 1,1 or 0,0 |
-| `resource1` | Data source for study 1 (lowercase) |
-| `resource2` | Data source for study 2 (lowercase) |
+| column | type | description |
+| --- | --- | --- |
+| `dataset1` | `STRING` | Study 1 dataset name |
+| `dataset2` | `STRING` | Study 2 dataset name |
+| `data_type1` | `STRING` | Study 1 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL) |
+| `data_type2` | `STRING` | Study 2 association type (GWAS, eQTL, pQTL, sQTL, caQTL, metaboQTL) |
+| `trait1` | `STRING` | Trait/phenotype name for study 1 |
+| `trait1_original` | `STRING` | Original trait name for study 1, e.g. phenotype code |
+| `trait2` | `STRING` | Trait/phenotype name for study 2 |
+| `trait2_original` | `STRING` | Original trait name for study 2, e.g. phenotype code |
+| `cell_type1` | `STRING` | Cell/tissue context for trait 1 |
+| `cell_type2` | `STRING` | Cell/tissue context for trait 2 |
+| `cs1_id` | `STRING` | Credible set ID for trait 1 |
+| `cs2_id` | `STRING` | Credible set ID for trait 2 |
+| `hit1` | `STRING` | Variant that coloc predicted to be the most likely causal variant in trait 1 (chr:pos:ref:alt) |
+| `hit2` | `STRING` | Variant that coloc predicted to be the most likely causal variant in trait 2 (chr:pos:ref:alt) |
+| `hit1_beta` | `FLOAT64` | Effect size for lead variant in trait 1 |
+| `hit1_mlog10p` | `FLOAT64` | -log10(p) for lead variant in trait 1 |
+| `hit2_beta` | `FLOAT64` | Effect size for lead variant in trait 2 |
+| `hit2_mlog10p` | `FLOAT64` | -log10(p) for lead variant in trait 2 |
+| `chr` | `INT64` | Chromosome number, chromosome X is 23 |
+| `region_start_min` | `INT64` | Start of the analyzed region (GRCh38) |
+| `region_end_max` | `INT64` | End of the analyzed region (GRCh38) |
+| `PP_H0_abf` | `FLOAT64` | Posterior probability neither trait has association in the region |
+| `PP_H1_abf` | `FLOAT64` | Posterior probability only trait 1 has association |
+| `PP_H2_abf` | `FLOAT64` | Posterior probability only trait 2 has association |
+| `PP_H3_abf` | `FLOAT64` | Posterior probability both traits associate via DIFFERENT causal variants |
+| `PP_H4_abf` | `FLOAT64` | Posterior probability both traits associate and share the SAME causal variant. Generally >0.8 suggests colocalization |
+| `nsnps` | `INT64` | Number of SNPs in the region in both credible sets |
+| `nsnps1` | `INT64` | SNPs in the region for trait 1 |
+| `nsnps2` | `INT64` | SNPs in the region for trait 2 |
+| `cs1_log10bf` | `FLOAT64` | log10 Bayes factor for credible set 1 |
+| `cs2_log10bf` | `FLOAT64` | log10 Bayes factor for credible set 2 |
+| `clpp` | `FLOAT64` | Causal posterior probability |
+| `clpa` | `FLOAT64` | Causal posterior agreement |
+| `cs1_size` | `INT64` | Number of variants in credible set 1 |
+| `cs2_size` | `INT64` | Number of variants in credible set 2 |
+| `cs_overlap` | `INT64` | Number of variants shared between both credible sets |
+| `topInOverlap` | `STRING` | Whether the maximum PIP variant was in overlap of regions or not, for both traits, e.g. 1,1 or 0,0 |
+| `resource1` | `STRING` | Data source for study 1 (lowercase) |
+| `resource2` | `STRING` | Data source for study 2 (lowercase) |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

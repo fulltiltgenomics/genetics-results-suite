@@ -12,24 +12,28 @@ for those.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `variant` | Variant identifier as chr:pos:ref:alt, chromosome X is 23. Same format as the variant column in the association views, so it joins directly |
-| `chr` | Chromosome number, chromosome X is 23 |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative (effect) allele |
-| `INFO` | Imputation INFO score (imputation quality, 0-1). Low values indicate poorly imputed variants |
-| `AF` | Alternative allele frequency in FinnGen. This is the alt allele frequency, not the minor allele frequency — there is no maf column, use LEAST(AF, 1 - AF) |
-| `AC_Het` | Number of heterozygous genotypes in FinnGen |
-| `AC_Hom` | Number of homozygous (alt/alt) genotypes in FinnGen |
-| `most_severe` | Most severe VEP-predicted variant consequence |
-| `gene_most_severe` | Gene symbol associated with the most severe consequence |
-| `rsid` | dbSNP rsID when available. The only place rsIDs are stored — the association views have none |
-| `EXOME_enrichment_nfe` | Finnish vs non-Finnish European allele-frequency ratio from gnomAD exomes. Values above ~2 mark Finnish-enriched variants |
-| `GENOME_enrichment_nfe` | Finnish vs non-Finnish European allele-frequency ratio from gnomAD genomes |
-| `index` | Row index in the source annotation file, not a genetic quantity |
-| `resource` | Data source identifier, constant 'finngen' (FinnGen R14) |
+| column | type | description |
+| --- | --- | --- |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt, chromosome X is 23. Same format as the variant column in the association views, so it joins directly |
+| `chr` | `INT64` | Chromosome number, chromosome X is 23 |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative (effect) allele |
+| `INFO` | `FLOAT64` | Imputation INFO score (imputation quality, 0-1). Low values indicate poorly imputed variants |
+| `AF` | `FLOAT64` | Alternative allele frequency in FinnGen. This is the alt allele frequency, not the minor allele frequency — there is no maf column, use LEAST(AF, 1 - AF) |
+| `AC_Het` | `INT64` | Number of heterozygous genotypes in FinnGen |
+| `AC_Hom` | `INT64` | Number of homozygous (alt/alt) genotypes in FinnGen |
+| `most_severe` | `STRING` | Most severe VEP-predicted variant consequence |
+| `gene_most_severe` | `STRING` | Gene symbol associated with the most severe consequence |
+| `rsid` | `STRING` | dbSNP rsID when available. The only place rsIDs are stored — the association views have none |
+| `EXOME_enrichment_nfe` | `FLOAT64` | Finnish vs non-Finnish European allele-frequency ratio from gnomAD exomes. Values above ~2 mark Finnish-enriched variants |
+| `GENOME_enrichment_nfe` | `FLOAT64` | Finnish vs non-Finnish European allele-frequency ratio from gnomAD genomes |
+| `index` | `INT64` | Row index in the source annotation file, not a genetic quantity |
+| `resource` | `STRING` | Data source identifier, constant 'finngen' (FinnGen R14) |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

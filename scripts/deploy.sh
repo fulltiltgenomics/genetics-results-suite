@@ -13,14 +13,30 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   set -a; . "${ROOT_DIR}/.env"; set +a
 fi
 
+# the hook FILES are tracked (.beads/hooks/*) but core.hooksPath is local config a
+# clone does not carry, so an unwired checkout commits with no doc-drift warning and
+# no beads export, silently. warn here; never block a deploy over it.
+"${SCRIPT_DIR}/install-git-hooks.sh" --check || true
+
+# same class, one level up: several paths this script depends on (terraform.tfvars,
+# the sibling repos sync-datasets.sh copies into, the beads export) resolve into the
+# MAIN checkout when this runs from a worktree, and degrade without erroring.
+"${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
+
 echo "Deploying genetics-results-suite (tag: ${TAG})"
 
 # determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
+TFVARS_PROFILE=""
+if [ -f terraform.tfvars ]; then
+  # POSIX [[:space:]], not GNU-only \s: BSD/macOS sed does not know \s, so the substitution
+  # would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
+  TFVARS_PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' terraform.tfvars | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+fi
 if [ -n "${CONFIG_PROFILE:-}" ]; then
   PROFILE="${CONFIG_PROFILE}"
 elif [ -f terraform.tfvars ]; then
-  PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')"
+  PROFILE="${TFVARS_PROFILE}"
 else
   echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
   exit 1
@@ -38,6 +54,32 @@ if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
   terraform init -input=false -backend-config="${BACKEND_FILE}" -reconfigure > /dev/null
 else
+  # CONFIG_PROFILE alone is not enough to apply: without terraform.tfvars every other variable
+  # falls back to its default (log sinks off, manage_iam on, daly profile), which destroys and
+  # replaces live infrastructure. terraform itself also refuses (require_tfvars), this is the
+  # earlier and clearer failure.
+  if [ ! -f terraform.tfvars ]; then
+    echo "ERROR: terraform/terraform.tfvars not found — refusing to 'terraform apply'."
+    echo "It is gitignored and lives only in the main checkout; from a git worktree terraform"
+    echo "would use variable defaults and destroy live resources."
+    echo "Deploy from the main checkout, or set SKIP_TERRAFORM=true to deploy k8s manifests only."
+    exit 1
+  fi
+  # existence is not enough: the main checkout keeps terraform.tfvars.daly and .finngen next to the
+  # active terraform.tfvars, and CONFIG_PROFILE picks the BACKEND (so the state, project, cluster and
+  # domains) independently of which one is actually in place. Compare the two identities. When
+  # CONFIG_PROFILE is unset PROFILE was derived from this same file and the check is a no-op by
+  # construction — the mismatch only exists when something outside the file chose the backend.
+  if [ "${TFVARS_PROFILE}" != "${PROFILE}" ]; then
+    echo "ERROR: config profile mismatch — refusing to 'terraform apply'."
+    echo "  backend/state: ${PROFILE}.tfbackend (from CONFIG_PROFILE=${CONFIG_PROFILE:-<unset>})"
+    echo "  terraform/terraform.tfvars: config_profile = \"${TFVARS_PROFILE:-<unset>}\""
+    echo "Applying would write ${TFVARS_PROFILE:-unknown}-profile values (project_id, region, domains,"
+    echo "IAM, static IP) into the ${PROFILE} state — a different GCP project and cluster."
+    echo "Fix: cp terraform.tfvars.${PROFILE} terraform.tfvars, or unset CONFIG_PROFILE to follow the"
+    echo "tfvars file that is in place."
+    exit 1
+  fi
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
   terraform apply -auto-approve
@@ -68,9 +110,14 @@ TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 TF_OAUTH_ALLOWED_EMAILS=$(terraform output -raw oauth_allowed_emails 2>/dev/null || true)
 export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}"
-# audience accepted on Google Identity Tokens. Defaults to the gcloud CLI's OAuth client id,
-# which is what `gcloud auth print-identity-token` (the documented programmatic flow) mints;
-# user credentials cannot request a custom audience. Override to add service-account clients.
+# audience accepted on Google Identity Tokens — a deprecated access path; per-user API keys are the
+# documented programmatic flow. Defaults to the gcloud CLI's *public* OAuth client id, which is what
+# `gcloud auth print-identity-token` mints; user credentials cannot request a custom audience, so a
+# project-owned client id here would reject every human caller. Worth exactly cross-OAuth-client replay
+# protection, not identity: it rejects a token minted for a different client id, but NOT one the same
+# user handed to another service documenting this same `gcloud auth print-identity-token` flow, since
+# that token carries the identical aud. The email allow-list is the access control. Override to add
+# service-account clients.
 export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-32555940559.apps.googleusercontent.com}"
 TF_KEYCLOAK_BACKUP_BUCKET=$(terraform output -raw keycloak_backup_bucket 2>/dev/null || true)
 export KEYCLOAK_BACKUP_BUCKET="${KEYCLOAK_BACKUP_BUCKET:-${TF_KEYCLOAK_BACKUP_BUCKET}}"
@@ -165,10 +212,11 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
 # CreateContainerConfigError rather than starting degraded, so catch it here instead: an older
 # genetics-secrets predating the sandbox work simply has no such key.
 #
-# Deliberately NOT "re-run create-secrets.sh": that script only reuses-or-generates a few keys
-# and writes `--from-literal=x="${X:-}"` for the rest, so re-running it with an incomplete
-# environment blanks openai/tavily/perplexity/cohere/mcp keys, external-mcp-servers,
-# admin-users and slack-webhook-url. Patch in just the missing key instead.
+# create-secrets.sh now reuses every key it does not get from the environment, so re-running it
+# is a safe fix here and no longer blanks the optional keys. Its one requirement is an exported
+# ANTHROPIC_API_KEY — that key alone is never read back from the cluster, and without it the
+# script aborts before writing anything. The targeted patch below stays as the alternative for
+# operators who do not have that key to hand.
 for key in internal-api-secret sandbox-token-signing-key; do
   if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
        -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
@@ -184,8 +232,10 @@ Add ONLY that key, leaving every other key in the secret untouched:
 and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
 results-api, and internal-api-secret on every internal caller.)
 
-Do NOT re-run create-secrets.sh to fix this unless you have the full set of optional secrets
-exported in your shell: it rewrites the whole secret and blanks any key you do not export.
+Re-running create-secrets.sh also fixes this and is safe for the optional keys: it reuses every
+value already in the cluster instead of blanking the ones you have not exported. It does still
+require ANTHROPIC_API_KEY to be exported — that is the one key it never reads back from the
+cluster, and without it the script aborts (safely, writing nothing).
 EOF
     exit 1
   fi
@@ -283,10 +333,12 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
     -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 fi
 
-# keep the sibling service repos' committed datasets.yaml in sync with the canonical
-# copy (best-effort: skips repos that aren't checked out next to this one). The pods
-# below get the canonical file via the ConfigMap regardless, but this prevents the
-# committed copies (used for local dev and baked into freshly built images) from drifting.
+# refresh the sibling service repos' LOCAL datasets.yaml from the canonical copy. Those
+# copies are gitignored and untracked in both siblings, so they exist only on a developer's
+# machine and never reach an image (build.sh clones from GitHub). Best-effort: prints SKIP
+# for a sibling that isn't cloned here and exits 0; it only fails if it cannot resolve the
+# sibling root or finds a directory that isn't that repo. The pods below get the canonical
+# file via the ConfigMap regardless — this is purely so local dev isn't stale.
 if [ -x "${SCRIPT_DIR}/sync-datasets.sh" ]; then
   echo "=== Syncing datasets.yaml to sibling service repos ==="
   "${SCRIPT_DIR}/sync-datasets.sh" || echo "  WARN: dataset sync reported an issue (continuing)"
@@ -354,9 +406,10 @@ generate_ingress | kubectl apply -f -
 
 # network policies
 # The union of every file in network-policies/ is what actually decides "mcp-server cannot
-# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". Nothing
-# else in this repo runs that check — there are no git hooks and no CI — so it runs here,
-# before the apply that would put a broken union on the cluster.
+# reach the sandbox" and "the sandbox reaches nothing but db-api and results-api". The
+# pre-commit hook only runs the doc-drift check, and there is no CI, so nothing else in
+# this repo runs this check — it runs here, before the apply that would put a broken
+# union on the cluster.
 # exit 1 = a control is broken, and the deploy aborts. exit 2 = the harness itself could
 # not run (missing PyYAML); that is not evidence of a broken policy, so it only warns.
 set +e
@@ -402,6 +455,14 @@ echo ""
 echo "=== Forcing rollout restarts ==="
 # Always restart so pods pick up: (a) freshly-built :latest images,
 # (b) ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload).
+# ORDER WARNING: this list is restarted in one loop with no waiting, and results-api comes
+# BEFORE bff's effect lands and before mcp-server — the opposite of the cross-service ordering
+# documented in scripts/rollout.sh's ORDERING header (bff -> mcp-server -> results-api, because
+# results-api's ANONYMOUS_SURFACE_MINIMAL defaults on and the browser reaches /api/v1/auth,
+# /api/v1/variant_sets and /api/v1/rsid/variants through the bff's credential-less generic
+# passthrough). A full deploy from a state where the new bff is not yet built therefore takes a
+# transient browser 401 on those routes. When that matters, roll the three out individually with
+# scripts/rollout.sh in that order instead.
 DEPLOYS="frontend bff results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"

@@ -21,27 +21,40 @@ differs; `dataset` is present on both sides, so it must be matched explicitly ag
 `phenotype`). Without SOME dataset predicate the join fans out across every FinnGen release
 sharing the code space. Background, not an alternative: all 2,712 HLA phenotype codes are
 also FinnGen R14 endpoint codes, so h.dataset is always 'finngen_hla' and the join above is
-the one to write.
+the one to write. COLUMN NAMES: the view emits the suite's house spelling — `mlog10p`, `se`,
+`af`, `af_cases`, `af_controls` — which is also what the results-api /v1/hla endpoint
+returns, so per-column access is uniform across the by-phenotype and by-allele directions
+and no renaming is ever needed. Their column SETS still differ, so concatenating them is not
+free: results-api additionally returns `resource`, `version`, `chr` and `pos`, which this
+view's by-allele reads need not select. Select the shared columns explicitly on both sides
+rather than concatenating whole frames. The staged file and the underlying
+`hla_associations` table keep FinnGen's native
+`mlogp`/`sebeta`/`af_alt`/`af_alt_cases`/`af_alt_controls`; the view renames them 1:1, the
+values are unchanged.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
-| `pos` | Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000 |
-| `gene` | HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5 |
-| `allele` | Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name |
-| `phenotype` | FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. THE TRAIT COLUMN — this view has no `trait` or `trait_original`, so the join to phenotypes_v is `p.dataset = h.dataset AND p.trait_original = h.phenotype`, never `= h.trait` |
-| `pval` | Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlogp, never on pval |
-| `mlogp` | -log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3) |
-| `beta` | Effect size (log odds ratio for binary endpoints) per copy of the allele |
-| `sebeta` | Standard error of beta |
-| `af_alt` | Allele frequency in the full cohort |
-| `af_alt_cases` | Allele frequency in cases. NULL for quantitative endpoints |
-| `af_alt_controls` | Allele frequency in controls. NULL for quantitative endpoints |
-| `info` | Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations |
-| `dataset` | Source dataset identifier (constant 'finngen_hla') |
-| `resource` | Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome (always 6; the MHC). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr' |
+| `pos` | `INT64` | Anchor position (GRCh38) of the allele's HLA gene. Every allele of a gene shares one position, so this does NOT locate the allele itself. HLA-DRB3/DRB4/DRB5 share the placeholder 32500000 |
+| `gene` | `STRING` | HLA gene symbol: HLA-A, HLA-B, HLA-C, HLA-DPB1, HLA-DQA1, HLA-DQB1, HLA-DRB1, HLA-DRB3, HLA-DRB4, HLA-DRB5 |
+| `allele` | `STRING` | Imputed classical HLA allele at 4-digit (two-field) resolution, e.g. 'B*27:05'. NOT prefixed with the gene — join gene and allele for the full name |
+| `phenotype` | `STRING` | FinnGen R14 endpoint code, e.g. 'K11_COELIAC'. THE TRAIT COLUMN — this view has no `trait` or `trait_original`, so the join to phenotypes_v is `p.dataset = h.dataset AND p.trait_original = h.phenotype`, never `= h.trait` |
+| `pval` | `FLOAT64` | Association p-value. UNDERFLOWS TO 0 for the strongest HLA signals — rank on mlog10p, never on pval |
+| `mlog10p` | `FLOAT64` | -log10 p-value. The field to rank and threshold on (genome-wide significance is 7.3) |
+| `beta` | `FLOAT64` | Effect size (log odds ratio for binary endpoints) per copy of the allele |
+| `se` | `FLOAT64` | Standard error of beta |
+| `af` | `FLOAT64` | Allele frequency in the full cohort |
+| `af_cases` | `FLOAT64` | Allele frequency in cases. NULL for quantitative endpoints |
+| `af_controls` | `FLOAT64` | Allele frequency in controls. NULL for quantitative endpoints |
+| `info` | `FLOAT64` | Imputation INFO for the allele (constant per allele across phenotypes). ALWAYS check this: rare alleles imputed at INFO < 0.5 produce huge unstable betas that are artifacts, not associations |
+| `dataset` | `STRING` | Source dataset identifier (constant 'finngen_hla') |
+| `resource` | `STRING` | Data source identifier (lowercase, 'finngen'). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 
@@ -59,33 +72,33 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ### The HLA profile of one phenotype, strongest allele first
 
 ```sql
-SELECT gene, allele, mlogp, beta, sebeta, af_alt_cases, af_alt_controls, info FROM genetics_results.hla_associations_v WHERE phenotype = 'K11_COELIAC' AND mlogp > 7.3 ORDER BY mlogp DESC
+SELECT gene, allele, mlog10p, beta, se, af_cases, af_controls, info FROM genetics_results.hla_associations_v WHERE phenotype = 'K11_COELIAC' AND mlog10p > 7.3 ORDER BY mlog10p DESC
 ```
 
 ### Which phenotypes an allele is associated with (the cross-phenotype question)
 
 ```sql
-SELECT phenotype, mlogp, beta, af_alt_cases, af_alt_controls FROM genetics_results.hla_associations_v WHERE allele = 'B*27:05' AND mlogp > 7.3 ORDER BY mlogp DESC
+SELECT phenotype, mlog10p, beta, af_cases, af_controls FROM genetics_results.hla_associations_v WHERE allele = 'B*27:05' AND mlog10p > 7.3 ORDER BY mlog10p DESC
 ```
 
 ### Well-imputed genome-wide significant hits only, excluding imputation artifacts
 
 ```sql
-SELECT phenotype, gene, allele, mlogp, beta FROM genetics_results.hla_associations_v WHERE mlogp > 7.3 AND info >= 0.8 AND af_alt >= 0.005 ORDER BY mlogp DESC LIMIT 100
+SELECT phenotype, gene, allele, mlog10p, beta FROM genetics_results.hla_associations_v WHERE mlog10p > 7.3 AND info >= 0.8 AND af >= 0.005 ORDER BY mlog10p DESC LIMIT 100
 ```
 
 ### Human-readable trait names for HLA hits — the join key is p.trait_original = h.phenotype, NOT h.trait (this view has no `trait` column)
 
 ```sql
-SELECT p.trait_name, h.gene, h.allele, h.mlogp, h.beta FROM genetics_results.hla_associations_v h JOIN genetics_results.phenotypes_v p
+SELECT p.trait_name, h.gene, h.allele, h.mlog10p, h.beta FROM genetics_results.hla_associations_v h JOIN genetics_results.phenotypes_v p
   ON p.dataset = h.dataset AND p.trait_original = h.phenotype
-WHERE h.mlogp > 7.3 AND h.info >= 0.8 ORDER BY h.mlogp DESC LIMIT 20
+WHERE h.mlog10p > 7.3 AND h.info >= 0.8 ORDER BY h.mlog10p DESC LIMIT 20
 ```
 
 ### Which HLA gene carries the lead signal for each phenotype
 
 ```sql
-SELECT phenotype, ARRAY_AGG(STRUCT(gene, allele, mlogp)
-         ORDER BY mlogp DESC LIMIT 1)[OFFSET(0)] AS lead
-FROM genetics_results.hla_associations_v WHERE mlogp > 7.3 AND info >= 0.8 GROUP BY phenotype
+SELECT phenotype, ARRAY_AGG(STRUCT(gene, allele, mlog10p)
+         ORDER BY mlog10p DESC LIMIT 1)[OFFSET(0)] AS lead
+FROM genetics_results.hla_associations_v WHERE mlog10p > 7.3 AND info >= 0.8 GROUP BY phenotype
 ```

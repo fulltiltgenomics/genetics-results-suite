@@ -100,6 +100,20 @@ terraform init
 terraform apply                               # review the plan before confirming
 ```
 
+> `terraform.tfvars` is gitignored and lives only in your main checkout. Terraform refuses to plan
+> or apply without it (`require_tfvars`, default `true`) — otherwise a run from a git worktree or a
+> fresh clone would use variable defaults and destroy the log sinks and replace the node pool.
+> `apply -target=...` bypasses the guard entirely, and `destroy` does too (deliberately). If
+> you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`. `deploy.sh` enforces
+> the same before applying; `SKIP_TERRAFORM=true` (k8s manifests only) is unaffected.
+
+> **Switching profiles**: the main checkout keeps `terraform.tfvars.daly` and `terraform.tfvars.finngen`
+> beside the active `terraform.tfvars`. `CONFIG_PROFILE` picks the *state backend*, not the values, so
+> switching profiles means copying the file too — `cp terraform.tfvars.daly terraform.tfvars`. Get it
+> wrong and one profile's project, region and domains would be applied into the other's state; both
+> `deploy.sh` (before `terraform init`) and a terraform `precondition` (against the initialized state
+> bucket) now refuse. Leaving `CONFIG_PROFILE` unset makes `deploy.sh` follow the file in place.
+
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
 ```bash
@@ -175,6 +189,11 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 ./scripts/create-secrets.sh
 ```
 
+> **Run it from the main checkout.** It derives the config profile (which decides whether
+> `keycloak-secrets` is written) from `terraform/terraform.tfvars`, which is gitignored and lives
+> only there. From a git worktree it refuses with exit 1 rather than guessing — export
+> `CONFIG_PROFILE=daly` or `CONFIG_PROFILE=finngen` if you really need to run it from one.
+
 ### 4. Build and push Docker images
 
 Authenticate docker:
@@ -189,7 +208,49 @@ Build and push images:
 ./scripts/build-all.sh
 ```
 
-### 5. Deploy
+### 5. Wire up git hooks (once per clone)
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The hook files under `.beads/hooks/` are tracked, but `core.hooksPath` — the local
+git config that points git at them — is not, so a fresh clone runs **no** hooks:
+no `check-doc-drift.sh` warning on commits and no beads export, silently. This
+script sets it and repairs the doc-drift block if it has gone missing; it is
+idempotent and safe to re-run, and works from a worktree. `deploy.sh` and
+`build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+
+### Working from a git worktree
+
+```bash
+./scripts/check-worktree-paths.sh
+```
+
+Several things resolve to the **main checkout** even when you run them from a worktree,
+and they degrade silently rather than erroring: `terraform.tfvars` (gitignored, main
+checkout only), `core.hooksPath`, and bd's `.beads/issues.jsonl` export. The
+`.beads/issues.jsonl` case is the most misleading — the worktree's
+copy is tracked but nothing writes it, so `git add .beads/issues.jsonl && git commit`
+stages nothing and git replies "nothing to commit, working tree clean". Bead state
+itself is safe: the shared Dolt database is authoritative, and the git hooks never
+import from the jsonl. You can refresh the committed export **from the worktree** —
+one Dolt database is shared by every worktree, so `bd export -o .beads/issues.jsonl`
+run from here writes the same current snapshot the main checkout would produce
+(verified byte-identical). Running it in the main checkout works equally well; what
+does not work is assuming a `git add` from here refreshed anything.
+
+`sync-datasets.sh` used to be a fourth case, but it now resolves the sibling repos from
+the git common dir, so it works from a worktree and fails loudly when it cannot resolve
+them — `check-worktree-paths.sh` no longer reports it.
+
+This script reports only the paths that actually diverge; it is silent in the main
+checkout. `deploy.sh`, `build-all.sh` and `build.sh` run it with `--check`, warn, and
+never block — a single-service build falls back to `APP_NAME=FinnGenie` from a worktree
+just like a full build does, so it gets the same warning.
+See `docs/project-spec.md`, "Worktree path resolution".
+
+### 6. Deploy
 
 ```bash
 ./scripts/deploy.sh
@@ -291,10 +352,10 @@ first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schem
 (`sandbox/schema/`, one file per BigQuery view in `configs/datasets.yaml`) and the SDK
 signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 `/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
-copies are current, that every view and column reaches a file, and that the stubs cover
-exactly the SDK's exported surface. `build.sh sandbox` fails on a non-zero exit; `build-all.sh`
-folds it into the same skip branch as the generator. Exit 1 = a property broke, 2 = the
-harness could not run (no staged SDK source).
+copies are current, that every view and column reaches a file **with its BigQuery type**,
+and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
+a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
+Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. There
 is no sandbox Deployment yet. See
 [docs/code-execution-security.md](docs/code-execution-security.md).
@@ -328,24 +389,52 @@ Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` prov
 [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md).
 
 - **Frontend, Chat backend**: Protected by oauth2-proxy. Unauthenticated users are redirected to the sign-in page (Google directly, or the Keycloak provider chooser).
-- **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens, Google Identity Tokens or internal shared secret).
-- **MCP server**: Not behind oauth2-proxy. Uses bearer token auth via `MCP_API_KEY`, user-created tokens, Google Identity Tokens, or — where the broker is enabled — Keycloak OAuth 2.1 access tokens.
+- **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens — the recommended path — Google Identity Tokens (deprecated) or internal shared secret).
+- **MCP server**: Not behind oauth2-proxy. Uses bearer token auth via `MCP_API_KEY`, user-created tokens (recommended), Google Identity Tokens (deprecated), or — where the broker is enabled — Keycloak OAuth 2.1 access tokens.
 - **DB API**: Internal only (NetworkPolicy restricts access to chat-backend and mcp-server), and additionally requires the `INTERNAL_API_SECRET` bearer token on every endpoint except `/health` — the NetworkPolicy alone is not a sufficient boundary, since mcp-server is allowed through it and is itself reachable from outside.
 - **Internal service calls**: The chat-backend authenticates to results-api using a shared secret (`INTERNAL_API_SECRET`), auto-generated by `create-secrets.sh`.
-- **Code-execution sandbox**: never holds `INTERNAL_API_SECRET`. chat-backend mints a short-lived (5 minute), audience-bound HS256 token per script execution, signed with a separate key (`SANDBOX_TOKEN_SIGNING_KEY`, also auto-generated by `create-secrets.sh`); db-api and results-api verify it, fail closed when the key is missing, and refuse to start at all when `SANDBOX_ENABLED=true` and either secret is unset. See `docs/code-execution-security.md` §4.
+- **Code-execution sandbox**: never holds `INTERNAL_API_SECRET`. chat-backend mints a short-lived (5 minute), audience-bound HS256 token per script execution, signed with a separate key (`SANDBOX_TOKEN_SIGNING_KEY`, also auto-generated by `create-secrets.sh`); db-api and results-api verify it, fail closed when the key is missing, and refuse to start at all when `SANDBOX_ENABLED=true` and either secret is unset. Both services then bound the execution in aggregate from in-process counters keyed on the token's `jti` — db-api 200 GB of BigQuery bytes; results-api 1 GiB of response bytes, 1000 requests and 4 concurrent requests (8 pod-wide), plus a 4096-entry bound on the counter map — which is why the `replicas: 1` on both Deployments carries a comment saying it is load-bearing: scaling either up multiplies every one of those limits until the counters move to shared state. results-api's five are declared at their defaults in `k8s/deployments/results-api.yaml` so an operator can tune them without a rebuild, and the pod refuses to start on a value below 1 or on a pod-wide bound tighter than the per-execution one. **They bind only a request that presents a token** — a header-less request is never admitted — so results-api pairs them with an empty anonymous surface: with `ANONYMOUS_SURFACE_MINIMAL` on — its default, declared `"true"` in `k8s/deployments/results-api.yaml`, and forced by `SANDBOX_ENABLED=true` — `/healthz` is the only route it will answer without a resolved principal, and everything else 401s, so a script cannot shed its per-execution bounds by omitting the header (`genetics-results-suite-0lf`; the browser is unaffected because the BFF authenticates its upstream calls with the shared secret). That flag is deliberately **separate** from `SANDBOX_ENABLED` (`genetics-results-suite-rhh`): while the surface keyed on the sandbox switch, disabling the sandbox during an incident silently re-opened six routes to anonymous callers. Its counterpart in genetics-mcp-server is `genetics-results-suite-618`: the tool executor used to send **no** `Authorization` header when `INTERNAL_API_SECRET` was unset, so the deployed entrypoints now refuse to start without it rather than making anonymous calls that no log can distinguish from authenticated ones. The remaining gap — the two pod-wide bounds are cross-tenant denial surfaces — is documented in `docs/code-execution-security.md` §4.
 
-### Programmatic API access with Google Identity Token
+### Programmatic API access (per-user API key)
+
+Create a key in the browser: the user menu → **MCP and API keys** → *Create key*. The value is shown
+once; the same dialog lists and revokes your keys. A key expires after 90 days without use and every
+use extends it by another 90. The same key works for both `/api` and `/mcp`.
 
 ```bash
-TOKEN=$(gcloud auth print-identity-token)
+curl -H "Authorization: Bearer <TOKEN>" https://your-domain.example.com/api/v1/...
+```
+
+This is the recommended path for scripts and pipelines: the key is issued by this deployment, is
+revocable per user, and is attributable in the token store — none of which is true of a Google
+Identity Token.
+
+**A key can only be created in the browser.** `POST /chat/v1/tokens` requires an oauth2-proxy
+browser session, so no bearer token — not an existing API key, not a Google Identity Token — can
+mint one. A CI job or service account therefore cannot self-serve: a human signs in once and
+creates the key for it. Once created the key works headlessly and does not expire while it is in
+use (every use extends it by 90 days), so this is a one-time step, but plan for it before
+migrating a fully headless caller off the deprecated Identity Token path.
+
+#### Google Identity Token (deprecated)
+
+```bash
+TOKEN=$(gcloud auth print-identity-token)   # deprecated — prefer a per-user API key
 curl -H "Authorization: Bearer $TOKEN" https://your-domain.example.com/api/v1/...
 ```
 
-Requires a Google account on the allow-list (`ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS` from the
-`bearer-auth-allowed` ConfigMap — see [Managing access](#managing-access) below). The token's `aud`
-must also match `GOOGLE_TOKEN_AUDIENCE`, which defaults to the gcloud CLI's client id — i.e. exactly
-what `gcloud auth print-identity-token` mints — so an id_token issued for some other application
-cannot be replayed here. Google Identity Tokens expire after 1 hour.
+Still accepted, and it will not be switched off without notice, but do not build anything new on it
+and migrate existing callers to a per-user API key. Reasons: the token expires after 1 hour; this
+deployment does not issue it and therefore cannot revoke it for one person; and authorization on it
+rests entirely on the email allow-list (`ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS` from the
+`bearer-auth-allowed` ConfigMap — see [Managing access](#managing-access) below). `GOOGLE_TOKEN_AUDIENCE`
+does **not** narrow that: it defaults to the gcloud CLI's *public* OAuth client id, which anyone's
+`gcloud auth print-identity-token` mints, so it buys cross-*OAuth-client* replay protection and
+nothing more — it rejects a token minted for a different client id (ADC's `764086051850-…`, a
+project-owned client), but not one the same user handed to another service that documents this same
+`gcloud auth print-identity-token` flow, since that token carries the identical `aud`. See
+"Programmatic credentials: why the per-user API key, not the Google id_token" in
+[docs/project-spec.md](docs/project-spec.md).
 
 ### MCP server access (e.g. Claude Desktop or Claude Code)
 
@@ -362,6 +451,11 @@ cannot be replayed here. Google Identity Tokens expire after 1 hour.
   }
 }
 ```
+
+`MCP_API_KEY` is the deployment-wide *shared* secret: one value for everyone, not attributable to a
+person and not revocable for one. Prefer your own key from
+[Programmatic API access](#programmatic-api-access-per-user-api-key) above — the same per-user key
+works here, in exactly this header, and covers both `/api` and `/mcp`.
 
 ### Managing access
 
@@ -390,12 +484,12 @@ user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after
 
 ## Logging
 
-All services output structured JSON to stdout, automatically captured by GKE's fluentbit agent and sent to Cloud Logging. With `enable_log_sinks = true`, `terraform/logging.tf` also creates two Cloud Logging → BigQuery sinks: the results API's usage logs (stripped of variant, gene, phenotype etc. information) into `genetics_api_logs`, and chat-backend container logs at severity ≥ INFO into `genetics_chat_logs`. `scripts/chat_usage_stats.sh` reports chat usage counts from the latter.
+All services output structured JSON to stdout, automatically captured by GKE's fluentbit agent and sent to Cloud Logging. With `enable_log_sinks = true`, `terraform/logging.tf` also creates two Cloud Logging → BigQuery sinks: the `endpoint_access` usage logs of both results-api and db-api (stripped of variant, gene, phenotype etc. information), scoped to `k8s_container` resources in the `genetics` namespace, into `genetics_api_logs` — both services share the table `genetics_api_logs.stdout`, see `docs/project-spec.md` → Log sinks — and chat-backend container logs at severity ≥ INFO into `genetics_chat_logs`. `scripts/chat_usage_stats.sh` reports chat usage counts from the latter.
 
 ## Security
 
 - Network policies source-scope **every** service: db-api and rag-service only from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend and mcp-server; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server. The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
-- Application containers run with `allowPrivilegeEscalation: false`, all capabilities dropped and the `RuntimeDefault` seccomp profile; db-api and bff additionally run as non-root
+- The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. The other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) still mount it. Eight third-party and support workloads (frontend, oauth2-proxy, keycloak, postgres, rag-service, and the monitor, analyze-conversations and keycloak-postgres-backup CronJobs) are not hardened this way; the dynamically-created sandbox pods go further still (non-root uid 65532, read-only rootfs with no writable volume). See `docs/project-spec.md` → Security.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - Google-managed SSL certificates

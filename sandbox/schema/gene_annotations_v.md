@@ -17,26 +17,30 @@ so match on `SPLIT(c.trait2, '.')[OFFSET(0)]` and also require `c.chr = a.chr`.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `hgnc_id` | HGNC ID (e.g. HGNC:5) |
-| `symbol` | HGNC approved gene symbol (e.g. PCSK9) |
-| `name` | HGNC approved gene name |
-| `prev_symbols` | Previous HGNC symbols, pipe-delimited |
-| `alias_symbols` | Alias symbols, pipe-delimited |
-| `ensembl_gene_id` | Ensembl gene ID (e.g. ENSG00000169174) |
-| `ncbi_gene_id` | NCBI (Entrez) gene ID |
-| `chr` | Chromosome number (GRCh38, chromosome X encoded as 23) |
-| `gene_start` | Gene start position (GRCh38, GENCODE) |
-| `gene_end` | Gene end position (GRCh38, GENCODE) |
-| `strand` | Strand (+ or -) |
-| `locus_type` | HGNC locus type (e.g. gene with protein product, pseudogene, RNA gene) |
-| `gene_group_ids` | Full-lineage HGNC gene-group IDs (ARRAY<INT64>: leaf group plus all ancestors). Match a group with `<id> IN UNNEST(gene_group_ids)` |
-| `gene_group_names` | Full-lineage HGNC gene-group names (ARRAY<STRING>: leaf group plus all ancestors) |
-| `gencode_version` | GENCODE release used for coordinates |
-| `hgnc_version` | HGNC complete-set version/date used |
-| `download_date` | Date the source data was downloaded/built |
-| `resource` | Data source identifier, constant 'hgnc' |
+| column | type | description |
+| --- | --- | --- |
+| `hgnc_id` | `STRING` | HGNC ID (e.g. HGNC:5) |
+| `symbol` | `STRING` | HGNC approved gene symbol (e.g. PCSK9) |
+| `name` | `STRING` | HGNC approved gene name |
+| `prev_symbols` | `STRING` | Previous HGNC symbols, pipe-delimited |
+| `alias_symbols` | `STRING` | Alias symbols, pipe-delimited |
+| `ensembl_gene_id` | `STRING` | Ensembl gene ID (e.g. ENSG00000169174) |
+| `ncbi_gene_id` | `STRING` | NCBI (Entrez) gene ID |
+| `chr` | `INT64` | Chromosome number (GRCh38, chromosome X encoded as 23) |
+| `gene_start` | `INT64` | Gene start position (GRCh38, GENCODE) |
+| `gene_end` | `INT64` | Gene end position (GRCh38, GENCODE) |
+| `strand` | `STRING` | Strand (+ or -) |
+| `locus_type` | `STRING` | HGNC locus type (e.g. gene with protein product, pseudogene, RNA gene) |
+| `gene_group_ids` | `ARRAY<INT64>` | Full-lineage HGNC gene-group IDs (ARRAY<INT64>: leaf group plus all ancestors). Match a group with `<id> IN UNNEST(gene_group_ids)` |
+| `gene_group_names` | `ARRAY<STRING>` | Full-lineage HGNC gene-group names (ARRAY<STRING>: leaf group plus all ancestors) |
+| `gencode_version` | `STRING` | GENCODE release used for coordinates |
+| `hgnc_version` | `STRING` | HGNC complete-set version/date used |
+| `download_date` | `DATE` | Date the source data was downloaded/built |
+| `resource` | `STRING` | Data source identifier, constant 'hgnc' |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

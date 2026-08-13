@@ -13,31 +13,35 @@ within 100 kb of the methylation target.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Source dataset (deCODE_asmQTL_CpG, deCODE_asmQTL_MDS) |
-| `chr` | Chromosome number |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative allele |
-| `rsid` | dbSNP rsID |
-| `beta` | Effect size (SD units) of the variant on methylation rates |
-| `se` | Standard error of beta |
-| `mlog10p` | -log10(p-value). Higher = more significant |
-| `af` | Allele frequency |
-| `most_severe` | Most severe VEP-predicted variant consequence |
-| `gene_most_severe` | Gene symbol associated with the most severe consequence |
-| `target_start` | Start position of the methylation target (CpG unit or MDS) |
-| `target_end` | End position of the methylation target (CpG unit or MDS) |
-| `ref_methylrate` | Average methylation rate on reference haplotype |
-| `alt_methylrate` | Average methylation rate on alternative haplotype |
-| `n_haplotypes` | Number of informative haplotypes used in analysis |
-| `variant_rank` | primary = most significant variant, secondary = most significant on major allele of primary |
-| `ld_count` | Number of variants in high LD (r2>0.8) with this variant |
-| `vartype` | Variant type (SNV, SV, etc.) |
-| `variant` | Variant identifier as chr:pos:ref:alt |
-| `maf` | Minor allele frequency = LEAST(af, 1-af) |
-| `resource` | Data source identifier (lowercase) |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Source dataset (deCODE_asmQTL_CpG, deCODE_asmQTL_MDS) |
+| `chr` | `INT64` | Chromosome number |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative allele |
+| `rsid` | `STRING` | dbSNP rsID |
+| `beta` | `FLOAT64` | Effect size (SD units) of the variant on methylation rates |
+| `se` | `FLOAT64` | Standard error of beta |
+| `mlog10p` | `FLOAT64` | -log10(p-value). Higher = more significant |
+| `af` | `FLOAT64` | Allele frequency |
+| `most_severe` | `STRING` | Most severe VEP-predicted variant consequence |
+| `gene_most_severe` | `STRING` | Gene symbol associated with the most severe consequence |
+| `target_start` | `INT64` | Start position of the methylation target (CpG unit or MDS) |
+| `target_end` | `INT64` | End position of the methylation target (CpG unit or MDS) |
+| `ref_methylrate` | `FLOAT64` | Average methylation rate on reference haplotype |
+| `alt_methylrate` | `FLOAT64` | Average methylation rate on alternative haplotype |
+| `n_haplotypes` | `INT64` | Number of informative haplotypes used in analysis |
+| `variant_rank` | `STRING` | primary = most significant variant, secondary = most significant on major allele of primary |
+| `ld_count` | `INT64` | Number of variants in high LD (r2>0.8) with this variant |
+| `vartype` | `STRING` | Variant type (SNV, SV, etc.) |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt |
+| `maf` | `FLOAT64` | Minor allele frequency = LEAST(af, 1-af) |
+| `resource` | `STRING` | Data source identifier (lowercase) |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

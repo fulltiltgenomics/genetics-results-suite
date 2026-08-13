@@ -26,22 +26,26 @@ table (~33k rows), so an unfiltered scan is cheap.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Source dataset identifier; joins the dataset column of every results view (dataset1/dataset2 in colocalization_v) |
-| `trait_original` | Phenotype code exactly as the results views store it; THE join key |
-| `trait_name` | Human-readable trait name; NULL for a handful of source rows that carry none |
-| `trait_type` | 'binary' or 'quantitative'; NULL when the source states neither |
-| `category` | Source grouping — FinnGen ICD chapter, Kanta Quantitative/Binary class, Open Targets project id, or Genebass trait_type |
-| `n_samples` | Total analysed sample size; NULL (not 0) when unreported |
-| `n_cases` | Number of cases; NULL for quantitative traits and where unreported |
-| `n_controls` | Number of controls; NULL for quantitative traits and where unreported |
-| `dataset_id` | ONE contributing registry key — provenance, NOT a join key. Merged datasets_v rows keep only their first contributor as dataset_id, so values like 'finngen_kanta_r12' and 'genebass_gene_based' match no datasets_v row. Join datasets_v on `dataset`, or on `p.dataset_id IN UNNEST(d.dataset_ids)` |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
-| `author` | Study author; per-study for Open Targets, otherwise the dataset's |
-| `publication_date` | Publication date; NULL rather than invented when the source gives only a year |
-| `version` | Dataset version label (R14, R12, 26.06, ...) |
-| `coloc_partner_only` | TRUE for traits whose dataset exists only as a colocalization partner (FinnGen R12 core and R12 Kanta). They appear in colocalization_v but not credible_sets_v; add `AND NOT coloc_partner_only` to mirror what phenotype search returns |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Source dataset identifier; joins the dataset column of every results view (dataset1/dataset2 in colocalization_v) |
+| `trait_original` | `STRING` | Phenotype code exactly as the results views store it; THE join key |
+| `trait_name` | `STRING` | Human-readable trait name; NULL for a handful of source rows that carry none |
+| `trait_type` | `STRING` | 'binary' or 'quantitative'; NULL when the source states neither |
+| `category` | `STRING` | Source grouping — FinnGen ICD chapter, Kanta Quantitative/Binary class, Open Targets project id, or Genebass trait_type |
+| `n_samples` | `INT64` | Total analysed sample size; NULL (not 0) when unreported |
+| `n_cases` | `INT64` | Number of cases; NULL for quantitative traits and where unreported |
+| `n_controls` | `INT64` | Number of controls; NULL for quantitative traits and where unreported |
+| `dataset_id` | `STRING` | ONE contributing registry key — provenance, NOT a join key. Merged datasets_v rows keep only their first contributor as dataset_id, so values like 'finngen_kanta_r12' and 'genebass_gene_based' match no datasets_v row. Join datasets_v on `dataset`, or on `p.dataset_id IN UNNEST(d.dataset_ids)` |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| `author` | `STRING` | Study author; per-study for Open Targets, otherwise the dataset's |
+| `publication_date` | `DATE` | Publication date; NULL rather than invented when the source gives only a year |
+| `version` | `STRING` | Dataset version label (R14, R12, 26.06, ...) |
+| `coloc_partner_only` | `BOOL` | TRUE for traits whose dataset exists only as a colocalization partner (FinnGen R12 core and R12 Kanta). They appear in colocalization_v but not credible_sets_v; add `AND NOT coloc_partner_only` to mirror what phenotype search returns |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

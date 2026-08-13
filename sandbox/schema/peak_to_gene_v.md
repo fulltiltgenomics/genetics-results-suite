@@ -17,30 +17,34 @@ an order of magnitude.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome number (GRCh38; X=23) |
-| `peak_start` | Peak interval start (GRCh38) |
-| `peak_end` | Peak interval end (GRCh38) |
-| `peak_id` | Peak identifier as chr-start-end; join to credible_sets_v.trait for caQTL rows |
-| `gene_id` | Linked gene Ensembl ID (no version suffix) |
-| `symbol` | Linked gene symbol |
-| `cell_type` | Cell type the link was found in (e.g. l1.CD4_T); joins credible_sets_v.cell_type |
-| `total_cell_num` | Total number of cells in the analysis |
-| `expr_cell_num` | Number of cells expressing the gene |
-| `open_cell_num` | Number of cells with the peak accessible |
-| `hurdle_zero_beta` | Effect of peak accessibility on gene detection (zero component) |
-| `hurdle_zero_se` | Standard error of hurdle_zero_beta |
-| `hurdle_zero_z` | z statistic of the zero component |
-| `hurdle_zero_nlog10p` | -log10 p-value of the zero component |
-| `hurdle_count_beta` | Effect of peak accessibility on expression level (count component) |
-| `hurdle_count_se` | Standard error of hurdle_count_beta |
-| `hurdle_count_z` | z statistic of the count component |
-| `hurdle_count_nlog10p` | -log10 p-value of the count component |
-| `hurdle_aic` | Akaike information criterion of the fitted model |
-| `hurdle_bic` | Bayesian information criterion of the fitted model |
-| `dataset` | Source dataset identifier (FinnGen_ATACseq) |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome number (GRCh38; X=23) |
+| `peak_start` | `INT64` | Peak interval start (GRCh38) |
+| `peak_end` | `INT64` | Peak interval end (GRCh38) |
+| `peak_id` | `STRING` | Peak identifier as chr-start-end; join to credible_sets_v.trait for caQTL rows |
+| `gene_id` | `STRING` | Linked gene Ensembl ID (no version suffix) |
+| `symbol` | `STRING` | Linked gene symbol |
+| `cell_type` | `STRING` | Cell type the link was found in (e.g. l1.CD4_T); joins credible_sets_v.cell_type |
+| `total_cell_num` | `INT64` | Total number of cells in the analysis |
+| `expr_cell_num` | `INT64` | Number of cells expressing the gene |
+| `open_cell_num` | `INT64` | Number of cells with the peak accessible |
+| `hurdle_zero_beta` | `FLOAT64` | Effect of peak accessibility on gene detection (zero component) |
+| `hurdle_zero_se` | `FLOAT64` | Standard error of hurdle_zero_beta |
+| `hurdle_zero_z` | `FLOAT64` | z statistic of the zero component |
+| `hurdle_zero_nlog10p` | `FLOAT64` | -log10 p-value of the zero component |
+| `hurdle_count_beta` | `FLOAT64` | Effect of peak accessibility on expression level (count component) |
+| `hurdle_count_se` | `FLOAT64` | Standard error of hurdle_count_beta |
+| `hurdle_count_z` | `FLOAT64` | z statistic of the count component |
+| `hurdle_count_nlog10p` | `FLOAT64` | -log10 p-value of the count component |
+| `hurdle_aic` | `FLOAT64` | Akaike information criterion of the fitted model |
+| `hurdle_bic` | `FLOAT64` | Bayesian information criterion of the fitted model |
+| `dataset` | `STRING` | Source dataset identifier (FinnGen_ATACseq) |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 
