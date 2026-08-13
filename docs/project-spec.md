@@ -153,6 +153,8 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── bq-dev-dataset.sh     # stand up / verify / tear down the BigQuery rehearsal
+│                             #   dataset. See docs/bigquery-dev-dataset.md
 │   ├── chat_usage_stats.sh   # chat usage counts from the BigQuery chat-log sink
 │   ├── keycloak-register-client.sh    # register/update an MCP OAuth client in the live realm
 │   ├── keycloak-register-brainzzz.sh  # the brainzzz client specifically
@@ -789,6 +791,63 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
 - **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (grepping `terraform.tfvars` directly, like `deploy.sh` does for `config_profile`) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
+### There is no development environment — and the BigQuery rehearsal dataset
+
+Established read-only on 2026-08-13 (`genetics-results-suite-44g`) and worth stating
+plainly because the project's name argues the opposite: **`phewas-development` IS
+production.** One GKE cluster and one kubeconfig context
+(`gke_phewas-development_europe-west1-b_finngenie`), one GCP project with no companion
+`phewas-production`, one application namespace (`genetics`), and exactly three BigQuery
+datasets — `genetics_api_logs`, `genetics_chat_logs`, `genetics_results` — with no dev
+copy of any of them. The live results-api carries `DEPLOY_ENV=prod` and
+`LOG_SOURCE=finngenie_prod`. The `daly` profile is a **second production brand** with its
+own project, region, domain and real users, not a staging copy, so it is not a canary.
+(`log_source` `genetics-results-api-dev1` in the monitoring section is historical; nothing
+answers to it now.)
+
+Consequently every BigQuery DDL change is a change to live data by default. The
+rehearsal ground is `scripts/bq-dev-dataset.sh`, which builds `genetics_results_dev` next
+to `genetics_results` in the **same project and the same location** (`europe-west1`, per
+`bq show --format=prettyjson phewas-development:genetics_results`) out of zero-copy
+`CREATE TABLE … CLONE` statements, then creates the views with their table references
+**rewritten** to the dev dataset.
+
+The rewrite is the correctness crux, not a detail: all 15 views in `genetics_results`
+embed a fully-qualified `` `phewas-development.genetics_results.<table>` `` reference, so a
+view copied verbatim into a dev dataset silently reads **production** tables while the
+tables beside it are dev clones — a rehearsal that looks right and proves nothing.
+`bq-dev-dataset.sh verify` therefore reads every dev view back out of BigQuery and fails
+loudly on any surviving reference to the source dataset; run it after every `create` and
+after any rehearsal step that replaced a view. Rewrite and detection are one
+implementation used in two modes, because splitting them is how references backticked per
+part (`` `p`.`d`.`t` ``, ordinary BigQuery and the form a hand-written rehearsal view is
+likely to use) got handled by neither.
+
+Clone storage is not free forever: a clone bills for every block it stops sharing with its
+base table, which happens when **production** replaces or drops that table just as much as
+when the rehearsal writes to the clone. Drop a table's dev clone once its production
+counterpart has been promoted away — for this batch that is ~105 GB across `eyg` and `4ci`
+— rather than waiting for the batch teardown.
+
+Dry run is the default (`--apply` executes), `teardown` additionally needs `--yes` and the
+dataset name typed at a tty, and the target dataset name is refused outright if it is one
+of the three production datasets or lacks a `dev` segment — there is no override flag.
+
+`docs/bigquery-dev-dataset.md` is the runbook: the expand/verify/contract cycle and the
+promotion path for each of the five open BigQuery beads (`94c`, `eyg`, `4h6.20`,
+`4h6.21`, `4ci`), and the ordering constraints between them — `4ci`'s irreversible
+~27 GB `DROP`s only after `eyg` is verified, `94c`'s contract phase only after all three
+code artifacts ship (see *HLA column rename rollout* below), and `5p5`/`4h6.30` held back
+because their `datasets.yaml` guidance is correct today and becomes wrong only once `eyg`
+lands.
+
+Note for anyone measuring: `--dry_run` proves syntax and reference resolution only. On a
+freshly created table BigQuery's dry-run estimate **ignores clustering** until the storage
+optimiser has processed it (4h6.18 observed 4,492,232,401 B dry-run against 517,406,337 B
+actual), so scan-byte claims need real execution with `use_query_cache=False`, and the
+clustering itself should be asserted from
+`INFORMATION_SCHEMA.COLUMNS.clustering_ordinal_position`.
+
 ### Documentation-drift hook
 
 `scripts/check-doc-drift.sh` warns (never blocks) when a commit changes a path the
