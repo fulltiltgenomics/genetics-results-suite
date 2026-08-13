@@ -838,7 +838,7 @@ Three are still only *detected* here; the fourth was fixed in the offending scri
 |---|---|
 | `.beads/issues.jsonl` — bd writes the export next to the Dolt store, and the store is in the main checkout | the worktree's copy is **tracked but never written**, so `git add .beads/issues.jsonl && git commit` stages nothing and git answers "nothing to commit, working tree clean" |
 | ~~sibling repos for `scripts/sync-datasets.sh`~~ — **fixed**: the script resolves them from the git common dir, so a worktree run syncs the real siblings, refuses a directory whose `pyproject.toml` does not name that repo, and exits nonzero when it cannot resolve them at all. `check-worktree-paths.sh` no longer checks this case | (was: printed `WARN: repo not found, skipping` for both and **exited 0 having copied nothing**) |
-| `terraform/terraform.tfvars` — gitignored, so it exists only in the main checkout | terraform falls back to destructive variable **defaults**; `build.sh`/`build-all.sh` silently fall back to `APP_NAME=FinnGenie` |
+| `terraform/terraform.tfvars` — gitignored, so it exists only in the main checkout | terraform falls back to destructive variable **defaults**; `build.sh`/`build-all.sh` fall back to `APP_NAME=FinnGenie` (both run this preflight first, so the fallback is warned about rather than silent) |
 | `core.hooksPath` — local git config, shared by every worktree | hooks run from the main checkout's copies, so an edit to `.beads/hooks/*` on a branch is inert for commits made there |
 
 `scripts/check-worktree-paths.sh` is one preflight for the three still-detected cases
@@ -847,9 +847,10 @@ each tool will actually use against the path inside the current worktree and rep
 **only where they differ** — an alert that fires unconditionally is one nobody reads.
 It exits 0 in silence from the main checkout (where `git rev-parse --git-common-dir`'s
 parent equals the top level, so nothing can diverge), 1 from a worktree with
-divergences, and 2 outside a git repository. `scripts/deploy.sh` and
-`scripts/build-all.sh` call it `--check || true`, the same warn-never-block pattern as
-`install-git-hooks.sh`.
+divergences, and 2 outside a git repository. `scripts/deploy.sh`, `scripts/build-all.sh`
+and `scripts/build.sh` call it `--check || true`, the same warn-never-block pattern as
+`install-git-hooks.sh` — a single-service build degrades to `APP_NAME=FinnGenie` exactly
+like a full build, so it warns exactly like one (`genetics-results-suite-8wh`).
 
 Three refinements worth keeping: the `core.hooksPath` case fires **only when the hook
 files actually differ** (pointing at the main checkout is intended, and the files are
@@ -1178,6 +1179,22 @@ the ConfigMap — `deploy.sh`'s `envsubst` whitelist deliberately omits that nam
 verbatim — and a `render-config` initContainer substitutes it from `genetics-secrets` into a
 `medium: Memory` emptyDir that nginx mounts as `/etc/nginx/nginx.conf`. It substitutes that one
 name only, which is what keeps `envsubst` away from nginx's own `$host`/`$email`/`$request_uri`.
+
+Both passes use `envsubst`'s **shell-format argument** (an explicit name whitelist), never a bare
+`envsubst`. That is load-bearing twice over: a bare run would expand every nginx `$variable` that
+happens to collide with a set environment variable, and it would also expand `${INTERNAL_API_SECRET}`
+in `deploy.sh`'s pass, baking a Secret into a ConfigMap. The whitelist is not the whole story though
+— `deploy.sh` applies it to the **entire YAML document**, not just the `nginx.conf` value, so a
+whitelisted name written as `${...}` anywhere in that file, *including in a `#` comment*, is
+expanded. Both injected fragments are multi-line, so an expansion inside a comment breaks out of it
+and the render stops being valid YAML. That is why `auth-gateway.yaml`'s own comments name
+`LEGACY_REDIRECT`/`KEYCLOAK_SERVER` bare, without `${}` (`genetics-results-suite-8wh`'s sibling
+`genetics-results-suite-i5v`). **Either fragment alone triggers it**, and only one of the two is
+profile-gated: `KEYCLOAK_SERVER` is populated when `ENABLE_KEYCLOAK` is on (default on for `daly`,
+off for `finngen`), but `LEGACY_REDIRECT` comes from the `redirect_from_host`/`redirect_to_host`
+terraform variables, which have no profile coupling at all — a `finngen` deploy that configures a
+legacy redirect hits the same breakage. Verify any change here by rendering with both fragments
+populated and parsing the result as YAML; the bug is invisible only when *both* are empty.
 
 That initContainer then **validates what it rendered**, because the secret lands inside an nginx
 string literal and `create-secrets.sh` lets an operator supply their own value:

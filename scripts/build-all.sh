@@ -28,7 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # see build.sh: `|| true` keeps a missing tfvars from killing the build under pipefail,
 # which is what the check-worktree-paths warning above already claims happens
 # (genetics-results-suite-1xp)
-APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)}"
+# POSIX [[:space:]], not GNU-only \s — see build.sh (genetics-results-suite-8wh)
+APP_NAME="${APP_NAME:-$(grep -E '^[[:space:]]*app_name[[:space:]]*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
 SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"

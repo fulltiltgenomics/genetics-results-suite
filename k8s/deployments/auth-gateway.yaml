@@ -5,9 +5,13 @@ metadata:
   namespace: genetics
 data:
   # This is a TEMPLATE, not the running config. Two substitution passes render it:
-  #   1. deploy.sh's envsubst, for the public per-profile values (${LEGACY_REDIRECT},
-  #      ${KEYCLOAK_SERVER}) — its whitelist deliberately omits ${INTERNAL_API_SECRET}, so that
+  #   1. deploy.sh's envsubst, for the public per-profile values (LEGACY_REDIRECT,
+  #      KEYCLOAK_SERVER) — its whitelist deliberately omits INTERNAL_API_SECRET, so that
   #      placeholder survives verbatim. A Secret must never be baked into a ConfigMap.
+  #      NEVER spell a whitelisted name as a ${...} placeholder in a comment in this file:
+  #      deploy.sh envsubst's the WHOLE document, not just the nginx.conf value, and both
+  #      fragments are multi-line — an expansion inside a `#` line breaks out of the comment
+  #      and the render stops being valid YAML (genetics-results-suite-i5v).
   #   2. the render-config initContainer below, which reads INTERNAL_API_SECRET from the
   #      genetics-secrets Secret and envsubst's only that one name into an emptyDir. nginx
   #      cannot read environment variables from config directives, hence the render step.
@@ -396,8 +400,8 @@ spec:
           readOnlyRootFilesystem: true
           capabilities:
             # Nothing is added back. NET_BIND_SERVICE is unnecessary because the only `listen`
-            # is 8080 and neither fragment deploy.sh injects (${LEGACY_REDIRECT},
-            # ${KEYCLOAK_SERVER}) adds a listener. CHOWN/SETUID/SETGID, which the root master
+            # is 8080 and neither fragment deploy.sh injects (LEGACY_REDIRECT,
+            # KEYCLOAK_SERVER) adds a listener. CHOWN/SETUID/SETGID, which the root master
             # did need, are unnecessary because the master is uid 101 from the start: it never
             # chowns the temp paths and never setuids a worker. Verified against
             # nginx:1.27-alpine under `--user 101:101 --cap-drop ALL --read-only` with the real

@@ -105,7 +105,7 @@ if [ ! -f "$toplevel/terraform/terraform.tfvars" ] &&
     terraform run from here falls back to variable DEFAULTS, which are not a no-op subset
     of the live config. The require_tfvars precondition and deploy.sh block an apply, but
     'terraform apply -target=' and 'terraform destroy' bypass it, and build.sh/build-all.sh
-    just silently fall back to APP_NAME=FinnGenie."
+    print this same warning and then build with APP_NAME=FinnGenie anyway."
 fi
 
 # --- core.hooksPath: local git config, shared across worktrees ---

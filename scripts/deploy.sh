@@ -29,7 +29,9 @@ echo "Deploying genetics-results-suite (tag: ${TAG})"
 cd "${ROOT_DIR}/terraform"
 TFVARS_PROFILE=""
 if [ -f terraform.tfvars ]; then
-  TFVARS_PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)"
+  # POSIX [[:space:]], not GNU-only \s: BSD/macOS sed does not know \s, so the substitution
+  # would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
+  TFVARS_PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' terraform.tfvars | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
 fi
 if [ -n "${CONFIG_PROFILE:-}" ]; then
   PROFILE="${CONFIG_PROFILE}"
