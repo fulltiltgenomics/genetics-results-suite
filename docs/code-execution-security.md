@@ -89,11 +89,10 @@ chat-backend's `SUBAGENT_ALLOWED_PATHS`; see the `read_artifact` subsection in s
 
 The **suite baseline** referred to in the table below is what the suite's *own* service
 containers set: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and
-`RuntimeDefault` seccomp, with `db-api` (uid 10001) and `bff` (uid 1000) additionally
-`runAsNonRoot`. It is **not** a cluster-wide property and never was: eight third-party and
-support workloads set none of it, and `auth-gateway` adds `CHOWN`/`SETUID`/`SETGID` back
-on top of its drop-ALL, so even `drop: ["ALL"]` is not flatly true of the containers that
-do set it. `docs/project-spec.md` → Security holds the authoritative per-workload list —
+`RuntimeDefault` seccomp, with `db-api` (uid 10001), `bff` (uid 1000) and — since
+`genetics-results-suite-a7n` — both containers of `auth-gateway` (uid 101, pod-level)
+additionally `runAsNonRoot`. It is **not** a cluster-wide property and never was: eight third-party and
+support workloads set none of it. `docs/project-spec.md` → Security holds the authoritative per-workload list —
 do not duplicate that enumeration here. The sandbox must exceed this baseline, because it
 is the only workload in the cluster that executes attacker-influenceable code *by design*.
 
@@ -103,7 +102,7 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 |---|---|---|
 | Base image | `gcr.io/distroless/python3-debian12:nonroot`, multi-stage with a venv built in a `python:3.12-slim` stage | No shell, no package manager, no `curl`. `execute_script`'s `bash` interpreter is not merely un-allow-listed, it is absent from the filesystem. |
 | uid / gid | `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65532` | The distroless `nonroot` identity. Deliberately not 1032/1000/10001 — none of the existing suite uids, so no accidental filesystem-permission overlap if a volume is ever attached by mistake. |
-| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. No suite container currently sets it. |
+| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The only other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`), and they need two writable `emptyDir`s to do so; the sandbox needs none. |
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |

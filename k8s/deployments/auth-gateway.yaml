@@ -251,6 +251,22 @@ spec:
       labels:
         app: auth-gateway
     spec:
+      # the nginx MASTER runs as uid 101 too, not just the workers. The image's master normally
+      # starts as root, chowns its compiled-in temp paths and setuids each worker to 101; running
+      # the whole pod as 101 removes all three of those actions, so both containers can drop every
+      # capability. It requires /var/cache/nginx to be writable by 101 (the `cache` emptyDir
+      # below), because that path is root:root 0755 in the image and the *_temp dirs do not exist.
+      # What actually makes those temp paths usable is runAsUser, not fsGroup: the initContainer's
+      # `nginx -t` creates them 0700 owned by 101, and the main container runs as the same uid.
+      # fsGroup cannot help there — 0700 grants the group nothing. Its narrower, still-worthwhile
+      # role is the emptyDir ROOT directories the kubelet creates. The consequence: this depends
+      # on runAsUser matching the uid that created the 0700 dirs, so overriding runAsUser on one
+      # container breaks the gateway despite fsGroup.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
       initContainers:
       # substitute ONLY ${INTERNAL_API_SECRET} — the single-name shell-format argument is what
       # keeps envsubst away from nginx's own $host/$email/$request_uri variables, and it is
@@ -314,17 +330,26 @@ spec:
           readOnly: true
         - name: rendered-config
           mountPath: /etc/nginx/rendered
+        # `nginx -t` is not a dry run: it creates the compiled-in temp paths under
+        # /var/cache/nginx, so the validation step above dies with
+        # `mkdir("/var/cache/nginx/client_temp") failed (13: Permission denied)` as uid 101
+        # unless the same emptyDir the main container uses is mounted here too. Doing so also
+        # pre-creates the temp dirs owned by 101 before nginx itself starts.
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: tmp
+          mountPath: /tmp
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
+            # CHOWN is no longer needed. The mechanism is not a warning about the `user`
+            # directive — the rendered config has no `user` directive at all. nginx applies its
+            # compiled-in --user default only when geteuid() == 0, so as uid 101 ccf->user stays
+            # unset and ngx_create_paths skips its chown for every temp path. Verified by running
+            # this exact script under `--user 101:101 --cap-drop ALL`: `nginx -t` succeeds
+            # silently and leaves /var/cache/nginx/*_temp owned by 101, no chown attempted.
             drop: ["ALL"]
-            # `nginx -t` is not a dry run: it creates the compiled-in temp paths under
-            # /var/cache/nginx and chowns them to the worker uid, so the validation step
-            # above dies with `chown(...) failed (1: Operation not permitted)` on a bare
-            # drop-ALL — a failing initContainer that stalls every rollout. Verified by
-            # running this image under `--cap-drop=ALL`, with and without
-            # `--security-opt=no-new-privileges`; NNP made no difference either way.
-            add: ["CHOWN"]
           seccompProfile:
             type: RuntimeDefault
         resources:
@@ -344,6 +369,16 @@ spec:
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
           readOnly: true
+        # client_body_temp / proxy_temp / fastcgi_temp / scgi_temp / uwsgi_temp live here and
+        # must be writable by uid 101; the image ships the directory root:root 0755 and empty.
+        # Deliberately NOT `medium: Memory`: a 50M request body (client_max_body_size) or a
+        # buffered upstream response would be charged against the 128Mi memory limit.
+        - name: cache
+          mountPath: /var/cache/nginx
+        # readOnlyRootFilesystem below makes the image layer unwritable, and the config sets
+        # `pid /tmp/nginx.pid`. /var/run is NOT needed — verified, it stays read-only.
+        - name: tmp
+          mountPath: /tmp
         readinessProbe:
           httpGet:
             path: /healthz
@@ -358,20 +393,18 @@ spec:
           periodSeconds: 30
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
+            # Nothing is added back. NET_BIND_SERVICE is unnecessary because the only `listen`
+            # is 8080 and neither fragment deploy.sh injects (${LEGACY_REDIRECT},
+            # ${KEYCLOAK_SERVER}) adds a listener. CHOWN/SETUID/SETGID, which the root master
+            # did need, are unnecessary because the master is uid 101 from the start: it never
+            # chowns the temp paths and never setuids a worker. Verified against
+            # nginx:1.27-alpine under `--user 101:101 --cap-drop ALL --read-only` with the real
+            # rendered config: master and worker both Uid 101 with CapPrm/CapEff/CapBnd all 0,
+            # and /healthz, the auth_request path (both outcomes), the Bearer bypass, a 20 MB
+            # POST (client_body_temp) and a 20 MB buffered response (proxy_temp) all served.
             drop: ["ALL"]
-            # NET_BIND_SERVICE is deliberately absent: the only `listen` is 8080, and neither
-            # fragment deploy.sh injects (${LEGACY_REDIRECT}, ${KEYCLOAK_SERVER}) adds one.
-            # The three below are not optional. This image's master starts as root and its
-            # nginx build defaults to `--user=nginx`, which the mounted config does not
-            # override, so startup chowns /var/cache/nginx/*_temp to uid 101 (CHOWN) and each
-            # worker setgid/setuid's to it (SETGID/SETUID). Verified against nginx:1.27-alpine:
-            # a bare drop-ALL aborts at chown; adding only CHOWN leaves `setgid(101) failed`
-            # with no worker respawnable, i.e. a master that holds the port and answers
-            # nothing — the liveness probe then restarts the internet-facing gateway forever.
-            # Running as uid 101 instead would need /var/cache/nginx made writable (an emptyDir
-            # the pod does not have), so the capability grant is the smaller change.
-            add: ["CHOWN", "SETUID", "SETGID"]
           seccompProfile:
             type: RuntimeDefault
         resources:
@@ -390,6 +423,12 @@ spec:
       - name: rendered-config
         emptyDir:
           medium: Memory
+      # node-disk backed on purpose (see the mount comment): nginx's temp paths, which the
+      # image leaves unwritable for uid 101, plus /tmp for the pid file under a read-only rootfs
+      - name: cache
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
