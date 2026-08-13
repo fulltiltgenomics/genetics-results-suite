@@ -15,30 +15,34 @@ linked to it.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2) |
-| `data_type` | Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL |
-| `trait` | Trait/phenotype name. For caQTL this is the peak id (chr-start-end), not a gene — join peak_to_gene_v to reach genes |
-| `trait_original` | Original trait name in the respective dataset, e.g. phenotype code |
-| `cell_type` | Cell type or tissue context (for QTL data) |
-| `chr` | Chromosome number |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative (effect) allele |
-| `mlog10p` | -log10(p-value). Higher = more significant. 7.30103 = genome-wide significance (p-value 5e-8) |
-| `beta` | Effect size estimate (log-OR for binary traits) |
-| `se` | Standard error of beta |
-| `pip` | Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal |
-| `cs_id` | Credible set identifier — groups variants in the same causal signal. NOT unique on its own: the same cs_id value recurs across resources, datasets, traits and cell types, so a credible set is identified by (resource, dataset, trait, cell_type, cs_id) — the grouping the one-row-per-credible-set example below uses. GROUP BY, PARTITION BY or COUNT on cs_id alone silently merges unrelated signals. In a JOIN the same five columns need a NULL-safe comparison on cell_type (cell_type IS NOT DISTINCT FROM ..., never =): cell_type is NULL on every GWAS row — 282,195 of 2,489,585 rows on chr22 — so a plain equi-join on the key drops all of them. The key is not strictly one row per variant either: about 2.4% of credible sets (2,975 of 122,322 on chr22) repeat a variant, so COUNT(*) per key can exceed cs_size; use COUNT(DISTINCT variant) when the count has to match. |
-| `cs_size` | Number of variants in this credible set |
-| `cs_min_r2` | Minimum pairwise LD r² within the credible set |
-| `aaf` | Alternative allele frequency. Prefer maf column for minor allele frequency |
-| `most_severe` | Most severe VEP-predicted variant consequence |
-| `gene_most_severe` | Gene symbol associated with the most severe consequence |
-| `variant` | Variant identifier as chr:pos:ref:alt, chromosome X is 23 |
-| `maf` | Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2) |
+| `data_type` | `STRING` | Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL |
+| `trait` | `STRING` | Trait/phenotype name. For caQTL this is the peak id (chr-start-end), not a gene — join peak_to_gene_v to reach genes |
+| `trait_original` | `STRING` | Original trait name in the respective dataset, e.g. phenotype code |
+| `cell_type` | `STRING` | Cell type or tissue context (for QTL data) |
+| `chr` | `INT64` | Chromosome number |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative (effect) allele |
+| `mlog10p` | `FLOAT64` | -log10(p-value). Higher = more significant. 7.30103 = genome-wide significance (p-value 5e-8) |
+| `beta` | `FLOAT64` | Effect size estimate (log-OR for binary traits) |
+| `se` | `FLOAT64` | Standard error of beta |
+| `pip` | `FLOAT64` | Posterior inclusion probability from fine-mapping (0-1). Higher = more likely causal |
+| `cs_id` | `STRING` | Credible set identifier — groups variants in the same causal signal. NOT unique on its own: the same cs_id value recurs across resources, datasets, traits and cell types, so a credible set is identified by (resource, dataset, trait, cell_type, cs_id) — the grouping the one-row-per-credible-set example below uses. GROUP BY, PARTITION BY or COUNT on cs_id alone silently merges unrelated signals. In a JOIN the same five columns need a NULL-safe comparison on cell_type (cell_type IS NOT DISTINCT FROM ..., never =): cell_type is NULL on every GWAS row — 282,195 of 2,489,585 rows on chr22 — so a plain equi-join on the key drops all of them. The key is not strictly one row per variant either: about 2.4% of credible sets (2,975 of 122,322 on chr22) repeat a variant, so COUNT(*) per key can exceed cs_size; use COUNT(DISTINCT variant) when the count has to match. |
+| `cs_size` | `INT64` | Number of variants in this credible set |
+| `cs_min_r2` | `FLOAT64` | Minimum pairwise LD r² within the credible set |
+| `aaf` | `FLOAT64` | Alternative allele frequency. Prefer maf column for minor allele frequency |
+| `most_severe` | `STRING` | Most severe VEP-predicted variant consequence |
+| `gene_most_severe` | `STRING` | Gene symbol associated with the most severe consequence |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt, chromosome X is 23 |
+| `maf` | `FLOAT64` | Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

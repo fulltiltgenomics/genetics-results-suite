@@ -17,8 +17,19 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# see deploy.sh: core.hooksPath is not tracked, so warn if this checkout is unwired
+"${SCRIPT_DIR}/install-git-hooks.sh" --check || true
+
+# APP_NAME below is read from terraform.tfvars, which exists only in the main checkout
+# — warn before the fallback to FinnGenie happens silently
+"${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
+
 # product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
-APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+# see build.sh: `|| true` keeps a missing tfvars from killing the build under pipefail,
+# which is what the check-worktree-paths warning above already claims happens
+# (genetics-results-suite-1xp)
+# POSIX [[:space:]], not GNU-only \s — see build.sh (genetics-results-suite-8wh)
+APP_NAME="${APP_NAME:-$(grep -E '^[[:space:]]*app_name[[:space:]]*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
 SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"

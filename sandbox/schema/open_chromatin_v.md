@@ -10,27 +10,31 @@ against peak_start/peak_end. Always filter by resource, not dataset.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `chr` | Chromosome number (GRCh38; X=23, Y=24, M=25) |
-| `peak_start` | Peak interval start (GRCh38) |
-| `peak_end` | Peak interval end (GRCh38) |
-| `peak_id` | Peak identifier as chr-start-end |
-| `dataset` | Source dataset identifier |
-| `cell_type` | Verbatim source cell-type/context label |
-| `tissue` | Harmonized tissue (e.g. brain, heart, immune) |
-| `life_stage` | Developmental stage (fetal, adult, unknown) |
-| `condition` | Experimental condition (resting, stimulated, AD, control, unknown) |
-| `assay` | Assay type (scATAC, snATAC, bulk_ATAC, chromHMM) |
-| `score` | Peak signal strength (NA for presence/ChromHMM data) |
-| `score_type` | Meaning of score (e.g. signal, cpm, presence, chromhmm:<State>) |
-| `n_cells` | Number of cells supporting the peak (single-cell assays) |
-| `cell_ontology_id` | Cell Ontology (CL) identifier where available |
-| `uberon_id` | UBERON anatomy identifier where available |
-| `target_gene` | Linked target gene symbol for cCRE->gene links (else NA) |
-| `target_gene_id` | Linked target Ensembl gene ID for cCRE->gene links (else NA) |
-| `version` | Data release version |
-| `resource` | Data source identifier (lowercase). Always filter by this column, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `chr` | `INT64` | Chromosome number (GRCh38; X=23, Y=24, M=25) |
+| `peak_start` | `INT64` | Peak interval start (GRCh38) |
+| `peak_end` | `INT64` | Peak interval end (GRCh38) |
+| `peak_id` | `STRING` | Peak identifier as chr-start-end |
+| `dataset` | `STRING` | Source dataset identifier |
+| `cell_type` | `STRING` | Verbatim source cell-type/context label |
+| `tissue` | `STRING` | Harmonized tissue (e.g. brain, heart, immune) |
+| `life_stage` | `STRING` | Developmental stage (fetal, adult, unknown) |
+| `condition` | `STRING` | Experimental condition (resting, stimulated, AD, control, unknown) |
+| `assay` | `STRING` | Assay type (scATAC, snATAC, bulk_ATAC, chromHMM) |
+| `score` | `FLOAT64` | Peak signal strength (NA for presence/ChromHMM data) |
+| `score_type` | `STRING` | Meaning of score (e.g. signal, cpm, presence, chromhmm:<State>) |
+| `n_cells` | `INT64` | Number of cells supporting the peak (single-cell assays) |
+| `cell_ontology_id` | `STRING` | Cell Ontology (CL) identifier where available |
+| `uberon_id` | `STRING` | UBERON anatomy identifier where available |
+| `target_gene` | `STRING` | Linked target gene symbol for cCRE->gene links (else NA) |
+| `target_gene_id` | `STRING` | Linked target Ensembl gene ID for cCRE->gene links (else NA) |
+| `version` | `STRING` | Data release version |
+| `resource` | `STRING` | Data source identifier (lowercase). Always filter by this column, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

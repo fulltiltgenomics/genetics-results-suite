@@ -288,6 +288,13 @@ domain/address allow-list.
 ## Known follow-up
 
 The backend **bearer-token** path (`genetics-results-api/app/core/auth.py`,
-`get_bearer_token_user`) validates **Google** Identity Tokens only. Programmatic/API access
-for Apple-only identities would need a generic OIDC verifier (validate against Keycloak's
-JWKS / issuer). Browser login does not use this path, so it does not block Apple sign-in.
+`get_bearer_token_user`) validates **Google** Identity Tokens only, so an Apple-only identity
+cannot use that branch. That branch is now **deprecated**, and it is no longer what programmatic
+access depends on: an Apple-only user signs in through Keycloak in the browser, creates a per-user
+API key from the user menu → **MCP and API keys**, and uses it on both `/api` and `/mcp` today.
+Key creation is authorized from the oauth2-proxy identity header and the same address allow-list —
+neither cares which IdP issued the session — and validation is a token-store lookup that never
+looks at the email at all. A generic OIDC verifier (validating against Keycloak's JWKS / issuer)
+remains a follow-up for the deprecated Google-JWT branch alone. Browser login does not use that
+path, so it never blocked Apple sign-in. See "Programmatic credentials: why the per-user API key,
+not the Google id_token" in `docs/project-spec.md`.

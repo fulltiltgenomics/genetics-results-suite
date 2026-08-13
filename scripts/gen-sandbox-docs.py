@@ -111,10 +111,30 @@ def render_view(name, table):
     out = [BANNER, "", f"# {name}", ""]
     out += [_unfold(table["description"]), ""]
 
-    out += ["## Columns", "", "| column | description |", "| --- | --- |"]
+    types = table.get("column_types") or {}
+    untyped = [col for col in table["columns"] if not types.get(col)]
+    if untyped:
+        # a column rendered without its BigQuery type is the defect this block exists to
+        # fix (genetics-results-suite-4h6.31), and a missing entry must not degrade to a
+        # blank cell that reads as "no type" to the model
+        raise SystemExit(
+            f"{name}: column_types has no type for {untyped}. Add them from "
+            "`genetics_results.INFORMATION_SCHEMA.COLUMNS` in configs/datasets.yaml "
+            "(see docs/adding-datasets.md)."
+        )
+
+    out += ["## Columns", "", "| column | type | description |", "| --- | --- | --- |"]
     for col, desc in table["columns"].items():
-        out.append(f"| `{col}` | {_table_cell(desc)} |")
+        out.append(f"| `{col}` | `{_table_cell(types[col])}` | {_table_cell(desc)} |")
     out.append("")
+    out += [
+        _unfold(
+            "Types are the view's own BigQuery types. Match the literal to the type: a "
+            "quoted string never compares equal to a numeric column, and an ARRAY column "
+            "has to go through UNNEST (`<value> IN UNNEST(<column>)`), never a bare `=`."
+        ),
+        "",
+    ]
 
     categorical = table.get("categorical_columns") or {}
     if categorical:

@@ -9,29 +9,33 @@ contains variants filtered to mlog10p > 4.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Study name (e.g. genebass, IBD_exome) |
-| `chr` | Chromosome number, chromosome X is 23 |
-| `pos` | Genomic position (GRCh38) |
-| `ref` | Reference allele |
-| `alt` | Alternative (effect) allele |
-| `gene` | Gene symbol (e.g. PCSK9) |
-| `annotation` | Variant annotation filter (e.g. pLoF, missense, synonymous, splice_region_variant) |
-| `mlog10p` | -log10(p-value) for the single-variant association. Higher = more significant |
-| `beta` | Effect size estimate (log-OR for binary traits) |
-| `se` | Standard error of beta |
-| `af_overall` | Overall alternative allele frequency |
-| `af_cases` | Alternative allele frequency in cases |
-| `af_controls` | Alternative allele frequency in controls |
-| `ac` | Alternative allele count |
-| `an` | Alternative allele number (total alleles genotyped) |
-| `n_cases` | Number of cases in the analysis (may be NA) |
-| `n_controls` | Number of controls in the analysis (may be NA) |
-| `trait` | Trait/phenotype name |
-| `trait_original` | Original trait name in the respective dataset |
-| `variant` | Variant identifier as chr:pos:ref:alt |
-| `resource` | Data source identifier (lowercase) |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Study name (e.g. genebass, IBD_exome) |
+| `chr` | `INT64` | Chromosome number, chromosome X is 23 |
+| `pos` | `INT64` | Genomic position (GRCh38) |
+| `ref` | `STRING` | Reference allele |
+| `alt` | `STRING` | Alternative (effect) allele |
+| `gene` | `STRING` | Gene symbol (e.g. PCSK9) |
+| `annotation` | `STRING` | Variant annotation filter (e.g. pLoF, missense, synonymous, splice_region_variant) |
+| `mlog10p` | `FLOAT64` | -log10(p-value) for the single-variant association. Higher = more significant |
+| `beta` | `FLOAT64` | Effect size estimate (log-OR for binary traits) |
+| `se` | `FLOAT64` | Standard error of beta |
+| `af_overall` | `FLOAT64` | Overall alternative allele frequency |
+| `af_cases` | `FLOAT64` | Alternative allele frequency in cases |
+| `af_controls` | `FLOAT64` | Alternative allele frequency in controls |
+| `ac` | `INT64` | Alternative allele count |
+| `an` | `INT64` | Alternative allele number (total alleles genotyped) |
+| `n_cases` | `INT64` | Number of cases in the analysis (may be NA) |
+| `n_controls` | `INT64` | Number of controls in the analysis (may be NA) |
+| `trait` | `STRING` | Trait/phenotype name |
+| `trait_original` | `STRING` | Original trait name in the respective dataset |
+| `variant` | `STRING` | Variant identifier as chr:pos:ref:alt |
+| `resource` | `STRING` | Data source identifier (lowercase) |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

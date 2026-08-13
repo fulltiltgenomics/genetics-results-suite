@@ -129,6 +129,72 @@ def _generator_code():
     return ast.unparse(tree)
 
 
+_SCALAR_TYPES = {
+    "BIGNUMERIC", "BOOL", "BYTES", "DATE", "DATETIME", "FLOAT64", "GEOGRAPHY", "INT64",
+    "INTERVAL", "JSON", "NUMERIC", "STRING", "TIME", "TIMESTAMP",
+}
+
+
+def _valid_bq_type(text):
+    """Is `text` spelled the way genetics_results.INFORMATION_SCHEMA.COLUMNS.data_type
+    spells a type?
+
+    Presence alone is not enough to be worth shipping. `column_types` is hand-copied out
+    of a query result, and 'INT', 'float', 'array of int' or a pasted description are all
+    things that would satisfy a non-empty check while telling the model something false —
+    which is strictly worse than the missing type this field was added to fix. A grammar
+    check is the strongest thing available offline; see the note on _column_types.
+    """
+    if not isinstance(text, str):
+        return False
+    text = text.strip()
+    if text in _SCALAR_TYPES:
+        return True
+    for wrapper in ("ARRAY", "RANGE"):
+        prefix = f"{wrapper}<"
+        if text.startswith(prefix) and text.endswith(">"):
+            return _valid_bq_type(text[len(prefix):-1])
+    if text.startswith("STRUCT<") and text.endswith(">"):
+        depth = 0
+        fields, current = [], ""
+        for char in text[len("STRUCT<"):-1]:
+            if char == "<":
+                depth += 1
+            elif char == ">":
+                depth -= 1
+            if char == "," and depth == 0:
+                fields.append(current)
+                current = ""
+            else:
+                current += char
+        fields.append(current)
+        for field in fields:
+            parts = field.strip().split(None, 1)
+            if not parts or not _valid_bq_type(parts[-1]):
+                return False
+        return True
+    # STRING(20), NUMERIC(38, 9) etc.
+    head, _, tail = text.partition("(")
+    if tail.endswith(")") and head.strip() in _SCALAR_TYPES:
+        return all(part.strip().isdigit() for part in tail[:-1].split(","))
+    return False
+
+
+def _render_mutated(gen, mutated):
+    """Render a modified copy of the config through the real generator.
+
+    Written to a temp file rather than passed in memory because render_schema_docs takes a
+    path; the canonical configs/datasets.yaml is never touched.
+    """
+    path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gen-sandbox-docs-mutation.yaml")
+    with open(path, "w") as fh:
+        yaml.safe_dump(mutated, fh, allow_unicode=True)
+    try:
+        return gen.render_schema_docs(path)
+    finally:
+        os.remove(path)
+
+
 def _field_text(table, field):
     """The YAML text a rule is supposed to live in. `examples` folds every example's
     description and SQL together, because which example carries a rule is an editorial
@@ -169,7 +235,15 @@ def main(argv=None):
         config = yaml.safe_load(fh)
     tables = config["tables"]
     generator_code = _generator_code()
-    schema_files = gen.render_schema_docs(DATASETS_YAML)
+    try:
+        schema_files = gen.render_schema_docs(DATASETS_YAML)
+    except SystemExit as exc:
+        # the generator refuses to render an incomplete datasets.yaml (a column with no
+        # column_types entry, an empty tables block). Report it as a named failure instead
+        # of letting SystemExit escape as a bare message with no check name attached.
+        print(f"  FAIL the generator can render configs/datasets.yaml: {exc}")
+        print("sandbox docs checks: 1 failure(s)")
+        return 1
 
     sdk_dir = os.path.join(args.sdk_src, "src", "genetics_mcp_server", "sdk")
     if not os.path.isdir(sdk_dir):
@@ -218,6 +292,96 @@ def main(argv=None):
             for example in table.get("examples") or []:
                 first = str(example["sql"]).strip().splitlines()[0].strip()
                 assert first in doc, f"{name}: example SQL missing ({first!r})"
+
+    @check("every documented column carries a well-formed BigQuery type")
+    def _column_types():
+        """genetics-results-suite-4h6.31: a column documented without its type is the
+        defect this field exists to close — an agent writing SQL cannot tell an INT64
+        chromosome from a string one, or an ARRAY that needs UNNEST from a scalar.
+
+        Checked against configs/datasets.yaml, not the rendered doc, and in BOTH
+        directions: a missing entry is a column the model gets no type for, an extra
+        entry is a type for a column that no longer exists, which will be silently
+        attached to the wrong thing the day that name comes back.
+
+        WHY THE TYPE IS NOT COMPARED AGAINST LIVE BIGQUERY HERE. This harness gates
+        scripts/build.sh on a build host with no BigQuery credentials, no network
+        guarantee and no reason to grow either — every other check in it is a pure
+        function of files in the repo. A live comparison would turn a docker build into
+        something that fails when a service account rotates. The offline substitute is
+        the grammar check: it cannot tell FLOAT64 from INT64, but it does reject
+        everything that is not a type at all. Re-populating from
+        `genetics_results.INFORMATION_SCHEMA.COLUMNS` is a step in
+        docs/adding-datasets.md instead, where the person who changed a view is."""
+        for name, table in tables.items():
+            types = table.get("column_types")
+            assert isinstance(types, dict) and types, (
+                f"{name}: no `column_types:` block in configs/datasets.yaml. Populate it "
+                "from genetics_results.INFORMATION_SCHEMA.COLUMNS (docs/adding-datasets.md)"
+            )
+            missing = [c for c in table["columns"] if c not in types]
+            assert not missing, (
+                f"{name}: no type for {missing} — every column in `columns:` needs one in "
+                "`column_types:`"
+            )
+            extra = [c for c in types if c not in table["columns"]]
+            assert not extra, (
+                f"{name}: `column_types:` names {extra}, which `columns:` does not "
+                "document — a stale type outlives the column it described"
+            )
+            malformed = {c: types[c] for c in table["columns"] if not _valid_bq_type(types[c])}
+            assert not malformed, (
+                f"{name}: not BigQuery type spellings: {malformed} — copy data_type "
+                "verbatim from INFORMATION_SCHEMA.COLUMNS (e.g. INT64, ARRAY<STRING>)"
+            )
+
+    @check("the type of every column reaches its schema file")
+    def _types_in_docs():
+        """Names alone already appear in the file, so this asserts the whole rendered row
+        prefix: a generator that emitted an empty type cell would pass a substring check
+        on the column name and still show the model nothing."""
+        for name, table in tables.items():
+            doc = schema_files[f"{name}.md"]
+            for column, type_name in table["column_types"].items():
+                row = f"| `{column}` | `{type_name}` |"
+                assert row in doc, f"{name}: {column} is not rendered with its type as {row!r}"
+
+    @check("a type changed in datasets.yaml changes the generated output")
+    def _type_mutation():
+        view = sorted(tables)[0]
+        column = next(iter(tables[view]["columns"]))
+        mutated = copy.deepcopy(config)
+        mutated["tables"][view]["column_types"][column] = "SENTINEL64"
+        regenerated = _render_mutated(gen, mutated)
+        assert f"| `{column}` | `SENTINEL64` |" in regenerated[f"{view}.md"], (
+            f"changing tables.{view}.column_types.{column} did not change {view}.md — the "
+            "generator is not reading the type from the canonical file"
+        )
+
+    @check("a column with no type is REFUSED, not rendered blank")
+    def _missing_type_fails_closed():
+        """The direction that matters. A guard that only proves the type shows up when it
+        is present fails open: the failure mode is a column whose entry was never added,
+        and a generator that quietly emitted `| chr |  |` would satisfy every other check
+        in this file while shipping exactly the gap 4h6.31 was filed for. So delete an
+        entry and require the generator to refuse."""
+        view = sorted(tables)[0]
+        column = next(iter(tables[view]["columns"]))
+        for drop_whole_block in (False, True):
+            mutated = copy.deepcopy(config)
+            if drop_whole_block:
+                del mutated["tables"][view]["column_types"]
+            else:
+                del mutated["tables"][view]["column_types"][column]
+            try:
+                _render_mutated(gen, mutated)
+            except SystemExit:
+                continue
+            raise AssertionError(
+                f"the generator rendered {view}.md with "
+                + ("no column_types block" if drop_whole_block else f"no type for {column}")
+                + " instead of refusing — the check fails open"
+            )
 
     @check("the index lists every view")
     def _index():
@@ -279,13 +443,7 @@ def main(argv=None):
                     node = node[key]
                 node[rule["field"][-1]] = str(node[rule["field"][-1]]) + " " + sentinel
 
-            path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gen-sandbox-docs-mutation.yaml")
-            with open(path, "w") as fh:
-                yaml.safe_dump(mutated, fh, allow_unicode=True)
-            try:
-                regenerated = gen.render_schema_docs(path)
-            finally:
-                os.remove(path)
+            regenerated = _render_mutated(gen, mutated)
             doc_name = rule["docs"][0]
             assert sentinel in regenerated[doc_name], (
                 f"{rule['name']}: mutating tables.{rule['table']}."

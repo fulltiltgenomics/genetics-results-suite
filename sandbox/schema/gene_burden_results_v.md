@@ -11,26 +11,30 @@ rather than scanning.
 
 ## Columns
 
-| column | description |
-| --- | --- |
-| `dataset` | Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome) |
-| `trait` | Trait/phenotype name |
-| `gene` | Gene symbol (e.g. PCSK9) |
-| `gene_id` | Ensembl gene ID (e.g. ENSG00000169174) |
-| `chr` | Chromosome number, chromosome X is 23 |
-| `gene_start_pos` | Gene start position (GRCh38) |
-| `gene_end_pos` | Gene end position (GRCh38) |
-| `annotation` | Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous) |
-| `mlog10p_burden` | -log10(p-value) from the gene-level burden test. Higher = more significant |
-| `beta` | Effect size estimate from burden test |
-| `se` | Standard error of beta |
-| `total_variants` | Total qualifying variants in the gene |
-| `total_variants_pheno` | Qualifying variants with phenotype data |
-| `n_cases` | Number of cases in the analysis |
-| `n_controls` | Number of controls in the analysis |
-| `trait_original` | Original trait name in the respective dataset |
-| `flags` | Quality or analysis flags (NA if none) |
-| `resource` | Data source identifier (lowercase). Use this for filtering, not dataset |
+| column | type | description |
+| --- | --- | --- |
+| `dataset` | `STRING` | Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome) |
+| `trait` | `STRING` | Trait/phenotype name |
+| `gene` | `STRING` | Gene symbol (e.g. PCSK9) |
+| `gene_id` | `STRING` | Ensembl gene ID (e.g. ENSG00000169174) |
+| `chr` | `INT64` | Chromosome number, chromosome X is 23 |
+| `gene_start_pos` | `INT64` | Gene start position (GRCh38) |
+| `gene_end_pos` | `INT64` | Gene end position (GRCh38) |
+| `annotation` | `STRING` | Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous) |
+| `mlog10p_burden` | `FLOAT64` | -log10(p-value) from the gene-level burden test. Higher = more significant |
+| `beta` | `FLOAT64` | Effect size estimate from burden test |
+| `se` | `FLOAT64` | Standard error of beta |
+| `total_variants` | `INT64` | Total qualifying variants in the gene |
+| `total_variants_pheno` | `INT64` | Qualifying variants with phenotype data |
+| `n_cases` | `INT64` | Number of cases in the analysis |
+| `n_controls` | `INT64` | Number of controls in the analysis |
+| `trait_original` | `STRING` | Original trait name in the respective dataset |
+| `flags` | `STRING` | Quality or analysis flags (NA if none) |
+| `resource` | `STRING` | Data source identifier (lowercase). Use this for filtering, not dataset |
+
+Types are the view's own BigQuery types. Match the literal to the type: a quoted string
+never compares equal to a numeric column, and an ARRAY column has to go through UNNEST
+(`<value> IN UNNEST(<column>)`), never a bare `=`.
 
 ## Columns with a small, enumerable set of values
 

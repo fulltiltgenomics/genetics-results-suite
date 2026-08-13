@@ -49,10 +49,13 @@ Consequences:
   override to `DATASET_LABEL_OVERRIDES` in `src/features/table/utils/tableutil.tsx`
   (e.g. `UKB_PPP` → "UKBB PPP (Olink 3K)"). Optional, and only for display clarity.
 
-Both `genetics-results-api` and `genetics-results-db` keep a committed copy of
-`datasets.yaml` under `configs/`, refreshed by `scripts/sync-datasets.sh` (and by
-`deploy.sh`, best-effort). These committed copies are for local dev and CI drift checks;
-the deploy-time ConfigMap is authoritative at runtime.
+Both `genetics-results-api` and `genetics-results-db` read `configs/datasets.yaml` from
+their own checkout when run locally, but that file is **gitignored and untracked** in
+both repos (`genetics-results-api/.gitignore`, `genetics-results-db/.gitignore`) — it
+exists only as a local copy, placed there by `scripts/sync-datasets.sh` (and by
+`deploy.sh`, best-effort). It is a local-dev convenience so a developer's sibling
+checkout is not stale; it is never committed and never part of an image. The
+deploy-time ConfigMap is authoritative at runtime.
 
 ## 3. First decide: new resource, or new data for an existing resource?
 
@@ -181,19 +184,104 @@ generated fragment. The resource-mapped views are `credible_sets_v`, `colocaliza
 `open_chromatin_v`, `variant_effect_v`, `mpra_v`, `peak_to_gene_v` and `hla_associations_v`
 (the script's `ALL_VIEWS`).
 
-The two metadata views — `phenotypes_v` and `datasets_v` — are deliberately **not** in
-`ALL_VIEWS`. They carry `resource` as a real column taken straight from this file's registry,
-which is authoritative; the generated `CASE` blocks only exist to recover the resource from a
-dataset *name* where the registry is not available in the row. They are likewise absent from
-`scripts/monitor/bq_summary.py`'s `VIEWS`, which compares per-resource coverage of *result*
-views against `dataset_to_resource_rules` — a comparison that is meaningless for a table whose
-rows are the registry itself.
+`configs/datasets.yaml` describes **15** views; `ALL_VIEWS` has **11**. **Four** views are
+deliberately outside it, for **two different reasons** — do not read "not a metadata view" as
+"belongs in `ALL_VIEWS`":
+
+- **`phenotypes_v` and `datasets_v`** carry `resource` as a real column taken straight from
+  this file's registry, which is authoritative; the generated `CASE` blocks only exist to
+  recover the resource from a dataset *name* where the registry is not available in the row.
+  Both `schemas/phenotypes_v.sql` and `schemas/datasets_v.sql` say so in a header comment
+  carrying the instruction "Do not add this view to `scripts/generate_resource_sql.py`'s
+  `ALL_VIEWS`." — each comment continues past that sentence to record why the view exists at
+  all (so `api/main.py`'s `VIEWS` exposes views uniformly). Both files live only on
+  genetics-results-db's `worktree-db-only-architecture` branch; they are not on its `master`.
+- **`gene_annotations_v` and `variant_annotation_v`** are excluded for the opposite reason:
+  their base tables are **single-source and have no dataset discriminator column at all**, so
+  there is nothing for a `CASE` to switch on. Each view appends a bare constant —
+  `'hgnc' AS resource` and `'finngen' AS resource` respectively (see
+  `schemas/gene_annotations_v.sql` and `schemas/variant_annotation_v.sql`, the latter
+  recording the reason in its header comment). A `CASE` block here would have exactly one arm.
+
+Whenever you add a view, decide which of these three cases it is: dataset-discriminated (goes
+in `ALL_VIEWS`), registry-authoritative, or single-source constant.
+
+Neither group appears in `scripts/monitor/bq_summary.py`'s `VIEWS`, which compares
+per-resource coverage of *result* views against `dataset_to_resource_rules` — meaningless for
+a table whose rows are the registry itself, and for a single-source table whose `resource` is
+a constant. Note that `VIEWS` is narrower still (**8** views): `open_chromatin_v`,
+`variant_effect_v` and `peak_to_gene_v` are in `ALL_VIEWS` but not monitored. Re-derive all
+three lists rather than trusting this paragraph:
+
+Run these from this repo's root. `DB_REPO` has to be set explicitly: the plain sibling path
+`../genetics-results-db` only resolves from a plain clone, and from a `.claude/worktrees/<name>`
+checkout of this repo it points into `.claude/worktrees/` instead — set it to that repo's
+matching worktree.
+
+```bash
+DB_REPO=../genetics-results-db                                   # plain clone
+# DB_REPO=../../../../genetics-results-db/.claude/worktrees/db-only-architecture   # from a worktree
+
+python3 -c "import yaml;print(len(yaml.safe_load(open('configs/datasets.yaml'))['tables']))"
+sed -n '/^ALL_VIEWS = \[/,/^]/p' "$DB_REPO/scripts/generate_resource_sql.py"
+sed -n '/^VIEWS = \[/,/^]/p' scripts/monitor/bq_summary.py
+```
 
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
 `IF NOT EXISTS` and re-applies every `*_v` view via `CREATE OR REPLACE` — no data loss;
 `--recreate` drops and rebuilds tables and **deletes data**). To apply just one changed
 view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
 `genetics_results` placeholder with `<project>.<dataset>`.
+
+**There is no dev deployment and no second BigQuery dataset — `phewas-development` is
+production.** Anything beyond an additive `CREATE OR REPLACE VIEW` (a rename, a
+re-clustering, a `DROP`) should be rehearsed first in the throwaway dataset that
+`scripts/bq-dev-dataset.sh` builds; `setup_bigquery.sh` already takes `PROJECT_ID` /
+`DATASET_ID` / `LOCATION` from the environment, so pointing it at the rehearsal dataset
+needs no file edits. See **`docs/bigquery-dev-dataset.md`**.
+
+These counts rot easily, so re-derive them rather than trusting this paragraph. As of
+2026-08-13, `bq ls phewas-development:genetics_results` holds **18 base tables and 15
+views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
+and `variant_annotation_v` are the other two live views and are in neither list. Both do
+carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
+tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`
+to switch on (the single-source-constant case above). `configs/datasets.yaml`'s `tables:` section
+has an entry for all 15.
+
+### Column types (`tables.<view>.column_types`)
+
+Every column documented in a view's `columns:` block must also appear in its
+`column_types:` block, with the column's BigQuery type. The sandbox schema docs
+(`sandbox/schema/<view>.md`, generated into the code-execution image) are the only
+description of these views a sandboxed agent gets, and without the type it writes SQL that
+cannot run — `chr` is `INT64`, so `chr = 'chr5'` and `chr = '5'` are both errors, and
+`gene_annotations_v.gene_group_ids` is `ARRAY<INT64>`, so it needs `UNNEST`.
+
+**Do not type them by hand.** Once the view exists (or has been re-applied after a column
+change), read the types back out of BigQuery:
+
+```bash
+bq query --project_id=<project> --use_legacy_sql=false --format=csv \
+  'SELECT table_name, ordinal_position, column_name, data_type
+   FROM genetics_results.INFORMATION_SCHEMA.COLUMNS
+   WHERE table_name = "<view>"
+   ORDER BY ordinal_position'
+```
+
+Copy `data_type` verbatim — that is the spelling BigQuery uses, `ARRAY<...>` and
+`STRUCT<...>` included. Then regenerate and check:
+
+```bash
+python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type
+python3 scripts/test-sandbox-docs.py      # gates scripts/build.sh
+```
+
+The harness fails on a missing entry, on a stale entry naming a column that no longer
+exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted
+description). It does **not** compare the recorded type against live BigQuery — it runs on
+a build host with no credentials — so re-running the query above after a view change is the
+step that keeps them true. See `docs/datasets-yaml-schema.md` for the field reference.
 
 Loading the actual rows into the base tables is a separate step — **not** done by
 `deploy.sh`. The low-level loader is `scripts/load_data.py`; per-data-type wrapper scripts
@@ -356,7 +444,12 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
 4. `genetics-results-db`: `schemas/hla_associations{,_v}.sql`, `scripts/load_hla.sh`, the
    `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view added
    to the `VIEWS` allowlist in `api/main.py` **and** to `ALL_VIEWS` in
-   `generate_resource_sql.py` so the linter covers it.
+   `generate_resource_sql.py` so the linter covers it. `hla_associations_v` lists its
+   columns explicitly instead of `SELECT *`, because it renames five to the suite's house
+   spelling (`mlogp`→`mlog10p`, `sebeta`→`se`, `af_alt`→`af`, `af_alt_cases`→`af_cases`,
+   `af_alt_controls`→`af_controls`); a column added to `hla_associations` therefore has to
+   be added to the view too, which `tests/test_hla_view_columns.py` enforces against
+   `SCHEMAS["hla_associations"]`.
 5. `genetics-mcp-server`: `get_hla_by_phenotype` (results-api) and `get_hla_by_allele`
    (BigQuery), plus an HLA section in the chat system prompt.
 6. `genetics-results-suite`: `hla_associations_v` added to the monitor's `VIEWS` and
@@ -380,15 +473,33 @@ convenience mirror.
 - [ ] genetics-results-api: `common.py` `dataset_to_resource` entry if the data shares a
       combined credible-set file (per-row resource attribution).
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
-      apply views + load BQ rows if BQ-bound. A **new** view also needs adding to
-      `ALL_VIEWS` (generator/linter), `VIEWS` (`api/main.py`) and the monitor's
-      `VIEWS`/`_CONFIG_VIEWS` in this repo, or it is silently unmonitored and unqueryable.
+      apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
+      decision with a separate consequence:
+      - `VIEWS` (`api/main.py`) — **always**. This is the only list that makes a view
+        queryable; omit it and nothing can reach the view.
+      - `ALL_VIEWS` (generator/linter) — **only if the view is dataset-discriminated**, i.e.
+        its `resource` has to be recovered from a dataset name by a generated `CASE` block.
+        A registry-authoritative or single-source-constant view must stay out of it; see
+        the three-case paragraph in §5 ("Whenever you add a view, decide which of these three
+        cases it is"). Wrongly adding it makes `lint` demand a `CASE` block the view should
+        not have; wrongly omitting it lets the view's `CASE` drift from `datasets.yaml`
+        unnoticed.
+      - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
+        only for *result* views whose per-resource coverage is meaningful to compare against
+        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Adding a
+        view to `api/main.py`'s `VIEWS` also brings its `dataset` values under the registry
+        cross-check (next item).
 - [ ] genetics-results-db: `BQ_DATASETS_BY_DATASET_ID` entry in `scripts/build_phenotypes.py`
       for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Adding the view to
       `VIEWS` automatically brings its `dataset` values under the registry cross-check, so the
       loader will fail until the map covers them. Skipping this leaves the dataset invisible in
       `datasets_v` and its trait codes unresolvable in `phenotypes_v` — exactly what happened
       to `finngen_hla`.
+- [ ] `datasets.yaml`: if a `tables.<view>` block was added or its `columns:` changed,
+      re-derive `column_types:` from `genetics_results.INFORMATION_SCHEMA.COLUMNS` (query in
+      §6), then `python3 scripts/gen-sandbox-docs.py` and commit the regenerated
+      `sandbox/schema/*.md`. `scripts/test-sandbox-docs.py` (which gates `build.sh`) fails
+      on any documented column without a type.
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
