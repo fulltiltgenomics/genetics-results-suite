@@ -198,6 +198,20 @@ Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (crea
 view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
 `genetics_results` placeholder with `<project>.<dataset>`.
 
+**There is no dev deployment and no second BigQuery dataset — `phewas-development` is
+production.** Anything beyond an additive `CREATE OR REPLACE VIEW` (a rename, a
+re-clustering, a `DROP`) should be rehearsed first in the throwaway dataset that
+`scripts/bq-dev-dataset.sh` builds; `setup_bigquery.sh` already takes `PROJECT_ID` /
+`DATASET_ID` / `LOCATION` from the environment, so pointing it at the rehearsal dataset
+needs no file edits. See **`docs/bigquery-dev-dataset.md`**.
+
+These counts rot easily, so re-derive them rather than trusting this paragraph. As of
+2026-08-13, `bq ls phewas-development:genetics_results` holds **18 base tables and 15
+views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
+and `variant_annotation_v` are the other two live views and are in neither list, because
+they carry no `resource` column to generate. `configs/datasets.yaml`'s `tables:` section
+has an entry for all 15.
+
 ### Column types (`tables.<view>.column_types`)
 
 Every column documented in a view's `columns:` block must also appear in its
