@@ -184,13 +184,48 @@ generated fragment. The resource-mapped views are `credible_sets_v`, `colocaliza
 `open_chromatin_v`, `variant_effect_v`, `mpra_v`, `peak_to_gene_v` and `hla_associations_v`
 (the script's `ALL_VIEWS`).
 
-The two metadata views — `phenotypes_v` and `datasets_v` — are deliberately **not** in
-`ALL_VIEWS`. They carry `resource` as a real column taken straight from this file's registry,
-which is authoritative; the generated `CASE` blocks only exist to recover the resource from a
-dataset *name* where the registry is not available in the row. They are likewise absent from
-`scripts/monitor/bq_summary.py`'s `VIEWS`, which compares per-resource coverage of *result*
-views against `dataset_to_resource_rules` — a comparison that is meaningless for a table whose
-rows are the registry itself.
+`configs/datasets.yaml` describes **15** views; `ALL_VIEWS` has **11**. **Four** views are
+deliberately outside it, for **two different reasons** — do not read "not a metadata view" as
+"belongs in `ALL_VIEWS`":
+
+- **`phenotypes_v` and `datasets_v`** carry `resource` as a real column taken straight from
+  this file's registry, which is authoritative; the generated `CASE` blocks only exist to
+  recover the resource from a dataset *name* where the registry is not available in the row.
+  Both `schemas/phenotypes_v.sql` and `schemas/datasets_v.sql` say so in a header comment
+  carrying the instruction "Do not add this view to `scripts/generate_resource_sql.py`'s
+  `ALL_VIEWS`." — each comment continues past that sentence to record why the view exists at
+  all (so `api/main.py`'s `VIEWS` exposes views uniformly). Both files live only on
+  genetics-results-db's `worktree-db-only-architecture` branch; they are not on its `master`.
+- **`gene_annotations_v` and `variant_annotation_v`** are excluded for the opposite reason:
+  their base tables are **single-source and have no dataset discriminator column at all**, so
+  there is nothing for a `CASE` to switch on. Each view appends a bare constant —
+  `'hgnc' AS resource` and `'finngen' AS resource` respectively (see
+  `schemas/gene_annotations_v.sql` and `schemas/variant_annotation_v.sql`, the latter
+  recording the reason in its header comment). A `CASE` block here would have exactly one arm.
+
+Whenever you add a view, decide which of these three cases it is: dataset-discriminated (goes
+in `ALL_VIEWS`), registry-authoritative, or single-source constant.
+
+Neither group appears in `scripts/monitor/bq_summary.py`'s `VIEWS`, which compares
+per-resource coverage of *result* views against `dataset_to_resource_rules` — meaningless for
+a table whose rows are the registry itself, and for a single-source table whose `resource` is
+a constant. Note that `VIEWS` is narrower still (**8** views): `open_chromatin_v`,
+`variant_effect_v` and `peak_to_gene_v` are in `ALL_VIEWS` but not monitored. Re-derive all
+three lists rather than trusting this paragraph:
+
+Run these from this repo's root. `DB_REPO` has to be set explicitly: the plain sibling path
+`../genetics-results-db` only resolves from a plain clone, and from a `.claude/worktrees/<name>`
+checkout of this repo it points into `.claude/worktrees/` instead — set it to that repo's
+matching worktree.
+
+```bash
+DB_REPO=../genetics-results-db                                   # plain clone
+# DB_REPO=../../../../genetics-results-db/.claude/worktrees/db-only-architecture   # from a worktree
+
+python3 -c "import yaml;print(len(yaml.safe_load(open('configs/datasets.yaml'))['tables']))"
+sed -n '/^ALL_VIEWS = \[/,/^]/p' "$DB_REPO/scripts/generate_resource_sql.py"
+sed -n '/^VIEWS = \[/,/^]/p' scripts/monitor/bq_summary.py
+```
 
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
 `IF NOT EXISTS` and re-applies every `*_v` view via `CREATE OR REPLACE` — no data loss;
@@ -208,8 +243,10 @@ needs no file edits. See **`docs/bigquery-dev-dataset.md`**.
 These counts rot easily, so re-derive them rather than trusting this paragraph. As of
 2026-08-13, `bq ls phewas-development:genetics_results` holds **18 base tables and 15
 views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
-and `variant_annotation_v` are the other two live views and are in neither list, because
-they carry no `resource` column to generate. `configs/datasets.yaml`'s `tables:` section
+and `variant_annotation_v` are the other two live views and are in neither list. Both do
+carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
+tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`
+to switch on (the single-source-constant case above). `configs/datasets.yaml`'s `tables:` section
 has an entry for all 15.
 
 ### Column types (`tables.<view>.column_types`)
@@ -436,9 +473,22 @@ convenience mirror.
 - [ ] genetics-results-api: `common.py` `dataset_to_resource` entry if the data shares a
       combined credible-set file (per-row resource attribution).
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
-      apply views + load BQ rows if BQ-bound. A **new** view also needs adding to
-      `ALL_VIEWS` (generator/linter), `VIEWS` (`api/main.py`) and the monitor's
-      `VIEWS`/`_CONFIG_VIEWS` in this repo, or it is silently unmonitored and unqueryable.
+      apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
+      decision with a separate consequence:
+      - `VIEWS` (`api/main.py`) — **always**. This is the only list that makes a view
+        queryable; omit it and nothing can reach the view.
+      - `ALL_VIEWS` (generator/linter) — **only if the view is dataset-discriminated**, i.e.
+        its `resource` has to be recovered from a dataset name by a generated `CASE` block.
+        A registry-authoritative or single-source-constant view must stay out of it; see
+        the three-case paragraph in §5 ("Whenever you add a view, decide which of these three
+        cases it is"). Wrongly adding it makes `lint` demand a `CASE` block the view should
+        not have; wrongly omitting it lets the view's `CASE` drift from `datasets.yaml`
+        unnoticed.
+      - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
+        only for *result* views whose per-resource coverage is meaningful to compare against
+        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Adding a
+        view to `api/main.py`'s `VIEWS` also brings its `dataset` values under the registry
+        cross-check (next item).
 - [ ] genetics-results-db: `BQ_DATASETS_BY_DATASET_ID` entry in `scripts/build_phenotypes.py`
       for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Adding the view to
       `VIEWS` automatically brings its `dataset` values under the registry cross-check, so the

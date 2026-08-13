@@ -19,8 +19,22 @@ hit() {
 }
 
 found=0
+# check <code paths> <doc paths> <message> [paths to ignore inside <code paths>]
+#
+# The 4th argument exists because a rule whose path pattern is broader than the doc
+# concern it names fires where it can never apply, and a warning that fires when it
+# cannot apply is how a warn-only check becomes wallpaper (genetics-results-suite-dqa).
+# Use it only where the named doc demonstrably does not describe the excluded files, and
+# say which property of them makes that true — "generated" is not by itself such a
+# property, since a doc can and does reason about generated content.
 check() {
-    if hit "$1" && ! hit "$2"; then
+    matched=$(printf '%s\n' "$staged" | grep -E "$1")
+    [ -n "$matched" ] || return 0
+    if [ -n "${4:-}" ]; then
+        matched=$(printf '%s\n' "$matched" | grep -vE "$4")
+        [ -n "$matched" ] || return 0
+    fi
+    if ! hit "$2"; then
         if [ "$found" -eq 0 ]; then
             printf '\ndoc-drift warning — this commit changes code the docs describe:\n\n' >&2
             found=1
@@ -50,17 +64,31 @@ check '^scripts/monitor/' '^docs/project-spec\.md$' \
 # the CLAUDE.md sandbox row owns two docs, and satisfying one does not satisfy the
 # other — so they are two checks, not one alternation
 SANDBOX_PATHS='^(sandbox/|k8s/deployments/sandbox\.yaml$|k8s/network-policies/sandbox-policy\.yaml$)'
-
+# no exclusion for the generated trees: code-execution-security.md reasons about the
+# *content* of sandbox/schema/ and sandbox/stubs/ directly — the shipped stubs are where
+# INTERNAL_API_SECRET appears in the secrets-in-image analysis, and the build gate that
+# fails on a PLACEHOLDER file in either staged tree is stated in terms of both. A
+# regeneration can therefore falsify the doc, which is exactly what this rule is for.
 check "$SANDBOX_PATHS" \
     '^docs/code-execution-security\.md$' \
-    'sandbox image/manifests/policy -> docs/code-execution-security.md (isolation boundary, egress+ingress allow-lists, the three MCP-exclusion layers, sandbox token claims)'
+    'sandbox image/manifests/policy/schema/stubs -> docs/code-execution-security.md (isolation boundary, egress+ingress allow-lists, the three MCP-exclusion layers, sandbox token claims, what the shipped schema docs and stubs disclose)'
 
+# project-spec.md summarises what the sandbox *exposes*, so the generated trees are in
+# scope for this one — a new view in sandbox/schema/ changes that summary.
 check "$SANDBOX_PATHS" \
     '^docs/project-spec\.md$' \
-    'sandbox image/manifests/policy -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy)'
+    'sandbox image/manifests/policy/schema -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy, what the sandbox exposes)'
+
+# Only the *static branding assets* under keycloak/themes/ are exempt: a stylesheet, an
+# image, a font or a `.properties` bundle changes how the login page looks and reads and
+# has no other effect. The exemption is by extension, not by directory, because
+# keycloak/themes/genetics/login/ is exactly where a FreeMarker override (`login.ftl`) or a
+# script would go, and those change how the login page *behaves* — they stay covered.
+KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
 check '^(keycloak/|scripts/keycloak-)' '^docs/keycloak-apple-signin\.md$' \
-    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)'
+    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)' \
+    "$KEYCLOAK_BRANDING"
 
 if [ "$found" -eq 1 ]; then
     printf '\n  Update the doc in this commit, or note why it does not apply.\n' >&2
