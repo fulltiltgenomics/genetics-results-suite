@@ -1929,6 +1929,43 @@ review. Follow the existing pattern including the explanatory comment: the curre
 distinguishes technical limits ("uses Perplexity API") from product decisions; this one is
 a security control and should say so.
 
+**Half of this has landed.** `4h6.15` added `read_artifact` to the literal set in the same
+change that defined the tool. That was not eagerness about a `4h6.16` deliverable: a tool is
+registered on `/mcp` from the moment its definition exists unless it is excluded, so
+deferring the exclusion would have shipped a window in which the tool was live over MCP.
+`run_analysis` joins it with `4h6.16`. The `code` `TOOL_PROFILE` and the route-level
+assertion below remain `4h6.16`'s.
+
+**`list_capabilities` is deliberately *not* excluded, and the reason is not that it
+discloses nothing.** Keeping it out of the set is still the right call — an exclusion set
+padded with names that are not security controls stops reading as a security control, and
+the next reader can no longer tell which entries are load-bearing. But an earlier version of
+this passage justified it with "it discloses no data, no session state and no execution" and
+with the claim that an MCP client can already see what it renders. The second argument is
+simply false: the SDK is not the MCP tool surface, and the catalogue is new disclosure to an
+MCP client. It is accepted **on its content**, which was measured by diffing the tool's real
+output against everything an MCP client can otherwise reach:
+
+- **Removed.** The output used to carry each module's `__doc__`, and through it
+  `INTERNAL_API_SECRET`, `GENETICS_API_URL`, `BIGQUERY_API_URL`, the name `results-api`, and
+  an internal bead id. Module docstrings are now stripped from the rendered output — the
+  index carries hand-written one-line summaries instead — so those are gone.
+- **Still disclosed, and accepted rather than denied — stated as categories, deliberately.**
+  Function docstrings are the thing the catalogue exists to render, and what they leak falls
+  into four kinds: the **settings mechanism** (e.g. `_URL_SETTINGS`), **internal service and
+  component names** (e.g. `db-api`), the **execution model** — that a code-execution sandbox
+  exists at all — and **limit and quota values** (e.g. the per-execution row and byte caps).
+  The examples are illustrative, not a list. An exhaustive enumeration has been attempted
+  twice in this passage and was incomplete both times, so the categories are the claim and a
+  reader who needs the current residue should diff the tool's real output rather than trust a
+  list here. No credential **values** are exposed, and view names are separately obtainable
+  through `get_database_schema`, which is registered.
+- **Closing the residue is a separate decision, not a follow-up here.** The only way to
+  remove it is to edit the SDK's own docstrings, which changes what a sandboxed script reads
+  when it introspects the SDK and drifts the generated `sandbox/stubs/*.pyi` against their
+  source. That trade — MCP-side disclosure against in-sandbox documentation quality — is not
+  `4h6.16`'s to make silently.
+
 **A warning, not a reinforcement: `TOOL_PROFILE` provides no protection here, and the
 intuition about it is backwards.** An earlier draft offered "the `code` `TOOL_PROFILE` is a
 chat-backend profile only and is never selected by the standalone MCP server" as a second
@@ -2151,6 +2188,116 @@ hands the model a read primitive over **every conversation in the deployment**. 
 - chat-backend's `SUBAGENT_ALLOWED_PATHS` is untouched by this work and gains no new reader.
   `ENABLE_SCRIPT_EXECUTION` stays `false` (section 1), which is what makes that variable
   inert today; `read_artifact` must not be the thing that makes it live again.
+
+### As built (`4h6.15`) — the read is descriptor-based end to end, the allow-list is structural, scoping is not there yet
+
+Everything above this subsection that is not repeated here is still design. What exists is
+`ToolExecutor.read_artifact`, `ToolExecutor._open_artifacts_dir` and
+`ToolExecutor._artifacts_dir` in
+`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`, plus
+`_ARTIFACTS_DIR_PREFIX` in the same file.
+
+**Two descriptors, and every decision taken off an `fstat`.** The name is checked before the
+filesystem is touched (rejects `.`, `..`, separators, backslashes, NUL, absolute paths, and
+anything where `Path(name).name != name`), then `_validate_path` re-checks the resolved path
+against the single-entry allow-list. Both of those are advisory: both answer a question
+about a *path*, and the child uid owns the directory. The enforcing layer is a pair of
+descriptors:
+
+1. `_open_artifacts_dir()` opens the configured directory **once** with
+   `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, then verifies the **descriptor** rather than the
+   path by reading `/proc/self/fd/<dirfd>` — the kernel's own name for the inode that fd
+   holds. That name must start with the hardcoded prefix and must **not** end in the
+   kernel's `" (deleted)"` suffix. It fails closed to `None`.
+2. The artifact is then opened as a **bare name relative to that fd**,
+   `os.open(name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, dir_fd=dirfd)`. `S_ISREG`, the
+   link-count check, the size check and the chunked `os.read` loop all run against that one
+   file descriptor. After `_open_artifacts_dir` returns, nothing addresses anything by path.
+
+**The lesson is why the shape looks like this.** The first version validated a path and then
+re-opened it, and a validator won that race 825 times in 6,000 calls. The fix — open once
+with `O_NOFOLLOW` — was then re-attacked and found to be the *same* defect one level up:
+`O_NOFOLLOW` guards only the **final** component, and `artifacts` is an **intermediate**
+component the child owns. `rmdir`-ing it and relinking it at another execution's retained
+artifacts between the check and the open leaked out-of-tree content **151 times in 20,000
+iterations (0.76%)**. `_validate_path` was no help at all there: it resolves both sides
+through the same swapped link, so they agree and it passes. The real defect was never the
+missing flag — it was **addressing anything by path after checking it**, and fixing that at
+one level only relocated it to the next. Re-attacking the descriptor form gave **0 leaks in
+40,000 iterations** across two swapper profiles, and the deterministic control that
+previously returned out-of-tree content now refuses.
+
+Three properties follow from taking the answer off descriptors:
+
+- The `" (deleted)"` refusal is load-bearing, not hygiene. `rmdir` followed by re-creating a
+  directory at the same path with planted content is refused, because the fd still names the
+  deleted inode and the kernel says so.
+- `O_NONBLOCK` on the file open is a control, not tidiness. `O_RDONLY` on a FIFO with no
+  writer blocks **in the kernel**, before `S_ISREG` is ever reached, so a script doing
+  `os.mkfifo(artifacts/results.tsv)` hangs the calling coroutine — and with it chat-backend
+  — indefinitely. That is a trivial in-sandbox denial of service, and it hung a validator's
+  own harness for about four minutes before the flag was added. Such a name is now refused
+  in under a millisecond, by `S_ISREG` after the non-blocking open. The flag is inert for
+  regular files, which are all that survives that check.
+- `st_nlink != 1` refuses hardlinks. Path resolution could never have caught this one at
+  all: a hardlink has nothing to resolve, so both path-based layers see an in-tree path over
+  an out-of-tree inode and pass. Stating it here means the property does not depend on
+  `fs.protected_hardlinks` being set on the node.
+
+Failures are uniform: a resolution failure, a symlink, a hardlink, a non-regular file, a
+directory that fails descriptor verification and a missing name all return the same
+`Artifact not found`, so which names exist outside the allow-list is not learnable by
+probing. An oversized file is refused rather than truncated, and the error deliberately
+omits the byte count.
+
+**The allow-list root is checked structurally, and every check fails closed.**
+`_artifacts_dir()` returns `""` — meaning artifact reads are simply not enabled — unless the
+configured directory passes both:
+
+- **It may not itself be a symlink** (`lstat`, `S_ISLNK`). This is reachable, not operator
+  error. Section 2 chowns `/scratch/<id>` to the child uid, so the child can `rmdir` its own
+  `artifacts` and relink the name at another execution's retained artifacts; because
+  `_validate_path` resolves both sides, *every* file under that target would then validate.
+  That is precisely the cross-execution channel 6.4 exists to prevent. Note that this check,
+  like `_validate_path`, is a path answer and therefore advisory — `_open_artifacts_dir`'s
+  `O_NOFOLLOW` on the directory open is what actually holds it, at the moment of use.
+- **Its resolved path must sit under a hardcoded `/scratch/` prefix**
+  (`_ARTIFACTS_DIR_PREFIX`, patched only by tests), and `_open_artifacts_dir` re-asserts the
+  same prefix against the descriptor. The prefix is what makes the chat-backend
+  misconfiguration *unreachable* rather than merely unmade: `read_artifact` is registered in
+  the chat backend, chat-backend has no `/scratch` volume and never will, so
+  `SANDBOX_ARTIFACTS_DIR=/data` — the PVC holding `chat_history.db` and `llm_config.db` —
+  cannot resolve. Before the prefix existed, a single env var staying unset was the entire
+  safety property. `SUBAGENT_ALLOWED_PATHS` gains no reader here; `_artifacts_dir` is its
+  own variable for exactly the reason the allow-list subsection above gives.
+
+**A stated limitation: the prefix check is a *location* check, not an *ownership* one.** It
+proves the descriptor names an inode under `/scratch/`; it does not prove that inode is
+*this* execution's artifacts directory. Point `SANDBOX_ARTIFACTS_DIR` at some other
+directory that happens to sit under the prefix and its contents are readable. This is not
+reachable from a sandboxed script — it requires control of the parent process's environment
+— and it is the same gap the scoping paragraph below describes, but it is worth stating
+outright rather than leaving implicit in "the env var points at the right directory".
+
+**Cross-execution scoping is not implemented.** The tool takes a bare artifact name and
+nothing else — there is no session argument, no execution argument, and no server-side
+resolution of a name against the executions belonging to a `sid`. Which execution's
+artifacts are reachable rests **entirely** on `SANDBOX_ARTIFACTS_DIR` pointing at the right
+directory, constrained only by the structural checks above. The authorization mechanism
+specified earlier in this section, the HTTP path from chat-backend to the sandbox pod, and
+the manifest that name resolution would consult are all still design, and belong to
+`4h6.11`. Until they land, the retrievability claims 6.2 and 6.4 lean on are met by
+deployment configuration, not by code.
+
+**Deployment note — an availability concern, not a security one.** `_open_artifacts_dir`
+verifies the descriptor through `/proc/self/fd/`. If the sandbox pod ever runs with a masked
+or otherwise restricted `/proc`, the `readlink` fails, the function fails closed, and
+`read_artifact` refuses **everything** — correct behaviour, but a total loss of the feature
+rather than a leak. Confirm `/proc/self/fd` is readable in the pod once, when
+`k8s/deployments/sandbox.yaml` is written (`4h6.7`).
+
+`read_artifact`'s exclusion from the MCP tool set landed with this change; see section 5,
+layer 1.
 
 ### 6.3 Resource exhaustion starving chat-backend
 
