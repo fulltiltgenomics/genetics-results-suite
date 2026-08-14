@@ -59,13 +59,13 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT cs.dataset, d.pseudo_credible_sets, cs.trait_original,
        cs.cs_id, cs.pip, cs.cs_size
-FROM genetics_results.credible_sets_v cs JOIN genetics_results.datasets_v d USING (dataset) WHERE cs.chr = 1 AND cs.pos BETWEEN 154000000 AND 155000000 ORDER BY d.pseudo_credible_sets, cs.pip DESC
+FROM credible_sets_v cs JOIN datasets_v d USING (dataset) WHERE cs.chr = 1 AND cs.pos BETWEEN 154000000 AND 155000000 ORDER BY d.pseudo_credible_sets, cs.pip DESC
 ```
 
 ### Find the eQTL Catalogue sub-studies for a tissue, then query them
 
 ```sql
-SELECT cs.dataset, d.description, cs.trait, cs.pos, cs.ref, cs.alt, cs.pip FROM genetics_results.datasets_v d JOIN genetics_results.credible_sets_v cs USING (dataset) WHERE d.subdataset_of = 'eqtl_catalogue'
+SELECT cs.dataset, d.description, cs.trait, cs.pos, cs.ref, cs.alt, cs.pip FROM datasets_v d JOIN credible_sets_v cs USING (dataset) WHERE d.subdataset_of = 'eqtl_catalogue'
   AND LOWER(d.description) LIKE '%macrophage%'
   AND cs.trait = 'IL7R'
 ORDER BY cs.pip DESC
@@ -74,11 +74,11 @@ ORDER BY cs.pip DESC
 ### What queryable datasets exist for a resource, newest first
 
 ```sql
-SELECT dataset, version, data_type, n_samples, publication_date, description FROM genetics_results.datasets_v WHERE resource = 'finngen' AND dataset IS NOT NULL ORDER BY publication_date DESC
+SELECT dataset, version, data_type, n_samples, publication_date, description FROM datasets_v WHERE resource = 'finngen' AND dataset IS NOT NULL ORDER BY publication_date DESC
 ```
 
 ### Resolve a free-text resource mention through the alias list
 
 ```sql
-SELECT DISTINCT resource, resource_label FROM genetics_results.datasets_v, UNNEST(resource_aliases) AS alias WHERE LOWER(alias) LIKE '%uk biobank%'
+SELECT DISTINCT resource, resource_label FROM datasets_v, UNNEST(resource_aliases) AS alias WHERE LOWER(alias) LIKE '%uk biobank%'
 ```

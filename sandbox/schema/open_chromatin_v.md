@@ -55,12 +55,12 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ### Cell types/tissues where a genomic position is open chromatin
 
 ```sql
-SELECT DISTINCT resource, tissue, cell_type, condition FROM genetics_results.open_chromatin_v WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
+SELECT DISTINCT resource, tissue, cell_type, condition FROM open_chromatin_v WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
 ```
 
 ### Check whether a variant's position is accessible in brain
 
 ```sql
-SELECT resource, cell_type, condition, assay, score FROM genetics_results.open_chromatin_v WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
+SELECT resource, cell_type, condition, assay, score FROM open_chromatin_v WHERE chr = 1 AND peak_start <= 55039974 AND peak_end >= 55039974
   AND tissue = 'brain'
 ```

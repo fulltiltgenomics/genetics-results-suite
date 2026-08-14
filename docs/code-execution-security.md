@@ -729,6 +729,17 @@ fails the build on any `PLACEHOLDER*` file, so the coupling stays. `/genetics/sd
 package in `/opt/venv`, and two copies of those names on `sys.path` would shadow silently;
 the generated stubs say so in their own header.
 
+**Neither tree names the BigQuery dataset any more (`bee`).** The worked example SQL and
+the `sql()` docstring used to be written `FROM genetics_results.<view>`, so both shipped
+directories carried the production dataset name into the image. They now name views bare
+(`FROM <view>`) because db-api rewrites a bare name in a table position to its own
+`DATASET_ID` before `authorize_query` sees it. The security consequence is small but real
+and runs one way only: the image no longer discloses which dataset backs the views, while
+the allow-list check is unchanged — it still compares fully-qualified ids, after the
+rewrite, so a script that qualifies a table itself is still refused. View *names* remain
+disclosed, as they always were, and are separately obtainable through
+`get_database_schema`.
+
 Both trees are *generated, never transcribed*. The schema markdown is rendered from this
 repo's canonical `configs/datasets.yaml` — one file per entry under `tables:`, carrying its
 description, columns, enumerable columns and worked example SQL — and the stubs are read

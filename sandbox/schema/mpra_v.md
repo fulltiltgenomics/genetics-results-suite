@@ -55,13 +55,13 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ### MPRA calls for a variant across all cell lines (and the meta summary)
 
 ```sql
-SELECT cell_line, emVar, active, log2Skew, log2Skew_mlog10p, log2FC, log2FC_mlog10p FROM genetics_results.mpra_v WHERE variant = '1:55054110:G:A' ORDER BY cell_line
+SELECT cell_line, emVar, active, log2Skew, log2Skew_mlog10p, log2FC, log2FC_mlog10p FROM mpra_v WHERE variant = '1:55054110:G:A' ORDER BY cell_line
 ```
 
 ### emVars in a region using the cross-cell-line meta summary
 
 ```sql
-SELECT variant, log2Skew, log2Skew_mlog10p, log2FC FROM genetics_results.mpra_v WHERE chr = 1 AND pos BETWEEN 55039974 AND 55539974
+SELECT variant, log2Skew, log2Skew_mlog10p, log2FC FROM mpra_v WHERE chr = 1 AND pos BETWEEN 55039974 AND 55539974
   AND cell_line = 'meta' AND emVar
 ORDER BY log2Skew_mlog10p DESC
 ```
@@ -69,5 +69,5 @@ ORDER BY log2Skew_mlog10p DESC
 ### Per-cell-line reporter RNA levels for a variant (meta rows have mean_RNA NULL)
 
 ```sql
-SELECT cell_line, mean_RNA_ref, mean_RNA_alt, log2Skew, active FROM genetics_results.mpra_v WHERE variant = '1:55054110:G:A' AND cell_line != 'meta' ORDER BY cell_line
+SELECT cell_line, mean_RNA_ref, mean_RNA_alt, log2Skew, active FROM mpra_v WHERE variant = '1:55054110:G:A' AND cell_line != 'meta' ORDER BY cell_line
 ```

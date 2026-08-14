@@ -135,8 +135,9 @@ def hla(
     suite uses.
 
     Rank on `mlog10p` — `pval` underflows to a literal 0 for the strongest signals
-    (coeliac DQB1*02:01 is mlog10p 1596). Only the `allele=` shape carries its column
-    names through an empty result; results-api returns a bare `[]` with no schema.
+    (coeliac DQB1*02:01 is mlog10p 1596). Both shapes carry their column names through
+    an empty result, so filtering a no-hit phenotype gives an empty frame rather than
+    ColumnNotFoundError.
     """
     ...
 
@@ -345,9 +346,11 @@ def sql(query: str, *, max_rows: int = 100000) -> pl.DataFrame:
     """Run read-only SQL against the genetics BigQuery views.
 
     The db-api rejects anything that is not a plain SELECT over the exposed views, so
-    this is the escape hatch for joins the typed functions above do not cover. Qualify
-    every table as `genetics_results.<view>`; the schema docs' examples are written that
-    way.
+    this is the escape hatch for joins the typed functions above do not cover. Name every
+    table by its bare view name (`FROM credible_sets_v`) — do NOT prefix it with a
+    project or dataset, and do not wrap it in backticks. db-api resolves each name
+    against the dataset it was configured with, so the same script runs unchanged
+    against dev and production data. The schema docs' examples are written that way.
 
     Like the `limit=` functions, a truncated result RAISES rather than returning a
     prefix — a short frame with no signal would make every downstream count and join

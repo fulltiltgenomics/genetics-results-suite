@@ -54,7 +54,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT resource, dataset, trait, trait_original, annotation,
        mlog10p_burden, beta, se, n_cases, n_controls, total_variants
-FROM genetics_results.gene_burden_results_v
+FROM gene_burden_results_v
 WHERE gene = 'TLN1'
 ORDER BY mlog10p_burden DESC
 ```
@@ -64,7 +64,7 @@ ORDER BY mlog10p_burden DESC
 ```sql
 SELECT gene, annotation, trait, mlog10p_burden, beta, se,
        n_cases, n_controls, total_variants
-FROM genetics_results.gene_burden_results_v
+FROM gene_burden_results_v
 WHERE resource = 'genebass' AND annotation = 'pLoF'
   AND LOWER(trait) LIKE '%crohn%'
 ORDER BY mlog10p_burden DESC
@@ -74,7 +74,7 @@ ORDER BY mlog10p_burden DESC
 
 ```sql
 SELECT gene, annotation, trait, mlog10p_burden, beta, n_cases, n_controls
-FROM genetics_results.gene_burden_results_v
+FROM gene_burden_results_v
 WHERE resource = 'bipex2' AND mlog10p_burden > 3
 ORDER BY mlog10p_burden DESC LIMIT 20
 ```
@@ -83,7 +83,7 @@ ORDER BY mlog10p_burden DESC LIMIT 20
 
 ```sql
 SELECT trait_original, annotation, mlog10p_burden, beta, se, total_variants
-FROM genetics_results.gene_burden_results_v
+FROM gene_burden_results_v
 WHERE gene = 'PCSK9'
   AND trait_original IN ('continuous_30780_both_sexes__irnt', 'icd10_E78_both_sexes__')
 ORDER BY mlog10p_burden DESC

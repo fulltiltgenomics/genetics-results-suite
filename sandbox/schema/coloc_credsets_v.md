@@ -76,7 +76,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 WITH top_coloc AS (
   SELECT dataset1, cs1_id, trait1_original, cell_type1,
          dataset2, cs2_id, trait2_original, cell_type2
-  FROM genetics_results.colocalization_v
+  FROM colocalization_v
   WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
     AND data_type2 = 'eQTL' AND PP_H4_abf > 0.9
   ORDER BY PP_H4_abf DESC, dataset2, trait2_original, cs2_id LIMIT 1
@@ -84,7 +84,7 @@ WITH top_coloc AS (
 SELECT DISTINCT cc.dataset, cc.data_type, cc.trait, cc.trait_original, cc.cell_type,
        cc.variant, cc.pip, cc.mlog10p, cc.beta
 FROM top_coloc t
-JOIN genetics_results.coloc_credsets_v cc
+JOIN coloc_credsets_v cc
   ON (cc.cs_id = t.cs1_id AND cc.dataset = t.dataset1
       AND cc.trait_original = t.trait1_original
       AND cc.cell_type IS NOT DISTINCT FROM t.cell_type1)
@@ -100,7 +100,7 @@ ORDER BY cc.data_type, cc.pip DESC
 WITH pair AS (
   SELECT dataset1, cs1_id, trait1_original, cell_type1,
          dataset2, cs2_id, trait2_original, cell_type2
-  FROM genetics_results.colocalization_v
+  FROM colocalization_v
   WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
     AND data_type2 = 'eQTL' AND PP_H4_abf > 0.9 AND cs_overlap > 0
   ORDER BY PP_H4_abf DESC, dataset2, trait2_original, cs2_id LIMIT 1
@@ -108,11 +108,11 @@ WITH pair AS (
 SELECT DISTINCT a.variant, a.pip AS gwas_pip, b.pip AS qtl_pip,
        a.beta AS gwas_beta, b.beta AS qtl_beta
 FROM pair p
-JOIN genetics_results.coloc_credsets_v a
+JOIN coloc_credsets_v a
   ON a.cs_id = p.cs1_id AND a.dataset = p.dataset1
  AND a.trait_original = p.trait1_original
  AND a.cell_type IS NOT DISTINCT FROM p.cell_type1
-JOIN genetics_results.coloc_credsets_v b
+JOIN coloc_credsets_v b
   ON b.cs_id = p.cs2_id AND b.dataset = p.dataset2
  AND b.trait_original = p.trait2_original
  AND b.cell_type IS NOT DISTINCT FROM p.cell_type2
