@@ -127,7 +127,7 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 15-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 15 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
 | CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
-| pids | `pod_pids_limit: 256` in the sandbox node pool's `kubelet_config`, plus a child pid budget **meaningfully below** 256 | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold well under 256, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). |
+| pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). |
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
 | Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
@@ -211,7 +211,7 @@ first place does that, which is why the supervisor has to hold the budget.
 **Decision: yes, and this settles the node-pool question rather than complicating it.**
 
 The argument against is real: GKE Sandbox cannot be enabled on an existing pool's workloads
-selectively — it requires a pool created with `sandbox_config { sandbox_type = "gvisor" }`,
+selectively — it requires a pool created with `sandbox_config { type = "gvisor" }`,
 which is a *dedicated* pool, and gVisor's syscall interception costs measurably on the
 `mmap`/`futex`-heavy paths that numpy and polars live on.
 
@@ -223,20 +223,61 @@ arbitrary code execution — precisely our situation — reaches the node. gViso
 control in the catalogue that addresses that, and the population of people who can trigger
 script authoring includes anyone who can get a string into the model's context.
 
-The cost argument inverts on inspection. `docs/project-spec.md` ("Node pool sizing")
-records that the pinned 2 × `e2-standard-4` pool *already* overshoots one node on both axes
-during a full deploy (3951m vs 3920m allocatable CPU, 13.60 vs 12.97 GiB), and warns
-explicitly that "raising any deployment's requests, or adding a service, can re-break
-this". Putting the sandbox on the existing pool re-breaks it. Putting it on its own pool
-leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 0 GiB to it.
+**The cost argument does *not* invert, and an earlier version of this paragraph claimed it
+did.** It asserted that the primary pool was pinned at 2 × `e2-standard-4` and already
+overshot one node on both axes (3951m / 13.60 GiB), so a separate pool was nearly free.
+`genetics-results-suite-262` established that the pinning was never applied to any live
+profile — the primary pool autoscales 1-3 and runs **one** node — and re-derived the
+arithmetic: under the live **finngen** profile a full deploy peaks at 3226m / 12498 Mi
+against 3920m / 13273 Mi allocatable, i.e. it **fits**, with 775 Mi to spare. See `docs/project-spec.md`
+("Node pool sizing") for the current table. So the honest accounting is: putting the sandbox
+on the existing pool would push finngen over and force a second node; putting it on its own
+pool leaves the primary surge budget **untouched** (the sandbox contributes 0m and 0 GiB) at
+the cost of **one permanently-running `e2-standard-2`**. gVisor was chosen anyway, on the
+isolation grounds above and not on cost.
 
 **Specification for `4h6.10`:**
 
-- New `google_container_node_pool` `sandbox-pool`, `min_node_count == max_node_count == 1`
-  (the pinning rationale from the main pool applies identically: an autoscaler with room to
-  move evicts pods, and here it would kill in-flight scripts).
-- `machine_type = "e2-standard-2"`, `sandbox_config { sandbox_type = "gvisor" }`,
-  `kubelet_config { pod_pids_limit = 256 }`.
+**Implemented** as `google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`
+(`4h6.10`), behind `var.sandbox_pool_enabled` (**default `false`** — `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy, so an ungated pool would be created by a
+routine deploy nobody opted into).
+
+Two corrections against the spec as originally drafted below, and they are **not** of equal
+standing — do not read them as a pair:
+
+- **Tool-verified.** The provider argument is `sandbox_config { type = ... }`, not
+  `sandbox_type`; `terraform validate` rejects the latter outright. (One thing even this does
+  not settle: the GKE REST enum is `GVISOR` and the provider does no normalization — there is no
+  lowercase `gvisor` string in the binary — so whether the API accepts `"gvisor"` is
+  **unverified** and is a 30-second check at the first real apply. If rejected, the value becomes
+  `"GVISOR"` here and in `docs/project-spec.md` too.)
+- **Not verified by anything.** `pod_pids_limit` was raised from 256 to **1024** on the strength
+  of GKE's *documented* minimum. `terraform validate` did **not** find this and does not confirm
+  it: the provider schema is a bare optional number with no range check, so it passes on 256 as
+  readily as on 1024. `terraform/gke.tf` and `docs/project-spec.md` both mark it **UNCONFIRMED**
+  against this cluster (`genetics-results-suite-5r2`); this copy says the same. Only a real pool
+  creation settles it.
+
+- New `google_container_node_pool` `<cluster>-sandbox-pool`,
+  `min_node_count == max_node_count == 1`. The pinning rationale here is *not* inherited from
+  the main pool (which autoscales 1-3 — see `genetics-results-suite-262`): it is that a
+  scale-down would kill an in-flight script, with no second replica.
+- `machine_type = "e2-standard-2"`, `sandbox_config { type = "gvisor" }`,
+  `kubelet_config { pod_pids_limit = 1024 }`. Sizing on an `e2-standard-2`: CPU allocatable is
+  1930m; **memory allocatable is not derivable offline** — the capacity-minus-reservations method
+  gives 6249 Mi but provably overstates (the same method gives 13622 Mi for the measured
+  `e2-standard-4`, whose real allocatable is 13273 Mi), so 6249 Mi is an **upper bound**, not a
+  value. The overhead the pod actually shares the node with is **not** the primary node's
+  876m / 1.33 GiB: ~487m / ~555 Mi of that is singletons (kube-dns, metrics-server, konnectivity,
+  the autoscalers) that do not tolerate `sandbox.gke.io/runtime=gvisor:NoSchedule` and cannot
+  land here. What can is the DaemonSet set, measured at ~383m / ~769 Mi, plus `gke-metadata-server`
+  (undeterminable offline — WI is off on this cluster, so the DaemonSet does not exist) and the
+  GKE Sandbox components (of which `runsc-metric-server` is measurable, dormant at 3m / 12 Mi).
+  An earlier draft claimed the pod's 1500m ceiling was unsatisfiable alongside the system pods
+  (876m + 1500m = 2376m > 1930m); on the correct base, 383m + 1500m = 1883m < 1930m, so **that
+  conclusion is not established** — and the undetermined rows mean the reverse is not established
+  either. Full table in `docs/project-spec.md`, "The sandbox pool".
   **UNVERIFIED, and `4h6.10` must settle it before relying on either number.** Two open
   questions that cannot be answered from this checkout or read-only from the live project —
   as of 2026-08-13 the `finngenie` cluster (`europe-west1-b`) has exactly one node pool,
@@ -267,6 +308,19 @@ leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 
   `GCE_METADATA` mode, because in that mode the identity handed out is the node's and is
   not derived from the KSA at all — "the sandbox KSA has no WI binding" stops being a
   statement about anything.
+
+  **But `GKE_METADATA` is necessary, not sufficient, and `4h6.10` establishes only half of
+  the control.** It does not deny credentials; it swaps *node* identity for *KSA* identity.
+  The other half — the sandbox KSA having **no** Workload Identity binding — is established by
+  nothing in the terraform change, and the repo's house style is the failure mode: all 8
+  deployments in `k8s/deployments/*.yaml` set `serviceAccountName: genetics-suite`, and
+  `terraform/iam.tf` binds exactly that KSA to a GSA holding `bigquery.dataViewer`,
+  `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. **Whoever writes
+  `k8s/deployments/sandbox.yaml` must give it a dedicated KSA with no
+  `iam.gke.io/gcp-service-account` annotation and no `google_service_account_iam_member`
+  binding — explicitly not `genetics-suite`, and not the namespace `default` either.** Copy
+  the house style and `GKE_METADATA` buys nothing at all. The same warning is repeated in
+  `terraform/gke.tf`'s pool comment, where a reviewer of the pool will see it.
 - **`GKE_METADATA` requires cluster-level Workload Identity, so the cluster resource must
   change too — this is not optional and it is not a detail.**
   `workload_metadata_config { mode = "GKE_METADATA" }` is rejected by the GKE API unless
@@ -291,11 +345,26 @@ leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 
   never reach), and not the Compute Engine default. A new GSA carrying only what a node
   needs — `roles/logging.logWriter`, `roles/monitoring.metricWriter`,
   `roles/monitoring.viewer`, `roles/stackdriver.resourceMetadata.writer`,
-  `roles/artifactregistry.reader` — and nothing else. When `manage_iam = false` terraform
-  cannot create it, so `node_service_account` becomes a **required input** in that mode:
-  validated non-empty and failing the plan if absent, **never** falling back to `null` the
-  way the primary pool's does. `null` there means the Compute Engine default SA, which in
-  most projects carries `roles/editor`.
+  `roles/artifactregistry.reader` — and nothing else. Terraform cannot create it (and under
+  `manage_iam = false` is not allowed to), so `var.sandbox_node_service_account` is a
+  **required input whenever `sandbox_pool_enabled = true`**, in every mode, and **never** falls
+  back to `null` the way the primary pool's does. `null` there means the Compute Engine default
+  SA, which in most projects carries `roles/editor`.
+
+  **As shipped, be precise about what "validated" means: it is a format and identity check, not
+  a privilege check.** Three `lifecycle { precondition }` blocks on the pool resource (not
+  variable validations — so they fire only when the pool is actually being created, and the
+  escape hatch is "don't create the pool", never "create it with a weaker SA"): the email must
+  match `<name>@<project_id>.iam.gserviceaccount.com` in *this* project, case-folded; it must
+  not be `genetics-suite`; and it must not equal `var.node_service_account`. That third check is
+  the one that matters most and was missing from earlier drafts — under the live
+  `manage_iam = false` mode the primary pool grants `oauth_scopes = ["cloud-platform"]`, so
+  reusing its SA would put the suite's **entire credential** on the node running untrusted code.
+  **Terraform neither creates the SA nor reads back the roles bound to it.** The `gcloud` recipe
+  in `README.md` is the only thing bounding them, and nothing checks that the operator did not
+  grant more — so an over-privileged SA passes every check here. The variable keeps
+  `default = ""` only because omitting a default makes terraform prompt interactively; `""`
+  fails the first precondition.
 - **Explicit `oauth_scopes`**, not the provider default, and **the rationale is narrower
   than it looks.** An earlier draft called node scopes "the second bound on any token the
   metadata server would mint". In `GKE_METADATA` mode that is **false**: tokens handed to
@@ -1959,7 +2028,8 @@ not code execution.
 
 **Controls, in order of effect:** no internet egress, so there is no pool to join and no
 payload to download — a miner needs both. CPU `limits: 1500m`. Wall clock 60s default /
-120s hard, not model-overridable. `pod_pids_limit: 256`. Concurrency 1 with a queue, so a
+120s hard, not model-overridable. `pod_pids_limit: 1024`, with the supervisor's own child pid
+budget far below it. Concurrency 1 with a queue, so a
 loop of submissions serializes rather than multiplying. Nothing executable persists:
 `/scratch/<id>` is deleted on completion except for the artifacts subdirectory, which is
 inert data on a 15-minute reaper (see the `read_artifact` subsection); the root filesystem
@@ -2089,11 +2159,16 @@ pool.** The sandbox is the only pod tolerating `sandbox.gke.io/runtime=gvisor:No
 and chat-backend cannot schedule there. A script cannot contend for chat-backend's CPU,
 memory, page cache or pids, because it is not on the same machine.
 
-This also protects the constraint `docs/project-spec.md` documents at length: the pinned
-2 × `e2-standard-4` pool already overshoots one node during a full deploy (3951m / 13.60
-GiB against 3920m / 12.97 GiB allocatable), and the spec warns that adding a service
-re-breaks it. The sandbox adds nothing to that budget. `4h6.10` therefore re-derives
-nothing for the primary pool; it adds a pool.
+This also protects the constraint `docs/project-spec.md` documents at length. The figures
+this paragraph used to quote (a pinned 2 × `e2-standard-4` pool overshooting one node at
+3951m / 13.60 GiB) were **wrong on both the pinning and the arithmetic** — see
+`genetics-results-suite-262`. Re-derived: the primary pool autoscales 1-3, and a full deploy
+peaks at 3226m / 12498 Mi (finngen) or 3826m / 13778 Mi (daly, as deployed by default) against
+3920m / 13273 Mi allocatable — so daly is over by 505 Mi and already needs a second node on
+memory (daly with `ENABLE_RAG=true` is over on both axes at 4076m / 14290 Mi), while finngen
+fits with 775 Mi of margin.
+The sandbox adds nothing to that budget either way, which is why `4h6.10` adds a pool rather
+than re-sizing the primary one.
 
 Secondary controls, in case the sandbox is ever moved onto the shared pool: `requests`
 equal to steady-state need, `limits` bounded well under one node, replicas 1.
@@ -2239,8 +2314,13 @@ abstract.
    removed from the cluster without a restart leaves a running db-api in whatever state it
    booted with. Neither is introduced by this design; both are now stated rather than
    claimed closed.
-6. **No PodDisruptionBudget in the namespace.** Node auto-upgrade or repair kills an
+6. **No PodDisruptionBudget for the sandbox.** Node auto-upgrade or repair kills an
    in-flight script. The model sees an error and retries, costing a roundtrip. Acceptable.
+   (The namespace is no longer PDB-free — `k8s/disruption-budgets/budgets.yaml` covers
+   chat-backend and results-api at `maxUnavailable: 1` since `genetics-results-suite-262`.
+   Those are protectively inert at `replicas: 1` and cover neither the sandbox nor its pool.
+   A *blocking* budget on the sandbox would be actively harmful: its pool is pinned at one
+   node, so an unsatisfiable budget would stall every upgrade and repair of that node.)
 7. **The pre-warmed interpreter.** The supervisor process forks per execution to avoid
    paying pod-schedule cost per script. The supervisor holds **no** credentials — tokens
    are passed to the forked child only. The residual is that a bug in the fork boundary
