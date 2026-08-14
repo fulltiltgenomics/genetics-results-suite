@@ -122,19 +122,99 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
-| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fourteen workloads use `serviceAccountName: genetics-suite` (the rest name no KSA and fall to the namespace `default`), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
+| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
 | Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
 | Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 15-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 15 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
 | CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
-| pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). |
+| pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). **DECIDED: (b)** — `4h6.7` picked the shared uid, because (a) needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` that this pod drops; see "The uid choice" below for the reasoning and the two costs, and do not read "(a) is preferred" here as the state of the code. |
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
 | Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
 | Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. In exchange it removes cross-user co-tenancy *inside* the pod entirely: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. |
 | Replicas | 1 | Peak 23 turns/hour, p95 8, mean 3. Do not build for concurrency that does not exist. |
 
-### Permission contract for the second-uid option
+### What the manifest adds beyond this table
+
+`k8s/deployments/sandbox.yaml` (`genetics-results-suite-4h6.7`) implements every row above.
+Five things it declares are **not** in the table, four of them controls this document did not
+specify; the per-field rationale lives in `docs/project-spec.md` → "The sandbox Deployment"
+and is not duplicated here.
+
+- **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST` /
+  `_PORT` variables for every Service in the namespace into the pod's environment — the whole
+  internal inventory and its ClusterIPs, handed to untrusted code for free. Nothing in the
+  egress allow-list becomes reachable through them, but the disclosure is gratuitous.
+- **`dnsPolicy: None` with a `127.0.0.1` nameserver and `ndots:1 timeout:1 attempts:1`.** "On
+  DNS" below argues the resolver must not be a sink and that a *stall* is the failure shape to
+  avoid; leaving `dnsPolicy` at the default `ClusterFirst` writes kube-dns into
+  `/etc/resolv.conf` and gets exactly that stall against an egress policy that drops 53/UDP.
+  Pointing the resolver at loopback turns the stall into an immediate `ECONNREFUSED`. It is a
+  second line, not a replacement: `/etc/nsswitch.conf` ordering and `hostAliases` still do the
+  work, and the egress policy is still what denies the network.
+- **`strategy: Recreate` and no `livenessProbe`.** Both are availability decisions with a
+  security edge. A rolling update would put a second sandbox pod on a pool pinned at one node
+  and break "one execution at a time" from per-pod to per-cluster; a liveness probe racing a
+  legitimate 120s execution restarts the pod and kills the script, which the supervisor's own
+  wall clock already handles.
+- **No `command` / `args`.** The image ships no `CMD` on purpose and the supervisor (`4h6.14`)
+  does not exist yet, so an applied pod would start `python3` with no script and
+  CrashLoopBackOff — it *schedules*, so this is not the Pending case. `scripts/deploy.sh`
+  therefore refuses to apply the file at all while it declares neither field, naming `4h6.14`;
+  the refusal is keyed on the manifest and clears itself when `4h6.14` adds `args:`.
+- **The apply is gated on the node pool.** `scripts/deploy.sh` skips the file unless
+  `ENABLE_SANDBOX=true`, derived from `sandbox_pool_enabled` in `terraform.tfvars` rather than
+  being a second switch, and refuses the apply outright if no node carries `workload=sandbox`
+  — the pod tolerates a taint only the gVisor pool has, so applying it without the pool leaves
+  a permanently Pending pod behind a `kubectl apply` that returned 0. Both refusals live in a
+  **preflight that runs before the first apply of the deploy**, not in the manifest loop where
+  `sandbox.yaml` sorts second-to-last and an `exit 1` would leave every other manifest applied
+  and every rollout unrolled.
+- **`SANDBOX_ENABLED` on db-api and results-api** stays `"false"` until the separate,
+  deliberate enablement step, and `scripts/test-network-policies.py` reports that pairing as a
+  note instead of a failure **only when it has confirmed against the cluster that no sandbox
+  Deployment is live**. `ENABLE_SANDBOX` alone does not license the relaxation: it means "this
+  run will not apply it", and deploy.sh *skips* the manifest rather than deleting it, so a
+  later gate-off deploy can run against a sandbox that is still serving. A live sandbox with
+  the gate off is a hard failure there; an undeterminable cluster fails closed.
+
+### The uid choice: option (b), one shared uid — DECIDED (`4h6.7`)
+
+The pids row above obliges `4h6.7`/`4h6.14` to pick (a) or (b) explicitly. **The choice is (b):
+the supervisor and the child both run as uid 65532**, which is what `k8s/deployments/sandbox.yaml`
+now declares (`runAsUser: 65532`, `runAsGroup: 65532`, `fsGroup: 65532`, and no second uid
+anywhere).
+
+**It is forced, not preferred.** Option (a) needs three things the pod's own hardening
+forecloses: `setuid` to a second uid before the fork, a `chown` of `/scratch/<id>` to that uid,
+and a `chown` of the token file to it at mode `0400`. With `capabilities.drop: ["ALL"]` and
+`allowPrivilegeEscalation: false` the container holds no `CAP_SETUID`, `CAP_SETGID` or
+`CAP_CHOWN` — measured in this pod's shape, `setuid(65533)` and `chown(65533)` both return
+`EPERM`. Taking (a) would mean adding those three capabilities back to the one workload in the
+cluster that executes attacker-influenceable code by design, which contradicts the baseline this
+ticket exists to establish. That trade is not worth `RLIMIT_NPROC`, and it must not be made
+silently by a later ticket that reads only the "(a) is preferred" line above.
+
+**What it costs, stated plainly, because `4h6.14` inherits both:**
+
+- **`RLIMIT_NPROC` is not a per-execution control.** It is a limit per *real uid* across the pid
+  namespace, so a child forking to its limit also stops the supervisor forking. `4h6.14` must
+  enforce the pid budget from the supervisor — watch the child's process group and kill above a
+  threshold sized from what a legitimate script needs (tens of processes) — and treat
+  `RLIMIT_NPROC` as advisory only. The kubelet's `pod_pids_limit: 1024` remains the outer
+  backstop and is not a substitute.
+- **The token file is within the child's same-uid reach.** `/proc/<pid>/environ` is readable by
+  any process with the same uid, and mode `0600` on a supervisor-owned file does not exclude a
+  same-uid child or any helper it spawns (see the token-delivery numbered list in section 4).
+  The mitigation is lifetime, not permissions: the SDK reads the file once and unlinks it, so the
+  window is the interval before its first call, and `/scratch/<id>` is wiped regardless.
+
+**`4h6.14` must not assume it can drop privileges.** There is no uid to drop to and no capability
+to do it with; a supervisor written against option (a) will fail at runtime with `EPERM`, not at
+review. The section below is retained for the case where that trade is ever revisited *together
+with* the capability grant it requires — it does not describe what is implemented today.
+
+### Permission contract for the second-uid option (NOT IN EFFECT — see the decision above)
 
 Option (a) of the pids row — a distinct child uid — is preferred, and it silently breaks two
 things unless the ownership rules are stated. Both have an obvious wrong fix that an
@@ -630,7 +710,9 @@ and `build-checks.py` fails the build if it is removed while polars ships),
 `PYTHONUNBUFFERED`, `PYTHONFAULTHANDLER`, `MPLBACKEND=Agg`, `GENETICS_MPLCACHE`,
 `GENETICS_SCHEMA_DIR`, `GENETICS_STUBS_DIR`, `GENETICS_PREWARM`, and
 `SANDBOX_SUPERVISOR_UID` / `SANDBOX_CHILD_UID` / `SANDBOX_SHARED_GID` (65532 / 65533 /
-65532) so `4h6.7` and `4h6.14` read the uids rather than restating them. `TMPDIR`, `HOME`,
+65532) so `4h6.7` and `4h6.14` read the uids rather than restating them — but the uid choice is
+now settled as option (b), one shared uid 65532 ("The uid choice", section 2), so
+`SANDBOX_CHILD_UID` names a uid nothing can switch to and `4h6.14` must not fork against it. `TMPDIR`, `HOME`,
 `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately **not** set:
 they are per-execution and belong under `/scratch/<execution-id>`, and a fixed value in the
 image would recreate exactly the shared cross-execution directory that removing the
@@ -986,7 +1068,9 @@ entire lifetime property. The mechanism is:
    unreadable by the child**, which is the process that needs it: the supervisor writes it
    and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the
    matching rule for artifacts written by the child and read by the supervisor, are in
-   section 2's "Permission contract"; option (a) is not implementable without both.
+   section 2's "Permission contract"; option (a) is not implementable without both. **Option
+   (b) is the one in effect** ("The uid choice", section 2), so this is the shared-uid case:
+   mode 0600 does not exclude the child, and read-once-and-unlink is the whole mitigation.
 4. Nothing about the tokens is written to the pod spec, to a ConfigMap, or to a Secret.
 
 **Claims (all required, all validated):**
@@ -1052,7 +1136,8 @@ because the sandbox is the one caller whose input is attacker-influenced. Concre
    similarly named `genetics_api_logs.genetics_results_api` is a developer VM's test output).
    **Caveat: those three fields are not queryable in BigQuery today.** That table's
    `jsonPayload` schema has no `sid`, `sub` or `jti` column, because no sandbox-authorized
-   request has ever reached the sink to grow it — there is no sandbox Deployment and
+   request has ever reached the sink to grow it — no sandbox Deployment is applied (the manifest
+   exists since `4h6.7`, gated off) and
    `SANDBOX_ENABLED` is `"false"` on both services. Until one lands, sandbox attribution is
    readable in Cloud Logging and container stdout only, and any claim here about attributing an
    execution must be checked against the schema rather than assumed.
@@ -1415,7 +1500,8 @@ section implies.**
    above honest use precisely so an honest execution never meets them, and both fail toward
    refusing new work rather than corrupting a running execution's accounting.
 
-Production impact today is nil for the counters themselves: no sandbox Deployment exists and
+Production impact today is nil for the counters themselves: no sandbox Deployment is applied (the
+manifest exists since `4h6.7`, gated off) and
 `SANDBOX_ENABLED` is `"false"` on both services, so nothing but `tests/test_sandbox_budget.py`
 (30 tests, offline lane) will report a regression in any of this. **The anonymous surface is the
 exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
@@ -1998,7 +2084,8 @@ with an **offline** guard in `scripts/test-network-policies.py`. Because Network
 additive, "mcp-server cannot reach the sandbox" is a property of every file in
 `k8s/network-policies/` at once, so the guard parses them all and asserts that no rule
 selecting `app: sandbox` admits `app: mcp-server` — including via a from-less rule, which
-admits everything. It runs with no cluster and no network, which is the only kind of test
+admits everything. That guard runs with no cluster and no network — the harness's single cluster
+call is elsewhere, in the `SANDBOX_ENABLED` check's live-sandbox probe — which is the only kind of test
 available before `4h6.7` and `4h6.10` deploy anything. **The live connection test from the
 mcp-server pod to the sandbox Service is deferred to the deploy window** and tracked as
 `genetics-results-suite-4h6.26` with the other post-deploy verifications; it has not been run.
@@ -2201,7 +2288,9 @@ Everything above this subsection that is not repeated here is still design. What
 filesystem is touched (rejects `.`, `..`, separators, backslashes, NUL, absolute paths, and
 anything where `Path(name).name != name`), then `_validate_path` re-checks the resolved path
 against the single-entry allow-list. Both of those are advisory: both answer a question
-about a *path*, and the child uid owns the directory. The enforcing layer is a pair of
+about a *path*, and the executing code owns the directory — under the decided option (b) it
+runs as the pod's single uid 65532, the very uid that created `/scratch/<id>`, so it owns that
+directory *a fortiori*, without any chown being needed. The enforcing layer is a pair of
 descriptors:
 
 1. `_open_artifacts_dir()` opens the configured directory **once** with
@@ -2255,7 +2344,9 @@ omits the byte count.
 configured directory passes both:
 
 - **It may not itself be a symlink** (`lstat`, `S_ISLNK`). This is reachable, not operator
-  error. Section 2 chowns `/scratch/<id>` to the child uid, so the child can `rmdir` its own
+  error. `/scratch/<id>` is created and written by uid 65532, and under the decided option (b)
+  the child runs as that same uid — it owns the directory outright rather than by a chown, so
+  the swap is at least as reachable as it would be under (a). The child can `rmdir` its own
   `artifacts` and relink the name at another execution's retained artifacts; because
   `_validate_path` resolves both sides, *every* file under that target would then validate.
   That is precisely the cross-execution channel 6.4 exists to prevent. Note that this check,

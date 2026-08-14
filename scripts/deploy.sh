@@ -33,6 +33,29 @@ if [ -f terraform.tfvars ]; then
   # would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
   TFVARS_PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' terraform.tfvars | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
 fi
+
+# The code-execution sandbox is gated on the node pool that hosts it, DERIVED rather than a
+# separate switch: k8s/deployments/sandbox.yaml tolerates a taint only the gVisor pool carries,
+# and that pool exists only when sandbox_pool_enabled = true (terraform/gke.tf, default false).
+# Two independent switches would let a deploy apply the manifest with no pool, which is a pod
+# Pending forever — not a visible failure, since kubectl apply succeeds and the rollout restart
+# below does not wait on this Deployment.
+# An explicit ENABLE_SANDBOX in the environment still wins, for SKIP_TERRAFORM=true re-applies
+# where this file cannot see the state terraform holds; the live gVisor-node check in the sandbox
+# preflight (right after kubectl is configured) is what catches an override that is simply wrong.
+TFVARS_SANDBOX_POOL="false"
+if [ -f terraform.tfvars ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' terraform.tfvars; then
+  TFVARS_SANDBOX_POOL="true"
+fi
+ENABLE_SANDBOX="${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}"
+# exported because scripts/test-network-policies.py reads it: this run will not APPLY the
+# sandbox, so db-api's and results-api's SANDBOX_ENABLED may legitimately still be "false" and
+# that harness must not abort the deploy over it. NOT APPLYING IS NOT THE SAME AS NOT RUNNING —
+# this script skips sandbox.yaml when the gate is off, it never deletes it, so a later deploy
+# from a worktree or with terraform.tfvars unreadable runs gate-off against a sandbox that is
+# still serving. The harness therefore probes the CLUSTER as well as reading this variable, and
+# refuses when the two disagree; see its "SANDBOX_ENABLED is true..." check.
+export ENABLE_SANDBOX
 if [ -n "${CONFIG_PROFILE:-}" ]; then
   PROFILE="${CONFIG_PROFILE}"
 elif [ -f terraform.tfvars ]; then
@@ -89,6 +112,46 @@ fi
 echo "=== Configuring kubectl ==="
 CLUSTER_NAME=$(terraform output -raw cluster_name)
 eval "$(terraform output -raw kubectl_command)"
+
+# SANDBOX PREFLIGHT — before anything is applied, deliberately.
+# Both checks below used to live inside the `for f in deployments/*.yaml` loop, where
+# sandbox.yaml sorts second-to-last: `exit 1` there fired only after every other manifest had
+# been applied and skipped the cronjob apply, every rollout restart and every rollout-status
+# wait, leaving a half-finished deploy whose freshly built :latest images were never rolled and
+# no summary line saying so. A precondition that can be judged before the first apply belongs
+# before the first apply. The ClusterIP resolution stays in the loop: it genuinely depends on
+# db-api.yaml and results-api.yaml having been applied.
+if [ "${ENABLE_SANDBOX}" = "true" ]; then
+  # The pod tolerates sandbox.gke.io/runtime=gvisor:NoSchedule and selects workload=sandbox, so
+  # with no such node it goes Pending and STAYS Pending: kubectl apply returns 0 and the deploy
+  # reports success over a feature that is simply absent. terraform ran above, so if the pool
+  # were being created it exists by now.
+  if [ -z "$(kubectl get nodes -l workload=sandbox -o name 2>/dev/null)" ]; then
+    echo "ERROR: ENABLE_SANDBOX=true but no node carries workload=sandbox."
+    echo "       Either the gVisor pool is not up — set sandbox_pool_enabled = true (and"
+    echo "       sandbox_node_service_account) in terraform/terraform.tfvars, which lives in the"
+    echo "       MAIN checkout and is gitignored, and apply terraform before this deploy — or the"
+    echo "       pool was just created and its node has not finished registering the label yet, in"
+    echo "       which case 'kubectl get nodes -l workload=sandbox' answers within a few minutes"
+    echo "       and this deploy can simply be re-run."
+    echo "       Applying sandbox.yaml now would leave a permanently Pending pod."
+    exit 1
+  fi
+  # The sandbox image's ENTRYPOINT is the bare interpreter and it ships no CMD, so a manifest
+  # with neither `command:` nor `args:` starts python3 with no script and CrashLoopBackOffs. It
+  # SCHEDULES — "Pending forever" above is only the no-pool case — and nothing downstream waits
+  # on this rollout, so the deploy would exit 0 and print success over a pod that can never
+  # serve. That is the same silent success the gate exists to prevent, so refuse it too. Keyed
+  # on the manifest, not on a ticket number: the check clears itself when 4h6.14 lands `args:`.
+  if ! grep -Eq '^[[:space:]]*(command|args):' "${ROOT_DIR}/k8s/deployments/sandbox.yaml"; then
+    echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml declares no command/args."
+    echo "       The supervisor process is genetics-results-suite-4h6.14 and has not landed; the"
+    echo "       image's ENTRYPOINT is the bare interpreter, so this pod would CrashLoopBackOff"
+    echo "       while the deploy reported success. Land 4h6.14 (which adds 'args:' to that"
+    echo "       manifest) before enabling the sandbox, or set sandbox_pool_enabled = false."
+    exit 1
+  fi
+fi
 
 # derive variables from terraform (all overridable via env vars)
 TF_PROJECT_ID=$(terraform output -raw project_id)
@@ -439,6 +502,31 @@ for f in deployments/*.yaml; do
     echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
     continue
   fi
+  if [ "${base}" = "sandbox.yaml" ]; then
+    if [ "${ENABLE_SANDBOX}" != "true" ]; then
+      echo "Skipping sandbox (ENABLE_SANDBOX=${ENABLE_SANDBOX}; set sandbox_pool_enabled = true in terraform.tfvars)"
+      continue
+    fi
+    # the gVisor-node and supervisor preconditions were judged in the sandbox preflight near the
+    # top of this script, before the first apply. What is left here genuinely cannot be:
+    # hostAliases replace DNS for this pod (docs/code-execution-security.md, "On DNS"), so the
+    # two ClusterIPs are resolved from the live cluster and substituted here. Both Services are
+    # applied earlier in this same loop (db-api.yaml, results-api.yaml sort before sandbox.yaml),
+    # so they exist by now; an empty value would render `ip: ""` and be rejected by the API
+    # server, but failing here says why.
+    DB_API_CLUSTER_IP="$(kubectl get svc db-api -n "${NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+    RESULTS_API_CLUSTER_IP="$(kubectl get svc results-api -n "${NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+    if [ -z "${DB_API_CLUSTER_IP}" ] || [ -z "${RESULTS_API_CLUSTER_IP}" ]; then
+      echo "ERROR: could not resolve the db-api / results-api ClusterIPs the sandbox pins in"
+      echo "       /etc/hosts (db-api='${DB_API_CLUSTER_IP}' results-api='${RESULTS_API_CLUSTER_IP}')."
+      echo "       The sandbox has no DNS, so an unpinned name is unresolvable inside it."
+      exit 1
+    fi
+    export DB_API_CLUSTER_IP RESULTS_API_CLUSTER_IP
+    envsubst '${REGISTRY} ${DB_API_CLUSTER_IP} ${RESULTS_API_CLUSTER_IP}' < "$f" | \
+      sed "s/:latest/:${TAG}/g" | kubectl apply -f -
+    continue
+  fi
   envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
@@ -469,6 +557,11 @@ if [ "${ENABLE_RAG}" = "true" ]; then
 fi
 if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   DEPLOYS="${DEPLOYS} keycloak"
+fi
+if [ "${ENABLE_SANDBOX}" = "true" ]; then
+  # last on purpose: strategy is Recreate on a single pinned node, so the restart is a brief
+  # outage of code execution, and a restart mid-execution kills that script
+  DEPLOYS="${DEPLOYS} sandbox"
 fi
 for deploy in ${DEPLOYS}; do
   kubectl rollout restart deployment/"${deploy}" -n "${NAMESPACE}"
