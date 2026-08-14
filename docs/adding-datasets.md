@@ -270,7 +270,15 @@ bq query --project_id=<project> --use_legacy_sql=false --format=csv \
 ```
 
 Copy `data_type` verbatim — that is the spelling BigQuery uses, `ARRAY<...>` and
-`STRUCT<...>` included. Then regenerate and check:
+`STRUCT<...>` included.
+
+The `genetics_results.` prefix in that query is **not** a counter-example to the rule for
+`examples:` sql, and the difference matters when adding a view. The query above is run by a
+maintainer with `bq` straight against BigQuery, which has no default dataset, so it must
+name one. Anything under `examples:` goes through db-api instead and must name views
+**bare** — `FROM <view>`, no prefix, no backticks — because db-api qualifies them with its
+own `DATASET_ID` (`genetics-results-suite-bee`; see `docs/datasets-yaml-schema.md`,
+"Field details for `tables.<table>.examples`"). Then regenerate and check:
 
 ```bash
 python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type

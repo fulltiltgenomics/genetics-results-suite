@@ -62,7 +62,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT variant, rsid, mlog10p, beta, target_start, target_end,
        ref_methylrate, alt_methylrate, variant_rank
-FROM genetics_results.asm_qtl_v WHERE gene_most_severe = 'PCSK9' ORDER BY mlog10p DESC LIMIT 20
+FROM asm_qtl_v WHERE gene_most_severe = 'PCSK9' ORDER BY mlog10p DESC LIMIT 20
 ```
 
 ### Primary ASM-QTL associations with large methylation differences
@@ -70,7 +70,7 @@ FROM genetics_results.asm_qtl_v WHERE gene_most_severe = 'PCSK9' ORDER BY mlog10
 ```sql
 SELECT variant, rsid, gene_most_severe, mlog10p,
        ref_methylrate, alt_methylrate, dataset
-FROM genetics_results.asm_qtl_v WHERE variant_rank = 'primary'
+FROM asm_qtl_v WHERE variant_rank = 'primary'
   AND ABS(ref_methylrate - alt_methylrate) > 0.2
 ORDER BY mlog10p DESC LIMIT 50
 ```

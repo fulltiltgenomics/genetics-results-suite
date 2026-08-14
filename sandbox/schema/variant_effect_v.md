@@ -55,13 +55,13 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT resource, model, cell_type, tissue, score, score_type, mlog10p,
        predicted_direction, is_significant
-FROM genetics_results.variant_effect_v WHERE variant = '1:241069353:A:G' ORDER BY mlog10p DESC
+FROM variant_effect_v WHERE variant = '1:241069353:A:G' ORDER BY mlog10p DESC
 ```
 
 ### Strongest ChromBPNet predicted effects near a gene
 
 ```sql
-SELECT v.variant, v.cell_type, v.tissue, v.score, v.mlog10p, v.predicted_direction FROM genetics_results.variant_effect_v v JOIN genetics_results.gene_annotations_v g
+SELECT v.variant, v.cell_type, v.tissue, v.score, v.mlog10p, v.predicted_direction FROM variant_effect_v v JOIN gene_annotations_v g
   ON v.chr = g.chr
  AND v.pos BETWEEN g.gene_start - 100000 AND g.gene_end + 100000
 WHERE g.symbol = 'PCSK9' AND v.model = 'chrombpnet' ORDER BY v.mlog10p DESC LIMIT 50

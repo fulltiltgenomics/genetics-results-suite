@@ -65,7 +65,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT cs.dataset, cs.trait_original, p.trait_name, p.n_cases,
        cs.cs_id, cs.pos, cs.ref, cs.alt, cs.pip, cs.mlog10p
-FROM genetics_results.credible_sets_v cs LEFT JOIN genetics_results.phenotypes_v p USING (dataset, trait_original) WHERE cs.chr = 6 AND cs.pos BETWEEN 32000000 AND 33000000
+FROM credible_sets_v cs LEFT JOIN phenotypes_v p USING (dataset, trait_original) WHERE cs.chr = 6 AND cs.pos BETWEEN 32000000 AND 33000000
   AND cs.data_type = 'GWAS'
 ORDER BY cs.mlog10p DESC LIMIT 100
 ```
@@ -75,7 +75,7 @@ ORDER BY cs.mlog10p DESC LIMIT 100
 ```sql
 SELECT cs.dataset, cs.trait_original, p.trait_name,
        cs.chr, cs.pos, cs.ref, cs.alt, cs.pip
-FROM genetics_results.phenotypes_v p JOIN genetics_results.credible_sets_v cs USING (dataset, trait_original) WHERE LOWER(p.trait_name) LIKE '%type 2 diabetes%'
+FROM phenotypes_v p JOIN credible_sets_v cs USING (dataset, trait_original) WHERE LOWER(p.trait_name) LIKE '%type 2 diabetes%'
   AND NOT p.coloc_partner_only
   AND cs.chr = 10
 ORDER BY cs.pip DESC LIMIT 100
@@ -84,7 +84,7 @@ ORDER BY cs.pip DESC LIMIT 100
 ### Well-powered binary FinnGen endpoints in one ICD chapter
 
 ```sql
-SELECT trait_original, trait_name, n_cases, n_controls FROM genetics_results.phenotypes_v WHERE dataset = 'FinnGen_R14' AND trait_type = 'binary'
+SELECT trait_original, trait_name, n_cases, n_controls FROM phenotypes_v WHERE dataset = 'FinnGen_R14' AND trait_type = 'binary'
   AND category LIKE 'IX Diseases of the circulatory system%'
   AND n_cases >= 5000
 ORDER BY n_cases DESC
@@ -96,9 +96,9 @@ ORDER BY n_cases DESC
 SELECT c.dataset1, p1.trait_name AS trait1_name,
        c.dataset2, p2.trait_name AS trait2_name,
        c.PP_H4_abf
-FROM genetics_results.colocalization_v c LEFT JOIN genetics_results.phenotypes_v p1
+FROM colocalization_v c LEFT JOIN phenotypes_v p1
   ON p1.dataset = c.dataset1 AND p1.trait_original = c.trait1_original
-LEFT JOIN genetics_results.phenotypes_v p2
+LEFT JOIN phenotypes_v p2
   ON p2.dataset = c.dataset2 AND p2.trait_original = c.trait2_original
 WHERE c.chr = 19 AND c.PP_H4_abf > 0.8 ORDER BY c.PP_H4_abf DESC LIMIT 50
 ```
