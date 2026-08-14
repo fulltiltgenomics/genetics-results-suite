@@ -127,6 +127,55 @@ gcloud projects add-iam-policy-binding $(terraform output -raw project_id) \
   --role="roles/artifactregistry.reader"
 ```
 
+Terraform can create a **second** node pool, `<cluster_name>-sandbox-pool` — one pinned
+`e2-standard-2` running gVisor (GKE Sandbox) for the code-execution sandbox. It is **off by
+default** (`sandbox_pool_enabled = false`), because `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy: terraform changes here are *not* opt-in,
+so a pool gated on nothing would appear on a routine deploy nobody asked for.
+
+When you set `sandbox_pool_enabled = true`, `sandbox_node_service_account` becomes **required**
+in every mode, including `manage_iam = false`. The variable carries `default = ""` only so
+terraform does not stop to prompt; `""` fails the resource's precondition. The SA must be in
+this project, must not be `genetics-suite`, and must not equal `node_service_account` (the
+primary pool's SA — that pool grants the `cloud-platform` scope, so sharing it puts the whole
+suite's credential on the node running untrusted code). Those are **format and identity checks
+only**: terraform does not create the SA and does not verify what roles it holds, so the recipe
+below is the only thing bounding them. Create it before enabling the pool:
+
+```bash
+PROJECT=$(terraform output -raw project_id)
+gcloud iam service-accounts create finngenie-sandbox-node --project="$PROJECT"
+SA="finngenie-sandbox-node@${PROJECT}.iam.gserviceaccount.com"
+for ROLE in roles/logging.logWriter roles/monitoring.metricWriter roles/monitoring.viewer \
+            roles/stackdriver.resourceMetadata.writer roles/artifactregistry.reader; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${SA}" --role="$ROLE"
+done
+```
+
+Note this pool is created with `workload_metadata_config { mode = "GKE_METADATA" }`
+unconditionally, which is why `google_container_cluster.primary`'s `workload_identity_config`
+is also unconditional — GKE rejects the former without the latter **at apply, not at plan**.
+See "The sandbox pool" in `docs/project-spec.md` before changing either.
+
+> **What the next apply does whether or not you enable the pool.** `workload_identity_config`
+> on the cluster is unconditional now, and the live cluster currently has an **empty**
+> `workloadPool` (verified with `gcloud container clusters list`) because `manage_iam = false`.
+> So the next apply **enables Workload Identity on the live cluster** — an in-place update, very
+> likely inert (no pool is in `GKE_METADATA` mode and no KSA has a WI binding), but it reaches
+> production without anyone opting into it. Two consequences worth knowing before you run it:
+> `terraform.tfvars` is gitignored and lives only in the **main checkout**, so adding
+> `sandbox_pool_enabled` / `sandbox_node_service_account` there is a manual step this repo cannot
+> make for you; and `scripts/deploy.sh` applies terraform on every full deploy, so
+> `SKIP_TERRAFORM=true` is the escape hatch if you want manifests only.
+>
+> **Known risk, recorded not fixed:** once WI is on, the primary pool has no explicit
+> `workload_metadata_config` under `manage_iam = false`. If that pool is ever *recreated*
+> (`terraform/main.tf` already warns pool replacement is a live hazard), its metadata mode would
+> come from GKE's cluster-derived default rather than the `GCE_METADATA` all 8 workloads depend
+> on. Whether to pin the primary pool explicitly is tracked separately; nothing here changes its
+> behaviour.
+
 Configure kubectl to connect to the new cluster:
 
 ```bash

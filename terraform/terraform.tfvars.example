@@ -19,3 +19,19 @@ machine_type         = "e2-standard-4"
 # docs/project-spec.md before changing these.
 min_node_count = 1
 max_node_count = 3
+
+# Dedicated gVisor pool for the code-execution sandbox. OFF by default: scripts/deploy.sh
+# runs `terraform apply -auto-approve` on every full deploy, so an ungated pool would appear
+# on a routine deploy nobody opted into. Set sandbox_pool_enabled = true to create it.
+# Pinned at one node in terraform (min == max == 1, not a variable) and separate from the
+# pool above, so it adds nothing to the surge budget — it is a standing cost of one small
+# node instead.
+# When enabled, sandbox_node_service_account is REQUIRED: a dedicated GSA in THIS project
+# with only roles/logging.logWriter, roles/monitoring.metricWriter, roles/monitoring.viewer,
+# roles/stackdriver.resourceMetadata.writer, roles/artifactregistry.reader. Never
+# genetics-suite, never node_service_account, never the Compute Engine default. Terraform
+# checks the email's shape and those two identities — it does not create the SA and does not
+# verify which roles it actually holds.
+sandbox_pool_enabled = false
+sandbox_machine_type = "e2-standard-2"
+# sandbox_node_service_account = "finngenie-sandbox-node@your-gcp-project-id.iam.gserviceaccount.com"

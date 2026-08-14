@@ -442,8 +442,14 @@ explicitly: pin the build, or match on something build-independent.
 
 ### Node pool sizing
 
-The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
+There are **two** pools, and they are sized on different grounds.
+
+The **primary** pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
 `terraform.tfvars` profile (`max = 2` on daly), on `e2-standard-4`. One node is running today.
+
+The **sandbox** pool (`<cluster>-sandbox-pool`, `terraform/gke.tf`) is **pinned at one node**
+and exists for isolation, not capacity — see "The sandbox pool" below. It contributes **0m and
+0 GiB** to everything in the surge table that follows.
 
 > An earlier version of this section claimed the pool was pinned at
 > `min_node_count == max_node_count == 2`. That pinning was written into
@@ -456,9 +462,20 @@ The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every liv
 **Why the surge matters.** A full `deploy.sh` rolls every deployment at once. All of them
 except chat-backend, keycloak-postgres and rag-service (which are `strategy: Recreate`) use
 the default `RollingUpdate`, so with `replicas: 1` each surges by one extra pod. Figures below
-are re-derived from `k8s/deployments/*.yaml` and from the live node (2026-08-07); "system"
-is the per-node GKE overhead (`kube-system`, `gmp-system`, `gke-managed-cim`) measured at
-876m / 1.33 GiB.
+are re-derived from `k8s/deployments/*.yaml` (2026-08-14) and from the live node (2026-08-07);
+"system" is the per-node GKE overhead (`kube-system`, `gmp-system`, `gke-managed-cim`)
+measured at 876m / 1.33 GiB.
+
+**How to re-derive: sum pods' *effective* requests, not container counts.** The scheduler
+computes a pod's effective request as `max( max(init container requests), sum(regular
+container requests) )`, **per resource**. `auth-gateway` is the case that catches people: its
+`render-config` (10m/16Mi) is an `initContainer`, and the pod declares no `restartPolicy`
+anywhere, so it is a classic init container, not a native sidecar. 10m < 50m and 16Mi < 64Mi
+on both axes, so it contributes **exactly zero** to scheduling and auth-gateway is
+**50m / 64Mi**, not 60m / 80Mi. A *native sidecar* — an entry under `initContainers:` that
+carries `restartPolicy: Always` — **would** be added to the regular sum. So check for that
+field; do not count containers. A 2026-08-14 edit of this table applied the container-count
+rule instead and inflated every peak by 20m / 32 Mi; it has been reverted.
 
 RAG is **not** profile-derived: `scripts/deploy.sh` sets `ENABLE_RAG="${ENABLE_RAG:-false}"`
 unconditionally, so rag-service is off on *every* profile unless the operator exports it. Only
@@ -467,24 +484,29 @@ deployments, not 11.
 
 | | CPU | Memory |
 |---|---|---|
-| one `e2-standard-4` allocatable | **3920m** | **12.96 GiB** |
-| app requests, daly **as deployed by default** (Keycloak on, RAG off — 10 deployments) | 1650m | 6.44 GiB |
-| app requests, daly **with `ENABLE_RAG=true`** (11 deployments) | 1900m | 6.94 GiB |
-| app requests, finngen profile (no Keycloak, no RAG) | 1300m | 5.69 GiB |
-| + per-node GKE system overhead | 876m | 1.33 GiB |
-| rollout surge, daly (either variant — rag-service is `Recreate`, so it never surges) | +1300m | +5.69 GiB |
-| rollout surge, finngen (no Keycloak) | +1050m | +5.19 GiB |
-| **peak during a full deploy — daly, default** | **3826m** | **13.45 GiB** |
-| **peak during a full deploy — daly, RAG enabled** | **4076m** | **13.95 GiB** |
-| **peak during a full deploy — finngen** | 3226m | 12.20 GiB |
+| one `e2-standard-4` allocatable | **3920m** | **12.96 GiB** (13273 Mi) |
+| app requests, daly **as deployed by default** (Keycloak on, RAG off — 10 deployments) | 1650m | 6.44 GiB (6592 Mi) |
+| app requests, daly **with `ENABLE_RAG=true`** (11 deployments) | 1900m | 6.94 GiB (7104 Mi) |
+| app requests, finngen profile (no Keycloak, no RAG — 8 deployments) | 1300m | 5.69 GiB (5824 Mi) |
+| + per-node GKE system overhead | 876m | 1.33 GiB (1362 Mi) |
+| rollout surge, daly (either variant — rag-service is `Recreate`, so it never surges) | +1300m | +5.69 GiB (+5824 Mi) |
+| rollout surge, finngen (no Keycloak) | +1050m | +5.19 GiB (+5312 Mi) |
+| **peak during a full deploy — daly, default** | **3826m** | **13.46 GiB (13778 Mi)** |
+| **peak during a full deploy — daly, RAG enabled** | **4076m** | **13.96 GiB (14290 Mi)** |
+| **peak during a full deploy — finngen** | 3226m | 12.21 GiB (12498 Mi) |
+| the sandbox, on **either** primary-pool profile | **0m** | **0 GiB** (separate pool) |
 
 So the **daly** profile as actually deployed overshoots a single node on **memory only** —
-13.45 GiB against 12.96 GiB, while its 3826m CPU peak stays under the 3920m allocatable. It
-still must get a second node; only the reason is narrower than "both axes". Turning RAG on
-pushes CPU over as well. The **finngen** profile fits, but with under 1 GiB of memory
-headroom — and that margin disappears if the analyze-conversations (512Mi) or monitor (256Mi)
-CronJob overlaps the rollout. `results-api` at 500m / 4Gi, doubling to 8Gi mid-roll, dominates
-the memory term either way.
+13778 Mi against 13273 Mi allocatable, **over by 505 Mi** — while its 3826m CPU peak stays
+under the 3920m allocatable. It still must get a second node; only the reason is narrower than
+"both axes". Turning RAG on pushes CPU over as well, so daly+RAG is over on **both** axes. The
+**finngen** profile fits, with **775 Mi** of memory headroom — and that margin disappears if
+the analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
+at 500m / 4Gi, doubling to 8Gi mid-roll, dominates the memory term either way.
+
+**Nothing above changed when the sandbox was added, and that is the whole point of giving it
+its own pool.** The sandbox contributes 0m / 0 GiB here because it is on a different pool. The
+figures are `genetics-results-suite-262`'s, unchanged.
 
 When the autoscaler does add a node for a rollout, the scheduler places pods on it and ~15
 minutes later reaps the now-idle node, evicting them with `ScaleDown: deleting pod for node
@@ -618,7 +640,162 @@ Other consequences to keep in mind:
 
 To consolidate onto one larger node instead, note that `node_config.machine_type` is ForceNew on
 `google_container_node_pool` — changing it in place destroys and recreates the pool. Do it as a
-new pool plus cordon/drain migration, not a tfvars edit.
+new pool plus cordon/drain migration, not a tfvars edit. The same applies to
+`var.sandbox_machine_type` below.
+
+### The sandbox pool
+
+`google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`: `<cluster>-sandbox-pool`,
+`e2-standard-2` (`var.sandbox_machine_type`), `sandbox_config { type = "gvisor" }`,
+`min_node_count == max_node_count == 1`. It hosts only the code-execution sandbox
+(`docs/code-execution-security.md`). It is created **only when `sandbox_pool_enabled = true`**
+(`count`); the default is `false`. Note also that `type = "gvisor"` is lowercase while the GKE
+REST enum is `GVISOR` and the provider does no normalization — whether the API accepts the
+lowercase form is unverified until the first real apply; if rejected the value becomes
+`"GVISOR"` here, in `terraform/gke.tf` and in `docs/code-execution-security.md`.
+
+**Why a second pool at all.** Not capacity — isolation. GKE Sandbox is a per-pool property, so
+gVisor's userspace syscall boundary around untrusted LLM-authored code can only be bought by
+creating a pool for it, and the consequence is that chat-backend can never be co-scheduled with
+that code. GKE taints gVisor nodes `sandbox.gke.io/runtime=gvisor:NoSchedule` automatically, so
+no other workload drifts onto it.
+
+**Why pinned when the primary pool is not.** The primary pool autoscales because its pods are
+restartable request-servers with graceful shutdown. A scale-down here would kill an in-flight
+script mid-execution, and there is no second replica. Accepted cost: **one permanently-running
+`e2-standard-2`**. The cost argument in `docs/code-execution-security.md` was originally written
+against a primary pool believed to be pinned at 2 nodes ("the sandbox contributes 0 to a budget
+that is already over"); `genetics-results-suite-262` established the primary pool actually runs
+**one** node under the live finngen profile. The pool was still chosen, on isolation grounds
+alone — do not repeat the "nearly free" framing.
+
+**Budget on that node.** CPU allocatable is arithmetic (2 vCPU, GKE reserves 70m → 1930m).
+**Memory allocatable is not known and cannot be derived offline.** The usual method — advertised
+capacity 8192 Mi, minus GKE's 1843 Mi reservation, minus the 100 Mi eviction threshold — gives
+6249 Mi, but that method provably *overstates*: applied to the measured `e2-standard-4` it
+yields 13622 Mi against a measured 13273 Mi, because real capacity is 15996 Mi rather than
+16384 Mi. So treat **6249 Mi as an upper bound**, not a value; the true figure is lower by an
+amount only a real node reports.
+
+| | CPU | Memory |
+|---|---|---|
+| one `e2-standard-2` allocatable | **1930m** | **≤ 6249 Mi** (upper bound, see above) |
+| sandbox pod **requests** (`replicas: 1`) | 500m | 1024 Mi |
+| per-node overhead that can actually land here — measured DaemonSets, see below | ~383m | ~769 Mi |
+| plus `gke-metadata-server` and the GKE Sandbox components | **undetermined** | **undetermined** |
+| **scheduled total, excluding the undetermined rows** | **~883m** | **~1793 Mi** |
+| sandbox pod **limits** (burst ceiling, not a reservation) | 1500m | 3072 Mi |
+
+**Why the primary node's 876m / 1.33 GiB does not apply here.** That measurement is the whole
+of the primary node's system load, and most of it is singletons — kube-dns, metrics-server,
+konnectivity, the autoscalers, ~487m / ~555 Mi in total — which **cannot** land on the sandbox
+node: they do not tolerate `sandbox.gke.io/runtime=gvisor:NoSchedule`. The measured breakdown is
+DaemonSets 383m / 769 Mi (these tolerate everything, so they *do* land here), ReplicaSets
+382m / 425 Mi and a StatefulSet 105m / 130 Mi (these do not). Quoting 876m for this node is an
+**over**-statement, not a lower bound.
+
+Three things that table does *not* settle, all tracked in `genetics-results-suite-5r2`:
+
+1. **`gke-metadata-server`.** It is a DaemonSet that exists only on Workload-Identity clusters,
+   and this cluster has WI off today, so its request is **undeterminable offline**. It is not
+   guessed here.
+2. **The GKE Sandbox components.** One of them is measurable: `runsc-metric-server` already
+   exists dormant in `kube-system` at 3m / 12 Mi (`desiredNumberScheduled: 0`). The rest appear
+   only once a gVisor node exists. As of 2026-08-13 the project has none anywhere.
+3. **The runsc sentry's memory is charged to the pod's cgroup, so it eats the 3Gi *limit*, not
+   the node headroom.** It therefore constrains the `RLIMIT_AS` budget the supervisor sets for
+   the child, not this table. Unmeasured, and workload-shaped.
+
+**On the CPU limit.** An earlier version of this section claimed the pod's 1500m ceiling was
+"deliberately not satisfiable alongside the system pods" (876m + 1500m = 2376m > 1930m). That
+rests on the wrong base: on the ~383m that can actually schedule here, 383m + 1500m = 1883m,
+which is **under** 1930m — so the alarming conclusion is not established, and it is not replaced
+with a reassuring one either, because the two undetermined rows above could move it in either
+direction. What is true regardless: limits are not reservations, so nothing here blocks at
+schedule time; `requests: 500m` is what guarantees schedulability; and a script at its full
+ceiling contends with the node's own daemons under CFS shares. If `sandbox_machine_type` ever
+changes, revisit the pod's 500m/1500m together with it.
+
+**What the pool spec carries that is not about sizing at all.** Three properties in
+`terraform/gke.tf` are load-bearing security controls, and a reviewer should check them by
+reading the source rather than a plan diff:
+
+- `workload_metadata_config { mode = "GKE_METADATA" }`, **unconditional**. Unset defaults to
+  `GCE_METADATA`, which exposes `169.254.169.254` to every pod on the node — one HTTP GET of
+  `/computeMetadata/v1/instance/service-accounts/default/token` then yields a node-level token,
+  and Workload Identity becomes irrelevant because the identity served is the node's.
+- `google_container_cluster.primary`'s `workload_identity_config` is **unconditional** as a
+  direct consequence: GKE rejects a `GKE_METADATA` pool on a cluster with no `workload_pool`,
+  and it rejects it **at apply, not at plan**. It used to be gated on `var.manage_iam`. Enabling
+  the workload pool is an in-place cluster update — it does not recreate the cluster and does
+  not change the primary pool's own (still `manage_iam`-gated) metadata mode.
+- `var.sandbox_node_service_account` is **required whenever the pool is created**, enforced by
+  `lifecycle { precondition }` blocks on the resource rather than by variable validation — so it
+  fires only when the pool actually exists, and the escape hatch is "don't create the pool",
+  never "create it with a weaker SA". Three checks: the email must match
+  `<name>@<project_id>.iam.gserviceaccount.com` **in this project** (case-folded), it must not be
+  `genetics-suite`, and it must not equal `var.node_service_account` — that last one matters most,
+  because under the live `manage_iam = false` mode the primary pool grants
+  `oauth_scopes = ["cloud-platform"]`, so sharing its SA would put the suite's entire credential
+  on the node running untrusted code. **These are format and identity checks, not a privilege
+  check.** Terraform neither creates the SA nor reads back the roles bound to it; the `gcloud`
+  recipe in `README.md` (`roles/logging.logWriter`, `roles/monitoring.metricWriter`,
+  `roles/monitoring.viewer`, `roles/stackdriver.resourceMetadata.writer`,
+  `roles/artifactregistry.reader`) is the only thing bounding them, and nothing checks that the
+  operator did not grant more. The variable keeps `default = ""` only so terraform does not
+  prompt interactively; `""` fails the first precondition.
+- `var.sandbox_pool_enabled` (**default `false`**) gates whether the pool resource exists at all,
+  via `count`. It must **never** appear inside `node_config` — no `dynamic`, no ternary, no
+  count-derived field — so the only two representable states are "no pool" and "a pool in
+  `GKE_METADATA` mode". The cluster's `workload_identity_config` stays unconditional and is
+  deliberately *not* tied to this flag: tying it would make enabling the pool a two-step apply,
+  and the apply-time failure in between invites exactly the re-gating of the metadata mode that
+  the design forbids.
+
+**The pool is only half the control, and terraform cannot supply the other half.** `GKE_METADATA`
+does not deny credentials — it swaps *node* identity for *KSA* identity. Whether that is worth
+anything depends entirely on the KSA the sandbox pod runs as, and nothing in this change
+establishes it. The house style is the failure mode: all 8 deployments in `k8s/deployments/*.yaml`
+use `serviceAccountName: genetics-suite`, which `terraform/iam.tf` binds to a GSA holding
+`bigquery.dataViewer`, `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. Whoever
+writes `k8s/deployments/sandbox.yaml` **must** give it a dedicated KSA with no
+`iam.gke.io/gcp-service-account` annotation and no `google_service_account_iam_member` binding —
+explicitly **not** `genetics-suite`, and not the namespace `default` either. Copy the house style
+and `GKE_METADATA` buys nothing at all.
+
+The explicit `oauth_scopes` (`devstorage.read_only` — **required** for Artifact Registry pulls,
+`roles/artifactregistry.reader` alone is not sufficient — plus `logging.write`, `monitoring`,
+`monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append`) are **not**
+a fourth control of that kind. In `GKE_METADATA` mode pod tokens come from the IAM Credentials
+API and are not bounded by node scopes at all. They defend the `GCE_METADATA` misconfiguration
+case and the escape-to-the-node case only. Do not cite them as the pod-facing guarantee.
+
+`kubelet_config { pod_pids_limit = 1024 }` is the outer fork-bomb backstop (a per-pod pid
+ceiling is a kubelet setting, not a pod-spec field — one more reason the sandbox needs its own
+pool). `docs/code-execution-security.md` specifies 256; GKE's documented range for
+`podPidsLimit` starts at 1024, so 256 would be rejected at pool creation. **Unconfirmed against
+this cluster** (`genetics-results-suite-5r2`); note in particular that `terraform validate` does
+*not* establish it — the provider schema is a bare optional number with no range check, so it
+passes on 256 as readily as on 1024. The number is not what contains a fork bomb anyway — the
+supervisor enforces a child pid budget far below it.
+
+**What an operator is actually walking into.** `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy, so terraform changes are **not opt-in**;
+`SKIP_TERRAFORM=true` applies manifests only and is the escape hatch. `terraform.tfvars` is
+gitignored and lives only in the **main checkout**, so setting `sandbox_pool_enabled` or
+`sandbox_node_service_account` there is a manual step this repo cannot make. And because
+`workload_identity_config` on the cluster is now unconditional while the live cluster's
+`workloadPool` is currently **empty** (`manage_iam = false`, verified via
+`gcloud container clusters list`), **the next apply enables Workload Identity on the live
+cluster whether or not the sandbox pool is enabled**. That is an in-place update and very likely
+inert today — no pool runs in `GKE_METADATA` mode and no KSA carries a WI binding — but it
+reaches production without anyone opting in, which is more than "an in-place cluster update"
+conveys. **Recorded as a known risk, not changed here:** afterwards the primary pool still has no
+explicit `workload_metadata_config` under `manage_iam = false`, so if that pool is ever
+*recreated* (`terraform/main.tf` already warns pool replacement is a live hazard) its metadata
+mode would come from GKE's cluster-derived default rather than the `GCE_METADATA` all 8 workloads
+depend on. Whether to pin the primary pool explicitly is tracked separately; nothing in `4h6.10`
+alters the primary pool's behaviour.
 
 ## Monitoring
 
