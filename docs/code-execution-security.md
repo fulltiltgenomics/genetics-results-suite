@@ -1220,8 +1220,12 @@ bound on a determined user is **200 GB × turns**, and nothing in this design ca
 of turns. That is tolerable here for two measured reasons, not by assumption: concurrency is
 1 with a queue, so executions serialize rather than multiply, and the measured peak is 23
 chat turns/hour — an upper bound of roughly 4.6 TB/hour scanned *if every turn ran a script
-that deliberately exhausted its budget*, which is visible in BigQuery billing and
-attributable per `sub` and `sid` through the logging in control 3 of 6.2. If a per-session or
+that deliberately exhausted its budget*, which is visible in BigQuery billing and — once
+`4h6.14` delivers the token and db-api's `endpoint_access` line therefore carries `sub`,
+`sid` and `jti` — attributable per user and session through the db-api half of control 3 in
+6.2. Before that the spend is visible but not attributable, and the SDK-side half of that
+control is neither — nor, against a hostile script, trustworthy (6.2, control 3). If a
+per-session or
 per-user budget is ever wanted, the same in-process LRU counter keyed on `sid` or `sub`
 instead of `jti` provides it; it is deliberately not in v1 because a cross-turn budget needs
 shared state once replicas exceed 1.
@@ -2186,10 +2190,79 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
    aggregate budget on either service rather than running for the full 120 seconds.
-3. **Everything is logged.** Every SDK function call emits a structured line carrying
-   session id, function, argument summary and row count (`4h6.12`); db-api logs `sid`,
-   `sub` and `jti` per request. A dump is visible after the fact and attributable to a
-   person and a conversation.
+3. **The SDK records what it reads — but the trail is neither attributable nor collected
+   until `4h6.14`.** Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
+   wrapper emits one structured line carrying function, argument summary and row count
+   (`4h6.12`), and db-api logs `sid`, `sub` and `jti` per request. Four limits, all present
+   in the code today, and none of them cosmetic:
+   - **Not attributable to a person or a conversation.** The line's
+     `[user=…] [session=…] [execution=…]` prefix is read per call from `SANDBOX_USER`,
+     `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID`, which are the sandbox token's `sub`,
+     `sid` and `jti` (section 4). The SDK never receives that token and **nothing in either
+     repo sets those three variables**, so all three render `unknown`. db-api's `sid`/`sub`/
+     `jti` fields come from the same token, so that half waits on the same task: delivery is
+     `4h6.14`'s.
+   - **No line reaches a collector.** The cluster's logging agent collects the *pod's*
+     stdout; the child's streams go to the supervisor's pipe and nothing forwards them.
+     Until `4h6.14` does, the control produces records that nothing ingests.
+   - **Not tamper-evident, with or without a dedicated fd.** `GENETICS_SDK_AUDIT_FD`
+     separates the records from stdout — the supervisor holds the read end, the child writes
+     nothing else there, and propagation is switched off so inherited handlers cannot copy
+     them back onto a shared stream. It does not separate them from the *script*: the fd
+     number must be in the child's environment for the SDK to find it, so
+     `os.write(int(os.environ["GENETICS_SDK_AUDIT_FD"]), …)` puts arbitrary bytes straight on
+     it. Without the fd — the state today — the records additionally share stderr with the
+     audited script, so a forged line parses cleanly through this repo's own parser under any
+     user and session it likes; per-value escaping is irrelevant when the writer owns the
+     stream. The SDK emits a once-per-process warning saying exactly that, in the stream
+     itself, and `scripts/analyze_conversations.py` repeats it in any report built from such
+     a log.
+   - **`_executor` calls are not audited at all.** Instrumentation sits on the curated
+     surface; `get_client()._executor.<method>()` is one attribute access away from a
+     sandboxed script and returns the same data with no line emitted (`4h6.33`). So this is
+     "audited if you use the recommended surface", never "unbypassable" — false in
+     principle, not only in deployment.
+
+   Three further properties are deliberate rather than gaps. **The bound applies only to
+   refusals** — calls that never reached the executor — capped at `_AUDIT_MAX_REFUSALS = 1000`
+   per *process*, after which they are dropped and one "SDK audit truncated" notice is
+   emitted. A call that reached the executor is **never** dropped. Both halves are corrections
+   to an earlier revision that capped everything at 1000 per *execution*: that ceiling was
+   keyed on `SANDBOX_EXECUTION_ID`, which the script writes, so rotating it restored the flood
+   at 19,622 lines/s and 2.58 MB/s — *higher* than the 18,088 lines/s before the ceiling
+   existed, because each rotation also bought a truncation announcement. And the ceiling was
+   itself a suppression primitive: ~50 ms of refusals, which touch no network at all,
+   exhausted the budget, and every genuine `sql()` read afterwards emitted nothing. Silent
+   suppression on demand is strictly worse than a noisy flood. Hence the split — a refusal is
+   free to the caller and worth bounding, while a call that reached the executor already paid
+   an HTTP round-trip and is charged against the byte and row quotas the other controls rely
+   on, so it cannot be driven at flood rates. Measured after the change: a refusal flood *with*
+   id rotation settles at 0 lines/s steady-state, and 5,000 refusals followed by 25 real reads
+   records 25 of 25. **The identity fields are sanitised** on the same terms as arguments,
+   which they previously skipped: `SANDBOX_USER = "alice\n[user=admin@finngen.fi"` rendered a
+   line the shipped parser read back as `user='admin@finngen.fi'`, and a 100 KB value put
+   100,431 bytes on the stream from one legitimate call. Both are charset- and length-checked
+   now, and a failing value is *replaced* by `<invalid>` rather than truncated into something
+   plausible — the forgery renders `user='<invalid>'`, and the 100 KB case emits 197 bytes.
+   **The argument summary answers "how much", not "what"** for the most powerful calls:
+   `sql()` bodies render as `<str:N>` and every list argument as `<list:N>`, deliberately, so
+   a script cannot write chosen text into an operator's log. Row count is the only content
+   signal that survives there.
+
+   **None of that makes the records trustworthy, and no in-process mechanism can.** A
+   validator defeated every control above from inside the sandbox: forging records by calling
+   `logging.getLogger("genetics_mcp_server.sdk.audit").info(...)` directly and by `os.write`
+   to the audit fd number the script reads from its own environment, and suppressing them via
+   `logger.disabled`, the level, a filter, and handler removal. As long as the audited code
+   and the audit emitter share an address space this is the consequence of where the code
+   runs, not a list of gaps to patch one by one — a dedicated fd separates the stream from
+   stdout, not from the script. **These records are therefore a best-effort observability
+   signal, not a security control**, until enforcement moves out of the process, which is what
+   `4h6.14` now owes: the *supervisor* reads the fd and applies the rate, byte and per-line
+   caps on the read end where the child cannot reach them; the *supervisor*, which holds the
+   sandbox token, stamps `[user=…] [session=…] [execution=…]` from its `sub`/`sid`/`jti`
+   claims instead of asking the child who it is; and the child's framing is untrusted input,
+   re-parsed and re-framed before anything is recorded.
 4. **The sandbox grants no data the caller lacked.** The same user can already query the
    same views through the existing tool surface. The sandbox changes the *shape* of
    access, not its scope.
@@ -2198,6 +2271,23 @@ So the residual is: an authorized user extracts, into their own chat window, dat
 already authorized to see — 64 KiB at a time. That is unchanged from today and is not a
 regression. The thing the design *does* prevent is that data reaching a third party without
 passing through the user's authenticated session.
+
+**That conclusion survives control 3's state, but only half of it does — stated because an
+earlier draft leaned on the other half.** The residual above rests on controls 1, 2 and 4,
+which are unaffected: no sink, capped bytes and rows, no data the caller lacked. What does
+*not* follow any more is "a dump is visible after the fact and attributable to a person and a
+conversation" — the earlier wording of control 3, and false in every part. Attribution is the
+axis on which the sandbox is a **regression** rather than a wash: the same reads through the
+existing MCP tool surface already carry the user and the session in chat-backend's
+`Executing tool:` lines, and script-driven reads would not, so enabling the sandbox ahead of
+`4h6.14` (see section 4 on `SANDBOX_ENABLED`) buys a query path whose "who ran that?" is
+unanswerable. It is still *bounded* — nothing leaves the user's own session, nothing new is
+reachable — it is simply not detectable per person until `4h6.14` lands token delivery,
+supervisor-side enforcement and audit forwarding. And the gap is not only that the records go
+uncollected: under an assumption of compromise they are untrustworthy by construction, since
+the script and the emitter share a process (control 3). Do not cite 6.2 as evidence of
+after-the-fact attribution before then, and do not cite a *present* SDK record as evidence of
+what a script did.
 
 ### `read_artifact` (`4h6.15`): lifecycle, authorization, and the path allow-list
 
@@ -2465,8 +2555,15 @@ The controls, all of which work regardless of what the model was persuaded to wr
    attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
    mount the attachment directory or the PVC. A script sees the files it was given, not the
    directory they came from.
-6. **It is visible.** The SDK-call log and the db-api `sid`/`jti` attribution mean an
-   injected script's data access is reconstructable after the fact.
+6. **It is visible — after `4h6.14`, and with the limits in 6.2's control 3.** The SDK-call
+   log and the db-api `sid`/`jti` attribution make an injected script's data access
+   reconstructable after the fact, but only once the token is delivered and the supervisor
+   both enforces on and forwards the child's audit stream; today the records name no user and
+   no session, reach no collector, and cover nothing an injected script does through
+   `_executor`. An injected script is precisely the case they cannot answer: it runs in the
+   same process as the emitter, so it can forge and suppress SDK records at will, and only
+   db-api's own `endpoint_access` lines — written outside the sandbox — hold against it. Read
+   this as a property the design provides, not one it provides yet.
 7. **Explicitly NOT a control:** system-prompt instructions telling the model to ignore
    injected content, or to refuse suspicious scripts. Those reduce frequency; they are not
    a boundary and no control above depends on them.
