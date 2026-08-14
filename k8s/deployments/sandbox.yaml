@@ -1,0 +1,260 @@
+# The code-execution sandbox (genetics-results-suite-4h6.7). Design of record:
+# docs/code-execution-security.md sections 2-6; sizing in docs/project-spec.md
+# ("The sandbox pool").
+#
+# THIS MANIFEST IS NOT APPLIED BY DEFAULT. scripts/deploy.sh skips it unless
+# ENABLE_SANDBOX=true, which is derived from terraform.tfvars' sandbox_pool_enabled
+# (default false). The pod tolerates a taint that only the gVisor pool carries, so
+# applying it without the pool yields a Pending pod forever — see the sandbox preflight near the
+# top of deploy.sh, which refuses before anything is applied rather than creating one.
+#
+# NO COMMAND / ARGS, DELIBERATELY. The image's ENTRYPOINT is the bare interpreter and it
+# ships no CMD (sandbox/Dockerfile): the supervisor module is genetics-results-suite-4h6.14's
+# to write, and a placeholder here would be indistinguishable from a real one at runtime —
+# the same reasoning that kept CMD out of the image. Until 4h6.14 lands, this pod would
+# start python3 with no script and CrashLoopBackOff — it SCHEDULES, so "Pending forever" is only
+# the no-pool case, and `kubectl apply` plus a deploy that never waits on this rollout would report
+# success over a pod that can never serve. So deploy.sh refuses to apply this file at all while it
+# declares neither `command:` nor `args:`, naming 4h6.14 as the missing piece. That refusal
+# disappears by itself the moment 4h6.14 adds `args:` here — it is keyed on this manifest, not on a
+# ticket number a human has to remember to clear.
+#
+# The label contract (`app: sandbox`, container port 8080/TCP, Service `sandbox` on
+# 8080 -> 8080) is dictated by k8s/network-policies/sandbox-policy.yaml. Every rule there
+# selects `app: sandbox`; a podSelector that matches nothing is not an error, it is silent
+# no-coverage, and this is the ONLY Egress policy in the namespace — change the label or the
+# port here and the sandbox runs with unrestricted egress. scripts/test-network-policies.py
+# asserts the contract and deploy.sh aborts the network-policy apply if it fails.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox
+  namespace: genetics
+  # NO iam.gke.io/gcp-service-account ANNOTATION, EVER, and no google_service_account_iam_member
+  # binding in terraform/iam.tf. The sandbox node pool runs in GKE_METADATA mode, which does not
+  # deny credentials — it swaps NODE identity for KSA identity. An annotation here (or reusing
+  # `genetics-suite`, which is bound to a GSA holding bigquery.dataViewer, bigquery.jobUser,
+  # storage.objectViewer, artifactregistry.reader and logging.viewer) would hand model-authored
+  # code direct BigQuery and GCS credentials and make every other control in this file
+  # decoration. The namespace `default` SA is equally unacceptable: it is a shared identity this
+  # pod would then have in common with five other workloads (genetics-results-suite-5ho).
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox
+  namespace: genetics
+spec:
+  # Peak measured load is 23 chat turns/hour, p95 8, mean 3 (2026-08-07), and the supervisor
+  # runs one execution at a time and queues the rest. One replica; do not build for
+  # concurrency that does not exist.
+  replicas: 1
+  # Recreate, not RollingUpdate: the pool is pinned min == max == 1, so a surge pod competes
+  # for one node whose remaining headroom includes two rows docs/project-spec.md records as
+  # undetermined (gke-metadata-server and the GKE Sandbox components). Recreate also keeps
+  # "one execution at a time" true cluster-wide rather than only per-pod, and the emptyDir
+  # sizeLimit budget is per-pod. The cost is a few seconds with no sandbox during a rollout,
+  # which chat-backend surfaces as a tool error, not a wrong answer.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sandbox
+  template:
+    metadata:
+      labels:
+        app: sandbox
+    spec:
+      serviceAccountName: sandbox
+      # Defends the Kubernetes API server (no projected token in the container, so no
+      # kubectl-equivalent access). It defends NOTHING against the GCP metadata server, which
+      # is reached over the network and needs no mounted token — that guarantee is
+      # GKE_METADATA on the node plus no Workload Identity binding for the KSA above.
+      automountServiceAccountToken: false
+      # Kubernetes otherwise injects DB_API_SERVICE_HOST / _PORT style variables for every
+      # Service in the namespace, handing untrusted code the full service inventory and their
+      # ClusterIPs. The two endpoints it may reach are named explicitly below instead.
+      enableServiceLinks: false
+      # The pod must land on the gVisor pool and nowhere else. `workload: sandbox` is the node
+      # label terraform/gke.tf sets on that pool; GKE taints its nodes
+      # sandbox.gke.io/runtime=gvisor:NoSchedule automatically, so the toleration is what lets
+      # this pod schedule there and the absence of it elsewhere is what keeps every other
+      # workload off. runtimeClassName is the gVisor sentry itself — the userspace syscall
+      # boundary — and the `gvisor` RuntimeClass exists on this cluster already.
+      runtimeClassName: gvisor
+      nodeSelector:
+        workload: sandbox
+      tolerations:
+      - key: sandbox.gke.io/runtime
+        operator: Equal
+        value: gvisor
+        effect: NoSchedule
+      # No DNS. The egress policy permits 53/UDP to nothing, and a pod with egress to CoreDNS
+      # sustains ~200 KB/s of exfiltration through query names alone. dnsPolicy: None replaces
+      # the kube-dns resolver with a loopback address nothing listens on, so a lookup that
+      # escapes /etc/hosts fails in microseconds with ECONNREFUSED instead of stalling through
+      # the full resolver timeout budget against dropped packets — a hang inside the 120s wall
+      # clock, which is the failure shape this design exists to avoid and which cannot be
+      # repaired at runtime under readOnlyRootFilesystem. It depends on the image's
+      # /etc/nsswitch.conf listing `files` before `dns` (asserted at build time by
+      # sandbox/build-checks.py, per docs/code-execution-security.md).
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+        - 127.0.0.1
+        options:
+        - name: ndots
+          value: "1"
+        - name: timeout
+          value: "1"
+        - name: attempts
+          value: "1"
+      # Name resolution moves from a network service into /etc/hosts. All four name forms per
+      # IP: hostAliases writes literal strings and the glibc `files` module does no
+      # search-domain expansion, so `db-api` does not answer a lookup for
+      # `db-api.genetics.svc.cluster.local` — the FQDN every other manifest in this suite uses.
+      # deploy.sh resolves these two ClusterIPs from the live cluster at apply time and
+      # substitutes them; ClusterIPs are stable for a Service's lifetime, so deleting and
+      # recreating either Service requires re-rendering and rolling this Deployment.
+      hostAliases:
+      - ip: "${DB_API_CLUSTER_IP}"
+        hostnames: ["db-api", "db-api.genetics", "db-api.genetics.svc", "db-api.genetics.svc.cluster.local"]
+      - ip: "${RESULTS_API_CLUSTER_IP}"
+        hostnames: ["results-api", "results-api.genetics", "results-api.genetics.svc", "results-api.genetics.svc.cluster.local"]
+      # 120s hard wall clock plus room for the supervisor to reap the child, answer the
+      # in-flight request and wipe the execution directory. Shorter than the execution ceiling
+      # would make SIGKILL the normal end of a long script.
+      terminationGracePeriodSeconds: 130
+      # Explicit rather than defaulted: every one of these would break an isolation claim made
+      # in docs/code-execution-security.md if it were ever flipped.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # ONE SHARED UID — option (b) of the pids row in docs/code-execution-security.md,
+        # recorded here as the explicit choice that row obliges 4h6.7/4h6.14 to make. Option (a)
+        # (a distinct child uid 65533) is not implementable under this securityContext: it needs
+        # the supervisor to setuid to another uid and to chown /scratch/<id> and the token file
+        # to it, and drop-ALL plus allowPrivilegeEscalation: false leaves no CAP_SETUID,
+        # CAP_SETGID or CAP_CHOWN — setuid(65533) and chown(65533) both return EPERM here.
+        # Taking (a) would mean adding those three capabilities back, which contradicts the
+        # hardening baseline this manifest exists to establish, so (b) is forced rather than
+        # preferred. THE COST IS REAL AND 4h6.14 INHERITS IT: RLIMIT_NPROC is per real uid, so it
+        # is no longer a per-execution control (the supervisor must enforce the pid budget by
+        # watching the child's process group instead), and the per-execution token file sits
+        # within the child's same-uid reach via /proc/<pid>, so it must be read once and unlinked.
+        # 4h6.14 must not assume it can drop privileges.
+        # fsGroup 65532 is therefore the pod's single gid; it is also what makes the emptyDir
+        # writable by a non-root uid deterministically instead of relying on the kubelet's
+        # default mode.
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: sandbox
+        image: ${REGISTRY}/sandbox:latest
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        # The two endpoints the egress policy permits, in the FQDN form the rest of the suite
+        # uses and the form hostAliases pins. GENETICS_PUBLIC_API_URL is deliberately unset:
+        # it names an external URL this pod has no egress to.
+        - name: GENETICS_API_URL
+          value: "http://results-api.genetics.svc.cluster.local:4000/api"
+        - name: BIGQUERY_API_URL
+          value: "http://db-api.genetics.svc.cluster.local:8080"
+        # NO CREDENTIALS OF ANY KIND ARE DECLARED HERE, and none may be added. Not
+        # INTERNAL_API_SECRET (which would give a script db-api's full surface) and not
+        # SANDBOX_TOKEN_SIGNING_KEY (which would let it mint its own). The per-execution
+        # tokens arrive in the body of chat-backend's POST, are placed by the supervisor in
+        # the forked child only, and expire in 300s; a pod-spec value would turn that into a
+        # static pod-lifetime credential. See docs/code-execution-security.md section 4.
+        #
+        # SANDBOX_ARTIFACTS_DIR is likewise NOT set here. It is per-execution
+        # (/scratch/<execution-id>/artifacts) and set by the supervisor for the child; a fixed
+        # pod-wide value would be the cross-execution shared directory that removing /tmp was
+        # meant to prevent. `read_artifact` (4h6.15) refuses any value whose resolved path is
+        # not under the hardcoded `/scratch/` prefix and refuses if it is a symlink, which is
+        # why the volume below mounts exactly there.
+        volumeMounts:
+        # THE ONLY MOUNT IN THIS POD. No PVC, ever — chat-data holds every conversation in the
+        # deployment. No ConfigMap, no Secret, no pod-level /tmp (it outlives an execution, and
+        # with replicas: 1 and concurrency 1 successive users are guaranteed to share this pod).
+        - name: scratch
+          mountPath: /scratch
+        # No livenessProbe, deliberately. The supervisor enforces its own wall clock, and a
+        # liveness probe that races a legitimate 120s execution restarts the pod and destroys
+        # it — an availability trap that buys nothing the supervisor does not already do. The
+        # readiness probe exists so chat-backend's Service endpoint appears only once the
+        # supervisor is serving; kubelet probes are exempt from NetworkPolicy on this cluster's
+        # Dataplane V2, which is why sandbox-policy.yaml carries no probe rule.
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          # Exceeds the suite baseline. Nothing in the image needs to write outside /scratch:
+          # the bytecode and the matplotlib font cache are baked at build time. It is also what
+          # makes a hardcoded /tmp in some dependency fail loudly at test time rather than
+          # quietly acquiring a cross-execution channel.
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+          # procMount is deliberately left at its default (Default). It masks a handful of
+          # /proc paths (kcore, keys, timer_list) and mounts /proc/sys READ-ONLY rather than
+          # masking it — it stays readable, it is not writable. It does NOT touch /proc/self/fd, which
+          # `read_artifact` uses to verify the artifacts directory by descriptor rather than by
+          # a re-resolvable path name. Setting procMount: Unmasked would weaken the container;
+          # anything that hid /proc/self/fd would make artifact reads fail closed and kill the
+          # feature.
+        resources:
+          # Matches docs/project-spec.md ("The sandbox pool") and
+          # docs/code-execution-security.md section 2 exactly. requests are what keep the pod
+          # schedulable on the ~1930m / bounded-memory e2-standard-2; the CPU limit is the
+          # mining cap and the memory limit is the cgroup the runsc sentry is charged against
+          # too, so the supervisor's RLIMIT_AS for the child must sit below it. Ephemeral
+          # storage is the backstop under the emptyDir sizeLimit.
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+            ephemeral-storage: "1Gi"
+          limits:
+            cpu: "1500m"
+            memory: "3Gi"
+            ephemeral-storage: "2Gi"
+      volumes:
+      - name: scratch
+        emptyDir:
+          # Combined artifact-plus-temp budget for all live executions. Exceeding it does not
+          # fail the write — the kubelet EVICTS the pod — so the supervisor must enforce
+          # sub-quotas well under this (64Mi artifacts, per-execution total) and the kubelet
+          # must never be the thing that fires.
+          sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: sandbox

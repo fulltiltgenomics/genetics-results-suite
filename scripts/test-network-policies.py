@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Offline assertions about k8s/network-policies/*.yaml. No cluster, no network.
+"""Offline assertions about k8s/network-policies/*.yaml.
+
+Every check is decided from the repo alone, with ONE exception: the SANDBOX_ENABLED check
+reads the live cluster (`kubectl get`, over every kind in WORKLOAD_KINDS) to find out whether
+a sandbox is actually
+running, because ENABLE_SANDBOX only says whether this deploy will APPLY one — see
+live_sandbox_deployment(). With no kubectl on PATH the harness still runs end to end and says
+so; a kubectl that is present but cannot answer is refused rather than guessed at.
 
 The property under test is the one that cannot be read off a single file: NetworkPolicies
 in a namespace are ADDITIVE (union), so "mcp-server cannot reach the sandbox" is a
@@ -17,6 +24,8 @@ connection attempt from the mcp-server pod to the sandbox Service.
 """
 
 import os
+import shutil
+import subprocess
 import sys
 
 try:
@@ -385,6 +394,61 @@ def sandbox_policies():
     return [p for p in POLICIES if may_select(p["spec"].get("podSelector"), sandbox_pod_labels())]
 
 
+def live_sandbox_deployment():
+    """Is a sandbox workload live in the cluster right now?
+
+    The ONLY thing in this file that touches a cluster, and it exists because one relaxation
+    cannot be decided from the repo: ENABLE_SANDBOX=false means "this run will not apply the
+    sandbox", and deploy.sh SKIPS sandbox.yaml when the gate is off rather than deleting it, so
+    the env var says nothing about whether a sandbox is serving. Every other check here stays
+    offline.
+
+    Returns one of:
+      "live"       a workload whose name mentions the sandbox exists in the namespace
+      "absent"     the namespace exists, was read, and holds no such workload
+      "no-kubectl" kubectl is not on PATH — necessarily a manual offline run, since deploy.sh
+                   does everything through kubectl and could not have reached this harness
+      "unknown"    kubectl is there and the query failed (no context, unreachable, forbidden),
+                   or the namespace itself does not exist
+
+    The query covers every kind in WORKLOAD_KINDS, derived from it rather than restated, so the
+    two cannot drift: a sandbox running as a StatefulSet, Job or bare Pod must not read "absent"
+    and relax the check, for exactly the reason WORKLOAD_KINDS covers seven kinds offline.
+
+    The namespace is verified to exist first because an empty stdout is otherwise ambiguous:
+    real kubectl exits 0 and prints "No resources found" to stderr for a namespace that is not
+    there, so a mistyped NAMESPACE would relax rather than refuse. That the harness default and
+    deploy.sh's default happen to be the same string is a coincidence of value, not a guarantee.
+
+    Name matching is a substring, not equality, for the same reason _is_sandbox_doc() unions its
+    tells: a live workload called `sandbox-runner` or `code-exec-sandbox` must count.
+    """
+    exe = shutil.which("kubectl")
+    if exe is None:
+        return "no-kubectl"
+    namespace = os.environ.get("NAMESPACE", "genetics")
+
+    def _run(args):
+        try:
+            proc = subprocess.run(
+                [exe, *args], capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc if proc.returncode == 0 else None
+
+    if _run(["get", "namespace", namespace, "-o", "name"]) is None:
+        return "unknown"
+    resources = ",".join(sorted(k.lower() + "s" for k in WORKLOAD_KINDS))
+    proc = _run(["get", resources, "-n", namespace, "-o", "name"])
+    if proc is None:
+        return "unknown"
+    for line in proc.stdout.splitlines():
+        if "sandbox" in line.rsplit("/", 1)[-1].lower():
+            return "live"
+    return "absent"
+
+
 def _is_on(value):
     # the services parse this with .strip().lower() against {1, true, yes}; anything else —
     # including a valueFrom with no literal value — is off
@@ -749,6 +813,61 @@ def _():
     pre-existing unset-`INTERNAL_API_SECRET` fail-open branch, authorized with no `sub`, `sid`
     or `jti`. docs/code-execution-security.md section 4, rule 6.
     """
+    if sandbox_is_deployed() and os.environ.get("ENABLE_SANDBOX", "").strip().lower() != "true":
+        # PRESENT IN THE DIRECTORY IS NOT THE SAME AS APPLIED. scripts/deploy.sh skips
+        # sandbox.yaml unless ENABLE_SANDBOX=true, which it derives from terraform.tfvars'
+        # sandbox_pool_enabled — the same gated shape as rag-service and keycloak. So "false" on
+        # the verifiers can be correct rather than drift, and failing over it would abort every
+        # deploy (deploy.sh treats exit 1 as "refusing to apply network-policies/") for a
+        # workload that is not running.
+        #
+        # BUT THE GATE DOES NOT SAY THAT. ENABLE_SANDBOX=false means "this run will not apply
+        # it", not "it is not running": deploy.sh SKIPS sandbox.yaml when the gate is off, it
+        # never deletes it. After one gate-on deploy, any later deploy from a worktree or with
+        # terraform.tfvars unreadable (SKIP_TERRAFORM=true is the documented path for exactly
+        # that) runs gate-off against a LIVE, SERVING sandbox — and relaxing on the env var
+        # alone would silence the one check that stops db-api shipping SANDBOX_ENABLED=false
+        # underneath it, which is the fail-open branch where a script that omits Authorization
+        # is authorized with no sub/sid/jti. So the relaxation is keyed on the CLUSTER.
+        #
+        # This only relaxes THIS check. Every other sandbox check above is static — the label
+        # contract, the egress allow-list, the tells lock — and still runs against the manifest.
+        live = live_sandbox_deployment()
+        assert live != "live", (
+            "a sandbox Deployment is LIVE in the cluster but ENABLE_SANDBOX is not true. This "
+            "deploy would leave db-api/results-api with SANDBOX_ENABLED=\"false\" while the "
+            "sandbox serves, so a script that omits Authorization lands in db-api's unset-"
+            "INTERNAL_API_SECRET fail-open branch, authorized with no sub/sid/jti "
+            "(docs/code-execution-security.md section 4, rule 6). Deploy from a checkout whose "
+            "terraform.tfvars sets sandbox_pool_enabled = true, or export ENABLE_SANDBOX=true, "
+            "or delete the live sandbox Deployment first. Do not relax this check."
+        )
+        assert live != "unknown", (
+            "could not determine from the cluster whether a sandbox workload is live (kubectl "
+            "is on PATH but the query failed — no context, unreachable cluster, or no "
+            "permission), and ENABLE_SANDBOX is not true. Refusing to relax the SANDBOX_ENABLED "
+            "check on a guess: the gate says only that THIS run will not apply the sandbox, "
+            "never that one is not already running. Give this harness a working kubectl context "
+            "and re-run. Running with ENABLE_SANDBOX=true is not a way around this — it makes "
+            "this check strict, not relaxed."
+        )
+        if live == "no-kubectl":
+            # Said out loud rather than passed silently. deploy.sh does everything through
+            # kubectl and cannot reach this harness without it, so this is a manual offline run
+            # by construction and there is no deploy to fail open.
+            notes.append(
+                "kubectl is not on PATH, so whether a sandbox Deployment is LIVE was not "
+                "determined; the SANDBOX_ENABLED check is relaxed on the ENABLE_SANDBOX gate "
+                "alone, which is sound only for an offline run (deploy.sh always has kubectl)"
+            )
+        else:
+            notes.append(
+                "a sandbox workload exists in k8s/deployments/ but ENABLE_SANDBOX is not true "
+                "and no sandbox workload is live in the cluster, so deploy.sh will not apply "
+                "it; the SANDBOX_ENABLED check on db-api/results-api is inert until the gate is "
+                "on (genetics-results-suite-4h6.7)"
+            )
+        return
     values = sandbox_enabled_values()
     if not sandbox_is_deployed():
         # the discovery lock. Every other sandbox check is skipped by this branch, so a
