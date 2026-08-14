@@ -11,6 +11,20 @@ document decides *where* it runs, *what it can reach*, *what credential it carri
 *who can invoke it*. It does not cover the SDK's own API surface (`4h6.11`) except where
 that surface becomes a security boundary — see "Handoffs to other tasks".
 
+**And it does not: the SDK's public function list is NOT a containment boundary**
+(`genetics-results-suite-4h6.33`). A script that imports the SDK reaches the full
+`ToolExecutor` through `GeneticsClient._executor` — the underscore there is curation of the
+recommended surface, not enforcement — and httpx is present regardless, since it is the SDK's
+own transport. So a script can call anything the egress policy permits, whether or not the SDK
+wraps it, and "absent from the SDK" must never be read as "unreachable". The egress allow-list
+specified in section 3 ("Egress policy") — not the SDK — is what makes a target unreachable, with
+one exception it does not cover: link-local (169.254.169.254), where the load-bearing defence is
+the node pool's `GKE_METADATA` mode and the missing Workload Identity binding rather than this
+policy (see section 3). And it is the *specified* boundary, not yet a live one: the sandbox is not
+deployed, and `k8s/network-policies/sandbox-policy.yaml` stays decoration until
+`genetics-results-suite-4h6.7` ships a Deployment carrying the labels it selects. The SDK decides
+only what is convenient.
+
 **Threat actors, in the order they matter:**
 
 1. **A prompt-injected model.** Tool results and user-supplied attachments enter the
