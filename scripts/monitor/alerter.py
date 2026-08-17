@@ -49,6 +49,11 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # client-side and unactionable; a real scope misconfiguration shows up as nobody
     # being able to sign in, not as a log line worth paging on.
     ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 callback")),
+    # mcp-server's streamable-HTTP SSE streams are long-lived, so every pod restart kills
+    # the open ones mid-response and nginx logs one line per connection. Scoped to /mcp:
+    # a premature close on any other route still alerts, and a genuinely crash-looping
+    # mcp-server is caught by the /healthz check rather than by these lines.
+    ("nginx", re.compile(r'upstream prematurely closed connection.*request: "[A-Z]+ /mcp')),
 ]
 
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
