@@ -43,6 +43,12 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("oauth2-proxy", re.compile(r"Invalid redirect provided")),
     ("oauth2-proxy", re.compile(r"Invalid redirect generated")),
     ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 state")),  # stale/bot callbacks
+    # the IdP put ?error=... on the callback: crawlers mangling the authorize URL
+    # (invalid_scope), scanners injecting into it (unsupported_response_type), or a login
+    # page left open past the Keycloak auth session (temporarily_unavailable). All are
+    # client-side and unactionable; a real scope misconfiguration shows up as nobody
+    # being able to sign in, not as a log line worth paging on.
+    ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 callback")),
 ]
 
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
