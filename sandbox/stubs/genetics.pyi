@@ -11,11 +11,18 @@
     df = genetics.credible_sets(gene="IL7R")
     df.filter(pl.col("pip") > 0.5)
 
-A script needs no knowledge of HTTP, tokens, base URLs or result envelopes: endpoints and
-credentials come from the environment (GENETICS_API_URL, BIGQUERY_API_URL,
-INTERNAL_API_SECRET), every function returns a polars DataFrame, and a failed request
-raises GeneticsError instead of returning a success flag to check. Endpoints are read from
-the environment ONLY and cannot be set from a script — see the note above `_URL_SETTINGS`.
+A script needs no knowledge of HTTP, tokens, base URLs or result envelopes: endpoints come
+from the environment (GENETICS_API_URL, BIGQUERY_API_URL), every function returns a polars
+DataFrame, and a failed request raises GeneticsError instead of returning a success flag to
+check. Endpoints are not settable from a script — see the note above `_URL_SETTINGS`.
+
+In the sandbox the credential is the PER-EXECUTION token pair the supervisor minted for
+this execution and named to the child by path in SANDBOX_TOKEN_FILE, attached per request
+and bound to the destination it is going to — never INTERNAL_API_SECRET, which the sandbox
+image does not hold (genetics-results-suite-4h6.44; `tools/executor.py`'s
+`_load_sandbox_tokens` and `_SandboxTokenAuth`). Outside the sandbox — the service
+processes and local runs — the client still authenticates with INTERNAL_API_SECRET. The two
+are mutually exclusive with no fallback between them.
 
 Nothing here imports the chat backend, the MCP server or the databases, so the package can
 be installed into a sandbox image on its own.
