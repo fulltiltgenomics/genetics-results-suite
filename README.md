@@ -257,7 +257,7 @@ draining" in `docs/project-spec.md`.
 | mcp-server | genetics-mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (every 8h): health checks, BQ coverage, log alerts → Slack |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
