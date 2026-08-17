@@ -608,7 +608,7 @@ list by grepping the eleven closure modules, not by trusting it:
 |---|---|---|
 | `GENETICS_API_URL`, `GENETICS_PUBLIC_API_URL`, `BIGQUERY_API_URL` | `tools/executor.py`, the `base_url` / `public_url` / `bigquery_url` properties | live `os.environ.get` |
 | `PERPLEXITY_API_KEY`, `TAVILY_API_KEY`, `LITERATURE_SEARCH_BACKEND` | `tools/executor.py`, the literature-search tools | live `os.environ.get` |
-| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read |
+| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read — and since `4h6.44` the prose is a **negation**: both stubs say the sandbox credential is the per-execution token and never this secret |
 
 The three endpoint names are a map of the injection sites in the one backend the sandbox
 may reach. The three literature-search names are live reads whose values the sandbox pod
@@ -617,18 +617,38 @@ here.
 
 `INTERNAL_API_SECRET` in the SDK docstrings and the shipped stubs is an **accepted
 residual**, not an oversight (`4h6.13` recorded the exfiltration note in `client.pyi` as
-operational knowledge the agent is meant to read). It is kept, named, for three reasons.
-The stubs exist to be read by the model writing sandbox code, and "endpoint URLs are not
-configurable because the client attaches `INTERNAL_API_SECRET` to every request" is the
-only form of that warning that lets the reader connect it to the deployment's actual
-configuration; genericised to "an internal credential" it stops being checkable and starts
-being ignorable. It also discloses nothing the reader cannot already derive: the SDK it is
-being handed authenticates on its behalf, and the header rides on every request it makes.
-And the sandbox pod does not hold the value (`4h6.9`), so `os.environ.get("INTERNAL_API_SECRET")`
-inside the sandbox returns nothing — the name is not a key to anything present. This is a
-different calculus from `config/settings.py`, which named a dozen *unrelated* variables and
-so handed over the shape of the whole internal surface rather than the one credential the
-caller is already using.
+operational knowledge the agent is meant to read) — but **the argument for keeping it has
+changed with `4h6.44`, and the earlier one is no longer available.** That argument was that
+"endpoint URLs are not configurable because the client attaches `INTERNAL_API_SECRET` to
+every request" is a warning the reader can check against the deployment. The premise is now
+false on the sandbox path: the client attaches a **per-execution, audience-bound token** and
+never the shared secret, so a stub that said otherwise would be teaching the model a
+deployment that does not exist.
+
+What the stubs say now, and why the name still appears, is the **negation** — the SDK does
+not use `INTERNAL_API_SECRET`, it uses a credential the supervisor delivers per execution.
+That is worth naming for two reasons. It remains checkable against the deployment, which is
+what made the original phrasing preferable to a genericised "an internal credential". And it
+carries the operational fact the reader actually needs: the credential in hand is short-lived
+and scoped, so a script that tries to hoard it is hoarding something that expires, and the
+endpoint URLs are still not parameters because handing *that* token to a chosen host is still
+handing a live credential somewhere it should not go.
+
+It discloses nothing the reader cannot already derive — the SDK it is being handed
+authenticates on its behalf — and the sandbox pod does not hold the value (`4h6.9`), so
+`os.environ.get("INTERNAL_API_SECRET")` inside the sandbox returns nothing: the name is not a
+key to anything present, and after `4h6.44` it is not even a key to anything the SDK would
+send. This is a different calculus from `config/settings.py`, which named a dozen *unrelated*
+variables and so handed over the shape of the whole internal surface rather than the one
+credential the caller is already using.
+
+**The stubs are generated, so this passage is checkable rather than asserted.**
+`scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
+from the SDK source, `scripts/test-sandbox-docs.py` fails if the committed stubs differ from a
+fresh generation, and `scripts/build.sh` stages them into the image. A change to the SDK's
+docstrings therefore *cannot* leave the shipped stubs describing the old transport without
+failing that check — which is what caught this row after `4h6.44` landed. Re-derive the row
+above from the regenerated stubs; do not adjust it in place.
 
 What is *not* in the residual list: `config/settings.py` and `auth/core.py` are both out of
 the closure and neither ships, so no LLM provider key, allow-list, OAuth audience or
@@ -1692,7 +1712,7 @@ authoritative one.
   SDK's audit records are **not** separated out today — that is `4h6.45`'s, and until it
   lands they land in this same stream.
 
-#### `4h6.43` — the read-once token file, which is NOT an exposure bound
+#### `4h6.43`/`4h6.44` — the read-once token file, which is NOT an exposure bound
 
 The two tokens arrive in the POST body, are checked for consistency at parse time, and are
 written before the fork to `/scratch/<execution_id>/tokens.json`, mode `0600`, `O_EXCL`. The
@@ -1700,9 +1720,8 @@ child is given the **path** in `SANDBOX_TOKEN_FILE`, never the tokens themselves
 the environment is readable through `/proc/<pid>/environ` by any process with the same uid,
 and supervisor and child share uid 65532. The supervisor never puts them in its own
 environment, never writes them to the pod spec, a ConfigMap or a Secret, and never reads the
-file back. `4h6.44` owns the other half in the SDK: open once, unlink, and pick the token by
-destination (`aud: db-api` for `BIGQUERY_API_URL`, `aud: results-api` for `GENETICS_API_URL`
-— audience-bound, and a cross-audience token is a hard `401` at both validators).
+file back. `4h6.44` owns the other half in the SDK, and **it has landed** — see "The SDK half
+(`4h6.44`)" below for what it does and what it does not buy.
 
 **No `chown` and not mode `0400`.** That is section 2's "Permission contract" for option (a),
 which is **NOT IN EFFECT**: the pod holds no `CAP_CHOWN` or `CAP_SETUID` and both were
@@ -1736,6 +1755,73 @@ warning) is exactly what an uncredentialed run would reach.
 The `sub`/`sid`/`jti` claims stay on the request object for `4h6.45` to stamp audit records
 from. The supervisor is the only component that both holds the token and sits outside the
 child's address space, which is why `4h6.12` put the stamping here.
+
+**The SDK half (`4h6.44`), as built.** It lives in genetics-mcp-server's
+`tools/executor.py` — `_read_and_unlink`, `_load_sandbox_tokens`, `_parse_sandbox_tokens`,
+`_SandboxTokenAuth` and `_build_client` — not in `sdk/client.py`, because the client the SDK
+delegates to is the executor's. Five properties, each with a reason:
+
+- **Read once, and unlink whether or not the read succeeded.** The unlink is in a `finally`
+  around the read, so a file the SDK failed to parse is still removed rather than left for
+  the next process with this uid. The read is capped at 64 KiB.
+- **`O_NOFOLLOW`**, for the same reason the supervisor writes with it: `/scratch` is writable
+  by the child's uid, so a symlink planted at the path would otherwise redirect the read.
+- **Per-destination audience binding.** One httpx client serves both upstreams and the two
+  tokens are not interchangeable, so the audience is chosen per request from the destination
+  (`aud: db-api` for `BIGQUERY_API_URL`, `aud: results-api` for `GENETICS_API_URL`) rather
+  than by a default header on the client. Both validators pin `aud` as a **string** and
+  refuse a list, so a token sent to the wrong service is a hard `401`, not a degraded success.
+- **Hard failure rather than an uncredentialed run.** `SANDBOX_TOKEN_FILE` being set is the
+  statement that this process is a sandbox execution; a file that is missing, unreadable,
+  not JSON, or short of either audience raises rather than falling back to
+  `INTERNAL_API_SECRET` or to no header. The sandbox path and the service path are mutually
+  exclusive by construction — the secret is never attached alongside the token, because a
+  request carrying it resolves no sandbox principal and is served with no accounting
+  (`genetics-results-suite-0lf`).
+- **A request to any other destination gets no credential.**
+
+**What the binding is worth, stated exactly.** It is hygiene against a misconfigured or
+accidentally-redirected base URL, plus the correctness property that neither upstream can be
+handed the other's token. **It is not a control over the script.** The child is forked
+without exec and therefore owns `os.environ`; `base_url` and `bigquery_url` are resolved from
+`GENETICS_API_URL`/`BIGQUERY_API_URL` on **first use**, and `sdk/__init__.py` holds
+`_client = None` until the first call. Reproduced: with a valid token file present and
+`GENETICS_API_URL` pointed at an attacker-controlled host **before** the first SDK call, the
+request went out carrying the results-api token. What stops that in the pod is the egress
+allow-list in `k8s/network-policies/sandbox-policy.yaml` and nothing in the SDK — and there is
+no NetworkPolicy in the local Docker path, so the local sandbox does not have that stop.
+
+**And it is not an exposure bound either**, for exactly the reasons the file is not: the
+token is in the child's own address space the moment the SDK reads it, `4h6.55`'s
+`/proc/self/mem` scan recovered tokens from an execution that had already completed, and a
+detached `setsid()` grandchild of an earlier execution read a live token file from inside the
+read-once window. Read-once-and-unlink is worth building and is worth nothing as a bound. The
+exposure is bounded by `4h6.55`'s resolution and by nothing here.
+
+**What the token does buy** is that the credential on the wire is 5 minutes long, scoped to
+one audience, and carries `sub`/`sid`/`jti` — so the upstream controls keyed on `jti` are no
+longer inert and every `endpoint_access` line is attributable to a user, a conversation and an
+execution. That is a real change from `INTERNAL_API_SECRET`, which never expires, is accepted
+at both services, and resolves no principal at all.
+
+**The two upstreams do not meter the same way, and the asymmetry is not "one meters and one
+does not".** Re-derive rather than trusting this:
+
+| | results-api (`app/core/sandbox_budget.py`) | db-api (`api/main.py`) |
+|---|---|---|
+| per-`jti` request count | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) | **none** |
+| per-`jti` concurrency | **4**, and **8** pod-wide | **none** |
+| per-`jti` aggregate bytes | **1 GiB** response bytes | **200 GB** BigQuery bytes processed |
+| where it is enforced | `SandboxResponseCapMiddleware`, **before routing** — an unmatched path is admitted and counted like any other | in the handlers, on the four BigQuery paths only |
+
+So `genetics.sql()` — the most expensive surface the sandbox reaches — is **bounded by spend
+and attributable per execution, but not bounded by request count or by concurrency**: a script
+can issue unlimited db-api requests at unlimited concurrency as long as each stays inside the
+200 GB aggregate, and db-api's cheap paths (`/health`, the cached `/schema` hits) are not
+counted at all. That is a deliberate difference in kind — db-api's cost is BigQuery bytes and
+results-api's is egress and pod memory — not an oversight, but it does mean "the per-execution
+counters now apply" is true of results-api's four counters and of db-api's byte budget, and is
+**not** a statement that db-api counts requests. It does not.
 
 #### `4h6.46` — `/scratch` sub-quotas, retention and the reaper
 
@@ -2392,11 +2478,11 @@ bound on a determined user is **200 GB × turns**, and nothing in this design ca
 of turns. That is tolerable here for two measured reasons, not by assumption: concurrency is
 1 with a queue, so executions serialize rather than multiply, and the measured peak is 23
 chat turns/hour — an upper bound of roughly 4.6 TB/hour scanned *if every turn ran a script
-that deliberately exhausted its budget*, which is visible in BigQuery billing and — once
+that deliberately exhausted its budget*, which is visible in BigQuery billing and — now that
 `4h6.43`/`4h6.44` deliver the token and db-api's `endpoint_access` line therefore carries `sub`,
 `sid` and `jti` — attributable per user and session through the db-api half of control 3 in
-6.2. Before that the spend is visible but not attributable, and the SDK-side half of that
-control is neither — nor, against a hostile script, trustworthy (6.2, control 3). If a
+6.2. The SDK-side half of that control is still neither collected nor, against a hostile
+script, trustworthy (6.2, control 3). If a
 per-session or
 per-user budget is ever wanted, the same in-process LRU counter keyed on `sid` or `sub`
 instead of `jti` provides it; it is deliberately not in v1 because a cross-turn budget needs
@@ -2644,19 +2730,29 @@ section implies.**
    | `GET /api/v1/rsid/variants` | 200, `user_email=mcp-tool` | `{}` |
    | `GET /api/v1/variant_sets` | 200, `user_email=mcp-tool` | `{}` |
 
-   This is not hypothetical. `sdk/client.py` states that the client attaches `INTERNAL_API_SECRET`
-   to every request and that a script able to import the module can also read `os.environ`. So on
-   the day the flag flips, a sandbox script sheds all four counters by sending the internal secret
-   **instead of** sending no header. The change converts "omit the header" into "send the other
-   header".
+   This was not hypothetical, and it is the reason the transport had to change. While
+   `sdk/client.py` authenticated with `INTERNAL_API_SECRET`, a sandbox script shed all four
+   counters by sending the internal secret **instead of** sending no header — the fix to the
+   no-credential half converted "omit the header" into "send the other header".
 
-   **The residual path closes elsewhere, in two beads, neither of them in results-api's request
-   code:** `genetics-results-suite-4h6.7` must stop giving the sandbox `INTERNAL_API_SECRET` (the
-   Deployment), and `genetics-results-suite-4h6.44` must make the SDK send the per-execution token
-   (the transport). Until both land, limitation 1 is **partially** closed and the four counters
-   bind an honest execution only.
-   `tests/test_anonymous_surface.py::test_an_internal_secret_caller_is_served_but_not_accounted`
-   encodes the residue as current behaviour and is expected to fail when those two land.
+   **The sandbox's half of that residue is now closed, in the transport rather than in
+   results-api's request code.** `genetics-results-suite-4h6.44` has landed: the SDK builds its
+   client from the per-execution tokens when `SANDBOX_TOKEN_FILE` names them, attaches the
+   audience-bound token for each destination, and **never attaches `INTERNAL_API_SECRET`
+   alongside or instead** — the two paths are mutually exclusive in `_build_client`, precisely
+   because attaching both, or preferring the secret, would silently re-open this. A missing or
+   unusable token file raises rather than falling back. `genetics-results-suite-4h6.7` keeps the
+   Deployment half: the sandbox is never given the secret in the first place.
+
+   **What remains is intentional and is not the sandbox's.** results-api still serves an
+   internal-secret caller with no accounting, because chat-backend, mcp-server and bff
+   legitimately authenticate that way and none of them is a per-execution tenant.
+   `tests/test_anonymous_surface.py::test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it`
+   pins **both** halves as current behaviour: the internal-secret path is still served
+   unaccounted, and the SDK no longer takes it. It replaces the earlier
+   `test_an_internal_secret_caller_is_served_but_not_accounted`, which recorded the residue as
+   something expected to fail once `4h6.44` landed — the residue did not go away, the *caller*
+   did.
    The invariant `app/core/limits.py` states — that omitting the header cannot buy a *looser*
    limit — held for the per-response byte cap only; for these four counters, omitting it would
    buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
@@ -2669,10 +2765,12 @@ section implies.**
 2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
    surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
    slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
-   sizing above is an argument about honest volume and says nothing about an attacker, and with
-   limitation 1 only **partially** closed — a caller presenting `INTERNAL_API_SECRET` is still
-   served with no accounting — there is still no per-tenant fairness behind either number. They
-   are sized far
+   sizing above is an argument about honest volume and says nothing about an attacker, and there
+   is no per-tenant fairness behind either number. Limitation 1's sandbox half is now closed —
+   the SDK sends the per-execution token and nothing else (`4h6.44`) — but the counters were
+   never a fairness mechanism, and the intentional internal-secret residue means an
+   internal-secret caller inside the namespace still reaches these pod-wide surfaces without
+   being accounted. They are sized far
    above honest use precisely so an honest execution never meets them, and both fail toward
    refusing new work rather than corrupting a running execution's accounting.
 
@@ -2845,34 +2943,41 @@ Re-run against the fixed suite that same widening fails 2 tests. The route set i
 listed, so it cannot rot the way a count in prose does.
 `scripts/test-network-policies.py` cannot help here — it reads manifests and has no view of a
 Python decorator — which is precisely why the assertion lives with the routes.
-What these tests do **not** pin is accounting: every one of them but
-`test_an_internal_secret_caller_is_served_but_not_accounted` checks a boolean predicate rather
-than driving a request, which is exactly why the `INTERNAL_API_SECRET` bypass above was invisible
-to the suite until it was measured by hand.
+What these tests do **not** pin is accounting: only
+`test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it` drives a request; the
+rest check a boolean predicate, which is exactly why the `INTERNAL_API_SECRET` bypass above was
+invisible to the suite until it was measured by hand.
 
-*A rollout coupling this creates, and it is not the one an earlier draft described.* That draft
-said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.44` lands makes "every SDK call 401".
-**Measured false.** `sdk/client.py` authenticates with `INTERNAL_API_SECRET` read from the
-environment (the mitigation its own docstring calls insufficient), that secret satisfies
-`is_internal_caller`, and driving the real ASGI app with `SANDBOX_ENABLED=true` and
-`REQUIRE_AUTH=true` returns **200** on `/api/v1/rsid/variants` and `/api/v1/variant_sets` as
-`user_email=mcp-tool`.
+*A rollout coupling this created, and it was never the one the earliest draft described.* That
+draft said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.44` landed would make "every SDK
+call 401". **Measured false at the time**: the SDK authenticated with `INTERNAL_API_SECRET`
+read from the environment, that secret satisfies `is_internal_caller`, and driving the real
+ASGI app with `SANDBOX_ENABLED=true` and `REQUIRE_AUTH=true` returned **200** on
+`/api/v1/rsid/variants` and `/api/v1/variant_sets` as `user_email=mcp-tool`. The real hazard was
+the opposite and worse: the SDK kept working while contributing nothing to the per-execution
+budget, so the flip *looked* successful — no 401s, nothing in the logs to notice — while the
+control it was supposed to activate stayed inert.
 
-The real hazard is the opposite one, and it is worse: **the SDK keeps working while contributing
-nothing to the per-execution budget.** `admit` is reached only from `_sandbox_principal`, which
-accepts an HS256 sandbox token, so an internal-secret caller is served with
-`sandbox_budget._executions` still `{}`. The flip therefore *looks successful* — no 401s, no
-broken calls, nothing in the logs to notice — while the control it was supposed to activate is
-inert. Anyone planning the rollout against the 401 sentence plans against a risk that does not
-exist and misses the one that does.
+**`4h6.44` has landed and that hazard is gone**, along with the reasoning that produced it. The
+SDK now builds its client from the per-execution tokens, so a sandbox request resolves a
+principal, `admit` runs, and the counters are no longer empty. Two things this does **not**
+change, both easy to over-read:
 
-**The commit that lands the sandbox workload and flips the flag must also land the transport
-(`4h6.44`) and stop giving the sandbox `INTERNAL_API_SECRET` (`4h6.7`)** — not to keep the SDK
-working, which it will do regardless, but because without both the per-execution counters bind
-nothing. This is the same commit `genetics-results-suite-r22` already couples the label contract
-and the flag to; the requirement is additive, not a new one. The flag does enforce `4h6.9`'s
-contract that the SDK must never fall back to "send no credential" — that fallback stops working
-— but "send the internal secret instead" is a fallback it does *not* close.
+- The SDK does not 401 for a *missing* token either — it **raises before the request**, because
+  `SANDBOX_TOKEN_FILE` being set with an unusable file is a misconfiguration, not a caller to
+  degrade. Neither the old 401 story nor a silent-fallback story describes the current
+  behaviour.
+- `SANDBOX_ENABLED` still does not close "send the internal secret instead" *at results-api* —
+  it never could, since that path serves chat-backend, mcp-server and bff. What closed it for
+  the sandbox is that the sandbox no longer holds the secret (`4h6.7`) and the SDK no longer
+  sends it (`4h6.44`).
+
+**The commit that lands the sandbox workload and flips the flag still has to carry the
+Deployment half (`4h6.7`)**, for the same reason as before: a sandbox pod holding
+`INTERNAL_API_SECRET` re-opens the bypass regardless of what the SDK prefers, because a script
+that can read `os.environ` can build its own client. This is the same commit
+`genetics-results-suite-r22` already couples the label contract and the flag to; the
+requirement is additive, not a new one.
 
 **Why the exception has zero security delta — and the premise that had to be made true first.**
 The earlier argument was that a sandbox script is capped on these routes either way, so relaxing
@@ -3366,19 +3471,24 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
    aggregate budget on either service rather than running for the full 120 seconds.
-3. **The SDK records what it reads — but the trail is neither attributable nor collected
-   until `4h6.44` and `4h6.45`.** Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
+3. **The SDK records what it reads — the trail is now attributable, and is still not
+   collected until `4h6.45`.** Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
    wrapper emits one structured line carrying function, argument summary and row count
    (`4h6.12`), and db-api logs `sid`, `sub` and `jti` per request. Four limits, all present
    in the code today, and none of them cosmetic:
-   - **Not attributable to a person or a conversation.** The line's
+   - **Attributable now, and it was not before.** The line's
      `[user=…] [session=…] [execution=…]` prefix is read per call from `SANDBOX_USER`,
-     `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID`, which are the sandbox token's `sub`,
-     `sid` and `jti` (section 4). The SDK never receives that token and **nothing in either
-     repo sets those three variables**, so all three render `unknown`. db-api's `sid`/`sub`/
-     `jti` fields come from the same token. Half of that has landed: the supervisor now
-     writes the token file and names it to the child in `SANDBOX_TOKEN_FILE` (`4h6.43`). The
-     SDK still does not read it — `4h6.44` — so nothing has changed on the wire yet.
+     `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID`, which the supervisor sets in the child's
+     environment from the sandbox token's `sub`, `sid` and `jti` claims (`supervisor.py`,
+     `ExecutionDir.child_env`); an earlier draft said nothing in either repo set them and all three
+     rendered `unknown`. Both halves of token delivery have landed — the supervisor writes the
+     token file and names it in `SANDBOX_TOKEN_FILE` (`4h6.43`), the SDK reads and unlinks it
+     and sends the audience-bound token (`4h6.44`) — so db-api's and results-api's
+     `endpoint_access` lines carry the same three values from the token itself. **The
+     environment prefix and the wire claims are not the same evidence**: the child owns its own
+     environment, so a script can rewrite all three before an SDK call, while the token's
+     claims are signed and the script cannot alter them. Trust the upstream lines; treat the
+     SDK's prefix as a convenience.
    - **No line reaches a collector.** The cluster's logging agent collects the *pod's*
      stdout; the child's streams go to the supervisor's pipe and nothing forwards them.
      Until `4h6.45` does, the control produces records that nothing ingests.
@@ -3459,10 +3569,12 @@ existing MCP tool surface already carry the user and the session in chat-backend
 `Executing tool:` lines, and script-driven reads would not, so enabling the sandbox ahead of
 token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) buys a query path whose "who ran that?" is
 unanswerable. It is still *bounded* — nothing leaves the user's own session, nothing new is
-reachable — it is simply not detectable per person until `4h6.44` lands the SDK half of token delivery
-(`4h6.43` has landed the supervisor half: the child now receives its per-execution tokens by
-read-once file, but the SDK still attaches `INTERNAL_API_SECRET`)
-and `4h6.45` lands supervisor-side enforcement and audit forwarding. And the gap is not only that the records go
+reachable. Token delivery has now landed on both sides — the supervisor writes the read-once
+file (`4h6.43`) and the SDK reads it and sends the audience-bound token (`4h6.44`) — so the
+**upstream** half of the trail is attributable today: db-api's and results-api's
+`endpoint_access` lines carry `sub`, `sid` and `jti` from the signed token. What is still
+missing is the sandbox's own records, which go nowhere until `4h6.45` lands supervisor-side
+enforcement and audit forwarding. And the gap is not only that the records go
 uncollected: under an assumption of compromise they are untrustworthy by construction, since
 the script and the emitter share a process (control 3). Do not cite 6.2 as evidence of
 after-the-fact attribution before then, and do not cite a *present* SDK record as evidence of
@@ -3779,15 +3891,18 @@ The controls, all of which work regardless of what the model was persuaded to wr
    attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
    mount the attachment directory or the PVC. A script sees the files it was given, not the
    directory they came from.
-6. **It is visible — after `4h6.44` and `4h6.45`, and with the limits in 6.2's control 3.** The SDK-call
-   log and the db-api `sid`/`jti` attribution make an injected script's data access
-   reconstructable after the fact, but only once the token is delivered and the supervisor
-   both enforces on and forwards the child's audit stream; today the records name no user and
-   no session, reach no collector, and cover nothing an injected script does through
-   `_executor`. An injected script is precisely the case they cannot answer: it runs in the
-   same process as the emitter, so it can forge and suppress SDK records at will, and only
-   db-api's own `endpoint_access` lines — written outside the sandbox — hold against it. Read
-   this as a property the design provides, not one it provides yet.
+6. **It is partly visible — the upstream half only, and with the limits in 6.2's control 3.**
+   Token delivery has landed on both sides (`4h6.43`, `4h6.44`), so db-api's and results-api's
+   `endpoint_access` lines now carry `sub`, `sid` and `jti` from the signed token and an
+   injected script's *data access* is reconstructable after the fact. The SDK's own call log is
+   not: the supervisor neither enforces on nor forwards the child's audit stream until
+   `4h6.45`, so those records reach no collector and cover nothing an injected script does
+   through `_executor`. An injected script is precisely the case they cannot answer either way:
+   it runs in the same process as the emitter, so it can forge and suppress SDK records at will
+   — and it can rewrite `SANDBOX_USER`/`SANDBOX_SESSION_ID`/`SANDBOX_EXECUTION_ID` in its own
+   environment — so only the upstream `endpoint_access` lines, written outside the sandbox from
+   claims the script cannot sign, hold against it. Read the SDK-side half as a property the
+   design provides, not one it provides yet.
 7. **Explicitly NOT a control:** system-prompt instructions telling the model to ignore
    injected content, or to refuse suspicious scripts. Those reduce frequency; they are not
    a boundary and no control above depends on them.
