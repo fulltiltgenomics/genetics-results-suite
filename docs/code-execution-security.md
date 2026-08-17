@@ -1262,7 +1262,7 @@ must be distinguishable by the client from a script failure: `strategy: Recreate
 no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
 analysis failed" (`4h6.47`).
 
-### As built (`4h6.39`) — the supervisor skeleton, and the five holes still in it
+### As built (`4h6.39`) — the supervisor skeleton, and the one hole still in it
 
 `sandbox/supervisor.py` implements the contract above: the HTTP front door, the queue, the
 per-execution directory and child environment, the startup assertions and the fork/reap.
@@ -1300,16 +1300,15 @@ so no legitimate record is lost. This matters beyond tidiness: the client return
 unchanged, so a forged record tells the model its own successful analysis failed, and the
 code that writes it is model-influenceable by the prompt-injection path in §6.4.
 
-**Five behaviours in the contract are NOT implemented, each owned elsewhere, each stubbed in
-place with the bead name.** These are runtime holes and not TODOs:
+**This section was written when five behaviours were missing. Four have since landed** —
+`4h6.41` (wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing), `4h6.42` (the two output
+bounds), `4h6.43` (token delivery) and `4h6.46` (quotas, retention, reaper); see "As built
+(`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" below for what each of them actually does and what
+it measurably does not. **One is still absent**, and it is a runtime hole, not a TODO:
 
 | owner | absent | consequence today |
 |---|---|---|
-| `4h6.41` | wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing | **nothing kills a runaway child.** `status: "timeout"` is unreachable and a non-terminating script holds the only slot until the pod restarts. The seam is **two** functions, not one: `_apply_limits(job)` runs in the parent after the fork and owns the wall clock, the pid watch and *raising* the child's `oom_score_adj` (a raise is unprivileged); `_apply_child_limits()` runs in the child and owns `RLIMIT_AS`. Neither can be merged into the other — `setrlimit` on another process and *lowering* the supervisor's own `oom_score_adj` both need `CAP_SYS_RESOURCE`, which this pod drops, so the supervisor's `-500` is a pod-spec change and not a runtime one |
-| `4h6.42` | stdout capture caps | `status: "limit"` / `OutputLimit` is unreachable. The reader drains to EOF (or the deadline below) with an interim in-memory bound and returns the whole decoded text — no 8 MiB kill, no 64 KiB head-and-tail window, no elision marker. Past the interim bound it keeps reading and **discards**, so it never blocks the child on a full pipe and `output_bytes` stays an accurate count |
-| `4h6.43` | token delivery | the child gets **no** per-execution credential; a script's data calls carry whatever the image already holds |
-| `4h6.45` | audit forwarding | no audit fd exists, so nothing reaches the pod's stdout. `_audit_pipe` is a placeholder for the parent-side reader and re-stamper, and unlike the other four it is **not called and cannot be a drop-in**: a descriptor reaches the child only by existing before the fork, so `4h6.45` also edits `_execute` (create the pipe pre-fork, drain the read end on a third thread sharing the same reaped-child deadline), `_child_main` (dup it to a fixed number and add that number to the `_close_inherited_fds` keep-set) and `child_env` (export `GENETICS_SDK_AUDIT_FD`) |
-| `4h6.46` | quotas, retention, reaper | **nothing is deleted after an execution completes.** `/scratch` grows until restart and the `emptyDir` `sizeLimit` is defended by nothing but the startup wipe |
+| `4h6.45` | audit forwarding | no audit fd exists, so the SDK's records go to the **child's own stdout** — indistinguishable from script output, subject to the same 64 KiB return window, and reaching no collector at all, because the cluster's logging agent collects the pod's stdout and nothing forwards the child's. The handoff that used to live in a `_audit_pipe(job)` function is now a **comment block** in `sandbox/supervisor.py` at the same place: that function was defined, never called, and returned `None` while its docstring described a pipe, four caps and a re-stamper, which is a seam that describes itself falsely. Every word of the handoff is kept. It cannot be a drop-in in any case — a descriptor reaches the child only by existing before the fork, so `4h6.45` edits `_execute` (create the pipe pre-fork, drain the read end on a third thread sharing the same reaped-child deadline), `_child_main` (dup it to a fixed number and add that number to the `_close_inherited_fds` keep-set) and `child_env` (export `GENETICS_SDK_AUDIT_FD`) |
 
 The lossy UTF-8 decode of `output` **is** contract behaviour and is implemented: invalid
 bytes become U+FFFD, and there is no alternate encoding and no `encoding` field.
@@ -1345,8 +1344,9 @@ in the code:
   drain now gets a deadline — `DRAIN_GRACE_S` (2 s) after `waitpid` returns — and the
   supervisor closes the read ends itself and logs the abandonment; `duration_ms` is taken at
   the reap, so it measures the child and not the drain. This is **not** something the
-  `4h6.41` wall clock fixes: by then the process group is gone (`killpg` → `ESRCH`) and
-  nothing is left to kill. Killing the escapee stays `4h6.41`'s and `4h6.46`'s problem; what
+  `4h6.41` wall clock fixes, and `4h6.41` landing has not changed that: an escapee has left
+  the process group, so `killpg` returns `ESRCH` and there is nothing group-shaped left to
+  kill. **Nothing in the supervisor kills such a process** — `4h6.55` owns that — and what
   this guarantees is only that it cannot block the queue.
 - **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
   list carrying the right value is the same claim. Anything else is a `400`.
@@ -1560,6 +1560,328 @@ Consequences for `4h6.55`, none of them acted on here:
   this machine, which has no `runsc`.
 - Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
   file. The measurement is a strong hint about the cluster, not a result from it.
+
+### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`) — the per-execution limits, and what each one is worth
+
+Four of `4h6.39`'s five holes, landed together in `sandbox/supervisor.py` because they share
+one poll loop and one kill path. **Every limit below was watched firing in the real image**
+via `scripts/run-sandbox-local.sh --test`, not reasoned about; the checks live in
+`scripts/test-supervisor.py`'s `limits`, `tokens`, `retention` and `retained ceiling` groups
+and run in **both** modes.
+
+#### One watchdog, one kill path, and the two reap hazards it had to be written around
+
+A single daemon thread per execution polls the wall clock, the process-group size and both
+`/scratch` quotas every 200 ms. Four timers would have given four chances to get the reap
+race wrong; the drain thread's 8 MiB cap enters the same path through a callback.
+
+**Hazard 1 — a `pgid` cached at fork time is a stale pointer at a recycled pid.** Once
+`waitpid` reaps the child its pid is free for reuse, so a watchdog that decided to kill a
+moment earlier can `killpg` a group that is plausibly *the next execution's child*. The fix
+is structural rather than a narrowed window: `waitid(P_PID, …, WEXITED | WNOWAIT)` blocks
+until the child exits **without** consuming the zombie — so the pid stays un-recyclable — and
+the actual `waitpid` and the `reaped` flag are then set together under a lock every signal
+path also takes. A plain blocking `waitpid` cannot do this; it reaps before any lock can be
+taken.
+
+**Hazard 2, and it was found by running the code, not by reading it — reading the pgid back
+right after the fork returns the SUPERVISOR'S OWN process group.** The child's `setsid()` is
+the first statement of `_child_main`, but the parent wins that race routinely: the harness
+logged `child pgid is 651696, not the 651474 recorded at fork`, and 651474 was the
+supervisor's group. Had that value been trusted, the first wall-clock timeout would have
+`SIGTERM`ed the supervisor and everything in its group. The parent cannot fix it by calling
+`setpgid(pid, pid)` itself either — that makes the child a group leader and `setsid()` then
+fails with `EPERM` for a group leader. So **no pgid is cached at all**: it is resolved live at
+every use by a helper that refuses to return the supervisor's own group, and a child that has
+no group of its own yet is signalled by pid alone. Two consequences worth stating: the pid
+budget **skips** a poll rather than counting the supervisor's group against the child's
+budget, and `None` from the group scan means "unenforceable", never "empty".
+
+**What the group kill reaches, and what it does not.** It reaches the child and every
+descendant that stayed in its process group — an ordinary script's `subprocess` children. A
+descendant that calls `setsid()` **leaves the group and is not signalled**; that was measured
+with `killpg` returning `ESRCH` while the escapee kept running, and it also defeats the token
+file (below). This is the best mechanism available under the pod's constraints and it is
+**not a containment boundary**. `4h6.55` owns the one that would be, and until it lands an
+escaped process shares the pod with the next user. Nothing in the code or in this document
+should be read as claiming otherwise.
+
+#### `4h6.41` — wall clock, memory, oom_score_adj, pid budget
+
+| control | value | what fires, and what it is worth |
+|---|---|---|
+| wall clock | request `timeout_s`, default 60 s, hard ceiling 120 s (rejected, never clamped) | `SIGTERM` the group at the deadline, `SIGKILL` after `KILL_GRACE_S` (2 s), answer `200` with `status: "timeout"`, `error.type: "Timeout"`, `error.limit: null` |
+| `RLIMIT_AS` | 2560 MiB = `limits.memory` 3Gi − 512 MiB supervisor headroom, **soft and hard** | set in the **child**, because `setrlimit` on another process needs `CAP_SYS_RESOURCE`, which the pod drops. An over-large allocation is a clean `MemoryError` inside the child rather than a cgroup OOM kill whose victim the kernel picks by RSS heuristic — and which gVisor's accounting changes again, since the sentry holds memory on the application's behalf |
+
+**The hard limit is lowered too, and that is the whole control.** Setting only the soft limit
+made this **opt-out**: raising a soft limit back up to the hard limit is unprivileged, so
+`setrlimit(RLIMIT_AS, (RLIM_INFINITY, RLIM_INFINITY))` from the script succeeded — **measured
+in the real image**, after which allocating 2900 MiB produced exactly the cgroup OOM kill
+(`sig=9`) the limit exists to prevent. Lowering a hard limit *is* unprivileged and is
+irreversible without `CAP_SYS_RESOURCE`, which the pod drops, so the child cannot undo it. The
+harness asserts the undo is **refused**, in both modes, rather than asserting the soft value.
+| child `oom_score_adj` | raised to `+500` from the parent | see below; weaker than section 2 implies |
+| supervisor `oom_score_adj` | **not set, and nothing pretends to** | `-500` returned `EPERM` for the supervisor's own file *and* for the child's, measured. Lowering below the inherited floor needs `CAP_SYS_RESOURCE`. Section 2's `-500` is a **pod-spec change** (`4h6.50`), not a runtime one |
+| pid budget | 32 processes in the child's group | supervisor-side watch via `/proc/<pid>/stat`'s `pgrp` field. `RLIMIT_NPROC` is **advisory only** here: it is per real uid across the pid namespace and the two processes share uid 65532, so a child forking to its limit also stops the *supervisor* forking. Over budget kills the whole group: `status: "limit"`, `error.type: "PidLimit"` |
+
+**`RLIMIT_AS` is sized against the POD's budget, and the local container's behaviour is
+deliberately ignored.** `4h6.40` measured that the local `/scratch` is a tmpfs whose page
+cache is charged to the container's *own* 3 GiB memory cgroup (113 MiB → 414 MiB after a
+300 MiB write), while the pod's `emptyDir` is node-disk-backed and charged to
+`ephemeral-storage` (1Gi/2Gi), **never** to `limits.memory`. Tuning to the local behaviour
+would be up to 512 MiB more conservative than the pod needs. **The divergence a reader will
+hit:** a script holding ~2.4 GiB while `/scratch` holds 400 MiB can be cgroup-OOM-killed
+*locally* and run fine in the pod. The number is therefore hard-coded from
+`k8s/deployments/sandbox.yaml` rather than read from `/sys/fs/cgroup`.
+
+**`RLIMIT_AS` bounds virtual address space, not RSS, and the prewarmed child does not start
+from zero.** Measured inside the image: a child that has inherited `prewarm()`'s
+numpy/scipy/polars/matplotlib mappings already has `VmSize` ~1358 MiB against `VmRSS`
+~113 MiB, because BLAS reserves far more than it touches. So the script's own allocation
+headroom under the 2560 MiB limit is **~1.2 GiB, not ~2.5 GiB**. Raising the limit to
+"fix" that would spend the supervisor's headroom, which is the one thing keeping the cgroup
+OOM killer from having to choose between the two processes.
+
+**What the `oom_score_adj` raise is actually worth, measured rather than assumed.** The child
+starts at `0` (inherited). Writing `500` succeeds. Writing `0` again **also succeeds, from
+inside the child, at any time** — only going *below* the inherited floor is refused (`-500` →
+`EPERM`). So a script can undo it, and the honest guarantee is not "+500 holds" but "the
+child can never make itself a *better* OOM candidate than the supervisor": its adjustment
+stays in `[0, 1000]` against the supervisor's `0`. Section 2's Memory row reads as though the
+`+500`/`-500` pair is durable in both directions; neither half is, and this row is the
+authoritative one.
+
+#### `4h6.42` — the two output bounds, which are different limits
+
+- **Pipe cap, 8 MiB.** The reader **stops** at the cap and kills the group; it does not drain
+  and discard, because the cap exists so the supervisor's memory and the pod's CPU stop being
+  consumed and draining achieves neither. `output_bytes` therefore stops at the cap too,
+  which is what that field means on the wire. Answer: `status: "limit"`,
+  `error.type`/`error.limit` `"OutputLimit"`, `output_truncated: true`. A child blocked
+  writing to the now-unread pipe still dies — a pipe write is an interruptible sleep, so
+  `SIGTERM`'s default disposition ends it, and `SIGKILL` follows 2 s later regardless.
+- **Return window, 64 KiB.** First 32 KiB + `\n...[<N> bytes elided]...\n` + last 32 KiB, the
+  marker additional to the budget. Head **and** tail because the traceback is at the tail;
+  head-only truncation is the expensive failure shape, since the model then debugs against
+  output it cannot see.
+- **The cut is on bytes and never through a character.** Up to 3 bytes are trimmed from each
+  side onto a UTF-8 boundary and **counted into `<N>`**, so head + tail + elided accounts for
+  every byte. Without this the split introduces U+FFFD at both seams; the harness prints
+  `'x' + 'é' * 200000` specifically so the boundary lands mid-sequence rather than neatly
+  between two characters.
+- **`output_truncated` is true for either cause** — the pipe cap fired, or the window elided a
+  middle.
+- **stderr is interleaved into the same pipe as stdout** (settled by `4h6.39`, restated
+  because `4h6.42` was asked to record the decision): section 2 budgets **one** 64 KiB window,
+  and splitting it across two streams either halves the window or doubles the budget. The
+  SDK's audit records are **not** separated out today — that is `4h6.45`'s, and until it
+  lands they land in this same stream.
+
+#### `4h6.43` — the read-once token file, which is NOT an exposure bound
+
+The two tokens arrive in the POST body, are checked for consistency at parse time, and are
+written before the fork to `/scratch/<execution_id>/tokens.json`, mode `0600`, `O_EXCL`. The
+child is given the **path** in `SANDBOX_TOKEN_FILE`, never the tokens themselves — a token in
+the environment is readable through `/proc/<pid>/environ` by any process with the same uid,
+and supervisor and child share uid 65532. The supervisor never puts them in its own
+environment, never writes them to the pod spec, a ConfigMap or a Secret, and never reads the
+file back. `4h6.44` owns the other half in the SDK: open once, unlink, and pick the token by
+destination (`aud: db-api` for `BIGQUERY_API_URL`, `aud: results-api` for `GENETICS_API_URL`
+— audience-bound, and a cross-audience token is a hard `401` at both validators).
+
+**No `chown` and not mode `0400`.** That is section 2's "Permission contract" for option (a),
+which is **NOT IN EFFECT**: the pod holds no `CAP_CHOWN` or `CAP_SETUID` and both were
+measured to return `EPERM`. `0400` without the `chown` would exclude the child, which is the
+process that has to read it.
+
+**This file bounds nothing, and every earlier phrasing in this document read as though it
+did.** `4h6.55` measured, against this exact shape:
+
+- the child is forked **without exec** from a supervisor holding tokens in its address space,
+  and a raw `/proc/self/mem` scan in the child recovered them — **including from an execution
+  that had already completed and been released**. Clearing references cannot help: freed
+  Python strings stay in arenas that copy-on-write hands to the child;
+- a detached `setsid()` grandchild of an **earlier** execution read **this** execution's
+  mode-0600 file from inside the read-once window;
+- the same tokens are reachable by module global, frame walk and `gc.get_objects()`.
+
+So the file is still the right thing to build — the child needs *some* route to the
+credential, it keeps the token out of `/proc/<pid>/environ`, and it gives the SDK something to
+unlink — but **the exposure is bounded by `4h6.55`'s resolution and by nothing here.** The
+supervisor also unlinks the file itself the moment the child is reaped, whether or not the
+SDK ever read it, and `_retain` deletes it again with the rest of the directory; that is
+hygiene, not a bound.
+
+**Refusing to run uncredentialed** is enforced in `parse_execute_request`, before any
+directory exists: a token set that is incomplete, carries the wrong audience, or disagrees
+with the body's `user`/`session_id`/`execution_id` is a `400`. This matters because db-api's
+pre-existing fail-open branch (unset `INTERNAL_API_SECRET` disables auth with a startup
+warning) is exactly what an uncredentialed run would reach.
+
+The `sub`/`sid`/`jti` claims stay on the request object for `4h6.45` to stamp audit records
+from. The supervisor is the only component that both holds the token and sits outside the
+child's address space, which is why `4h6.12` put the stamping here.
+
+#### `4h6.46` — `/scratch` sub-quotas, retention and the reaper
+
+| budget | value | enforcement |
+|---|---|---|
+| per-execution artifacts | 64 MiB **and** 1024 entries | polled; over → `status: "limit"`, `error.type: "ArtifactQuota"` |
+| per-execution total (`/scratch/<id>`, artifacts + tmp + caches) | 192 MiB **and** 20 000 entries | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
+| aggregate `/scratch` during a run (retained + live) | 480 MiB | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
+| aggregate retained artifacts | 256 MiB | oldest-first eviction when a completion breaches it |
+| retention | 15 min from completion | reaper thread, every 30 s |
+| manifest entries in one response | 1024 | listed; the rest counted in `artifacts_omitted` |
+
+**The budget, stated once.** `sandbox/supervisor.py` states the same arithmetic in one comment
+block above the constants and nowhere else; an earlier version stated it in two places that
+contradicted each other (`448 MiB < 512 MiB` in one, a `~200 MiB` poll overshoot in the
+other — `256 + 192 + 200 = 648` against a 512 MiB volume).
+
+```
+  RETAINED_ARTIFACTS_CEILING   256 MiB   steady state, held by oldest-first eviction; each
+                                         term is bounded — a COMPLETED retention is trimmed to
+                                         the 64 MiB artifact quota before it is retained, a
+                                         FAILURE-PATH one is neither cleaned nor trimmed and is
+                                         bounded by the 192 MiB execution quota instead
++ EXECUTION_TOTAL_QUOTA        192 MiB   the one live execution
+= 448 MiB
+<= SCRATCH_AGGREGATE_CEILING   480 MiB   = 512 MiB sizeLimit − 32 MiB for .supervisor and for
+                                         filesystem overhead the per-tree walks do not see
+```
+
+`448 <= 480` is what makes the aggregate check a **backstop rather than a second quota**: the
+two per-part budgets cannot together reach it, so it fires only on overshoot. **The kubelet
+must never be the thing that fires:** exceeding an `emptyDir` `sizeLimit` does not fail the
+write, it **evicts the pod**, killing the in-flight script and destroying every retained
+artifact in the window.
+
+**What this arithmetic does not prove.** The 32 MiB reserve is a margin, not a proof. A poll
+can miss ~200 MiB of writes, and a child that traps `SIGTERM` keeps writing for
+`KILL_GRACE_S` (2 s) after a quota fires; neither is bounded by 32 MiB and no arrangement of
+these constants would bound them. What bounds them is how fast the writer is stopped (`SIGTERM`
+immediately, `SIGKILL` 2 s later) and, afterwards, the trim. So the honest claim is: **the
+steady state is exact and sits 64 MiB under the cliff; the transient peak during a hostile
+burst is not**, and the aggregate check is what fires 32 MiB early instead of letting the
+kubelet be the thing that notices.
+
+- **Accounting is on `st_blocks` plus a per-entry floor, not `st_size`,** and both halves are
+  needed. `st_blocks` because `f.seek(512 << 20); f.write(b'x')` makes a file whose apparent
+  size is 512 MiB and whose blocks are nearly none — charging apparent size would kill that
+  script for using no space. The 512-byte per-entry floor because charging blocks *alone* said
+  a zero-length file was free: **measured**, 300 000 empty files charged 8.6 MB against the
+  192 MiB quota, so no limit fired, while the response reached 19.8 MB and the supervisor's RSS
+  went 22 MB → 166 MB. An empty file costs an inode, a directory entry, a manifest row and a
+  scan step; it is not free anywhere that matters.
+- **The entry budgets bound the watchdog's own scan, which is why the wall clock is a bound at
+  all.** The scan stops at the budget — a tree with more entries than the budget allows is over
+  it, and the exact count past that point changes no decision. Before that, one pass over
+  800 000 empty files took 8.47 s and reported 0 bytes, and `artifacts/` was walked twice
+  because it lives under the base directory: **measured**, with `timeout_s=30`, 0 files → killed
+  at 30.23 s, 200 000 → 45.51 s, 800 000 → 46.74 s. `MAX_QUEUED_WAIT_S` is 120 s, so every
+  second past the deadline is a second the next two callers spend queued or being `429`ed.
+- **The poll interval is 200 ms and is chosen against the WALL CLOCK, not the overshoot.** The
+  wall clock is the tightest of the four in the only sense that matters — it is the one bound a
+  client is told the exact value of. The overshoot is the *loosest*: at ~1 GiB/s a poll misses
+  ~200 MiB and no interval anybody would run makes that small. Three things keep the deadline
+  honest: the poll wait shrinks as the deadline approaches, the scan is entry-bounded, and the
+  clock is re-checked immediately *after* the scan so an overrun fires on that tick. The
+  harness's quota tests still pace their writes — an unpaced writer hits `ENOSPC` (locally) or
+  an eviction (in the pod) before the poll it is trying to demonstrate ever runs.
+- **`artifacts/` is TRIMMED to its quota before it is retained,** newest entries first by
+  mtime. Without this a quota kill retained its own overshoot: **measured**, a burst write
+  killed by `ArtifactQuota` at 64 MiB left 93 MiB on disk (46 % over) in 0.31 s, and at the
+  ~1 GiB/s tmpfs sustains that is ~264 MiB. Retaining it made the 256 MiB ceiling a ceiling
+  over unbounded terms. The trim runs *before* the manifest is built — the other order would
+  advertise names the trim then deletes — and what it deleted is reported in
+  `artifacts_omitted`, the field that already means "present but not listed". Newest-first
+  because the entry that blew the quota is the one being written when the kill landed.
+- **Cleanup and post-hoc accounting are not bounded by the budgets they restore**, and bounding
+  them there was circular. A *live* scan stops at the 20 000-entry budget because past that
+  point the tree is over it either way. The trim stopping there meant it sorted a truncated
+  sample and derived both the surviving entry count and the size it caches from it: **measured**,
+  25 000 zero-length files left **6 024 entries against the 1 024 budget** and reported
+  **0.5 MiB where the tree really held 2.9 MiB** — a 6× undercount that scales linearly, and
+  the number the aggregate check and the ceiling eviction then treat as fact. It is reachable
+  inside `KILL_GRACE_S` alone: ~14 000 empty-file creations/s were measured on a slow local
+  filesystem, and the pod's `emptyDir` is faster. The trim now drains in bounded passes —
+  chunk-at-a-time, a four-million-entry hard stop, and a pass that deletes nothing gives up
+  rather than looping — so the size it returns is the size that is really there. The same
+  correction applies to the **failure-path retention**, which measured only `artifacts/` on the
+  one path where nothing has cleaned `tmp/`, `home/` or the caches yet, charging up to a whole
+  192 MiB execution as zero; it measures the whole execution directory and re-checks the
+  ceiling on the spot, since nothing else re-checks it until a next completion that may never
+  come.
+- **Retained sizes are measured once and cached.** Re-walking every retained tree on every
+  completion made one 300 000-file execution a tax on all fifteen minutes of executions after
+  it. Nothing writes to a retained directory, so the value cannot drift.
+- **Oldest-first eviction has no "never evict the last one" guard**, and removing it was the
+  fix: with it, a single over-ceiling execution sat above the ceiling permanently, because
+  there was nothing older to evict. The trim is what protects the newest execution now, and
+  protects it properly — every retained entry is ≤ 64 MiB against a 256 MiB ceiling.
+- **On completion everything under `/scratch/<id>` is deleted except `artifacts/`**, which is
+  retained 15 minutes so `read_artifact` has something to return and is then deleted
+  unconditionally, read or not.
+- **Eviction is observable on the wire without any host view of `/scratch`:** an evicted
+  execution's id stops answering `409 DuplicateExecutionId` and becomes usable again, because
+  its directory is gone. That is what the harness asserts, in both modes.
+- **The reaper has two mechanisms because they answer different failures.** The registry
+  covers executions that *completed*. A filesystem sweep covers a directory whose job died on
+  a path that never reached `_retain` — an orphan the registry has no row for, which would
+  otherwise sit until the pod restarts; live and queued ids are excluded by name first.
+- **Retention does not survive a pod restart**, and the startup wipe (`4h6.39`) removes
+  everything unrecognised, which after a restart is everything.
+
+**`SANDBOX_RETENTION_S` is a test-only override with the same standing as
+`SANDBOX_SCRATCH_ROOT`:** loud warning on every start, never set by the image and never by
+`k8s/deployments/sandbox.yaml`. It may only **shorten** retention — a larger value is
+**refused at startup, not clamped**, because artifacts outliving what `read_artifact` was told
+is worse than a startup error, and a knob that is silently ignored is a knob that gets
+believed. It exists so the reaper can be watched deleting a directory inside a test run rather
+than fifteen minutes later; `scripts/test-supervisor.py --container URL --retention-s N`
+asserts the caller started the container that way, and **skips the retention check by name**
+when it is absent rather than quietly proving less. Measured this way in the real image: the
+supervisor logged `retention reaper removed 1 execution directory` and the id became reusable.
+
+#### `error.type` is validated on arrival, not echoed
+
+The child is forked without `exec`, so the script holds the status fd and writes the string
+that becomes `error.type`. `message` had a 2 KiB cap and `traceback` an 8 KiB tail cap from the
+start; `type` had **neither a cap nor a validator**, only the 64 KiB status-pipe read.
+**Measured against the container:** a 60 000-character `error.type` reached the response,
+bypassing the 64 KiB output window entirely and landing in a model's context, and a child
+writing `{"type": "Timeout"}` produced `error.type: "Timeout"` with `error.limit: null` — a
+shape only the supervisor is supposed to be able to emit, and one the contract invites clients
+to branch on.
+
+This is **the same defect `4h6.47` fixed on the other side of this wire**, where chat-backend's
+client applied `_redact` to `message` and not to `error_type`. Both ends had the same blind
+spot about the same field.
+
+The supervisor now requires a child-supplied `type` to be ≤ 64 bytes and to match an
+identifier or dotted qualname, and refuses its own reserved names; anything else is reported
+as `NonZeroExit`. `StartupFailure` is the one reserved name a child legitimately writes — from
+the child's own setup handler, which exits `70` and cannot reach the script — so it is admitted
+on that exit code and refused on every other. None of this narrows what the *contract* says
+`type` may hold: the reserved names are still reserved, a real exception class name still
+passes through unchanged, and the field is still an open string to a client.
+
+**The response as a whole is now bounded** at 1 MiB, the mirror of `MAX_BODY_BYTES` on the
+request. Every component is separately capped (64 KiB output, 1024 manifest entries, 64 B
+`type`, 2 KiB `message`, 8 KiB `traceback`), so a well-formed response is ~100 KiB and this
+backstop should never fire; it exists because nothing bounded the outgoing body at all, and a
+19.8 MB one was measured. Degradation drops `artifacts` first — counting them in
+`artifacts_omitted`, since a name the model cannot see is recoverable and output it never sees
+is not.
+
+#### Still not provable locally
+
+`oom_score_adj` writability and `/proc` process-group inspection under **gVisor** are
+unverified — `runsc` implements both in the sentry — and so is the kubelet's `pod_pids_limit`
+as an outer backstop (`--pids-limit` is per container, not per pod). `emptyDir` `sizeLimit`
+eviction has **no local form at all**: the local `/scratch` is a 512 MiB tmpfs that returns
+`ENOSPC`, which is a *different failure* from a pod eviction and a gentler one. These go to
+`4h6.51`, the deploy-window bead.
 
 ---
 
@@ -1875,9 +2197,17 @@ entire lifetime property. The mechanism is:
    the SDK reads once and unlinks. Reason: `/proc/<pid>/environ` is readable by any process
    with the same uid, and under option (b) of the pids row the supervisor and child share
    uid 65532 — so a second child, or any helper process the script spawns, can read the
-   token out of a sibling's environment. A file that is read and unlinked closes the window
-   to the interval before the SDK's first call; `/scratch/<id>` is per-execution and wiped
-   regardless. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
+   token out of a sibling's environment. `/scratch/<id>` is per-execution and wiped
+   regardless. **The file is not an exposure bound and this paragraph used to imply it was.**
+   An earlier phrasing said read-once-and-unlink "closes the window to the interval before the
+   SDK's first call". It does not close anything: `4h6.55` measured a detached `setsid()`
+   grandchild of an *earlier* execution reading this execution's mode-0600 file **inside** that
+   window, and — because the child is forked without exec from a supervisor holding the tokens
+   in its address space — measured a raw `/proc/self/mem` scan in the child recovering tokens
+   including from an execution that had already completed. The file is still worth writing (it
+   keeps the token out of `/proc/<pid>/environ` and gives the SDK something to unlink), but
+   what bounds the exposure is `4h6.55`'s resolution and nothing else. See "As built
+   (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
    unreadable by the child**, which is the process that needs it: the supervisor writes it
    and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the
    matching rule for artifacts written by the child and read by the supervisor, are in
@@ -3017,8 +3347,9 @@ What *is* preventable is data leaving the user's own conversation. The controls:
      `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID`, which are the sandbox token's `sub`,
      `sid` and `jti` (section 4). The SDK never receives that token and **nothing in either
      repo sets those three variables**, so all three render `unknown`. db-api's `sid`/`sub`/
-     `jti` fields come from the same token, so that half waits on the same two tasks: the
-     supervisor writes the token file (`4h6.43`) and the SDK reads and sends it (`4h6.44`).
+     `jti` fields come from the same token. Half of that has landed: the supervisor now
+     writes the token file and names it to the child in `SANDBOX_TOKEN_FILE` (`4h6.43`). The
+     SDK still does not read it — `4h6.44` — so nothing has changed on the wire yet.
    - **No line reaches a collector.** The cluster's logging agent collects the *pod's*
      stdout; the child's streams go to the supervisor's pipe and nothing forwards them.
      Until `4h6.45` does, the control produces records that nothing ingests.
@@ -3099,7 +3430,9 @@ existing MCP tool surface already carry the user and the session in chat-backend
 `Executing tool:` lines, and script-driven reads would not, so enabling the sandbox ahead of
 token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) buys a query path whose "who ran that?" is
 unanswerable. It is still *bounded* — nothing leaves the user's own session, nothing new is
-reachable — it is simply not detectable per person until `4h6.43`/`4h6.44` land token delivery
+reachable — it is simply not detectable per person until `4h6.44` lands the SDK half of token delivery
+(`4h6.43` has landed the supervisor half: the child now receives its per-execution tokens by
+read-once file, but the SDK still attaches `INTERNAL_API_SECRET`)
 and `4h6.45` lands supervisor-side enforcement and audit forwarding. And the gap is not only that the records go
 uncollected: under an assumption of compromise they are untrustworthy by construction, since
 the script and the emitter share a process (control 3). Do not cite 6.2 as evidence of

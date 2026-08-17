@@ -711,7 +711,13 @@ Three things that table does *not* settle, all tracked in `genetics-results-suit
    only once a gVisor node exists. As of 2026-08-13 the project has none anywhere.
 3. **The runsc sentry's memory is charged to the pod's cgroup, so it eats the 3Gi *limit*, not
    the node headroom.** It therefore constrains the `RLIMIT_AS` budget the supervisor sets for
-   the child, not this table. Unmeasured, and workload-shaped.
+   the child, not this table. Unmeasured, and workload-shaped. That budget is now a concrete
+   number — `genetics-results-suite-4h6.41` sets `RLIMIT_AS` to **2560 MiB**, i.e. the 3Gi
+   `limits.memory` less 512 MiB of supervisor headroom, hard-coded from
+   `k8s/deployments/sandbox.yaml` rather than read from `/sys/fs/cgroup` (see
+   `docs/code-execution-security.md`, "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)").
+   Whatever the sentry holds comes out of that same 512 MiB, so if it turns out to be large
+   the headroom is what has to grow.
 
 **On the CPU limit.** An earlier version of this section claimed the pod's 1500m ceiling was
 "deliberately not satisfiable alongside the system pods" (876m + 1500m = 2376m > 1930m). That
