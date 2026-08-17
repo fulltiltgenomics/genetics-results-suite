@@ -919,12 +919,18 @@ start it, because the image still ships no `CMD` and the manifest still declares
 `command`/`args`, which is what `scripts/deploy.sh` refuses to apply until
 `genetics-results-suite-4h6.50` wires it up as the last bead of the chain.
 
-- **It is a skeleton, and the gaps are runtime behaviours rather than TODOs.** The wall clock
-  and rlimits (`4h6.41`), the output caps (`4h6.42`), token delivery to the child
-  (`4h6.43`), audit forwarding (`4h6.45`) and the `/scratch` quotas, retention and reaper
-  (`4h6.46`) are each stubbed in place under their bead's name. `docs/code-execution-security.md`
-  → "As built (`4h6.39`)" tabulates what each absence means today; the short version is that
-  nothing yet kills a runaway child and nothing yet deletes a completed execution.
+- **The per-execution limits are built; one runtime gap remains.** The wall clock and rlimits
+  (`4h6.41`), the output caps (`4h6.42`), token delivery to the child (`4h6.43`) and the
+  `/scratch` quotas, retention and reaper (`4h6.46`) landed together, sharing one poll loop and
+  one kill path: a per-execution watchdog thread kills the process group (`_fire_limit` →
+  `_kill_group`) and the reaper deletes completed executions on a 30 s tick (`reap_expired` →
+  `_forget_retained`). `docs/code-execution-security.md` → "As built (`4h6.41`, `4h6.42`,
+  `4h6.43`, `4h6.46`)" tabulates what each one is worth and what it measurably does not do.
+  What is still absent is **audit forwarding (`4h6.45`)** — the only remaining
+  `STUB (genetics-results-suite-…)` marker in `sandbox/supervisor.py`, a comment block rather
+  than a dead function, so the SDK's records go to the child's own stdout, inside the same
+  64 KiB return window as script output and reaching no collector — and the missing `CMD`
+  (`4h6.50`, above), without which nothing starts the supervisor at all.
 - **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
   pre-imported analysis modules the child inherits copy-on-write — and it therefore closes
   every inherited descriptor before running the script, or it would hold the listening socket
@@ -937,7 +943,9 @@ start it, because the image still ships no `CMD` and the manifest still declares
   `setsid()`s away keeps the write ends open and EOF never arrives, which used to hold the
   only execution slot on a pipe read after the child was long gone. The drain gets 2 s past
   `waitpid` and is then abandoned with a log line, and `duration_ms` is taken at the reap.
-  Killing the escapee is `4h6.41`/`4h6.46` work; the slot is freed regardless.
+  Killing the escapee is `4h6.55`'s work and not the watchdog's — a `setsid()` descendant has
+  left the process group `_kill_group` signals, which is measured, so a PID namespace per
+  execution is what contains it; the slot is freed regardless.
 - **Every writable path is per-execution.** `TMPDIR`, `HOME`, `MPLCONFIGDIR`,
   `XDG_CACHE_HOME`, `PYTHONPYCACHEPREFIX` and `SANDBOX_ARTIFACTS_DIR` are set in the child
   and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
