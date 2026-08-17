@@ -9,14 +9,16 @@
 # top of deploy.sh, which refuses before anything is applied rather than creating one.
 #
 # NO COMMAND / ARGS, DELIBERATELY. The image's ENTRYPOINT is the bare interpreter and it
-# ships no CMD (sandbox/Dockerfile): the supervisor module is genetics-results-suite-4h6.14's
+# ships no CMD (sandbox/Dockerfile): the supervisor module is genetics-results-suite-4h6.39's
 # to write, and a placeholder here would be indistinguishable from a real one at runtime —
-# the same reasoning that kept CMD out of the image. Until 4h6.14 lands, this pod would
+# the same reasoning that kept CMD out of the image. Until it lands, this pod would
 # start python3 with no script and CrashLoopBackOff — it SCHEDULES, so "Pending forever" is only
 # the no-pool case, and `kubectl apply` plus a deploy that never waits on this rollout would report
 # success over a pod that can never serve. So deploy.sh refuses to apply this file at all while it
-# declares neither `command:` nor `args:`, naming 4h6.14 as the missing piece. That refusal
-# disappears by itself the moment 4h6.14 adds `args:` here — it is keyed on this manifest, not on a
+# declares neither `command:` nor `args:`, naming 4h6.39 as the missing piece. That refusal
+# disappears by itself the moment 4h6.50 adds `args:` here — 4h6.50 is the last bead of the
+# supervisor chain and the only one that may touch this file; 4h6.39 deliberately does not.
+# The check is keyed on this manifest, not on a
 # ticket number a human has to remember to clear.
 #
 # The label contract (`app: sandbox`, container port 8080/TCP, Service `sandbox` on
@@ -137,18 +139,19 @@ spec:
         runAsUser: 65532
         runAsGroup: 65532
         # ONE SHARED UID — option (b) of the pids row in docs/code-execution-security.md,
-        # recorded here as the explicit choice that row obliges 4h6.7/4h6.14 to make. Option (a)
+        # recorded here as the explicit choice that row obliges 4h6.7/4h6.41 to make. Option (a)
         # (a distinct child uid 65533) is not implementable under this securityContext: it needs
         # the supervisor to setuid to another uid and to chown /scratch/<id> and the token file
         # to it, and drop-ALL plus allowPrivilegeEscalation: false leaves no CAP_SETUID,
         # CAP_SETGID or CAP_CHOWN — setuid(65533) and chown(65533) both return EPERM here.
         # Taking (a) would mean adding those three capabilities back, which contradicts the
         # hardening baseline this manifest exists to establish, so (b) is forced rather than
-        # preferred. THE COST IS REAL AND 4h6.14 INHERITS IT: RLIMIT_NPROC is per real uid, so it
-        # is no longer a per-execution control (the supervisor must enforce the pid budget by
-        # watching the child's process group instead), and the per-execution token file sits
-        # within the child's same-uid reach via /proc/<pid>, so it must be read once and unlinked.
-        # 4h6.14 must not assume it can drop privileges.
+        # preferred. THE COST IS REAL AND THE SUPERVISOR CHAIN INHERITS IT: RLIMIT_NPROC is per
+        # real uid, so it
+        # is no longer a per-execution control (4h6.41: the supervisor must enforce the pid budget
+        # by watching the child's process group instead), and the per-execution token file sits
+        # within the child's same-uid reach via /proc/<pid>, so it must be read once and unlinked
+        # (4h6.43/4h6.44). 4h6.39 must not assume it can drop privileges.
         # fsGroup 65532 is therefore the pod's single gid; it is also what makes the emptyDir
         # writable by a non-root uid deterministically instead of relying on the kubelet's
         # default mode.

@@ -142,13 +142,13 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   # SCHEDULES — "Pending forever" above is only the no-pool case — and nothing downstream waits
   # on this rollout, so the deploy would exit 0 and print success over a pod that can never
   # serve. That is the same silent success the gate exists to prevent, so refuse it too. Keyed
-  # on the manifest, not on a ticket number: the check clears itself when 4h6.14 lands `args:`.
+  # on the manifest, not on a ticket number: the check clears itself when 4h6.50 lands `args:`.
   if ! grep -Eq '^[[:space:]]*(command|args):' "${ROOT_DIR}/k8s/deployments/sandbox.yaml"; then
     echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml declares no command/args."
-    echo "       The supervisor process is genetics-results-suite-4h6.14 and has not landed; the"
+    echo "       The supervisor process is genetics-results-suite-4h6.39 and has not landed; the"
     echo "       image's ENTRYPOINT is the bare interpreter, so this pod would CrashLoopBackOff"
-    echo "       while the deploy reported success. Land 4h6.14 (which adds 'args:' to that"
-    echo "       manifest) before enabling the sandbox, or set sandbox_pool_enabled = false."
+    echo "       while the deploy reported success. Land the supervisor chain (4h6.50 adds 'args:'"
+    echo "       to that manifest) before enabling the sandbox, or set sandbox_pool_enabled = false."
     exit 1
   fi
 fi

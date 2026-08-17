@@ -46,8 +46,8 @@ PKG = os.path.join(SITE, "genetics_mcp_server")
 # tests/test_sdk_import_closure.py pins the closure so it cannot regrow silently.
 #
 # tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK
-# method delegates to it. Its f-string SQL interpolation sites therefore still ship —
-# see docs/code-execution-security.md, genetics-results-suite-4h6.14.
+# method delegates to it. Its SQL-building methods therefore still ship, guarded by
+# tools/sql_safety.py — see docs/code-execution-security.md, "Handoffs to other tasks".
 SDK_ALLOWLIST = frozenset(
     {
         "__init__.py",
