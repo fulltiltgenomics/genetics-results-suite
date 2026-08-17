@@ -759,6 +759,484 @@ a `datasets.yaml` change is visible in review.
 **Image size is 607 MB.** numpy, scipy, matplotlib and polars are most of it. Noted because
 the sandbox node pool is pinned at one node and pulls the image on every node replacement.
 
+### The HTTP contract between chat-backend and the supervisor (`4h6.38`)
+
+**This subsection is the interface, because there cannot be a shared module.** The image
+pip-installs only the genetics SDK's import closure and `sandbox/prune_venv.py` deletes
+everything else, so chat-backend's client (`4h6.47`) and the supervisor (`4h6.39`) cannot
+import one definition of the wire shape. Two implementers building against different
+assumptions is not recoverable by fixing one side. Every field below therefore states its
+type, whether it is required, and what happens when it is absent or malformed; a field not
+listed here does not exist.
+
+**Why it lives in section 2 rather than section 4.** Every value on this wire is a
+section-2 row's wire form — the 60s/120s wall clock, the 64 KiB output cap, concurrency 1
+with a queue, `/scratch/<execution-id>` and its quotas, and the artifact manifest. The
+tokens the body carries are section 4's decision and are **not** re-opened here; this
+subsection says only how they travel and what the supervisor does with a set that does not
+hang together.
+
+**It must not depend on Kubernetes.** A local Docker backend is coming (`4h6.40`): the same
+image runs in a plain container for development, and **the contract is identical in both**.
+Nothing in the request or the response may carry a downward-API field, a service account, a
+ClusterIP or a cluster DNS name, and the client holds exactly one configuration value — a
+base URL. What genuinely differs is deployment-only and is listed here so that nobody adds a
+wire field to compensate for it: `runtimeClassName: gvisor` and the node pool; the egress
+NetworkPolicy; `hostAliases` versus whatever the dev container resolves `db-api` and
+`results-api` with; and `/scratch` as an `emptyDir` versus a container-local directory. A
+supervisor that reads any of those to answer a request is wrong in one of the two
+deployments.
+
+#### Transport
+
+Plain HTTP/1.1 on `0.0.0.0:8080` — the container port `k8s/deployments/sandbox.yaml`
+declares and the Service maps 8080 → 8080. No TLS: on the cluster the hop is pod-to-pod and
+the ingress allow-list (section 3) is the control; in the local container the equivalent is
+binding to loopback and not publishing the port. Request and response bodies are
+`application/json; charset=utf-8`. Exactly two routes exist — `GET /health` and
+`POST /execute` — and there is no third; any other path is `404`, any other method on these
+two is `405`.
+
+**There is no HTTP-layer authentication on `/execute`, and that is a decision rather than an
+omission.** The sandbox pod holds no credential it could verify a caller against, and giving
+it one would put a static secret in the single workload that runs attacker-influenceable
+code by design — the thing section 4 exists to prevent. The network is the authentication,
+in both deployments. Consequence, stated so it is not discovered later: anything that can
+reach port 8080 can execute code with whatever tokens it supplies, so the ingress allow-list
+is load-bearing and a dev container must not publish the port.
+
+**Everything travels in the JSON body; nothing travels in a header.** No `Authorization`, no
+`X-Execution-Id`. Headers are what proxies log, the tokens must never be logged, and a split
+between headers and body gives two places for the same value to disagree.
+
+#### `GET /health`
+
+No authentication, no request body, no query parameters. The `readinessProbe` in
+`k8s/deployments/sandbox.yaml` points here and reads only the status code.
+
+- `200` with `{"status": "ok", "busy": <bool>, "queued": <int>}` once the supervisor is
+  serving — meaning after its startup assertions have passed (`/etc/nsswitch.conf` ordering,
+  `prewarm()`; see the `4h6.39` scope and the handoff table). `busy` and `queued` are
+  informational only. **`queued` counts requests *waiting*, and does not count the one
+  executing** — the same definition the queue bound below uses, so `busy: true, queued: 0`
+  means one running and nothing behind it. Reporting a different number here from the one
+  the bound is enforced against is how a client ends up predicting the wrong `429`.
+- `503` with the same body shape before that point and while draining after `SIGTERM`, with
+  `status` holding `"starting"` in the first case and `"draining"` in the second. `status`
+  takes exactly those three values.
+- **`/health` is the one route exempt from the uniform error shape below**, and the exemption
+  is deliberate rather than an oversight: the probe reads only the status code, and a client
+  polling for recovery wants `busy`/`queued` in the 503 as much as in the 200. Stated
+  explicitly because the rule in "Error responses" is otherwise absolute, and a client that
+  parsed a `/health` 503 as `{execution_id, error}` would `KeyError` on every startup.
+- **A busy supervisor is healthy.** `/health` returns `200` while an execution is in flight.
+  Reporting `503` there would remove the pod from the Service endpoints mid-execution, which
+  with one replica means the client's own in-flight request is the last one that works and
+  every retry fails against no endpoint at all. Readiness must not flap on load.
+- The body discloses no execution id, no user, no session and no counts attributable to
+  anyone. `queued` is a depth, not an inventory.
+
+#### `POST /execute` — request
+
+One JSON object. **Unknown top-level fields are rejected with `400`** rather than ignored,
+so a field added on one side and not the other fails loudly on the first call instead of
+being silently dropped — which is the exact failure this whole subsection exists to prevent.
+The request body is capped at **1 MiB** total (`413` above it), measured on the **raw bytes
+on the wire**, and the supervisor stops reading at the cap rather than buffering past it.
+
+**The body also has a time bound: 10s from the request line to the last byte, then `408`
+with `error.type: "RequestTimeout"`.** A size cap alone does not bound a slow client, and
+with concurrency 1 a request dribbling its body holds the supervisor's only slot for as long
+as it likes — the size cap never fires because the bytes never arrive. 10s is far above any
+honest 1 MiB pod-to-pod POST and far below the wall clock, so it can only fire on a stalled
+or hostile peer.
+
+| field | type | required | absent or malformed |
+|---|---|---|---|
+| `code` | string, UTF-8 Python source, ≤ 256 KiB | yes | absent, not a string, empty or whitespace-only → `400`. Over 256 KiB → `413`. **Measured on the UTF-8 encoding of the decoded string** (`len(code.encode("utf-8"))`), not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program, and the two ends must not disagree about which one the limit is. The 1 MiB body cap is the one measured on the wire. |
+| `execution_id` | string matching `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` | yes | absent or non-matching → `400`. The supervisor **must not** mint one of its own. |
+| `tokens` | object, exactly the two keys `db-api` and `results-api`, values compact JWS strings | yes | either key missing, an extra key, or a non-string value → `400`. Never run without them. |
+| `user` | string, the authenticated end-user email | yes | absent or empty → `400`. Must equal the tokens' `sub`. |
+| `session_id` | string, the chat session id | yes | absent or empty → `400`. Must equal the tokens' `sid`. |
+| `timeout_s` | integer seconds, `1 ≤ timeout_s ≤ 120` | no, default **60** | absent → 60. Non-integer, ≤ 0, or **> 120 → `400`, not clamped** (see below). |
+
+**`execution_id` is one value in three roles**, and the strict uuid4 form is not
+fastidiousness: it becomes the `/scratch/<execution-id>` directory name, so any laxer rule
+re-opens path traversal on the one request value that names a filesystem path. The three
+roles are the directory name, the `jti` of both tokens, and the join key that makes the
+`4h6.12` audit trail, db-api's `endpoint_access` lines and chat-backend's manifest record
+line up. `mint_execution_tokens` takes an optional `execution_id=` for precisely this
+(section 4, "As built"), and it **raises `SandboxTokenUnavailable`** when the signing key is
+unset — which the client must surface, never catch and continue.
+
+**When the three roles disagree — refuse, do not pick a winner.** The supervisor decodes
+each token's payload segment **without verifying the signature** (it holds no signing key,
+deliberately, and never will) purely to read `sub`, `sid`, `jti` and `exp`. These are
+consistency checks on its own caller, **not authentication** — the security decision is
+db-api's and results-api's verification (section 4), and nothing here may be mistaken for
+it. The rules:
+
+| condition | result |
+|---|---|
+| a token is not three dot-separated segments, or its payload is not decodable JSON | `400` |
+| the two tokens' `jti` differ from each other | `400` |
+| either `jti` ≠ the body's `execution_id` | `400` |
+| a token's `aud` ≠ the key it was sent under | `400` |
+| a token's `sub` ≠ the body's `user`, or `sid` ≠ the body's `session_id` | `400` |
+| `exp` is already past **at dequeue** (see concurrency) | `409`, `error.type: "TokenExpired"` |
+
+Refusing rather than preferring one value is the point. Preferring the `jti` would name the
+directory one thing and stamp the audit another; preferring the body would hand the child
+credentials whose `jti` joins to no directory. Either way every downstream record keys on a
+value some other record does not carry, and the damage is invisible until somebody asks
+"what did that script read?" and gets nothing back. A mismatch means the tokens were not
+minted for this request, and that is a caller bug worth a hard failure on the first call.
+
+**The tokens travel in the body and nowhere else.** Never pod env, never a ConfigMap, never
+a Secret: chat-backend cannot set environment variables on a running pod, and a pod-spec
+value turns a 300s per-execution credential into a static pod-lifetime one. The supervisor
+places them in the forked child only — under the decided shared-uid model their protection
+is **lifetime** (the SDK reads the file once and unlinks it), not permissions. The
+supervisor must never log a token, must never echo one in a response, and must not keep one
+after the child is reaped.
+
+**The timeout is bounded and the model cannot raise it.** 60s default, 120s hard ceiling
+(section 2's Wall clock row). Two independent things enforce that: `run_analysis` exposes no
+timeout parameter to the model at all, so no model-authored value ever reaches this field;
+and the supervisor **rejects** `timeout_s > 120` with `400`. **Decision: reject, not clamp.**
+Clamping is a silent behaviour change on a path fed from a model-influenceable direction — a
+caller asking for 300 has either a bug or a jailbreak, and both deserve to be visible. It
+would also desync the two deadlines: the client sets its own deadline *above* the
+supervisor's ceiling (`4h6.47`), and a silently clamped server-side value makes the client's
+arithmetic wrong.
+
+**Timeout semantics.** `timeout_s` is the child's wall clock measured **from the fork**, not
+from request receipt — queue wait does not count against the script. On expiry the
+supervisor `SIGTERM`s the child's process group, `SIGKILL`s after a 2s grace, reaps, and
+still answers `200` with `status: "timeout"` and whatever output was captured.
+`terminationGracePeriodSeconds: 130` is 120s plus reap, answer and wipe, so that sequence
+has to complete in seconds, not tens of them.
+
+#### Concurrency: one at a time, queued, with a bounded queue and a bounded wait
+
+**One execution at a time** (section 2's Concurrency row), and with `replicas: 1` and
+`strategy: Recreate` that is the cluster-wide bound, which is what removes cross-user
+co-tenancy inside the pod. A second concurrent `POST /execute` is **queued, not refused**:
+measured peak is 23 chat turns/hour, so a collision is rare, and turning a rare collision
+into a user-visible tool failure buys nothing.
+
+The queue is bounded in **both** dimensions, and the bound is derived rather than picked:
+a queued request holds tokens that expire at `iat + 300`, so a wait long enough to outlive
+them produces a script whose every data call `401`s. **Queue depth 2 and a maximum queued
+wait of 120s**, whichever binds first; beyond either the supervisor answers `429` with
+`Retry-After: 60`. On **dequeue** — not on receipt — it re-checks `exp`, and answers `409`
+`TokenExpired` if the wait consumed the credential. That distinction matters to the client:
+`400` means "your request was wrong", `409` means "you waited too long; re-mint and retry".
+
+**Depth 2 means at most two requests *waiting*, not counting the one executing.** So three
+requests can be in flight — one running, two queued — and the fourth gets `429`. Stated
+because the other reading (two total, i.e. one running plus one waiting) is equally
+defensible and silently differs by one, and a client treating `/health`'s `queued < 2` as
+"safe to submit" would then take `429`s it did not predict. `/health`'s `queued` uses this
+same definition.
+
+**After a `429` the client re-mints, and it re-mints a fresh `execution_id` too**, not just
+fresh tokens: the refused request never reached a fork (see the duplicate-id rule below, and
+the directory is created at dequeue, so a `429` leaves nothing behind), and reusing the id
+would collide with that rule the moment the earlier attempt did run. This is also the only
+route by which `409 TokenExpired` is reachable at all — a client that re-mints on `429`
+should still handle it, because the expiry is re-checked at dequeue on the retry as well.
+
+**A repeated `execution_id` is refused: `409` with `error.type: "DuplicateExecutionId"`**,
+whenever `/scratch/<execution-id>` already exists — a live execution or a completed one still
+inside its 15-minute artifact retention. After retention expires the id is reusable, which is
+harmless because nothing then refers to it. This is a normal event, not a client bug, which
+is why it has a specified outcome rather than being left to the implementer: the `429` retry
+path, the 15-minute retention and `mint_execution_tokens`' optional `execution_id=` (section
+4, "As built") together make a resubmission with the same id easy to write by accident.
+Refusing is the only one of the three plausible behaviours that preserves the invariant
+everything downstream keys on — one `execution_id` names exactly one directory, one manifest
+and one audit trail. Reusing the directory would merge two runs' artifacts into a manifest
+chat-backend has already recorded, and wiping and re-running would delete artifacts
+`read_artifact` may still be serving from the first run; both leave the `jti`/`sid` join
+`4h6.52`'s sid-scoped retrieval will build on pointing at content that is not what was
+recorded.
+
+**The maximum wait — not the depth — is the number the token lifetime constrains.** The
+inequality is `max wait + timeout_s < 300`: 120 + 120 = 240 against the real 300s TTL
+(section 4). Depth does not appear in it, and raising the depth lengthens the queue without
+lengthening any individual wait, because the wait bound cuts first. Anyone raising the
+**wait** above 180s is the one who breaks it, and gets a script whose data calls `401`
+mid-run. Note also that the 60s of slack this leaves is not free headroom: section 4
+justifies the 300s TTL partly by "a slow BigQuery job started at the last moment" plus clock
+skew, and an execution that waited the full 120s and then ran the full 120s has ~60s of token
+life left for that last-moment call rather than the ~180s section 4's reasoning assumes — so
+the wait bound trades directly against section 4's margin.
+
+**When the client goes away, the supervisor's behaviour depends on whether the child has
+been forked.** The contract tells the client to set its own deadline *above* the 120s
+ceiling, so the ordinary case is that it waits; but chat-backend restarts, and a connection
+can drop. Two rules:
+
+- **A queued request whose connection has closed is dropped at dequeue and never forked.**
+  Nobody is waiting for the response, and running it would spend the pod's only slot and up
+  to 120s of a credential nobody will use — while the client's retry queues behind it. The
+  check is cheap and is made at dequeue, where the `exp` re-check already happens.
+- **A running child is *not* killed on disconnect. It runs to completion**, is reaped, its
+  manifest is written and its artifacts are retained for the usual 15 minutes; the response
+  it can no longer deliver is discarded. Killing it would destroy artifacts the retention
+  window promises and that a rerun may not reproduce, and peer-disconnect detection while
+  the supervisor is not reading the socket is unreliable enough that a false positive would
+  kill live executions. The slot is held for at most `timeout_s`, i.e. ≤ 120s, which is the
+  same bound the queue's max wait is derived against — an abandoned child cannot starve the
+  queue for longer than a healthy one.
+
+A chat-backend restart mid-execution is exactly this case and needs no separate handling: the
+old response is undeliverable, the artifacts survive their retention window, and the retry
+arrives with a **fresh** `execution_id` (per the duplicate rule above) and queues normally. A
+`SIGTERM` to the *supervisor* is the other direction and is already specified: it stops
+accepting (`503 NotReady`) and lets the in-flight child finish inside the 130s grace.
+
+#### `POST /execute` — response
+
+**It does not stream. One request, one response, returned once, after the child has been
+reaped.** Stated plainly because `4h6.14`'s title says "stream stdout" and that phrase
+refers to the supervisor reading the child's pipe incrementally — which it must, to enforce
+the 8 MiB pipe cap — not to a streaming HTTP response. Three reasons the response cannot
+stream: the 64 KiB head-and-tail cap is uncomputable until the stream ends, because the tail
+is unknown until then; the artifact manifest and the error object are only knowable at the
+end, so a streaming body would put them after an unbounded prefix that every client must
+buffer anyway; and the model consumes the whole result in one turn regardless.
+
+**`200` means the supervisor ran the script and is reporting what happened — including a
+script that raised, timed out or was killed.** A failing script is not an HTTP failure.
+Non-2xx is reserved for the supervisor refusing or being unable to run it at all.
+
+| field | type | notes |
+|---|---|---|
+| `execution_id` | string | echo of the request value |
+| `status` | `"ok"` \| `"error"` \| `"timeout"` \| `"limit"` | `ok` = child exited 0; `error` = non-zero exit or an uncaught exception; `timeout` = wall clock fired; `limit` = a supervisor-enforced limit fired |
+| `exit_code` | integer or `null` | `null` when the child was killed by a signal or never started |
+| `signal` | integer or `null` | `null` when it exited normally. Kept separate from `exit_code` rather than folded into `128+n`, which loses which of the two happened |
+| `duration_ms` | integer | child wall clock, fork to reap; excludes queue wait |
+| `output` | string, always present, `""` if none | see below |
+| `output_bytes` | integer | total bytes read from the child's pipe before capping, up to the 8 MiB pipe cap |
+| `output_truncated` | boolean | true iff `output` is elided or the pipe cap fired |
+| `error` | object or `null` | present iff `status != "ok"`; see below |
+| `artifacts` | array of objects, always present, `[]` if none | the manifest; see below |
+| `artifacts_omitted` | integer ≥ 0 | files present in the artifacts directory that could not be listed retrievably; see below |
+
+The response carries **no token, no filesystem path, no environment and no host name**.
+
+**`output` is stdout and stderr interleaved, as the child wrote them.** Section 2 budgets
+**one** 64 KiB window (first 32 KiB + last 32 KiB) for what reaches the model, and the
+traceback the model needs is at the tail. Splitting that budget across two fields either
+halves the head-and-tail window or quietly doubles section 2's number, so the child gets one
+pipe and this contract returns one string. The SDK's audit records are **not** in it — they
+go to the dedicated fd described below. Naming the field `output` rather than `stdout` is
+deliberate: a field called `stdout` that also carries stderr is a trap for whoever reads
+this document next.
+
+**Capping and elision.** Capping is applied to **bytes**, head 32 KiB + tail 32 KiB, with the
+literal marker `\n...[<N> bytes elided]...\n` between them, where `<N>` is the decimal count
+of bytes dropped. The marker is fixed text so a client can recognise it without heuristics.
+The 64 KiB budget is the head and the tail **only — the marker is additional**, so a fully
+elided `output` encodes to 65536 bytes plus the marker's ~30. Head and tail are exactly
+32 KiB each rather than 32 KiB minus half a marker, because the alternative makes the two
+ends' arithmetic depend on the decimal width of `<N>`.
+
+**The 8 MiB pipe cap kills the child, and it is a `limit`, not an `ok`.** Section 2's Output
+cap row says the reader stops at 8 MiB from the pipe *and kills the child*; this is what that
+looks like on the wire, stated because a supervisor that instead drained and discarded the
+excess would answer `200 status:"ok" error:null` and silently violate section 2 — the whole
+point of the cap is that the supervisor's memory and the pod's CPU stop being consumed, which
+draining does not achieve. On the cap firing the supervisor `SIGTERM`s the child's process
+group, `SIGKILL`s after the same 2s grace as the timeout path, reaps, and answers **`200`**
+with `status: "limit"`, `error.type: "OutputLimit"`, `error.limit: "OutputLimit"` and
+`output_truncated: true`. `exit_code` and `signal` report how the child actually ended —
+normally `exit_code: null` with `signal` 15 or 9 depending on whether the grace expired, but
+a child that traps `SIGTERM` and exits reports its `exit_code` with `signal: null` instead.
+`status` is `"limit"` in every one of those cases: it records that the supervisor's limit
+fired, not how the process happened to die.
+
+**Output that is not valid UTF-8 is decoded lossily, and there is no alternate encoding.**
+The head/tail split cuts on byte boundaries and can bisect a multi-byte sequence, and a
+script can print arbitrary bytes in any case. The supervisor decodes with
+`errors="replace"`, so invalid bytes become U+FFFD and `output` is always a valid JSON
+string. **No base64, no `encoding` field**, because a client that has to branch on encoding
+will eventually get the branch wrong, and the model cannot read base64 usefully anyway. A
+script with binary to return writes an **artifact**; `read_artifact` already returns base64
+with an explicit `encoding` field for exactly that case (section 6).
+
+**The `error` object.**
+
+| field | type | notes |
+|---|---|---|
+| `type` | string, **open** | the child's exception class name (`ValueError`), or one of the supervisor's own reserved names: `Timeout`, `MemoryLimit`, `PidLimit`, `ArtifactQuota`, `ScratchQuota`, `OutputLimit`, `NonZeroExit`, `Killed`, `StartupFailure` |
+| `message` | string, ≤ 2 KiB | truncated, never omitted |
+| `traceback` | string or `null`, tail-capped at 8 KiB | `null` when the end was not an exception |
+| `limit` | string or `null` | which limit fired, when `status == "limit"`; the same vocabulary as `type` |
+
+**`type` is an open string, and the listed names are a reserved minimum.** It cannot be a
+closed enum, because half its range is the child's exception class name and the child imports
+whatever it likes. So: the supervisor's own names above are reserved — it emits no others for
+those conditions and a client may branch on them — and every other value is an opaque label
+to display, never to switch on. This is the one place the subsection's "a field not listed
+here does not exist" rule does not extend to values: it constrains the set of *fields*, not
+the set of strings a `type` may hold.
+
+**`NonZeroExit` is the name for a child that exited non-zero without an uncaught exception**
+— `sys.exit(3)`, a C extension calling `exit()`, a subprocess convention. The `status` table
+already makes that a `status: "error"` case, and without a reserved name for it every
+supervisor would invent its own (`ExitCode`, `Error`, the number itself). `exit_code` carries
+the number; `traceback` is `null`.
+
+**Unsettled, and deliberately not invented here:** *how* the child reports its exception type
+and traceback to the supervisor — a structured final record on a dedicated fd, versus the
+supervisor parsing the tail of `output` — is `4h6.39`'s to settle. This contract fixes only
+the shape the supervisor emits. A supervisor that can only observe an exit status and a byte
+stream may legitimately report `type: "Killed"` with `traceback: null`; a client must
+tolerate that and must not parse `message` for meaning.
+
+#### The artifact manifest
+
+One entry per retrievable file, and **the shape is dictated by what `read_artifact` can
+actually consume** (`4h6.15`, `ToolExecutor.read_artifact` in
+`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`). That function takes a
+**bare name** and resolves it against `SANDBOX_ARTIFACTS_DIR`; it rejects separators,
+backslashes, `.`/`..`, absolute paths, NUL and anything where `Path(name).name != name`
+*before* touching the filesystem, refuses a symlinked artifacts directory, requires the
+resolved directory to sit under a hardcoded `/scratch/` prefix, opens that directory with
+`O_DIRECTORY|O_NOFOLLOW` and verifies **the descriptor** through `/proc/self/fd`, then opens
+the file relative to that descriptor with `O_NOFOLLOW|O_NONBLOCK` and refuses anything that
+is not a regular file with `st_nlink == 1`.
+
+| field | type | notes |
+|---|---|---|
+| `name` | string | the **bare** file name, e.g. `"manhattan.png"` |
+| `size` | integer | bytes, from the supervisor's `fstat` at manifest time |
+| `content_type` | string | from the **name** only |
+
+**No paths. No execution id. No URL.** An entry carrying any of those would name something
+`read_artifact` refuses by construction, and an execution id in the manifest would invite a
+model-supplied one back in — which section 6 rules out precisely because the id is
+unguessable but not confidential.
+
+The supervisor lists a file **only if it would survive that read**, which means all of:
+
+- a **regular file directly in** `/scratch/<execution-id>/artifacts` — no recursion into
+  subdirectories (their contents are unnameable by a bare name), no symlinks, no FIFOs,
+  sockets or devices;
+- `st_nlink == 1`;
+- a name that passes `read_artifact`'s own rules, and additionally is valid UTF-8, has **no
+  leading or trailing whitespace**, and has no control characters — a name the supervisor
+  cannot render is a name the model cannot ask for, and a name containing a newline would
+  forge a line break in the audit stream. The whitespace rule is not cosmetic: `executor.py`
+  does `name = name.strip()` **before** validating, so `"plot.png "` passes every other rule
+  on this list, gets listed, and is then unretrievable — the read strips it, looks up
+  `plot.png`, and returns the same indistinguishable "Artifact not found" the model gets for
+  a name that was never there. A manifest must never advertise a name the read cannot open.
+
+Anything failing those is **omitted and counted in `artifacts_omitted`**, never listed with a
+mangled name and never silently dropped: a nonzero count tells an operator something is
+there without disclosing an attacker-chosen string. Files **over `read_artifact`'s 4 MiB read
+limit are still listed** with their true size — the refusal that follows tells the model to
+write a smaller summary, which is more useful than the file appearing not to exist. Note
+these are three separate numbers and none of them is the others: the 4 MiB per-read limit,
+the 64Mi per-execution artifact quota, and the 512Mi `emptyDir` `sizeLimit` the supervisor's
+sub-quotas must keep the kubelet away from.
+
+`content_type` is derived from the name (`mimetypes.guess_type`, falling back to
+`application/octet-stream`) and **must not** be sniffed from content: `read_artifact`
+recomputes it the same way at read time, and the two answers have to agree. Entries are
+sorted by `name`.
+
+**`size` is the one field that legitimately differs between the two.** The manifest's is the
+supervisor's `fstat` at manifest time; `read_artifact` returns `len(raw)` from its own read,
+minutes later. They disagree only if something rewrote the file after the execution ended,
+which nothing in the design does — but the two numbers are produced by different code at
+different times, so a client must not assert they are equal, and a mismatch is not a security
+event. It is noted here only so nobody adds that assertion later and gets a flaky failure.
+
+`/scratch/<execution-id>/artifacts` is retained 15 minutes after completion and everything
+else under the directory goes immediately (section 6). The manifest is what chat-backend
+records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
+
+**Unsettled: there is no artifact-retrieval endpoint in this contract.** Section 6 specifies
+that `read_artifact` proxies over HTTP to the sandbox, while the code that landed reads a
+local directory named by `SANDBOX_ARTIFACTS_DIR` — chat-backend has no `/scratch` and never
+will, so that path is inert rather than wrong. A third route (something like
+`GET /artifacts/<execution-id>/<name>`) is therefore still owed, and it is **not invented
+here**: `genetics-results-suite-4h6.52` owns it, together with the sid-scoped resolution that
+would call it. An implementer of either side of *this* contract should build `/health` and
+`/execute` and nothing else.
+
+#### What the supervisor owes beyond the request and the response
+
+**The audit stream.** `4h6.12` handed over a written specification rather than a puzzle, and
+it is an obligation of this contract even though it is not a field in it. The supervisor
+holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
+
+- applies the rate, byte and per-line caps **on the read end**, where the child cannot reach
+  them — every in-process bound was defeated by running it, because the audited code and the
+  emitter share an address space;
+- treats the child's framing as **untrusted input**, re-parsing and re-framing before
+  anything is recorded;
+- **stamps `[user=…] [session=…] [execution=…]` from the tokens' `sub`, `sid` and `jti`** —
+  from the credential it holds, never from the body's `user`/`session_id` (which are only
+  checked against the claims) and never by asking the child, which is what makes those three
+  fields render `unknown` today;
+- forwards the re-framed records to the **pod's own stdout**, the only stream the cluster's
+  logging agent collects. In the local Docker backend that is the container's stdout —
+  identical code, different collector, and the one place the deployment difference shows up
+  in behaviour rather than in configuration.
+
+Consequence for the client: **the response body carries no audit records and must not be
+expected to.** The trail leaves out of band, and a client that reads only the response learns
+nothing about what the script read.
+
+**What the supervisor cannot do, so no field may imply it.** Under the decided shared-uid
+model (option (b), forced — see "The uid choice") the container holds no `CAP_SETUID`,
+`CAP_SETGID` or `CAP_CHOWN`, and `setuid(65533)`/`chown(65533)` were measured to return
+`EPERM`. Therefore: no per-execution uid appears anywhere in this contract; `RLIMIT_NPROC` is
+not a per-execution control, so the pid budget is a supervisor-side watch on the child's
+process group and is not something a request can set; and the token file's protection is
+read-once-and-unlink, so a request field naming a token-file mode or owner would be
+meaningless. A supervisor written against option (a) fails at runtime, not at review.
+
+#### Error responses
+
+Every non-2xx response **except `GET /health`'s own `503`** is the same shape —
+`{"execution_id": <echo or null>, "error": {"type": …, "message": …}}` — so a client parses
+one object, not two. `/health` answers both `200` and `503` with its health body
+(`status`/`busy`/`queued`), for the reason given under that route; it is the single
+exception, and there are no others.
+
+| status | when | `error.type` |
+|---|---|---|
+| `400` | unparseable JSON, unknown field, missing or malformed field, token inconsistency, `timeout_s` out of range | `InvalidRequest` and a specific subtype |
+| `404` | any path other than the two | `NotFound` |
+| `405` | wrong method on `/health` or `/execute` | `MethodNotAllowed` |
+| `408` | request body not fully received within 10s | `RequestTimeout` |
+| `409` | tokens expired while queued | `TokenExpired` |
+| `409` | `execution_id` names a live or still-retained execution | `DuplicateExecutionId` |
+| `413` | body over 1 MiB, or `code` over 256 KiB | `PayloadTooLarge` |
+| `415` | request `Content-Type` is not `application/json` | `UnsupportedMediaType` |
+| `429` | queue full or maximum queued wait exceeded; carries `Retry-After` | `Busy` |
+| `500` | supervisor bug | `InternalError` |
+| `503` | `POST /execute` before startup assertions pass, or while draining after `SIGTERM` | `NotReady` |
+
+The two `409`s are distinguished by `error.type`, never by the status code, and they want
+opposite responses from the client: `TokenExpired` means re-mint and retry, `DuplicateExecutionId`
+means the id was already spent and the retry needs a fresh one.
+
+`400` and `500` bodies **never echo the request payload and never carry a filesystem path or
+a traceback** — the caller supplied the payload and the paths are the sandbox's own. A `503`
+must be distinguishable by the client from a script failure: `strategy: Recreate` plus
+`terminationGracePeriodSeconds: 130` means a deploy landing on an in-flight execution leaves
+no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
+analysis failed" (`4h6.47`).
+
 ---
 
 ## 3. Egress policy
@@ -1845,7 +2323,11 @@ raises `SandboxTokenUnavailable` when `SANDBOX_TOKEN_SIGNING_KEY` is unset — d
 exception rather than a `None`, because every fallback from "no sandbox token" is either
 "send no credential" or "send the shared secret", which are the two outcomes this whole
 mechanism exists to prevent. `4h6.14` owns everything downstream of the return value: the
-POST body, the mode-0600 file under `/scratch/<id>`, and the child's environment.
+POST body, the mode-0600 file under `/scratch/<id>`, and the child's environment. **That
+`0600` is hygiene, not a control**: under the decided shared-uid model (section 2, "The uid
+choice") the supervisor and the child run as the same uid 65532, so the mode excludes nobody
+who could otherwise read the file. The protection is **lifetime** — the SDK reads it once and
+unlinks it — and nothing should be designed as if the mode were doing work.
 
 **Deviations from the design above, all deliberate:**
 
@@ -2478,8 +2960,9 @@ artifacts are reachable rests **entirely** on `SANDBOX_ARTIFACTS_DIR` pointing a
 directory, constrained only by the structural checks above. The authorization mechanism
 specified earlier in this section, the HTTP path from chat-backend to the sandbox pod, and
 the manifest that name resolution would consult are all still design, and belong to
-`4h6.11`. Until they land, the retrievability claims 6.2 and 6.4 lean on are met by
-deployment configuration, not by code.
+`genetics-results-suite-4h6.52`. They were never `4h6.11`'s — that task is closed and did not
+do them, so do not read its state as evidence any of this landed. Until `4h6.52` lands, the
+retrievability claims 6.2 and 6.4 lean on are met by deployment configuration, not by code.
 
 **Deployment note — an availability concern, not a security one.** `_open_artifacts_dir`
 verifies the descriptor through `/proc/self/fd/`. If the sandbox pod ever runs with a masked
@@ -2687,8 +3170,10 @@ abstract.
 | `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
-| `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |
-| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
+| `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
+| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **that proxy hop and the
+sid-scoped resolution are `genetics-results-suite-4h6.52`'s, not this task's; `4h6.15` shipped
+the descriptor-based local read only**; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
 
 **One finding outside this document's scope that other tasks need.** `4h6.11` notes that

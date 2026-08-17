@@ -860,6 +860,43 @@ Security-relevant fields, and what each one is for:
 user-gated step that turns the feature on, and `scripts/test-network-policies.py` enforces the
 pairing whenever `ENABLE_SANDBOX=true`.
 
+### The sandbox HTTP contract (summary — the definition lives elsewhere)
+
+`docs/code-execution-security.md` § 2, "The HTTP contract between chat-backend and the
+supervisor" (`genetics-results-suite-4h6.38`), **owns** the wire shape between chat-backend
+and the supervisor: every field, its type, whether it is required, and what happens when it
+is absent or malformed. It is written down rather than shared as code because the sandbox
+image pip-installs only the genetics SDK's import closure and `sandbox/prune_venv.py`
+deletes the rest, so the two ends (`4h6.39` in this repo, `4h6.47` in genetics-mcp-server)
+cannot import one definition. Do not restate it here; the essentials only:
+
+- **A small fixed set of routes and no others**: a health endpoint the `readinessProbe`
+  reads, and one execute endpoint, plain HTTP/1.1 JSON. No HTTP-layer authentication — the
+  sandbox holds no credential to verify against, so the ingress allow-list is the
+  authentication.
+- **Nothing in the request or response depends on Kubernetes**, so the local Docker backend
+  (`4h6.40`) speaks the identical contract; the client holds one base URL. What differs
+  (gVisor, NetworkPolicy, `hostAliases`, `emptyDir`) is deployment only.
+- **Execute returns once and does not stream.** A `200` covers a script that raised, timed
+  out or hit a limit; non-2xx means the supervisor did not run it at all.
+- **The wall clock is bounded and the model cannot raise it** — `run_analysis` exposes no
+  timeout parameter, and an over-ceiling request is rejected rather than clamped.
+- **One execution at a time, with a bounded queue and a bounded wait**, which with
+  `replicas: 1` and `strategy: Recreate` is the cluster-wide bound. Every figure involved —
+  the port, the timeouts, the queue depth and wait, the output cap, the manifest fields —
+  lives in the security doc, which calls the queue depth "the one tunable number here". Read
+  them there; a copy here would rot silently.
+- **The per-execution tokens travel in the POST body only** — never pod env, ConfigMap or
+  Secret, which is why the manifest declares no credentials.
+- **`execution_id` is one value in three roles**: the `/scratch/<id>` directory name, the
+  `jti` of both tokens, and the log join key. Any disagreement is a `400`, never a
+  best-guess, and an id is spent once — a resubmission with the same one is refused.
+- **The response's artifact manifest names files and nothing else** — no paths and no
+  execution id — because `read_artifact` takes a bare name and refuses anything else.
+- **The supervisor forwards the SDK audit stream to the pod's stdout**, stamping user,
+  session and execution from the tokens' claims rather than asking the child. That is the
+  only thing the cluster's logging agent collects, and it is not part of the response.
+
 ## Monitoring
 
 ### Metrics (Prometheus)
