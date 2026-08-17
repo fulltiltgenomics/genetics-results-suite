@@ -899,6 +899,61 @@ cannot import one definition. Do not restate it here; the essentials only:
   session and execution from the tokens' claims rather than asking the child. That is the
   only thing the cluster's logging agent collects, and it is not part of the response.
 
+### The supervisor process (`sandbox/supervisor.py`, `genetics-results-suite-4h6.39`)
+
+The program the sandbox pod runs, and the thing whose absence made
+`k8s/deployments/sandbox.yaml` unapplyable. Standard library only, plus what
+`sandbox/requirements.txt` already ships — `sandbox/prune_venv.py` deletes pip and
+everything outside the SDK's import closure, so a new dependency has to be added there
+deliberately. `sandbox/Dockerfile` copies it to `/genetics/supervisor.py`; that does **not**
+start it, because the image still ships no `CMD` and the manifest still declares no
+`command`/`args`, which is what `scripts/deploy.sh` refuses to apply until
+`genetics-results-suite-4h6.50` wires it up as the last bead of the chain.
+
+- **It is a skeleton, and the gaps are runtime behaviours rather than TODOs.** The wall clock
+  and rlimits (`4h6.41`), the output caps (`4h6.42`), token delivery to the child
+  (`4h6.43`), audit forwarding (`4h6.45`) and the `/scratch` quotas, retention and reaper
+  (`4h6.46`) are each stubbed in place under their bead's name. `docs/code-execution-security.md`
+  → "As built (`4h6.39`)" tabulates what each absence means today; the short version is that
+  nothing yet kills a runaway child and nothing yet deletes a completed execution.
+- **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
+  pre-imported analysis modules the child inherits copy-on-write — and it therefore closes
+  every inherited descriptor before running the script, or it would hold the listening socket
+  and other users' in-flight connections. Two consequences of not exec'ing are handled rather
+  than assumed away: the script can also write the status pipe it is left holding, so a
+  status record is **ignored** when the child exited 0 and was not signalled (otherwise a
+  script forges `status: "error"` on its own successful run); and the child's descendants
+  inherit the output pipe, so the drain is bounded — see the next point.
+- **An execution ends when the child is reaped, not when its pipes close.** A grandchild that
+  `setsid()`s away keeps the write ends open and EOF never arrives, which used to hold the
+  only execution slot on a pipe read after the child was long gone. The drain gets 2 s past
+  `waitpid` and is then abandoned with a log line, and `duration_ms` is taken at the reap.
+  Killing the escapee is `4h6.41`/`4h6.46` work; the slot is freed regardless.
+- **Every writable path is per-execution.** `TMPDIR`, `HOME`, `MPLCONFIGDIR`,
+  `XDG_CACHE_HOME`, `PYTHONPYCACHEPREFIX` and `SANDBOX_ARTIFACTS_DIR` are set in the child
+  and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
+  purpose: a fixed pod-wide value recreates the cross-execution shared directory that
+  removing the pod-level `/tmp` was meant to prevent.
+- **No `setuid` and no `chown` anywhere.** Supervisor and child share uid 65532 — forced,
+  because the pod drops `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN`. The image's advertised
+  `SANDBOX_CHILD_UID` names a uid nothing in this pod can switch to.
+- **`scripts/test-supervisor.py`** is the offline harness: `python3 scripts/test-supervisor.py`,
+  exit 0 pass / 1 a property broke / 2 could not run, in the same style as
+  `test-sandbox-docs.py` and `test-network-policies.py`. It needs no cluster, no credentials
+  and no image — it runs the real supervisor in the local interpreter against a temporary
+  `/scratch` root and forks real children, so the queue-depth definition, the duplicate-id
+  refusal, reject-don't-clamp on the timeout, the token consistency rules, the per-execution
+  environment, which names reach the artifact manifest, the `429`'s `Retry-After` header that
+  the client's retry policy reads, and the two forgeries the fork-without-exec model makes
+  reachable — a status record written by the script, and a descendant holding the output pipe
+  open — are exercised rather than asserted about. No build or deploy script runs it yet.
+- **Three environment differences are what "not the image" looks like**, each warned about
+  loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
+  `GENETICS_MPLCACHE` unset leaves the font cache to be rebuilt, and `SANDBOX_SCRATCH_ROOT`
+  moves the scratch root for tests — which makes artifacts unretrievable, since
+  `read_artifact` hardcodes the `/scratch/` prefix. The image sets the first two and never
+  sets the third.
+
 ## Monitoring
 
 ### Metrics (Prometheus)
