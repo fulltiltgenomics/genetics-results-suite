@@ -125,7 +125,9 @@ class LogAlerter:
     def __init__(self):
         self.project = os.environ["GCP_PROJECT"]
         self.namespace = os.environ.get("K8S_NAMESPACE", "genetics")
-        self.lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "8"))
+        # default matches the CronJob's daily schedule, so a deployment that omits the env var
+        # still covers the whole interval rather than silently skipping 16h of logs
+        self.lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "24"))
         self.dedup_ttl_hours = int(os.environ.get("ALERT_DEDUP_TTL_HOURS", "24"))
         self.db_path = os.environ.get("MONITOR_DB_PATH", "/tmp/monitor.db")
 
