@@ -1490,7 +1490,8 @@ base URL and does the same thing against both.
 | `--pids-limit 1024` | the kubelet's `pod_pids_limit` |
 | `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer-wipe sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
 | `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
-| `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal` | the same two variables at cluster FQDNs pinned by `hostAliases` |
+| `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal`, on the **dev-stack's** ports (results-api `:2000`, db-api `:8080`) and not the manifest's — locally `:4000` is chat-api (`4h6.49`) | the same two variables at cluster FQDNs pinned by `hostAliases` |
+| `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 900s |
 | the supervisor as the `docker run` command | `args:` (`4h6.50`) |
 
 **What is not reproduced.** The script prints this list every time it brings the container
@@ -2123,6 +2124,175 @@ as an outer backstop (`--pids-limit` is per container, not per pod). `emptyDir` 
 eviction has **no local form at all**: the local `/scratch` is a 512 MiB tmpfs that returns
 `ENOSPC`, which is a *different failure* from a pod eviction and a gentler one. These go to
 `4h6.51`, the deploy-window bead.
+
+### As built (`4h6.49`) — the end-to-end local verification: what was measured, and how
+
+`scripts/test-e2e-local.py` drives the whole path against the running local stack —
+chat-backend's **own** minting and client code (`genetics_mcp_server.sandbox_token`,
+`sandbox_client`), the sandbox container `scripts/run-sandbox-local.sh` starts, and the real
+db-api (`:8080`) and results-api (`:2000`) that `scripts/dev-stack.sh` starts. It is a separate
+file from `scripts/test-supervisor.py` on purpose: that harness needs no cluster, no
+credentials, no backends and (in its fast path) no Docker, and folding these preconditions into
+it would take that property away from everyone who re-runs it.
+
+**Measured 2026-08-17 against `genetics_dev`, with a sandbox container started as
+`SANDBOX_RETENTION_S=45 scripts/run-sandbox-local.sh`:**
+
+```
+scripts/test-e2e-local.py --retention-s 45   → OK: 49 checks passed, nothing skipped.
+scripts/test-e2e-local.py                    → OK: 48 checks passed, nothing skipped.
+```
+
+**Each count is quoted next to the command that produces it, because a count without its
+command is not a claim.** The two differ by one check and not by four: the harness *discovers*
+the container's effective retention, so the group runs either way and `--retention-s` only adds
+the cross-check that the caller's number matches. Against a container with **no**
+`SANDBOX_RETENTION_S` — the normal state — the retention group **skips**, the run prints
+`NOT MEASURED (1)` and a `PARTIAL:` banner instead of `OK:`, and it still **exits 0**. A green
+exit is not by itself a claim that everything was measured. The `INTERNAL_API_SECRET` negative
+control skips the same way if that secret is absent or does not authenticate locally. Every
+skip is listed by name under `NOT MEASURED` and counted again in the exit banner for exactly
+this reason.
+
+**The run refuses to start against a container that is not the source under test.** It reads
+`/genetics/supervisor.py` and `/genetics/prewarm.py` back out of the running container with
+`docker cp` and compares them byte for byte with `sandbox/`, exiting 2 if they differ:
+`genetics-sandbox-local` survives rebuilds and branch switches, `run-sandbox-local.sh` is
+itself modified by this change, and every check below would otherwise be a true statement about
+a program nobody is verifying. What that does **not** cover, and is not claimed:
+`sandbox/requirements.txt`, `prune_venv.py` and the genetics-mcp-server checkout the SDK is
+installed from all shape the image without appearing under `/genetics`.
+
+What each check group is worth:
+
+* **The SDK's request is in results-api's `sandbox_budget` map, keyed on the token's `jti`.**
+  A 200 is not the evidence — `app/middleware_usage_logging.py` stamps `jti` and `sid` on the
+  `endpoint_access` record only from a resolved `SandboxPrincipal`, and
+  `SandboxResponseCapMiddleware` calls `admit` for exactly that principal. The **negative
+  control is measured in the same run whenever the secret is available and authenticates** (it
+  was, in the run above): the identical request carrying `INTERNAL_API_SECRET` is served **200
+  with no `jti` at all**, which is the shape of `0lf`. Where it is not available the control
+  **skips by name** rather than being argued. Accumulation, not just
+  admission, is shown by driving `SANDBOX_MAX_CONCURRENT_REQUESTS` (4) from inside a real
+  execution with twelve concurrent SDK calls and reading the `sandbox per-execution limit
+  exceeded` records back out of results-api's log under that same `jti`.
+* **The audit records carry the real identity.** A real execution's SDK calls appear in
+  `docker logs` (the container's **stdout**, not its stderr) in the shipped analyzer's own
+  regex shape, with `user`/`session`/`execution` equal to the token's `sub`/`sid`/`jti` — never
+  `unknown` — and with the function names of the calls actually made. In the same run a script
+  writes a forged `[user=admin@finngen.fi] … Executing SDK function: …` record and a 1 MiB line
+  onto the audit fd: no record parses as `admin@finngen.fi`, everything that survives is
+  re-stamped with the real identity, and the megabyte line is **dropped, not truncated and
+  forwarded** — the supervisor's `a record over 4096 bytes was DROPPED (not truncated)` notice
+  appears under the real `execution` and its per-execution summary counts the record as
+  `dropped_oversize`, which is what a truncate-and-forward regression would fail. The forged
+  script makes a genuine SDK call first, so the two "nothing forged survives" assertions are
+  `all()`/`not any()` over a window that demonstrably contains a real record.
+* **One value, and the join closes.** `execution_id`, `/scratch/<id>`, both tokens' `jti` and
+  the child's `SANDBOX_EXECUTION_ID` are the same string, and that string appears in
+  chat-backend's result, db-api's `sandbox request authorized` record (with the same `sub` and
+  `sid`), results-api's `endpoint_access` record and the audit stream.
+* **Every limit the bead names returns a clean structured result to chat-backend's own
+  client** — not an exception, not a hang: the wall clock (`timeout`/`Timeout`), the 8 MiB pipe
+  cap (`limit`/`OutputLimit`), the per-execution artifact quota (`limit`/`ArtifactQuota`), and
+  the 64 KiB return window (`ok`, head and tail both present, elision visible and counted, with
+  `output_bytes` reporting the true pre-cap total). `test-supervisor.py`'s `limits` group
+  already watches each one fire on the wire; what is new here is that `SandboxClient.execute`
+  turns each into a result dict.
+* **The signing key is fail-closed.** With `SANDBOX_TOKEN_SIGNING_KEY` unset the execution
+  fails by name and a counting transport shows **zero** requests left the client — no fallback
+  to the shared secret and no uncredentialed request. With a *wrong* key the execution runs and
+  both backends answer **401**, and neither records a principal for that `jti`.
+* **Retention, and precisely what the two probes pin.** An artifact is still there **at half
+  the container's own TTL** (the id is still taken, `409 DuplicateExecutionId`) and gone after
+  `TTL + REAPER_POLL_S`, because `SANDBOX_RETENTION_S` shortens the deadline and **not** the
+  reaper's 30s poll. The TTL is not taken from the caller: the harness reads the container's
+  **effective** `SANDBOX_RETENTION_S` from `docker inspect` and from the supervisor's own
+  startup warning, requires the two to agree, and skips by name if they do not — `--retention-s
+  N` only *cross-checks* that value, and a mismatch is a failure rather than two probes about
+  the wrong number. This is why the presence probe waits: a `409` taken the instant the
+  execution returns is satisfied by any positive retention, one second included, so it would
+  pin nothing at all. What is established is **"still present at TTL/2, absent by TTL +
+  REAPER_POLL_S"**, not "present until the deadline" — the interval between the last probe and
+  the deadline is unmeasured, and it belongs to the reaper. The presence side is also sound
+  only while nothing else is retaining concurrently, which is why the harness refuses to start
+  against a busy sandbox. The **mechanism** is what is verified, at a shortened TTL; the
+  shipped 900s constant is read off `sandbox/supervisor.py`, not waited out.
+* **The process-group kill, on the path where the kill actually happens.** `_kill_group` has
+  exactly one call site in `sandbox/supervisor.py` and it is inside `_fire_limit`, so **the
+  group is signalled only when a limit fires**. The assertion therefore goes on an execution
+  that spawns two grandchildren and then holds the wall clock open until it is killed: the
+  grandchild that stayed **in** the group does not outlive that kill. The
+  normally-completing path is *recorded* rather than asserted, because the group is never
+  signalled there at all and asserting otherwise would be asserting a wish.
+
+**Three defects in the local setup were found by trying to run this and are fixed in the same
+change.** Each one made the local run *look* fine while proving less:
+
+1. `scripts/run-sandbox-local.sh` pointed `GENETICS_API_URL` at `host.docker.internal:4000` —
+   the cluster's results-api Service port. Locally `:4000` is **chat-api**, which answers 404
+   on `/api`; results-api is on `:2000`. The SDK was talking to chat-backend.
+2. `scripts/dev-stack.sh` provisioned no `SANDBOX_TOKEN_SIGNING_KEY`, no `INTERNAL_API_SECRET`
+   and no `SANDBOX_ENABLED`, so db-api and results-api resolved **no sandbox principal at all**
+   and served the SDK with no per-execution accounting — locally indistinguishable from the bug
+   the tokens exist to fix. It now generates both secrets once into `DEV_STACK_RUN_DIR` (stable
+   across restarts, outside every repo) and exports them with `SANDBOX_ENABLED=true`.
+3. `SANDBOX_RETENTION_S` had no way through `run-sandbox-local.sh`, so the retention deadline
+   was unobservable in container mode. It is now passed through.
+
+**Two findings on results-api, filed rather than worked around:**
+
+* Its JSON log formatter carries `sid` and `jti` out of `log_rejection`'s `extra` and **drops
+  `code`, `limit` and `observed`** — so `Rejection.code`, whose whole purpose is to make a 429
+  actionable in a log, never reaches an operator. The code *is* on the wire in the 429 body,
+  and the harness reads it there.
+* `endpoint_access` records `user_email: null` for a sandbox principal even though `sid` and
+  `jti` are stamped, so the authenticated user is not attributable from results-api's log
+  alone. db-api's record and the audit stream both carry `sub`.
+
+**Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCES here.**
+In this configuration — plain Docker, `runc`, `--pids-limit 1024` — a grandchild that
+`setsid()`s away from the execution's process group is **still resident after the execution has
+been killed by its wall clock**, while its sibling that stayed in the group is gone. Measured
+2026-08-17:
+
+```
+process group: a grandchild IN the group does not outlive a limit kill        ok
+note  after the LIMIT kill the setsid() grandchild is RESIDENT: alive=['D'] zombie=['G']
+note  the NORMALLY-COMPLETING execution's group is never signalled, and both of its
+      grandchildren are alive=['D', 'G']
+```
+
+Neither note is a pass/fail: asserting the escapee is gone would assert the comfortable answer,
+and asserting it survives would fail this harness on a property nobody has claimed. **A green
+run of this file is not evidence that `4h6.55` fails to reproduce under `runc`. It reproduces.**
+`4h6.55` is P0 and open, and this changes nothing about it.
+
+An earlier draft of this section claimed the opposite, and the mechanism by which it did is
+worth keeping written down. The probe `exec`'d `/bin/sleep`; the image is
+`gcr.io/distroless/python3-debian12:nonroot` and **has no `/bin/sleep`** — no coreutils and no
+shell at all — so both forks died in `execv` with `ENOENT` and lingered only as unreaped
+zombies carrying no marker. The scan then found nothing, and "nothing found" read as "nothing
+survived". The guard written specifically to stop that — *the grandchildren really were
+spawned* — counted the parent's `SPAWNED` lines, which the parent prints on the `pid != 0`
+branch the moment `fork()` returns, **before and regardless of** whether the child's `exec`
+succeeded. A guard on a syscall's return value is not a guard on the object's existence. The
+probe now forks without `exec`ing (the shape `scripts/test-supervisor.py` already uses), names
+each grandchild through `/proc/self/comm` (`prctl(PR_SET_NAME)` — a fork without `exec`
+inherits the parent's `argv`, so the name is the only marker available), and the parent **reads
+that name back out of `/proc/<pid>/comm`** before it goes on. The scan looks for it in
+`/proc/<pid>/stat`, and treats an unreaped zombie as *not* a survivor: the supervisor is pid 1
+and never waits on orphans, so a grandchild it killed stays visible with its name intact and
+state `Z`.
+
+**Nothing here establishes any cross-user isolation property**, and the harness says so: `4h6.55`
+has measured a child reading other executions' tokens out of inherited memory and reading and
+overwriting other executions' artifacts. `4h6.55` states the local single-developer path is not
+blocked by that; it does not become untrue because this run passed.
+
+**Not claimed, and not claimable here:** gVisor syscall behaviour, the NetworkPolicy egress
+allow-list, the kubelet's `pod_pids_limit`, RuntimeDefault seccomp, and whether `oom_score_adj`
+and `/proc` process-group inspection behave under `runsc`. Those are `4h6.51`'s.
 
 ---
 

@@ -157,6 +157,8 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── test-e2e-local.py     # end-to-end run_analysis verification against the live local
+│                             #   stack (4h6.49). Needs dev-stack.sh + run-sandbox-local.sh up
 │   ├── dev-stack.sh          # start/stop the five local dev servers from one tree
 │                             #   (main checkouts or worktrees) against one dataset.
 │                             #   See docs/local-dev-vm.md
@@ -1020,6 +1022,32 @@ start it, because the image still ships no `CMD` and the manifest still declares
   mechanism — a check inside a group that ran, such as one needing the harness's own view of
   `/scratch` — and those stay counted and listed individually. No build or deploy script runs
   either mode yet.
+- **`scripts/test-e2e-local.py`** is the *other* harness and deliberately a separate file
+  (`genetics-results-suite-4h6.49`): it needs the whole local stack up (db-api `:8080`,
+  results-api `:2000`, the sandbox container) plus a signing key shared between chat-backend
+  and both verifiers, and BigQuery behind db-api — preconditions that would take away
+  `test-supervisor.py`'s "no cluster, no credentials, no image" property if folded in. It
+  drives chat-backend's own `sandbox_token`/`sandbox_client` code end to end and asserts on
+  what a 200 does not show: that the SDK's request appears in results-api's per-execution map
+  under the token's `jti` (with an `INTERNAL_API_SECRET` caller measured in the same run as the
+  200-with-no-accounting negative control), that the audit records carry the token's real
+  sub/sid/jti while a forged `[user=…]` line does not parse as genuine, that `execution_id`,
+  `/scratch/<id>` and both `jti`s are one value that joins across every log, that each limit
+  returns a clean structured result to the client, that a grandchild left **in** the process
+  group does not outlive the limit kill (the only path on which the supervisor signals the
+  group at all), that an unset signing key sends nothing at all, and that artifacts are still
+  present at half the container's own TTL and gone by `TTL + REAPER_POLL_S`. It refuses to
+  start unless the running container's `/genetics/supervisor.py` and `prewarm.py` are
+  byte-identical to `sandbox/`'s, and every skip is listed under `NOT MEASURED` and named in
+  the exit banner, because a green exit is not a claim that everything was measured. Measured
+  2026-08-17 with a container started as `SANDBOX_RETENTION_S=45`:
+  `scripts/test-e2e-local.py --retention-s 45` → **49 checks passed, nothing skipped** (48
+  without the flag, which only cross-checks the retention the harness reads off the container
+  itself). Against a container with no `SANDBOX_RETENTION_S` the retention group skips and the
+  run reports `NOT MEASURED (1)` with a `PARTIAL:` banner, still exiting 0. The
+  run also **reproduces `genetics-results-suite-4h6.55`**: a `setsid()` grandchild is still
+  resident after the execution is killed. Details in
+  [docs/code-execution-security.md](code-execution-security.md) §2, *As built (`4h6.49`)*.
 - **Three environment differences are what "not the image" looks like**, each warned about
   loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
   `GENETICS_MPLCACHE` unset leaves the font cache to be rebuilt, and `SANDBOX_SCRATCH_ROOT`
@@ -1310,6 +1338,13 @@ What is load-bearing about it:
   `process.env` over its `.env` files — so a worktree needs no `.env.local` either.
 - **`SANDBOX_URL` is set explicitly to `http://127.0.0.1:8081`.** The client's default is
   `127.0.0.1:8080`, which locally is db-api, not the sandbox (`genetics-results-suite-6um`).
+- **It provisions the sandbox's per-execution credentials** (`genetics-results-suite-4h6.49`):
+  `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are generated once into
+  `DEV_STACK_RUN_DIR` — stable across restarts, outside every repo, never in a working tree —
+  and exported with `SANDBOX_ENABLED=true`. Without them db-api and results-api resolve **no
+  sandbox principal at all** and serve the sandbox SDK with no per-execution accounting, which
+  is locally indistinguishable from the bug the tokens exist to fix
+  (`genetics-results-suite-0lf`). Override any of the three to pin a value.
 - **`status` reads `DATASET_ID` from `/proc/<pid>/environ`**, because `/health` does not
   report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
   `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.

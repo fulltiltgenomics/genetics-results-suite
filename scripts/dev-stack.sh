@@ -35,6 +35,12 @@
 #                        reads the main checkout's copy rather than getting a copy of the
 #                        secrets. Nothing here prints or copies its contents.
 #   PROJECT_ID           GCP project for db-api (default: $GCP_PROJECT, else phewas-development)
+#   SANDBOX_TOKEN_SIGNING_KEY, INTERNAL_API_SECRET, SANDBOX_ENABLED
+#                        the sandbox's per-execution credential configuration. Generated
+#                        once into DEV_STACK_RUN_DIR and reused; override to pin a value.
+#                        WITHOUT THEM db-api and results-api resolve no sandbox principal
+#                        and serve the SDK with no per-execution accounting at all, which
+#                        is indistinguishable from the bug the tokens exist to fix.
 #   SANDBOX_URL          code-execution sandbox (default: http://127.0.0.1:8081, what
 #                        scripts/run-sandbox-local.sh publishes). MUST be set explicitly:
 #                        the client's own default is 127.0.0.1:8080, which is db-api here
@@ -156,6 +162,43 @@ repo_dir() {
 PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT:-phewas-development}}"
 MCP_ENV_FILE="${MCP_ENV_FILE:-$SIBLING_ROOT/genetics-mcp-server/.env}"
 SANDBOX_URL="${SANDBOX_URL:-http://127.0.0.1:8081}"
+
+# --------------------------------------------------------------------------------------
+# The sandbox's per-execution credentials (genetics-results-suite-4h6.49).
+#
+# Without these the token path is DEAD LOCALLY AND SILENTLY SO. db-api and results-api read
+# SANDBOX_ENABLED and SANDBOX_TOKEN_SIGNING_KEY from the environment; with neither set,
+# `sandbox_enabled` is false, `verify_sandbox_token` rejects every sandbox-shaped bearer, no
+# `SandboxPrincipal` is ever resolved, and results-api's `sandbox_budget.admit` is never
+# called — so an SDK request is answered 200 with NO accounting at all. That is the exact
+# shape of genetics-results-suite-0lf, and a local run that does not set these cannot tell
+# the fixed path from the broken one.
+#
+# Generated once and kept in RUN_DIR, which is outside every repo: the key must be STABLE
+# across restarts (rotating it invalidates a token minted seconds earlier) and must never
+# land in a working tree. INTERNAL_API_SECRET is here because both services refuse to start
+# with SANDBOX_ENABLED true and that secret unset — the sandbox itself is NOT given it
+# (genetics-results-suite-4h6.7), so nothing in the sandbox path uses it; it exists so the
+# services' own fail-closed startup check is satisfied by the same configuration the cluster
+# has, rather than by turning the check off locally.
+dev_secret() {
+    # two statements: `local a=$1 b=$a` expands every word BEFORE the builtin assigns any of
+    # them, so `$a` is unbound there and `set -u` kills the script
+    local name="$1"
+    local path="$RUN_DIR/$name"
+    if [ ! -s "$path" ]; then
+        mkdir -p "$RUN_DIR"
+        ( umask 077; python3 -c 'import secrets;print(secrets.token_urlsafe(32))' >"$path" )
+    fi
+    cat "$path"
+}
+
+if [ "$COMMAND" = up ]; then
+    SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(dev_secret sandbox-token-signing-key)}"
+    INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(dev_secret internal-api-secret)}"
+    SANDBOX_ENABLED="${SANDBOX_ENABLED:-true}"
+    export SANDBOX_TOKEN_SIGNING_KEY INTERNAL_API_SECRET SANDBOX_ENABLED
+fi
 
 # Every port decision comes from `ss`. Without it the queries return nothing and the script
 # concludes every port is free — it would start a second copy of everything and report the

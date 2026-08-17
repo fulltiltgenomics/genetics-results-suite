@@ -94,6 +94,35 @@ the script does not name is passed through untouched. Put these there rather tha
 | `PERPLEXITY_API_KEY`, `TAVILY_API_KEY` | literature and web search are simply absent without them; nothing warns |
 | `CHAT_HISTORY_DB`, `LLM_CONFIG_DB`, `DOWNLOAD_STORAGE_PATH`, `ATTACHMENT_STORAGE_PATH` | defaults are `/mnt/disks/data/{chat_history.db,llm_config.db,downloads,attachments}`. On a machine that has that disk they are correct and hold the real chat history; on a fresh VM the directory does not exist. If you followed step 5's `$HOME/data` block and then switch to `dev-stack.sh`, the backend opens the **`/mnt/disks/data` database instead** and every past conversation appears to have vanished — put the same four `$HOME/data` paths in the `.env` and they do not |
 
+`SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are the exception to "put it in the
+`.env`": the script **generates** them once into `DEV_STACK_RUN_DIR`
+(`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend
+together with `SANDBOX_ENABLED=true`, so the minter and both verifiers agree. They have to be
+stable across restarts — rotating the key invalidates a token minted seconds earlier — and they
+must not land in a repo. Setting either variable yourself still wins.
+
+**This changes what an unauthenticated local request can do, and it is not a subtlety.**
+db-api's auth middleware is fail-open on an **empty** `INTERNAL_API_SECRET` (`api/main.py`
+warns `every endpoint is reachable without authentication` and lets everything through), so
+simply having the variable set flips it to **enforcing**. Measured 2026-08-17 against the local
+stack:
+
+| request | before `dev-stack.sh` provisioned the secret | now |
+|---|---|---|
+| `curl -X POST 127.0.0.1:8080/query -d '{"query":"SELECT 1"}'` | served | **401** |
+| `curl 127.0.0.1:8080/openapi.json` | served | **401** |
+| `curl 127.0.0.1:8080/health` | 200 | 200 (unauthenticated by design) |
+
+Any curl one-liner, notebook or script that talked to the local db-api without a credential
+stops working the first time you bring the stack up after this change. That is the cluster's
+behaviour arriving locally rather than a regression — the point of provisioning the secrets is
+that the local stack authenticates the way the deployed one does — but it is a real change to
+what a developer's existing tooling can do, so: send
+`Authorization: Bearer $(cat ~/.cache/genetics-dev-stack/internal-api-secret)`. Note that
+`SANDBOX_ENABLED=false` does **not** get the old behaviour back — it is `INTERNAL_API_SECRET`
+alone that db-api gates on. Bringing the stack up with `INTERNAL_API_SECRET= SANDBOX_ENABLED=`
+does, at the cost of the whole sandbox token path (see `docs/code-execution-security.md` §2).
+
 It starts services in dependency order and waits for each health endpoint. results-api gets
 a 10-minute budget because it verifies every configured tabix file against GCS before it
 serves (~90 s warm, longer cold); everything else answers in seconds.
