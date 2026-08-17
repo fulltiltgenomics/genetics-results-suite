@@ -1097,7 +1097,7 @@ with an explicit `encoding` field for exactly that case (section 6).
 
 | field | type | notes |
 |---|---|---|
-| `type` | string, **open** | the child's exception class name (`ValueError`), or one of the supervisor's own reserved names: `Timeout`, `MemoryLimit`, `PidLimit`, `ArtifactQuota`, `ScratchQuota`, `OutputLimit`, `NonZeroExit`, `Killed`, `StartupFailure` |
+| `type` | string, **open** | the child's exception class name (`ValueError`), or one of the supervisor's own reserved names: `Timeout`, `PidLimit`, `ArtifactQuota`, `ScratchQuota`, `OutputLimit`, `NonZeroExit`, `Killed`, `StartupFailure` |
 | `message` | string, ≤ 2 KiB | truncated, never omitted |
 | `traceback` | string or `null`, tail-capped at 8 KiB | `null` when the end was not an exception |
 | `limit` | string or `null` | which limit fired, when `status == "limit"`; the same vocabulary as `type` |
@@ -1109,6 +1109,21 @@ those conditions and a client may branch on them — and every other value is an
 to display, never to switch on. This is the one place the subsection's "a field not listed
 here does not exist" rule does not extend to values: it constrains the set of *fields*, not
 the set of strings a `type` may hold.
+
+**Memory exhaustion has no reserved name, and `MemoryLimit` is not one of the eight above.**
+The name exists in `sandbox/supervisor.py` as `ERR_MEMORY_LIMIT` and an earlier version of this
+table listed it, but nothing has ever emitted it and nothing can: the memory ceiling is
+`RLIMIT_AS`, which the **child** applies to itself and the kernel enforces inside the child, so
+the supervisor never sees a limit fire. What comes back is the child's own exception class —
+`status: "error"`, `error.type: "MemoryError"`, `error.limit: null` — on the *open* half of the
+range, which is what a client must match. The supervisor cannot re-label it: doing so would
+mean trusting the child to tell the ceiling apart from a plain `raise MemoryError`, and
+refusing exactly that trust is what the reserved set is for. `ERR_MEMORY_LIMIT` therefore stays
+in the supervisor's reserved set — where its only remaining job is to stop a script forging the
+name — and is deliberately absent from both `_LIMIT_MESSAGES` and this table. A client branch
+keyed on `"MemoryLimit"` is dead code; `genetics-mcp-server`'s `_analysis_hint` has one, and it
+is doubly unreachable because it sits under `status == "limit"`, which a `MemoryError` never
+produces.
 
 **`NonZeroExit` is the name for a child that exited non-zero without an uncaught exception**
 — `sys.exit(3)`, a C extension calling `exit()`, a subprocess convention. The `status` table
@@ -1730,7 +1745,7 @@ child's address space, which is why `4h6.12` put the stamping here.
 | per-execution total (`/scratch/<id>`, artifacts + tmp + caches) | 192 MiB **and** 20 000 entries | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
 | aggregate `/scratch` during a run (retained + live) | 480 MiB | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
 | aggregate retained artifacts | 256 MiB | oldest-first eviction when a completion breaches it |
-| retention | 15 min from completion | reaper thread, every 30 s |
+| retention | 15 min from completion, deleted on the next reaper tick — so the observable window is **[15 min, 15 min + 30 s]** | reaper thread, every 30 s (`REAPER_POLL_S`) |
 | manifest entries in one response | 1024 | listed; the rest counted in `artifacts_omitted` |
 
 **The budget, stated once.** `sandbox/supervisor.py` states the same arithmetic in one comment
@@ -1814,7 +1829,21 @@ kubelet be the thing that notices.
   come.
 - **Retained sizes are measured once and cached.** Re-walking every retained tree on every
   completion made one 300 000-file execution a tax on all fifteen minutes of executions after
-  it. Nothing writes to a retained directory, so the value cannot drift.
+  it. Nothing the supervisor can reach writes to a retained directory — the child is reaped and
+  the trim has already run — so the value cannot drift *for any process the kill path reaches*.
+  It **can** drift for a `setsid()` escapee, which is not in the killed process group, keeps its
+  write access to `/scratch/<id>/artifacts`, and can grow a tree after its size was cached: the
+  retained total, the ceiling eviction and the in-run aggregate check then all read low. That is
+  the same escapee section 2 records everywhere else and `4h6.55` owns; re-measuring would not
+  fix it, since the writes continue after any measurement. An earlier wording of this bullet
+  stated the no-drift claim unconditionally.
+- **The cached sizes can also double-count, in the safe direction.** Sizing follows the path it
+  is handed, so a child that replaces its own `artifacts/` with a symlink to another execution's
+  directory gets those bytes charged to both rows: the total reads **high**, so the ceiling
+  evicts earlier than it needs to, and nothing is under-protected. Deletion is unaffected —
+  `shutil.rmtree` does not traverse a symlink and the trim unlinks one rather than descending
+  it. Recorded, not fixed: a child that can plant it is already past the boundary `4h6.55` owns.
+  The guard, if that boundary ever makes it worth having, is one `lstat` before measuring.
 - **Oldest-first eviction has no "never evict the last one" guard**, and removing it was the
   fix: with it, a single over-ceiling execution sat above the ceiling permanently, because
   there was nothing older to evict. The trim is what protects the newest execution now, and
@@ -3456,6 +3485,26 @@ property that 6.1 and 6.4 assert. The rule:
 - `/scratch/<id>/artifacts` is retained for **15 minutes** from completion, then deleted
   unconditionally by the supervisor's reaper, whether or not it was ever read. Fifteen
   minutes is longer than any plausible same-turn retrieval and far shorter than a session.
+- **The 15 minutes is a floor, not an instant.** Deletion happens on a reaper tick and the
+  reaper polls every 30 s (`REAPER_POLL_S`), so a directory is present until the
+  deadline and gone by **deadline + 30 s**; in between it may be either. Tightening the poll
+  narrows the window without closing it, and polling is also what catches orphans the retention
+  registry has no row for, so the window is stated rather than engineered away. **Anything
+  asserting this boundary** — `4h6.49` is instructed to — must assert presence at some
+  `t < TTL` and absence only at `t >= TTL + 30 s` plus its own margin, driving it with the
+  `SANDBOX_RETENTION_S` override; the override shortens the TTL but **not** the poll, so the
+  30 s term stays 30 s however short the TTL is made.
+  **The presence half of that assertion holds only while nothing else is retaining
+  concurrently.** Presence until the deadline is not unconditional: a *later* completion that
+  pushes the retained aggregate over the 256 MiB ceiling makes `_enforce_retained_ceiling`
+  evict oldest-first, and `_forget_retained` deletes a directory **before** its deadline. So
+  the boundary is "present until the deadline **unless the retained ceiling evicts it first**,
+  gone by deadline + 30 s". A test asserting presence at `t < TTL` must therefore be the only
+  thing retaining for the duration of that window — one execution, or a total well under the
+  ceiling — or it is asserting against a directory another execution is entitled to delete.
+  `scripts/test-supervisor.py`'s
+  `test_retention_expiry` already does exactly this — `retention_s + REAPER_POLL_S + 2` against
+  a container, `reap_expired()` called directly in-process — and is the shape to copy.
 - Retention does not survive a pod restart, and the supervisor wipes unrecognised
   `/scratch` entries at startup (section 2, Writable paths).
 - So "nothing persists" is now precise: **nothing persists beyond 15 minutes, and nothing
@@ -3487,6 +3536,29 @@ manifest** — for each file under `/scratch/<id>/artifacts`, its `name`, `size`
 and serves `read_artifact` from it; the model sees the manifest and so knows what names are
 retrievable without guessing. The manifest carries **no paths and no execution id** — the
 same reason `read_artifact` takes a name.
+
+**A quota kill deletes artifacts NEWEST-FIRST, and that is visible to whoever reads the
+manifest.** When `artifacts/` is over its 64 MiB / 1024-entry quota the supervisor trims it
+back after the kill, and the victim order is mtime-descending with no size awareness: the entry
+being written when the kill landed is assumed to be the culprit. That is right for the case the
+trim exists for and wrong for an ordinary one — a script that writes a 100 MiB CSV **first** and
+then fifty small plots loses the fifty plots first, and then loses the CSV too, because no
+number of plots brings a tree under a quota one file alone exceeds. The policy is kept anyway:
+a size-aware pass would delete the large output the user actually asked for and keep incidental
+ones. The consequence a client must handle: after `status: "limit"` with
+`error.type: "ArtifactQuota"` the manifest can be **short or empty** even though the script
+wrote those files successfully, so a name the model can see in its own code may simply not be
+offered, and asking for it is a legitimate `404`. The manifest never *lies* — the trim runs
+before it is built, precisely so it cannot advertise a name that is already gone, and the
+deletions are folded into `artifacts_omitted`. **That field is a combined floor, not a trim
+counter.** It is `omitted + trimmed`: `build_manifest`'s own omissions (entries it could not
+`stat`, or that were not regular files with `st_nlink == 1`) plus the trim's deletion count,
+and the first half stops being a count of its own past the scan limit — beyond that the
+directory is no longer enumerated and the supervisor logs that `artifacts_omitted` is a floor.
+A client can read it as "at least this many names are missing", never as "the trim deleted
+exactly this many". Nothing here is a budget violation — the
+retained tree ends up under the quota either way — so it is a behaviour to describe, not a bug
+to fix.
 
 **Name collisions across executions in one `sid`: most recent wins.** Two executions in the
 same session can both write `manhattan.png`, and the resolution rule above ("executions

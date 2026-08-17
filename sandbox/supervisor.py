@@ -172,6 +172,19 @@ SCRATCH_AGGREGATE_CEILING_BYTES = SCRATCH_SIZE_LIMIT_BYTES - SCRATCH_SUPERVISOR_
 RETENTION_S = 15 * 60
 REAPER_POLL_S = 30.0
 
+# THE TTL IS A FLOOR, NOT AN INSTANT. Deletion happens on a reaper tick, so a retained
+# directory is there until RETENTION_S and is gone by RETENTION_S +
+# REAPER_POLL_S; anywhere in that window it may be either. The until-RETENTION_S half is not
+# unconditional: _enforce_retained_ceiling evicts oldest-first when a LATER completion pushes
+# the retained aggregate over RETAINED_ARTIFACTS_CEILING_BYTES, so a directory can go BEFORE
+# its deadline. A presence assertion at t < RETENTION_S is therefore only sound while nothing
+# else is retaining concurrently. Tightening the poll would only
+# narrow the window, not close it, and polling is what makes the reaper cover orphans the
+# registry has no row for — so the window is stated rather than engineered away. A test that
+# asserts "gone at RETENTION_S" is flaky by construction; assert presence at any t < RETENTION_S
+# and absence only at t >= RETENTION_S + REAPER_POLL_S (plus its own margin), against the
+# SANDBOX_RETENTION_S override rather than fifteen real minutes.
+
 # ZERO-LENGTH FILES ARE NOT FREE, and charging only st_blocks says they are. MEASURED: 300,000
 # empty files under artifacts/ charged 8.6 MB against the 192 MiB quota, so no limit fired,
 # while producing a 19.8 MB response and taking the supervisor's RSS from 22 MB to 166 MB. The
@@ -220,6 +233,17 @@ _EXECUTE_FIELDS = frozenset(
 
 # Reserved error.type names. error.type is an OPEN string — the child's exception class name
 # is the other half of its range — and these are the reserved minimum a client may branch on.
+#
+# ERR_MEMORY_LIMIT IS RESERVED AND NEVER EMITTED, which is not an oversight and is why it is
+# called out here rather than left to be rediscovered. The memory ceiling is RLIMIT_AS, applied
+# by the CHILD to itself (_apply_child_limits) and enforced by the kernel inside the child, so
+# the supervisor never observes it as a limit firing: what comes back is the child's own
+# exception class, `MemoryError`, with status "error". The supervisor could only re-label that
+# by trusting the child to distinguish "the ceiling stopped me" from `raise MemoryError`, and
+# the whole point of _sanitise_error_type is that it does not trust the child with a reserved
+# name. So the name stays in RESERVED_ERROR_TYPES — where its only job is to keep a script from
+# forging it — and the doc no longer claims the supervisor emits it. A client wanting to detect
+# memory exhaustion must match the child's `MemoryError`, on the open half of the range.
 ERR_TIMEOUT = "Timeout"
 ERR_MEMORY_LIMIT = "MemoryLimit"
 ERR_PID_LIMIT = "PidLimit"
@@ -1148,9 +1172,19 @@ class Supervisor:
         #
         # THE SIZE IS CACHED, NOT RE-MEASURED. It was re-measured by walking every retained
         # tree on every completion, which made a 300,000-file execution a tax on all fifteen
-        # minutes of executions after it (MEASURED). Nothing writes to a retained directory —
-        # the child is reaped and _retain has already trimmed it — so the value cannot drift,
-        # and _forget_retained is the only thing that removes bytes.
+        # minutes of executions after it (MEASURED). Nothing the supervisor knows about writes
+        # to a retained directory — the child is reaped and _retain has already trimmed it —
+        # and _forget_retained is the only thing that removes bytes, so the cached value cannot
+        # drift for any process the kill path actually reaches.
+        #
+        # IT CAN DRIFT FOR A setsid() ESCAPEE, and the earlier wording here said flatly that it
+        # could not. A descendant that left the process group is not signalled by _kill_group
+        # (see its comment), keeps its handles and its write access to /scratch/<id>/artifacts,
+        # and can grow a retained tree after its size was cached — so the retained total, the
+        # ceiling eviction and the watchdog's aggregate check all read low, and the emptyDir
+        # sizeLimit is what would notice. Re-measuring here would not fix it either (the write
+        # continues after any measurement); what fixes it is the containment boundary 4h6.55
+        # owns. The claim this comment is allowed to make is the conditional one.
         self._retention = {}
         self.retention_s = RETENTION_S if retention_s is None else retention_s
         self._stop_reaper = threading.Event()
@@ -1331,7 +1365,22 @@ class Supervisor:
         return trimmed
 
     def _retained_sizes(self):
-        """[(execution_id, bytes)] in completion order — which is oldest-first."""
+        """[(execution_id, bytes)] in completion order — which is oldest-first.
+
+        THE SIZES CAN DOUBLE-COUNT, and it is recorded here so it is not re-found as new. The
+        cached number comes from _dir_usage/_dir_bytes over /scratch/<id> and its artifacts
+        subtree, and os.scandir follows the path it is handed: a child that replaces its own
+        artifacts/ with a symlink to ANOTHER execution's directory gets that directory's bytes
+        charged twice, once to each row. The consequence is misaccounting in the conservative
+        direction — the total reads HIGH, so the ceiling evicts sooner than it needs to — and
+        deletion stays correct, because _forget_retained's shutil.rmtree does not traverse a
+        symlink and _remove_entry unlinks one rather than descending it. NOT FIXED HERE: a
+        child that can plant it is already outside the boundary 4h6.55 owns, where it can do
+        worse than skew a number. The cheap guard, if it is ever wanted, is one lstat —
+        refusing to measure <id>/artifacts when os.path.islink says it is a symlink and
+        charging the row 0 — which costs a syscall per measurement and buys nothing until
+        4h6.55 lands.
+        """
         with self._lock:
             return [(eid, row[1]) for eid, row in self._retention.items()]
 
@@ -1694,6 +1743,12 @@ class Supervisor:
 # and a single kill path, and four timers would give four chances to get the reap race wrong.
 # --------------------------------------------------------------------------------------
 
+# One row per reason _fire_limit is ever called with, EXCEPT ERR_TIMEOUT, which _response
+# answers in its own branch (status "timeout", error.limit null) and so never looks up here.
+# _response indexes this dict directly, so a new _fire_limit reason added without a row is a
+# KeyError there rather than a bad message. ERR_MEMORY_LIMIT has no row on purpose: nothing
+# fires it (see the reserved-names block above), and a message for a limit that cannot fire is
+# the stub this file has already had removed from it twice.
 _LIMIT_MESSAGES = {
     ERR_OUTPUT_LIMIT: f"output exceeded the {PIPE_CAP_BYTES // (1024 * 1024)} MiB pipe cap",
     ERR_PID_LIMIT: f"process group exceeded the {PID_BUDGET}-process budget",
@@ -1961,6 +2016,18 @@ def _trim_artifacts(artifacts_dir):
     being written when the kill landed; the smaller, deliberate artifacts a script produced
     earlier are the ones worth keeping. One policy covers both budgets, so there is no case
     where the two orderings disagree about which file goes.
+
+    THE POLICY IS BLIND TO SIZE, and the case it loses badly is one an ordinary user writes:
+    a 100 MiB CSV FIRST, then fifty small plots. The CSV is the oldest, so it is the LAST
+    candidate — the fifty plots go first, and since no number of plots brings a tree under a
+    quota one file alone exceeds, the CSV goes too. Everything is lost, and the plots were lost
+    for nothing. A size-aware pass would keep them. This is left as it is deliberately: recency
+    is the right signal for the hostile case the trim exists for (the entry being written when
+    the kill landed is the culprit), and the alternative deletes the large output a script was
+    asked to produce while keeping incidental ones. It is not a budget violation — the tree
+    still ends up under ARTIFACT_QUOTA_BYTES, or the give-up path returns a measured size — so
+    it is a behaviour, and it is stated in read_artifact's contract (the read_artifact
+    subsection of docs/code-execution-security.md) where a user reads what may be missing.
 
     Subdirectories are deleted whole and count like any other entry: a bare name cannot address
     their contents, so read_artifact can never return anything from one, but their bytes count
