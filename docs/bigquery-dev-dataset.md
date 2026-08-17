@@ -16,7 +16,11 @@ still standing.** A read-only survey on 2026-08-13 established:
   `finngenie.fi`. **`phewas-development` IS production**;
 - one application namespace, `genetics`. No `genetics-dev`;
 - exactly three BigQuery datasets — `genetics_api_logs`, `genetics_chat_logs`,
-  `genetics_results`. No dev copy of any of them;
+  `genetics_results`. No dev copy of any of them. (**Since 2026-08-14 there is a fourth**,
+  `genetics_dev` — a persistent chr22-only subset the local dev stack points db-api at,
+  `genetics-results-suite-g08`. It is a different object from the `genetics_results_dev`
+  clone this document builds: that one is created and torn down around a single DDL
+  rehearsal, this one stays. See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
 - the `daly` profile is a **second production brand** (its own project, region, domain,
   Keycloak realm and real Broad users), not a staging copy. It is not a canary.
 

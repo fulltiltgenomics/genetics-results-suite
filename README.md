@@ -293,6 +293,11 @@ does not work is assuming a `git add` from here refreshed anything.
 the git common dir, so it works from a worktree and fails loudly when it cannot resolve
 them — `check-worktree-paths.sh` no longer reports it.
 
+To **run** the suite from a worktree rather than build from it, use `scripts/dev-stack.sh`
+(below): the local dev servers otherwise keep serving the main checkouts on `master` while
+you edit a branch, and the config that makes them work — `genetics-mcp-server/.env`, the
+browser's `.env.local` — is gitignored and exists only in the main checkout.
+
 This script reports only the paths that actually diverge; it is silent in the main
 checkout. `deploy.sh`, `build-all.sh` and `build.sh` run it with `--check`, warn, and
 never block — a single-service build falls back to `APP_NAME=FinnGenie` from a worktree
@@ -431,6 +436,28 @@ second refusal names `genetics-results-suite-4h6.39` (the supervisor) and clears
 `genetics-results-suite-4h6.50` wires it into the manifest. See "The sandbox Deployment" in
 `docs/project-spec.md` and
 [docs/code-execution-security.md](docs/code-execution-security.md).
+
+## Running the suite locally
+
+Everything above deploys. To run the five services from source on one machine — results-api
+`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080`, one per repo —
+see [docs/local-dev-vm.md](docs/local-dev-vm.md) for the from-scratch setup and
+`scripts/dev-stack.sh` to drive them:
+
+```bash
+./scripts/dev-stack.sh up                 # all five from the worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # all five from the main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh status             # port, health, and which tree each pid is serving
+./scripts/dev-stack.sh down
+```
+
+Both trees use the same five ports, so `up` frees each port first and one tree serves at a
+time; switching back is `down` then `up --tree main`. A port is only freed when its holder
+is this suite's — checked against `/proc/<pid>/cwd` and the command line — so an unrelated
+app on `:3000` or `:8080` is reported and left alone (`--force` overrides) rather than
+killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **chr22-only**
+subset — smoke-test with `SMARCB1`, not `APOE`. Nothing in this script touches the cluster. See "Running the local dev stack" in
+`docs/project-spec.md`.
 
 ## Services
 

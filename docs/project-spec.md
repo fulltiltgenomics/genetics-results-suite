@@ -157,6 +157,9 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── dev-stack.sh          # start/stop the five local dev servers from one tree
+│                             #   (main checkouts or worktrees) against one dataset.
+│                             #   See docs/local-dev-vm.md
 │   ├── bq-dev-dataset.sh     # stand up / verify / tear down the BigQuery rehearsal
 │                             #   dataset. See docs/bigquery-dev-dataset.md
 │   ├── chat_usage_stats.sh   # chat usage counts from the BigQuery chat-log sink
@@ -1208,6 +1211,59 @@ optimiser has processed it (4h6.18 observed 4,492,232,401 B dry-run against 517,
 actual), so scan-byte claims need real execution with `use_query_cache=False`, and the
 clustering itself should be asserted from
 `INFORMATION_SCHEMA.COLUMNS.clustering_ordinal_position`.
+
+### Running the local dev stack (`scripts/dev-stack.sh`)
+
+Five servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
+chat-backend `:4000`, BFF `:5000`, db-api `:8080` — and each lives in a different repo.
+`scripts/dev-stack.sh` starts, stops and switches all five as one unit; the full
+from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
+
+```
+./scripts/dev-stack.sh up                 # worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh status             # port, health, and which tree each pid runs from
+./scripts/dev-stack.sh down
+```
+
+What is load-bearing about it:
+
+- **One tree at a time, by construction.** Both trees want the same five ports (the
+  frontend's `VITE_*` URLs, vite's `/api` proxy and the sandbox container's
+  `host.docker.internal` targets all name them), so `up` frees each port before starting on
+  it. Going back to `master` is `down` then `up --tree main`.
+- **It stops what holds the port, not what it started** — `ss` to the listening pid to its
+  process group — so it takes over hand-started tmux servers, and one signal reaches a whole
+  `npm` → `sh` → `node` tree instead of letting `tsx watch` respawn its child. **But only
+  when the holder is this suite's**: the socket says nothing about whose process it is, and
+  `:3000`/`:8080` are the ports an unrelated dev server is most likely to be sitting on. Each
+  holder's `/proc/<pid>/cwd` and command line are checked against the service's repo (main
+  checkout or any worktree beneath it) first; a stranger is reported — pid, cwd, argv — and
+  left alone, that service is skipped, and `up` exits non-zero. `--force` overrides. It also
+  refuses to run as root and never signals process group 0, 1, its own, or the one it
+  inherited from the launching terminal.
+- **Every selected tree is validated before the first port is freed**, so a missing `.venv`
+  cannot leave two services on the new tree, one killed and two still serving the old one.
+  `up` returns non-zero if any service fails preflight, has its port refused, or never
+  answers its health endpoint.
+- **The gitignored config is referenced, never copied.** `genetics-mcp-server/.env` exists
+  only in the main checkout; the script sources it by path (`MCP_ENV_FILE`) into the
+  chat-backend subshell, so no secret reaches a worktree, a command line or a log. The
+  frontend's `VITE_*` values are passed as environment variables — vite merges prefixed
+  `process.env` over its `.env` files — so a worktree needs no `.env.local` either.
+- **`SANDBOX_URL` is set explicitly to `http://127.0.0.1:8081`.** The client's default is
+  `127.0.0.1:8080`, which locally is db-api, not the sandbox (`genetics-results-suite-6um`).
+- **`status` reads `DATASET_ID` from `/proc/<pid>/environ`**, because `/health` does not
+  report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
+  `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.
+- **`--tree worktree` defaults db-api to `genetics_dev`**, the persistent chr22-only subset
+  (`genetics-results-suite-g08`): full schema, all 15 tables and views, 3.6 M rows against
+  production's 1.1 B. Smoke tests need a chr22 gene — `SMARCB1`, not `APOE`. It is a
+  different object from the `genetics_results_dev` *rehearsal* clone of
+  [docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md), which is created and torn down
+  around one DDL change.
+
+Nothing here touches a cluster: it starts local processes and reads BigQuery.
 
 ### Running the sandbox locally (`scripts/run-sandbox-local.sh`)
 

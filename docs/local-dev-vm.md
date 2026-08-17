@@ -20,6 +20,116 @@ which runs the real gateway image locally.
 Data flow: browser → vite `:3000` → BFF `:5000` → results-api `:2000`; the chat views bypass
 the BFF and call `:4000` directly. db-api is only used server-side, so it needs no tunnel.
 
+## Already set up? `scripts/dev-stack.sh` drives all five
+
+Steps 1-6 are the from-scratch build-out. On a machine where the repos, venvs and
+`node_modules` already exist, one script starts, stops and switches the whole stack
+(`genetics-results-suite-r9e`):
+
+```bash
+./scripts/dev-stack.sh up                 # the worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # the main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh status             # port, health code, and WHICH TREE each pid runs from
+./scripts/dev-stack.sh down               # stop all five
+./scripts/dev-stack.sh logs chat-api      # tail -f
+```
+
+Switching back to the main checkouts on `master` is `down` then `up --tree main`, and
+nothing else. The two trees are mutually exclusive by construction: both use the same five
+ports, so `up` frees each port before it starts anything on it.
+
+What the script is doing on your behalf, and why each piece matters:
+
+- **It resolves the trees the way `sync-datasets.sh` does** — the siblings sit next to the
+  **main** checkout (`~/suite/genetics-results-db`, …), never next to a worktree, so
+  `--tree worktree` means `~/suite/<repo>/.claude/worktrees/<name>` for all four repos at
+  once. The worktree name defaults to this checkout's own directory name (`DEV_WORKTREE`
+  overrides; `SUITE_SIBLING_ROOT` overrides the root).
+- **It stops whatever holds the port *if the holder is this suite's*, not what it started.**
+  Resolution is from the listening socket (`ss`) to the process group, so it takes over
+  servers started by hand in the tmux windows of step 6 — which is what the takeover
+  requires — and one `kill` reaches the whole `npm` → `sh` → `node` tree rather than leaving
+  `tsx watch` to respawn its child. But the socket only says *something* answers on `:3000`,
+  and on a dev box that is as likely to be an unrelated vite or an unrelated `:8080`. So
+  before signalling anything it checks the holder's `/proc/<pid>/cwd` and command line, and
+  frees the port only when the process runs from this suite's copy of that service's repo
+  (main checkout or any worktree under it) or names that repo on its command line. Anything
+  else is printed — pid, cwd, argv — and left running; `up` then skips that service and
+  exits non-zero rather than starting a second copy. `down --force` overrides the check when
+  you really do mean "kill whatever is there".
+- **It validates every selected tree before it frees the first port.** A missing `.venv` or
+  `node_modules` discovered while starting service four would leave the first three on the
+  new tree, one killed, and the last two still serving the old one — half on each, silently.
+  All five directory, venv and `node_modules` checks run first; a failure starts and stops
+  nothing.
+- **`up` exits non-zero if any service failed** to answer its health endpoint or had its
+  port refused, so a script can tell a good stack from a broken one.
+- **The gitignored config stays in the main checkout.** `genetics-mcp-server/.env` (the
+  `ANTHROPIC_API_KEY` and the `ANALYZE_*` models) is read from the main checkout by path —
+  `MCP_ENV_FILE` — and exported into the chat-backend subshell only. Nothing is copied into
+  a worktree, nothing lands on a command line where `ps` would show it, and nothing is
+  echoed. The frontend's three `VITE_*` values are passed as environment variables instead
+  of a file, because vite merges prefixed `process.env` over whatever `.env` files it
+  loaded; a worktree therefore needs no `.env.local` of its own.
+- **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly.** The client's own default is
+  `127.0.0.1:8080`, which on this machine is **db-api** — chat-backend would post code
+  executions at the BigQuery proxy (`genetics-results-suite-6um`). 8081 is what
+  `scripts/run-sandbox-local.sh` publishes.
+- **`status` reads `DATASET_ID` out of `/proc/<pid>/environ`**, because `/health` does not
+  report it and an **unset** `DATASET_ID` silently means production (`api/main.py` defaults
+  it to `genetics_results`). That default is the failure the dev dataset exists to remove,
+  so it is reported as `PRODUCTION` rather than as a blank.
+
+**`genetics-mcp-server/.env` is where every other chat-backend variable belongs.** The
+script sets only `BIGQUERY_API_URL`, `GENETICS_API_URL`, `DEFAULT_MODEL`,
+`EXTERNAL_MCP_SERVERS`, `REQUIRE_AUTH` and `SANDBOX_URL`, and each as a `${VAR:-default}` —
+so a value already in `MCP_ENV_FILE` **wins**, because the file is sourced first. Anything
+the script does not name is passed through untouched. Put these there rather than in the
+`~/genie.env` of [step 5](#5-environment-variables-that-are-not-in-the-repos), which
+`dev-stack.sh` never reads:
+
+| Variable | Why it matters under `dev-stack.sh` |
+|---|---|
+| `EXTERNAL_MCP_SERVERS` | the script's default is **opentargets only**. A hand-started stack that also had, say, a private gnomAD Cloud Run URL loses it unless the full comma-separated list is in the `.env` |
+| `PERPLEXITY_API_KEY`, `TAVILY_API_KEY` | literature and web search are simply absent without them; nothing warns |
+| `CHAT_HISTORY_DB`, `LLM_CONFIG_DB`, `DOWNLOAD_STORAGE_PATH`, `ATTACHMENT_STORAGE_PATH` | defaults are `/mnt/disks/data/{chat_history.db,llm_config.db,downloads,attachments}`. On a machine that has that disk they are correct and hold the real chat history; on a fresh VM the directory does not exist. If you followed step 5's `$HOME/data` block and then switch to `dev-stack.sh`, the backend opens the **`/mnt/disks/data` database instead** and every past conversation appears to have vanished — put the same four `$HOME/data` paths in the `.env` and they do not |
+
+It starts services in dependency order and waits for each health endpoint. results-api gets
+a 10-minute budget because it verifies every configured tabix file against GCS before it
+serves (~90 s warm, longer cold); everything else answers in seconds.
+
+### The dev dataset
+
+`--tree worktree` defaults db-api to `DATASET_ID=genetics_dev` — `phewas-development.genetics_dev`,
+region `europe-west1`, built by `genetics-results-suite-g08`. It is a **chr22-only** subset
+(3.6 M rows against production's 1.1 B), full schema, all 15 tables and 15 views populated.
+
+- **Smoke-test with a chr22 gene.** `SMARCB1` works. `APOE` is chr19 and every by-gene
+  method returns zero rows against it — that is the subset, not a broken stack.
+- Two views differ from production on purpose: `hla_associations_v` has different column
+  names (`genetics-results-suite-94c`) and `credible_sets` has a different storage layout
+  (`genetics-results-suite-eyg`, consumer-transparent through `credible_sets_v`). The other
+  13 are byte-identical.
+- **`genetics_dev` is the FIXED state for HLA, not the broken one, and the failing
+  combination is the mixed one.** `genetics_dev.hla_associations_v` is built from the
+  committed schemas and carries the house spelling (`mlog10p`, `se`, `af`, `af_cases`,
+  `af_controls`) that the worktree's `get_hla_by_allele` selects;
+  `genetics_results.hla_associations_v` still carries FinnGen's native spelling (`mlogp`,
+  `sebeta`, `af_alt`, …) that `master`'s MCP executor selects, because
+  `genetics-results-suite-94c`'s expand phase has not been applied to production. So `up`
+  works, `up --tree main` works, and an HLA query fails only when worktree code runs against
+  `genetics_results` — the `--dataset genetics_results` override below. See
+  [HLA column rename rollout](project-spec.md#hla-column-rename-rollout-hla_associations_v).
+- Only db-api reads it. results-api serves tabix files from GCS and is identical under both
+  trees; the BFF and frontend name no dataset at all.
+- `--dataset` overrides either way, and `up --tree worktree --dataset genetics_results`
+  points the worktree branches at production if that is what you actually want.
+
+Not to be confused with `genetics_results_dev`, the *rehearsal* dataset of
+[docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md) — a zero-copy clone created and torn
+down around a specific DDL change. `genetics_dev` is a persistent subset for running the
+stack.
+
 **Running a second copy:** a dev VM often already has the suite running from the main clones on
 exactly these ports. If you are bringing up a second copy (from a worktree, a branch, a second
 checkout), pick a disjoint port for every service and set `GENETICS_API_URL`, `BFF_PORT`,
@@ -170,6 +280,9 @@ export BIGQUERY_API_URL=http://localhost:8080
 export DEFAULT_MODEL=claude-opus-5
 export EXTERNAL_MCP_SERVERS=https://mcp.platform.opentargets.org
 export REQUIRE_AUTH=false                     # no oauth2-proxy locally
+# the client's default is 127.0.0.1:8080, which is db-api here — always set this
+# explicitly if you run the sandbox (scripts/run-sandbox-local.sh publishes 8081):
+export SANDBOX_URL=http://127.0.0.1:8081
 # defaults point at /mnt/disks/data, which a fresh VM does not have:
 export CHAT_HISTORY_DB=$HOME/data/chat_history.db
 export LLM_CONFIG_DB=$HOME/data/llm_config.db
@@ -178,7 +291,8 @@ export ATTACHMENT_STORAGE_PATH=$HOME/data/attachments
 
 # --- db-api (:8080) ---
 export PROJECT_ID=$GCP_PROJECT
-export DATASET_ID=genetics_results
+export DATASET_ID=genetics_results   # genetics_dev for the chr22 subset — see "The dev dataset".
+                                     # UNSET means genetics_results too, i.e. PRODUCTION
 export PORT=8080
 EOF
 
@@ -328,6 +442,10 @@ Two things look testable here and are not. Do not record either as verified from
 | results-api aborts at startup listing `gs://` files | ADC identity has no read access to the data bucket, or `CONFIG_PROFILE` points at data you cannot see |
 | `tabix: ... unknown URL scheme` / GCS errors | htslib built without `--enable-libcurl --enable-gcs` |
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
+| Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
+| Every by-gene query returns zero rows | db-api is on `genetics_dev`, which is **chr22 only** — try `SMARCB1`. `dev-stack.sh status` prints the dataset |
+| Code execution posts at db-api, or "sandbox" answers look like SQL errors | `SANDBOX_URL` is unset and its default is `127.0.0.1:8080`, which is db-api here; set `http://127.0.0.1:8081` (`genetics-results-suite-6um`) |
+| An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names — `genetics-results-suite-94c`'s expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |
 | db-api logs `bigquery.tables.get` / `bigquery.jobs.create` denied | the VM runs as the default compute service account, which has no roles. Attach one with `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` (`gcloud compute instances set-service-account`, VM stopped) and restart the servers |
