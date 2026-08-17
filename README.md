@@ -422,7 +422,8 @@ profile, `emptyDir` `sizeLimit` eviction, `ephemeral-storage` requests/limits, t
 restart behaviour and DNS — including the one that changes how limits must be sized, that the
 local `/scratch` tmpfs is charged to the container's memory cgroup while the pod's disk-backed
 `emptyDir` is charged to `ephemeral-storage` instead. `--test` then runs
-`python3 scripts/test-supervisor.py --container http://127.0.0.1:8081` against it;
+`python3 scripts/test-supervisor.py --container http://127.0.0.1:8081 --container-name NAME`
+against it (the name is what lets the audit-stream group read the container's stdout);
 `--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
 
 The Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because
