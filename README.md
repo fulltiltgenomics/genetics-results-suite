@@ -413,7 +413,8 @@ image ships no `CMD` and the supervisor is still to be written — so it is appl
 refusal cannot strand a half-finished deploy — refuses that apply if no node carries
 `workload=sandbox` (the pod would be Pending forever) or while the manifest still declares no
 `command`/`args` (it would schedule and CrashLoopBackOff while the deploy printed success); the
-second refusal names `genetics-results-suite-4h6.14` and clears itself when that lands. See "The sandbox Deployment" in
+second refusal names `genetics-results-suite-4h6.39` (the supervisor) and clears itself when
+`genetics-results-suite-4h6.50` wires it into the manifest. See "The sandbox Deployment" in
 `docs/project-spec.md` and
 [docs/code-execution-security.md](docs/code-execution-security.md).
 

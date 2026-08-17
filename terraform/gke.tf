@@ -196,7 +196,7 @@ resource "google_container_node_pool" "sandbox_nodes" {
     # number with no range check, so `terraform validate` passes on 256 as readily as on
     # 1024. UNCONFIRMED against this cluster (genetics-results-suite-5r2). Fork-bomb
     # containment does not rest on this number anyway: the supervisor enforces a child pid
-    # budget far below it (4h6.7/4h6.14). This is the outer backstop.
+    # budget far below it (4h6.7/4h6.41). This is the outer backstop.
     kubelet_config {
       pod_pids_limit = 1024
     }

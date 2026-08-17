@@ -129,7 +129,7 @@ ENV GCE_METADATA_HOST=169.254.169.254 \
     SANDBOX_SUPERVISOR_UID=65532 \
     SANDBOX_CHILD_UID=65533 \
     SANDBOX_SHARED_GID=65532
-# Deliberately NOT set here, and owned by genetics-results-suite-4h6.14 because they
+# Deliberately NOT set here, and owned by genetics-results-suite-4h6.39 because they
 # are per-execution: TMPDIR, HOME, MPLCONFIGDIR, XDG_CACHE_HOME and PYTHONPYCACHEPREFIX
 # all point inside /scratch/<execution-id> (section 2, writable paths). Setting them to
 # a fixed path in the image would create exactly the cross-execution shared directory
@@ -139,7 +139,8 @@ USER 65532:65532
 WORKDIR /genetics
 
 # ENTRYPOINT is the bare interpreter so the image is inspectable (`docker run <img> -c
-# ...`) and so 4h6.14 can supply the supervisor as the command without rebuilding.
-# There is no CMD: the supervisor module is genetics-results-suite-4h6.14's to add, and
+# ...`) and so the supervisor can be supplied as the command without rebuilding
+# (genetics-results-suite-4h6.50 wires it into k8s/deployments/sandbox.yaml).
+# There is no CMD: the supervisor module is genetics-results-suite-4h6.39's to add, and
 # a placeholder default here would be indistinguishable from a real one at runtime.
 ENTRYPOINT ["/usr/bin/python3"]
