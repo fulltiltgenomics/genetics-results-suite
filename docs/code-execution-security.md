@@ -796,7 +796,12 @@ Plain HTTP/1.1 on `0.0.0.0:8080` — the container port `k8s/deployments/sandbox
 declares and the Service maps 8080 → 8080. No TLS: on the cluster the hop is pod-to-pod and
 the ingress allow-list (section 3) is the control; in the local container the equivalent is
 binding to loopback and not publishing the port. Request and response bodies are
-`application/json; charset=utf-8`. Exactly two routes exist — `GET /health` and
+`application/json; charset=utf-8`. **The supervisor parses the request's `Content-Type` as a
+media type and ignores its parameters**, so a bare `application/json` — which is what
+`4h6.47` sends — is accepted exactly as the charset form is; the `415` row below means the
+*media type* is not `application/json`. Stated because this paragraph and that row phrase it
+differently, and a supervisor doing an exact string compare against the charset form would
+`415` every request the client makes. Exactly two routes exist — `GET /health` and
 `POST /execute` — and there is no third; any other path is `404`, any other method on these
 two is `405`.
 
@@ -857,7 +862,7 @@ or hostile peer.
 | field | type | required | absent or malformed |
 |---|---|---|---|
 | `code` | string, UTF-8 Python source, ≤ 256 KiB | yes | absent, not a string, empty or whitespace-only → `400`. Over 256 KiB → `413`. **Measured on the UTF-8 encoding of the decoded string** (`len(code.encode("utf-8"))`), not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program, and the two ends must not disagree about which one the limit is. The 1 MiB body cap is the one measured on the wire. |
-| `execution_id` | string matching `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` | yes | absent or non-matching → `400`. The supervisor **must not** mint one of its own. |
+| `execution_id` | string matching `\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z` | yes | absent or non-matching → `400`. The supervisor **must not** mint one of its own. **The anchors are `\A`/`\Z` and the match is a *full* match, deliberately:** in Python `$` also matches immediately before a final newline, so the `^…$` this row used to carry accepts `"…663\n"` — which then names a directory, is exported as `SANDBOX_EXECUTION_ID` and is echoed back in the response, i.e. a log-injection primitive on the one field this table calls strict. Any implementation of this row in any language must reject a trailing newline. |
 | `tokens` | object, exactly the two keys `db-api` and `results-api`, values compact JWS strings | yes | either key missing, an extra key, or a non-string value → `400`. Never run without them. |
 | `user` | string, the authenticated end-user email | yes | absent or empty → `400`. Must equal the tokens' `sub`. |
 | `session_id` | string, the chat session id | yes | absent or empty → `400`. Must equal the tokens' `sid`. |
@@ -909,9 +914,9 @@ timeout parameter to the model at all, so no model-authored value ever reaches t
 and the supervisor **rejects** `timeout_s > 120` with `400`. **Decision: reject, not clamp.**
 Clamping is a silent behaviour change on a path fed from a model-influenceable direction — a
 caller asking for 300 has either a bug or a jailbreak, and both deserve to be visible. It
-would also desync the two deadlines: the client sets its own deadline *above* the
-supervisor's ceiling (`4h6.47`), and a silently clamped server-side value makes the client's
-arithmetic wrong.
+would also desync the two deadlines: the client sets its own deadline *above* what the
+supervisor can take (`4h6.47`; see the arithmetic under "When the client goes away"), and a
+silently clamped server-side value makes the client's arithmetic wrong.
 
 **Timeout semantics.** `timeout_s` is the child's wall clock measured **from the fork**, not
 from request receipt — queue wait does not count against the script. On expiry the
@@ -946,9 +951,17 @@ same definition.
 **After a `429` the client re-mints, and it re-mints a fresh `execution_id` too**, not just
 fresh tokens: the refused request never reached a fork (see the duplicate-id rule below, and
 the directory is created at dequeue, so a `429` leaves nothing behind), and reusing the id
-would collide with that rule the moment the earlier attempt did run. This is also the only
-route by which `409 TokenExpired` is reachable at all — a client that re-mints on `429`
-should still handle it, because the expiry is re-checked at dequeue on the retry as well.
+would collide with that rule the moment the earlier attempt did run.
+
+**`409 TokenExpired` is a defensive check and is not expected to fire, and an earlier draft
+justified it wrongly.** That draft said the `429` retry was "the only route by which it is
+reachable at all", which does not follow from its own numbers: the retry re-mints, and the
+maximum queued wait (120s) is far below the 300s TTL, so a freshly minted pair cannot expire
+in the queue. What can actually reach it is a token pair that was **not** freshly minted —
+`mint_execution_tokens` takes an optional `execution_id=`, so a caller can resubmit an older
+pair — or clock skew between the minter and the supervisor large enough to matter. Both are
+caller-side faults worth a distinct status, and the check stays; a client should handle it
+without treating it as routine.
 
 **A repeated `execution_id` is refused: `409` with `error.type: "DuplicateExecutionId"`**,
 whenever `/scratch/<execution-id>` already exists — a live execution or a completed one still
@@ -977,9 +990,19 @@ life left for that last-moment call rather than the ~180s section 4's reasoning 
 the wait bound trades directly against section 4's margin.
 
 **When the client goes away, the supervisor's behaviour depends on whether the child has
-been forked.** The contract tells the client to set its own deadline *above* the 120s
-ceiling, so the ordinary case is that it waits; but chat-backend restarts, and a connection
-can drop. Two rules:
+been forked.** The contract tells the client to set its own deadline *above* **the maximum
+queued wait plus `timeout_s`**, so the ordinary case is that it waits; but chat-backend
+restarts, and a connection can drop. Two rules:
+
+**That deadline is 240s at `timeout_s: 120`, not 120s, and an earlier draft of this
+subsection said "above the 120s ceiling" twice.** It was wrong in the direction that
+produces a live interop bug, which is why it is called out rather than quietly fixed: the
+supervisor may hold a request for the full 120s queued wait **and then** run it for the full
+`timeout_s`, so a client that read that sentence literally and picked, say, 150s times out
+on an execution the supervisor is about to answer — and because a running child is
+deliberately not killed on disconnect, that client's retry then queues behind the child it
+abandoned. `4h6.47` implemented `max queued wait + timeout_s + margin` (255s at
+`timeout_s: 120`), which is the correct reading.
 
 - **A queued request whose connection has closed is dropped at dequeue and never forked.**
   Nobody is waiting for the response, and running it would spend the pod's only slot and up
@@ -1238,6 +1261,137 @@ must be distinguishable by the client from a script failure: `strategy: Recreate
 `terminationGracePeriodSeconds: 130` means a deploy landing on an in-flight execution leaves
 no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
 analysis failed" (`4h6.47`).
+
+### As built (`4h6.39`) — the supervisor skeleton, and the five holes still in it
+
+`sandbox/supervisor.py` implements the contract above: the HTTP front door, the queue, the
+per-execution directory and child environment, the startup assertions and the fork/reap.
+`scripts/test-supervisor.py` is its offline harness — no cluster, no credentials, no image;
+it runs the real supervisor in the local interpreter against a temporary `/scratch` root and
+forks real children. The image now carries the file (`sandbox/Dockerfile` copies it to
+`/genetics/supervisor.py`), which does **not** make the image start one: there is still no
+`CMD`, `k8s/deployments/sandbox.yaml` still declares no `command`/`args`, and `deploy.sh`
+still refuses to apply it. `4h6.50` clears that, last in the chain and deliberately so.
+
+**The child is forked and never exec'd.** That is what makes `prewarm()` worth anything —
+the pre-imported numpy/scipy/polars/matplotlib pages are inherited copy-on-write — and it is
+also why the child closes every inherited descriptor before running a line of the script.
+Without exec, PEP 446's non-inheritable default does nothing: the script would otherwise
+inherit the listening socket and every other in-flight client connection, and could read or
+write another user's HTTP conversation.
+
+**The one thing the contract left to this task is settled: a dedicated status pipe.** The
+child writes at most one JSON object (`type`, `message`, `traceback`) on a fixed descriptor
+and nothing else; the supervisor never parses `output` for meaning. Two reasons. The
+traceback lives at the tail of `output`, which is exactly what the 64 KiB head-and-tail cap
+elides on a chatty script; and a script can print whatever it likes, so parsing stdout lets
+the script forge its own error object. What arrives on the pipe is still **untrusted input**
+— the same process writes it — so the supervisor re-caps `message` and `traceback` and
+treats a malformed record as absent. A child that is killed writes nothing, which is the
+`type: "Killed"`, `traceback: null` case the contract already tells clients to tolerate.
+
+**The status pipe narrows the forgery it replaces; it does not close it, so the
+supervisor's own observation wins.** The child is forked and not exec'd, so the script runs
+with that descriptor open and writable: `os.write(3, b'{"type": "ValueError", …}')` followed
+by a clean exit produced `status: "error"` with `exit_code: 0` — a row the status table below
+declares impossible — until the supervisor was made to **ignore any status record when the
+child exited 0 and was not signalled**. An uncaught exception always leaves a non-zero exit,
+so no legitimate record is lost. This matters beyond tidiness: the client returns the body
+unchanged, so a forged record tells the model its own successful analysis failed, and the
+code that writes it is model-influenceable by the prompt-injection path in §6.4.
+
+**Five behaviours in the contract are NOT implemented, each owned elsewhere, each stubbed in
+place with the bead name.** These are runtime holes and not TODOs:
+
+| owner | absent | consequence today |
+|---|---|---|
+| `4h6.41` | wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing | **nothing kills a runaway child.** `status: "timeout"` is unreachable and a non-terminating script holds the only slot until the pod restarts. The seam is **two** functions, not one: `_apply_limits(job)` runs in the parent after the fork and owns the wall clock, the pid watch and *raising* the child's `oom_score_adj` (a raise is unprivileged); `_apply_child_limits()` runs in the child and owns `RLIMIT_AS`. Neither can be merged into the other — `setrlimit` on another process and *lowering* the supervisor's own `oom_score_adj` both need `CAP_SYS_RESOURCE`, which this pod drops, so the supervisor's `-500` is a pod-spec change and not a runtime one |
+| `4h6.42` | stdout capture caps | `status: "limit"` / `OutputLimit` is unreachable. The reader drains to EOF (or the deadline below) with an interim in-memory bound and returns the whole decoded text — no 8 MiB kill, no 64 KiB head-and-tail window, no elision marker. Past the interim bound it keeps reading and **discards**, so it never blocks the child on a full pipe and `output_bytes` stays an accurate count |
+| `4h6.43` | token delivery | the child gets **no** per-execution credential; a script's data calls carry whatever the image already holds |
+| `4h6.45` | audit forwarding | no audit fd exists, so nothing reaches the pod's stdout. `_audit_pipe` is a placeholder for the parent-side reader and re-stamper, and unlike the other four it is **not called and cannot be a drop-in**: a descriptor reaches the child only by existing before the fork, so `4h6.45` also edits `_execute` (create the pipe pre-fork, drain the read end on a third thread sharing the same reaped-child deadline), `_child_main` (dup it to a fixed number and add that number to the `_close_inherited_fds` keep-set) and `child_env` (export `GENETICS_SDK_AUDIT_FD`) |
+| `4h6.46` | quotas, retention, reaper | **nothing is deleted after an execution completes.** `/scratch` grows until restart and the `emptyDir` `sizeLimit` is defended by nothing but the startup wipe |
+
+The lossy UTF-8 decode of `output` **is** contract behaviour and is implemented: invalid
+bytes become U+FFFD, and there is no alternate encoding and no `encoding` field.
+
+**Where the contract was silent, and what was chosen.** Each of these is a place two
+implementers would each pick something reasonable, so they are written down rather than left
+in the code:
+
+- **The socket binds before the startup work runs**, so `status: "starting"` is observable
+  rather than theoretical: a probe arriving during `prewarm()` gets the contract's `503` with
+  a health body instead of a connection refusal. Nothing can be executed while not ready —
+  `/execute` answers `503 NotReady` — so this widens what is *visible*, not what is allowed,
+  and a failed assertion still exits non-zero and crash-loops the pod.
+- **`Content-Type` is parsed as a media type and its parameters are ignored**, per the
+  Transport paragraph above; `scripts/test-supervisor.py` locks bare, charset-bearing and
+  oddly-cased forms so nobody replaces it with a string compare.
+- **A chunked request body is refused (`400`).** A body with no `Content-Length` cannot be
+  size-capped before it is read, which is the one thing the 1 MiB cap exists to do. The
+  contract assumes a length, and every client of it is a JSON POST that has one.
+- **The duplicate-`execution_id` check is made twice, not once.** The contract phrases the
+  rule as "`/scratch/<execution-id>` already exists", but the directory is created at
+  dequeue, so two identical ids sitting in the queue would both pass a filesystem test. The
+  supervisor therefore refuses at **accept** against the union of queued, running and
+  retained ids *and* the filesystem, and again at **dequeue** by creating the directory with
+  `mkdir` and treating `EEXIST` as the same `409`. That is a superset of the stated rule and
+  preserves the same invariant.
+- **The execution ends when the child is reaped, not when its pipes close.** The write ends
+  of the output and status pipes are inherited by every descendant, so a grandchild that
+  `setsid()`s away holds them open after the direct child exits and EOF never comes. Reading
+  to EOF therefore held the execution slot on a *pipe read* rather than on a process:
+  measured, `/health` reported `busy: true, queued: 0` with nothing running, the response
+  never arrived, and a second user waited 36 s behind a child that had lived ~10 ms. The
+  drain now gets a deadline — `DRAIN_GRACE_S` (2 s) after `waitpid` returns — and the
+  supervisor closes the read ends itself and logs the abandonment; `duration_ms` is taken at
+  the reap, so it measures the child and not the drain. This is **not** something the
+  `4h6.41` wall clock fixes: by then the process group is gone (`killpg` → `ESRCH`) and
+  nothing is left to kill. Killing the escapee stays `4h6.41`'s and `4h6.46`'s problem; what
+  this guarantees is only that it cannot block the queue.
+- **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
+  list carrying the right value is the same claim. Anything else is a `400`.
+- **The child's working directory is `/scratch/<id>/tmp`.** `WORKDIR` is `/genetics` on a
+  read-only root, so a script writing a relative path would fail there; pointing it at the
+  artifacts directory instead would silently promote every scratch file the script writes
+  into the manifest.
+- **`SANDBOX_USER`, `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID` are set in the child**
+  from the tokens' `sub`/`sid`/`jti`, which closes half of the "all three render `unknown`"
+  gap section 6 records. It closes only half: the child can write anything to its own audit
+  fd, so `4h6.45` must still re-stamp on the read end from the tokens rather than believing
+  these.
+- **The startup wipe removes everything under `/scratch` except the supervisor's own
+  directory.** After a restart the supervisor holds no record of what was live or retained —
+  that state is in memory and does not survive the process — so nothing under `/scratch`
+  belongs to a live or still-retained execution by the definition the rule uses. Wiping is
+  the conservative reading and the one the rule exists for: a crash mid-execution must not
+  leave a readable directory behind.
+- **The supervisor keeps one writable `MPLCONFIGDIR` of its own** at
+  `/scratch/.supervisor/mplconfig`, seeded from `$GENETICS_MPLCACHE`, purely so `prewarm()`
+  can import `matplotlib.pyplot` at startup. It is not shared with any child — every
+  execution still gets its own, seeded the same way — and the startup wipe keeps it by name.
+
+**No setuid, no chown, and none is attempted.** Option (b) is the shipped model: supervisor
+and child share uid 65532. Per-execution directories are `0700` and the child sets
+`umask(0o077)`; under one uid those modes keep everything else out and do nothing between
+the two processes, which is why the token file's protection has to be lifetime (`4h6.43`)
+and the pid budget has to be a supervisor-side watch (`4h6.41`).
+
+**What differs when the supervisor runs outside the image.** Every one of these is keyed on
+an environment variable `sandbox/Dockerfile` always sets, so "unset" means "not the image"
+and produces a loud warning rather than a silent behaviour change:
+
+- **`GENETICS_PREWARM` unset → `prewarm()` is skipped**, with a warning. In the image it is
+  always set, so `PrewarmError` crashes the pod exactly as the handoff table requires; on a
+  developer machine without numpy/scipy/polars/matplotlib installed the supervisor would
+  otherwise be unstartable.
+- **`GENETICS_MPLCACHE` unset → `MPLCONFIGDIR` starts empty** and matplotlib rebuilds its
+  font cache per execution (seconds), instead of the copy being free.
+- **`SANDBOX_SCRATCH_ROOT` set → the `/scratch` root moves.** Test-only, and warned about in
+  those words: `read_artifact` refuses any artifacts directory that does not resolve under a
+  **hardcoded** `/scratch/` prefix (`4h6.15`), so artifacts written under an overridden root
+  are unretrievable by construction. The image never sets it.
+- The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
+  Linux developer machine and failing it is the intended outcome elsewhere.
 
 ---
 

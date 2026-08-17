@@ -99,6 +99,12 @@ COPY --from=builder /out/group /etc/group
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /out/mplcache /genetics/mplcache
 COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
+# The supervisor (genetics-results-suite-4h6.39). Shipping it does NOT make the image
+# start one: there is still no CMD, and k8s/deployments/sandbox.yaml still declares no
+# command/args, which is what scripts/deploy.sh refuses to apply until 4h6.50 wires it.
+# It is here so the image can be run as a supervisor at all — `docker run <img>
+# /genetics/supervisor.py` — which is what genetics-results-suite-4h6.40 needs.
+COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
 COPY --chown=65532:65532 schema/ /genetics/schema/
 COPY --chown=65532:65532 stubs/ /genetics/sdk/
 
