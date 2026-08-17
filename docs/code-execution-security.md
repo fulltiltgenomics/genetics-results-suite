@@ -1393,6 +1393,174 @@ and produces a loud warning rather than a silent behaviour change:
 - The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
   Linux developer machine and failing it is the intended outcome elsewhere.
 
+### As built (`4h6.40`) — the local Docker backend, and the six things it does not reproduce
+
+`scripts/run-sandbox-local.sh` builds `sandbox/` and runs **the same image, the same
+entrypoint and the same supervisor** in a plain container:
+
+```
+./scripts/run-sandbox-local.sh                 # build, (re)start, wait for /health
+./scripts/run-sandbox-local.sh --test          # ... and drive the contract against it
+./scripts/run-sandbox-local.sh --no-build      # restart in seconds
+./scripts/run-sandbox-local.sh --logs          # container stdout = the audit sink
+./scripts/run-sandbox-local.sh --stop
+```
+
+**There is no local code path.** The supervisor is passed as the container's command at
+`docker run` time, exactly as `4h6.50` will pass it as `args:`; the image still ships no
+`CMD` and the manifest still declares neither `command` nor `args`, so `scripts/deploy.sh`'s
+refusal is untouched and nothing here can reach a cluster. chat-backend's client holds one
+base URL and does the same thing against both.
+
+| local flag | the manifest line it stands in for |
+|---|---|
+| `--user 65532:65532`, `--cap-drop ALL`, `--security-opt no-new-privileges` | `runAsUser`/`runAsGroup` 65532, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false` |
+| `--read-only` | `readOnlyRootFilesystem: true` |
+| `--tmpfs /scratch:…,mode=0700,uid=65532,gid=65532` | the one `emptyDir` at `/scratch`, `fsGroup: 65532` |
+| `--memory 3g --cpus 1.5` | `limits.memory` / `limits.cpu` |
+| `--pids-limit 1024` | the kubelet's `pod_pids_limit` |
+| `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer-wipe sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
+| `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
+| `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal` | the same two variables at cluster FQDNs pinned by `hostAliases` |
+| the supervisor as the `docker run` command | `args:` (`4h6.50`) |
+
+**What is not reproduced.** The script prints this list every time it brings the container
+up, because a fidelity gap nobody reads is the same as no fidelity gap at all:
+
+1. **gVisor.** `runc`, not `runsc`, unless the daemon has the runtime registered — the script
+   auto-detects it and says which one it used. Without it the host kernel is directly
+   reachable from model-authored code, so section 2's "userspace syscall boundary" is the one
+   control whose absence changes the threat model rather than the test coverage.
+2. **The NetworkPolicy.** There is none. Egress is **unrestricted** — the whole host network,
+   the internet, and `169.254.169.254`. Every claim in section 3 is untested locally; a
+   script that exfiltrates in this container proves nothing about the pod, in either
+   direction.
+3. **`pod_pids_limit`.** `--pids-limit 1024` is a per-**container** cgroup where the kubelet's
+   is per-**pod**. Close enough to exercise `4h6.41`'s budget, not the same backstop.
+4. **The seccomp profile.** Docker's default, not `RuntimeDefault` via containerd. They are
+   near-identical in origin and this is the one difference that turned out to be
+   load-bearing — see the measurement below.
+5. **`sizeLimit` enforcement — and, more consequentially, which budget `/scratch` is charged
+   to.** The local `/scratch` is a 512 MiB tmpfs, so over-budget writes get `ENOSPC`. Under an
+   `emptyDir` `sizeLimit` the **kubelet evicts the pod** instead — which is precisely the
+   failure `4h6.46`'s sub-quotas exist to prevent, and it **cannot happen locally**. A quota
+   implementation that only ever sees `ENOSPC` is untested against the thing it was written
+   for.
+
+   The second half of this gap is easier to miss and it changes how `4h6.41` must size its
+   limits. **A tmpfs is page cache in the container's own memory cgroup**: locally, every byte
+   under `/scratch` is charged against the *same* `--memory 3g` as the child's RSS. Measured
+   inside the running container: `memory.current` **113 MiB → 414 MiB** after writing 300 MiB
+   to `/scratch`. In the pod, `volumes.scratch.emptyDir` carries **no `medium: Memory`**, so it
+   is node-disk-backed and charged to a **different, separately limited budget** —
+   `ephemeral-storage` (requests `1Gi` / limits `2Gi`) — and **never** to `limits.memory: 3Gi`.
+   So a script holding 2.6 GiB RSS beside a 400 MiB `/scratch` is cgroup-OOM-killed locally and
+   runs fine in the pod, and an `RLIMIT_AS` or supervisor headroom tuned against this container
+   is up to 512 MiB more conservative than the pod needs. `4h6.46`'s `/scratch` polling never
+   sees the memory interaction locally at all, because in the pod there isn't one.
+6. **`ephemeral-storage` requests/limits (`1Gi`/`2Gi`).** **No local form exists at all.**
+   Docker has no equivalent knob, so the budget that actually bounds `/scratch` in the pod is
+   not merely approximated here — it is absent, and exceeding it (kubelet eviction) is
+   unobservable locally in either direction.
+7. **`restartPolicy`.** `--restart no` against a Deployment that restarts: a crash-loop bug
+   presents locally as a dead container with its logs intact and in the cluster as
+   `CrashLoopBackOff`. Deliberate, and better for development, but it is a behavioural
+   difference and belongs on this list.
+8. **DNS and `hostAliases`.** The container uses ordinary Docker DNS; the pod has
+   `dnsPolicy: None` and resolves the two service names out of `/etc/hosts`. The startup
+   `/etc/nsswitch.conf` assertion still runs and still passes, so the `files`-before-`dns`
+   requirement is exercised; the *absence* of a resolver is not.
+
+`terminationGracePeriodSeconds: 130` **is** reproduced, via `--stop-timeout 130` plus a `--stop`
+that calls `docker stop` rather than `docker rm -f` — see the table above. It is named here only
+because getting it wrong is silent: `docker kill`, `docker rm -f` or Ctrl-C on the daemon all
+SIGKILL immediately and skip the drain-reap-answer-wipe the 130s exists for.
+
+Also not reproduced, and worth naming because it is a difference in **behaviour** rather than
+configuration: the audit stream goes to the container's stdout, collected by `docker logs`
+rather than by the cluster's logging agent. That is the single place the deployment
+difference shows in what the supervisor does, and it was already anticipated above.
+
+**`scripts/test-supervisor.py --container URL`** drives the contract against the running
+container over HTTP and adds a group of checks that only exist there, because they are
+properties of the **image**: the read-only root filesystem, the absence of a writable `/tmp`,
+the pruned venv (no `pip`, no `setuptools`, no `google-auth`), the genetics SDK importing,
+matplotlib producing a PNG from the baked font cache under a read-only rootfs, no credential
+anywhere in the child's environment, and the child running as 65532 rather than the
+advertised-and-unreachable 65533. In-process mode is unchanged and remains the fast path.
+
+**The two counts are not comparable, and the summary line says so.** Container mode runs the
+two wire groups plus the image group — nothing else. The groups that reach into the
+supervisor's own objects (the startup assertions, request parsing, the queue, the artifact
+manifest, the startup wipe) are **not run at all** over HTTP, because no route reaches them;
+that is most of the in-process checks. They are printed by name under "check groups NOT RUN in
+this mode" at the end of every container run, so a container total cannot be read as a
+near-complete fraction of the in-process total. `skip()` is the narrower mechanism and its
+claim is unchanged: it covers a check *inside a group that ran* — e.g. one needing the
+harness's own view of `/scratch`, which there is no artifact route to provide (`4h6.52`) — and
+those are counted and listed individually. Implementing the missing groups over the wire is
+not this bead's scope; being honest about their absence is.
+
+**One thing only became visible in a container.** In-process, the harness and the supervisor
+share an interpreter, a uid and a filesystem, so `SANDBOX_SCRATCH_ROOT` is set and `/scratch`
+is a temporary directory — the exact configuration `_scratch_root()` warns is test-only.
+Container mode is the first run in which `/scratch` is `/scratch`, the rootfs is read-only
+and `prewarm()` actually executes, and it confirmed the ordering `prewarm.py`'s docstring
+demands: a plot is produced with no writable path outside `/scratch` and no font-cache
+rebuild. Nothing in the wire contract needed changing — the supervisor answered identically
+in both modes on every shared check.
+
+#### Measurement for `4h6.55`: the namespace blocker is the seccomp profile, not the capabilities
+
+`4h6.55` (fork-without-exec plus one shared uid leaves no isolation between executions) has a
+leading candidate fix that needs a PID namespace and a mount namespace under `drop: [ALL]`,
+`allowPrivilegeEscalation: false`, uid 65532. Measured from **inside a real execution** in
+this container — i.e. from the position an attacker occupies — with the image, the shared
+uid and `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Seccomp: 2`:
+
+| call | result |
+|---|---|
+| `unshare(CLONE_NEWNS)` | `EPERM` |
+| `unshare(CLONE_NEWPID)` | `EPERM` |
+| `unshare(CLONE_NEWUSER)` | `EPERM` |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWNS\|CLONE_NEWPID)` | `EPERM` |
+
+The control experiment is what makes this useful. With **the same** uid, `--cap-drop ALL` and
+`no-new-privileges`, and **only** `seccomp=unconfined` changed: `unshare(CLONE_NEWUSER)`
+**succeeds**, and inside that user namespace `unshare(CLONE_NEWNS|CLONE_NEWPID)` **also
+succeeds**. So the blocker on the namespace calls is the **seccomp profile**, not the
+capability set and not `no_new_privs` — the profile returns `EPERM`, which is
+indistinguishable from the capability check unless you vary it.
+
+**But only the `CLONE_NEWUSER`-first route works, even unconfined.** With the profile relaxed,
+`unshare(CLONE_NEWNS)` and `unshare(CLONE_NEWPID)` *alone* still return `EPERM`: they need
+`CAP_SYS_ADMIN` in the current user namespace, which this uid does not have and the relaxed
+profile does not confer. Only entering a new **user** namespace first — where the process is
+root and therefore holds `CAP_SYS_ADMIN` in it — makes the mount and pid namespaces reachable.
+This constrains how `4h6.55`'s fix must be *written*, not just what it must be granted: a fix
+that calls `unshare(CLONE_NEWPID)` directly fails even with the profile relaxed, so the call
+has to be `CLONE_NEWUSER` first (or `CLONE_NEWUSER|…` in one call) and the uid/gid maps
+written before anything else is attempted.
+
+**`setuid(65533)` is a separate result and does not belong to the finding above.** It returns
+`EPERM` under the default profile *and* under `seccomp=unconfined` — the control leaves it
+unchanged. Its blocker is the **capability set** (no `CAP_SETUID` under `drop: [ALL]`), which
+is why option (a) is unreachable exactly as recorded, and relaxing seccomp would not recover
+it. The same holds for `chown(65533)` and `CAP_CHOWN`.
+
+Consequences for `4h6.55`, none of them acted on here:
+
+- A namespace-based fix under `RuntimeDefault` needs the profile relaxed, and "custom seccomp
+  profile" is already in **Rejected controls** above (it needs a node-local file distributed
+  by DaemonSet and referenced via `localhostProfile`). That rejection now costs something
+  concrete, so it is owed a re-examination rather than a re-citation.
+- **This says nothing about gVisor**, and gVisor is what will actually run. `runsc` implements
+  `unshare` in the sentry with its own support matrix, and the profile enforced at the host
+  applies to the sentry's syscalls, not the application's. Unmeasured, and not measurable on
+  this machine, which has no `runsc`.
+- Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
+  file. The measurement is a strong hint about the cluster, not a result from it.
+
 ---
 
 ## 3. Egress policy

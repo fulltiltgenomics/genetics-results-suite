@@ -1,13 +1,30 @@
 #!/usr/bin/env python3
 """Offline assertions about sandbox/supervisor.py (genetics-results-suite-4h6.39).
 
-Run: python3 scripts/test-supervisor.py
+Run: python3 scripts/test-supervisor.py                       in-process (the fast path)
+     python3 scripts/test-supervisor.py --container URL       against a running container
 Exit 0 = pass, 1 = a property is broken, 2 = the harness could not run.
 
 No cluster, no credentials, no Docker image, no network beyond loopback. It runs the real
 supervisor in this interpreter with SANDBOX_SCRATCH_ROOT pointed at a temporary directory
 and forks real children, so the fork/reap path, the per-execution environment and the
 artifact manifest are exercised rather than mocked.
+
+CONTAINER MODE (genetics-results-suite-4h6.40) drives the SAME wire checks over HTTP
+against a sandbox image started by scripts/run-sandbox-local.sh, plus a group that only
+exists there: the read-only root filesystem, the pruned venv, the seeded matplotlib font
+cache and the absence of credentials in the child's environment are all properties OF THE
+IMAGE, and the in-process run has no image.
+
+THE TWO COUNTS ARE NOT COMPARABLE, and the summary says so rather than leaving a reader to
+assume it. Container mode runs the two wire groups and the image group only. Every group
+that reaches into the supervisor's own objects — the startup assertions, request parsing,
+the queue, the artifact manifest, the startup wipe — is NOT RUN AT ALL over HTTP, because
+there is no route that reaches them; that is most of the in-process checks. They are named
+in the run's closing "not run in this mode" list. skip() is the narrower mechanism: it
+covers a check INSIDE a group that did run, and those are still counted and printed
+individually. The in-process mode remains the fast path — it needs no build and no daemon —
+and neither mode needs a cluster or a credential.
 
 The properties under test are the ones where the two ends of the contract in
 docs/code-execution-security.md section 2 could silently diverge — the queue-depth
@@ -48,6 +65,8 @@ except Exception as exc:  # pragma: no cover - harness failure
     sys.exit(2)
 
 FAILURES = []
+SKIPPED = []
+NOT_RUN = []
 CHECKS = 0
 
 
@@ -59,6 +78,13 @@ def check(name, condition, detail=""):
         print(f"  FAIL  {name} {detail}")
     else:
         print(f"  ok    {name}")
+
+
+def skip(name, reason):
+    """A check that cannot run in this mode. Counted and printed separately: a skipped
+    assertion silently omitted is how a mode ends up proving less than its output claims."""
+    SKIPPED.append(f"{name}: {reason}")
+    print(f"  skip  {name} ({reason})")
 
 
 def expect_request_error(name, fn, status, type_):
@@ -372,17 +398,27 @@ def test_manifest(tmp):
 
 
 class Server:
+    """The supervisor running in THIS interpreter."""
+
+    container = False
+
     def __init__(self, root):
         os.environ[sup.ENV_SCRATCH_ROOT] = root
         self.supervisor = sup.start(scratch_root=root, run_assertions=False)
         self.httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+        self.host = "127.0.0.1"
         self.port = self.httpd.server_address[1]
+        # What the supervisor calls /scratch, and where the harness can see it. They are the
+        # same path here and they are NOT in a container, which is the whole difference
+        # between the two modes.
+        self.scratch_root = root
+        self.host_scratch = root
         self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.05},
                                        daemon=True)
         self.thread.start()
 
     def request(self, method, path, body=None, ctype="application/json"):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=30)
         headers = {}
         payload = None
         if body is not None:
@@ -403,10 +439,30 @@ class Server:
         self.httpd.server_close()
 
 
-def test_http(tmp):
-    root = os.path.join(tmp, "scratch")
-    os.makedirs(root)
-    server = Server(root)
+class RemoteServer(Server):
+    """A supervisor in a container, reached over the published loopback port.
+
+    It inherits request() and nothing else: there is no in-process supervisor object and no
+    host view of /scratch, so every check that needs either is skipped by name.
+    """
+
+    container = True
+
+    def __init__(self, base_url):
+        parsed = base_url.split("//", 1)[-1].rstrip("/")
+        host, _, port = parsed.partition(":")
+        self.host = host or "127.0.0.1"
+        self.port = int(port or 80)
+        self.supervisor = None
+        self.scratch_root = sup.DEFAULT_SCRATCH_ROOT
+        self.host_scratch = None
+
+    def close(self):
+        pass
+
+
+def test_http(server):
+    root = server.scratch_root
     try:
         status, _, body = server.request("GET", "/health")
         check("http: GET /health -> 200 ok", status == 200 and body["status"] == "ok",
@@ -447,7 +503,7 @@ def test_http(tmp):
             check(f"http: content type accepted, {label}", status == 200,
                   f"got {status} {body}")
 
-        status, _, body = _raw_oversized(server.port)
+        status, _, body = _raw_oversized(server.host, server.port)
         check("http: body over 1 MiB -> 413 without reading it",
               status == 413 and body["error"]["type"] == "PayloadTooLarge", f"got {status} {body}")
 
@@ -494,8 +550,15 @@ def test_http(tmp):
             execution_id=payload["execution_id"]))
         check("http: duplicate execution_id -> 409 DuplicateExecutionId",
               status == 409 and dup["error"]["type"] == "DuplicateExecutionId", f"got {status} {dup}")
-        check("http: the first execution's artifacts survive the refusal",
-              os.path.exists(os.path.join(base, "artifacts", "out.csv")))
+        if server.host_scratch is None:
+            # There is no artifact-retrieval route in this contract (4h6.52 owns it), so a
+            # container's retained artifacts are not observable from outside it at all.
+            skip("http: the first execution's artifacts survive the refusal",
+                 "container mode: no host view of /scratch and no artifact route")
+        else:
+            check("http: the first execution's artifacts survive the refusal",
+                  os.path.exists(os.path.join(server.host_scratch, payload["execution_id"],
+                                              "artifacts", "out.csv")))
 
         # an uncaught exception
         status, _, body = server.request("POST", "/execute", body=make_body(
@@ -577,11 +640,8 @@ def test_http(tmp):
         server.close()
 
 
-def test_backpressure(tmp):
+def test_backpressure(server):
     """429 over the wire, with Retry-After: the client's (4h6.47) retry policy reads it."""
-    root = os.path.join(tmp, "backpressure")
-    os.makedirs(root)
-    server = Server(root)
     results = []
     threads = []
     try:
@@ -616,9 +676,9 @@ def test_backpressure(tmp):
           [r[0] for r in results] == [200, 200, 200], f"got {[r[0] for r in results]}")
 
 
-def _raw_oversized(port):
+def _raw_oversized(host, port):
     """Announce a 2 MiB body and send none of it. The cap must fire on the header alone."""
-    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s = socket.create_connection((host, port), timeout=10)
     s.sendall(
         b"POST /execute HTTP/1.1\r\nHost: localhost\r\n"
         b"Content-Type: application/json\r\nContent-Length: 2097152\r\n\r\n"
@@ -649,6 +709,113 @@ def _raw_oversized(port):
 
 
 # --------------------------------------------------------------------------------------
+# 5b. container-only: properties of the IMAGE, which the in-process mode has no way to test
+# --------------------------------------------------------------------------------------
+
+
+PROBE = r"""
+import json, os, sys
+out = {"uid": os.getuid(), "gid": os.getgid(), "cwd": os.getcwd(),
+       "env": {k: os.environ.get(k) for k in
+               ("GENETICS_PREWARM", "GENETICS_MPLCACHE", "GENETICS_SCHEMA_DIR",
+                "GENETICS_STUBS_DIR", "SANDBOX_SCRATCH_ROOT", "GENETICS_API_URL",
+                "BIGQUERY_API_URL", "INTERNAL_API_SECRET", "SANDBOX_TOKEN_SIGNING_KEY",
+                "TMPDIR")}}
+def writable(path):
+    try:
+        with open(path, "w") as fh:
+            fh.write("x")
+        os.unlink(path)
+        return None
+    except OSError as exc:
+        return exc.errno
+out["write_rootfs"] = writable("/genetics/probe")
+out["write_tmp"] = writable("/tmp/probe")
+out["write_tmpdir"] = writable(os.path.join(os.environ["TMPDIR"], "probe"))
+for mod in ("pip", "setuptools", "google.auth", "genetics_mcp_server.sdk", "matplotlib"):
+    try:
+        __import__(mod)
+        out["import_" + mod.replace(".", "_")] = True
+    except Exception:
+        out["import_" + mod.replace(".", "_")] = False
+out["sdk_pkg_dirs"] = sorted(os.listdir(os.path.dirname(os.path.dirname(
+    sys.modules["genetics_mcp_server.sdk"].__file__)))) if "genetics_mcp_server.sdk" in sys.modules else []
+print("PROBE " + json.dumps(out))
+"""
+
+
+def test_container(server):
+    """Everything here needs the image: the read-only rootfs, the pruned venv, the baked
+    font cache and the absence of credentials are all shipped properties."""
+    status, _, body = server.request("POST", "/execute", body=make_body(code=PROBE))
+    if status != 200 or body.get("status") != "ok":
+        check("container: probe script ran", False, f"got {status} {body}")
+        return
+    probe = json.loads(body["output"].split("PROBE ", 1)[1].splitlines()[0])
+    env = probe["env"]
+
+    check("container: child runs as uid 65532, the SUPERVISOR's uid",
+          probe["uid"] == 65532 and probe["gid"] == 65532, f"got {probe['uid']}:{probe['gid']}")
+    # SANDBOX_CHILD_UID=65533 is advertised by the image and names a uid nothing can switch
+    # to: option (a) needs CAP_SETUID and drop-ALL leaves none (section 2, "The uid choice").
+    check("container: the child did NOT become the advertised 65533", probe["uid"] != 65533)
+
+    check("container: root filesystem is read-only", probe["write_rootfs"] == 30,
+          f"errno {probe['write_rootfs']}")
+    check("container: there is no writable /tmp", probe["write_tmp"] is not None,
+          f"errno {probe['write_tmp']}")
+    check("container: TMPDIR is writable and under /scratch",
+          probe["write_tmpdir"] is None and env["TMPDIR"].startswith("/scratch/"),
+          f"{env['TMPDIR']} errno {probe['write_tmpdir']}")
+    check("container: cwd is the per-execution tmp, not artifacts/",
+          probe["cwd"].startswith("/scratch/") and probe["cwd"].endswith("/tmp"), probe["cwd"])
+
+    # prune_venv.py deletes pip and everything outside the SDK's import closure. Asserted at
+    # build time by build-checks.py; asserted here from INSIDE a real execution, which is the
+    # position an attacker actually occupies.
+    check("container: no package manager (pip)", probe["import_pip"] is False)
+    check("container: no setuptools", probe["import_setuptools"] is False)
+    check("container: no google-auth (section 3(c))", probe["import_google_auth"] is False)
+    check("container: the genetics SDK imports", probe["import_genetics_mcp_server_sdk"] is True)
+    check("container: matplotlib imports under the read-only rootfs",
+          probe["import_matplotlib"] is True)
+
+    check("container: no credential is in the child's environment",
+          env["INTERNAL_API_SECRET"] is None and env["SANDBOX_TOKEN_SIGNING_KEY"] is None,
+          f"got {env}")
+    check("container: the image's env markers are set, so degradations are off",
+          env["GENETICS_PREWARM"] and env["GENETICS_MPLCACHE"], f"got {env}")
+    check("container: SANDBOX_SCRATCH_ROOT is unset, so /scratch is the real /scratch",
+          env["SANDBOX_SCRATCH_ROOT"] is None, f"got {env['SANDBOX_SCRATCH_ROOT']!r}")
+    check("container: the two API endpoints are configured and are not cluster FQDNs",
+          env["GENETICS_API_URL"] and env["BIGQUERY_API_URL"]
+          and "svc.cluster.local" not in (env["GENETICS_API_URL"] + env["BIGQUERY_API_URL"]),
+          f"got {env['GENETICS_API_URL']} {env['BIGQUERY_API_URL']}")
+
+    # The font cache is baked at build time and copied into the per-execution MPLCONFIGDIR
+    # because the rootfs is read-only. On matplotlib 3.10 an unwritable MPLCONFIGDIR raises
+    # rather than falling back, so this is the one path where "it imports" is not enough:
+    # the plot has to be produced and land in the manifest.
+    plot = (
+        "import os, matplotlib\n"
+        "matplotlib.use('Agg')\n"
+        "import matplotlib.pyplot as plt\n"
+        "plt.plot([1, 2, 3], [3, 1, 2])\n"
+        "plt.savefig(os.path.join(os.environ['SANDBOX_ARTIFACTS_DIR'], 'plot.png'))\n"
+        "print('MPLCONFIGDIR', os.environ['MPLCONFIGDIR'])\n"
+    )
+    status, _, body = server.request("POST", "/execute", body=make_body(code=plot))
+    check("container: a plot is written under the read-only rootfs",
+          status == 200 and body["status"] == "ok", f"got {status} {body.get('error')}")
+    check("container: the plot reaches the artifact manifest",
+          [e["name"] for e in body.get("artifacts", [])] == ["plot.png"],
+          f"got {body.get('artifacts')}")
+    check("container: the plot's size is non-zero",
+          body.get("artifacts") and body["artifacts"][0]["size"] > 0,
+          f"got {body.get('artifacts')}")
+
+
+# --------------------------------------------------------------------------------------
 # 6. the startup wipe
 # --------------------------------------------------------------------------------------
 
@@ -674,7 +841,7 @@ def test_startup_wipe(tmp):
 # --------------------------------------------------------------------------------------
 
 
-def main():
+def run_in_process():
     tmp = tempfile.mkdtemp(prefix="supervisor-test-")
     try:
         print("startup assertions")
@@ -689,19 +856,93 @@ def main():
         print("startup wipe")
         test_startup_wipe(tmp)
         print("end to end over HTTP")
-        test_http(tmp)
+        root = os.path.join(tmp, "scratch")
+        os.makedirs(root)
+        test_http(Server(root))
         print("backpressure over HTTP")
-        test_backpressure(tmp)
+        root = os.path.join(tmp, "backpressure")
+        os.makedirs(root)
+        test_backpressure(Server(root))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+def run_container(base_url):
+    """The same wire checks, against the image. Nothing here imports the container's
+    supervisor: it is reached only through the two routes the contract defines, which is
+    exactly what chat-backend's client can do (4h6.47)."""
+    server = RemoteServer(base_url)
+    try:
+        status, _, body = server.request("GET", "/health")
+    except OSError as exc:
+        print(f"HARNESS: cannot reach {base_url}: {exc}", file=sys.stderr)
+        print("         Start one with scripts/run-sandbox-local.sh", file=sys.stderr)
+        raise SystemExit(2)
+    if status != 200 or (body or {}).get("status") != "ok":
+        print(f"HARNESS: {base_url}/health is not ok yet: {status} {body}", file=sys.stderr)
+        raise SystemExit(2)
+    if body["busy"] or body["queued"]:
+        # Concurrency is 1 cluster-wide, so a second driver would take 429s that the
+        # backpressure test attributes to its own three requests.
+        print(f"HARNESS: {base_url} is already executing something: {body}", file=sys.stderr)
+        raise SystemExit(2)
+    print(f"end to end over HTTP against the container at {base_url}")
+    test_http(server)
+    print("backpressure over HTTP against the container")
+    test_backpressure(server)
+    print("image properties, from inside a real execution")
+    test_container(server)
+
+    # Whole groups, not individual skips: there is no route on the wire that reaches the
+    # supervisor's own objects, so these never execute here. Naming them is the difference
+    # between a subset run and a subset run that looks complete.
+    NOT_RUN.extend([
+        "startup assertions (test_nsswitch) — reads the container's /etc/nsswitch.conf",
+        "request parsing and token consistency (test_parsing) — calls the parser directly",
+        "queue (test_queue, test_peer_gone) — inspects the supervisor's queue objects",
+        "artifact manifest (test_manifest) — needs the harness's own view of /scratch",
+        "startup wipe (test_startup_wipe) — calls wipe_unrecognised_scratch() directly",
+    ])
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    base_url = None
+    if argv and argv[0] == "--container":
+        if len(argv) != 2:
+            print("usage: test-supervisor.py [--container URL]", file=sys.stderr)
+            return 2
+        base_url = argv[1]
+    elif argv:
+        print("usage: test-supervisor.py [--container URL]", file=sys.stderr)
+        return 2
+
+    if base_url:
+        run_container(base_url)
+    else:
+        run_in_process()
+
     print()
+    if SKIPPED:
+        print(f"{len(SKIPPED)} skipped:")
+        for line in SKIPPED:
+            print(f"  - {line}")
+    if NOT_RUN:
+        print(f"{len(NOT_RUN)} check groups NOT RUN in this mode (not skips — never invoked):")
+        for line in NOT_RUN:
+            print(f"  - {line}")
     if FAILURES:
         print(f"FAILED {len(FAILURES)}/{CHECKS} checks:")
         for line in FAILURES:
             print(f"  - {line}")
         return 1
-    print(f"OK: {CHECKS} checks passed")
+    print(f"OK: {CHECKS} checks passed"
+          + (f", {len(SKIPPED)} skipped" if SKIPPED else ""))
+    if NOT_RUN:
+        print(f"     PARTIAL COVERAGE: {CHECKS} is the container-mode total, not a fraction of"
+              " the in-process run.")
+        print(f"     {len(NOT_RUN)} groups above never executed. Run scripts/test-supervisor.py"
+              " with no arguments for those.")
     return 0
 
 

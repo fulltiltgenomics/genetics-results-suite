@@ -405,9 +405,23 @@ copies are current, that every view and column reaches a file **with its BigQuer
 and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
 Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
-The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. The
-Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because the
-image ships no `CMD` and the supervisor is still to be written — so it is applied only when
+The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
+
+`./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
+container** on the developer machine — no cluster, no credentials, nothing pushed — with the
+supervisor passed as the container's command, `--read-only`, `--cap-drop ALL`, uid 65532 and a
+writable `/scratch`. It publishes `127.0.0.1:8081` (the container port stays 8080; the local
+db-api already holds 8080 on the host) and prints, on every start, the list of controls that
+have **no** local form: gVisor, the NetworkPolicy, the kubelet pid limit, the exact seccomp
+profile, `emptyDir` `sizeLimit` eviction, `ephemeral-storage` requests/limits, the Deployment's
+restart behaviour and DNS — including the one that changes how limits must be sized, that the
+local `/scratch` tmpfs is charged to the container's memory cgroup while the pod's disk-backed
+`emptyDir` is charged to `ephemeral-storage` instead. `--test` then runs
+`python3 scripts/test-supervisor.py --container http://127.0.0.1:8081` against it;
+`--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
+
+The Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because
+the image ships no `CMD` and the supervisor is supplied at run time — so it is applied only when
 `ENABLE_SANDBOX=true`, which `scripts/deploy.sh` derives from `sandbox_pool_enabled` in
 `terraform.tfvars`. A preflight in deploy.sh — before the first `kubectl apply` of the run, so a
 refusal cannot strand a half-finished deploy — refuses that apply if no node carries

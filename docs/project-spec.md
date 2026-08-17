@@ -937,8 +937,11 @@ start it, because the image still ships no `CMD` and the manifest still declares
 - **No `setuid` and no `chown` anywhere.** Supervisor and child share uid 65532 — forced,
   because the pod drops `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN`. The image's advertised
   `SANDBOX_CHILD_UID` names a uid nothing in this pod can switch to.
-- **`scripts/test-supervisor.py`** is the offline harness: `python3 scripts/test-supervisor.py`,
-  exit 0 pass / 1 a property broke / 2 could not run, in the same style as
+- **`scripts/test-supervisor.py`** is the offline harness, in two modes:
+  `python3 scripts/test-supervisor.py` (in-process, the fast path) and
+  `python3 scripts/test-supervisor.py --container URL` against a container started by
+  `scripts/run-sandbox-local.sh` (see *Running the sandbox locally* under Operational
+  procedures). Exit 0 pass / 1 a property broke / 2 could not run, in the same style as
   `test-sandbox-docs.py` and `test-network-policies.py`. It needs no cluster, no credentials
   and no image — it runs the real supervisor in the local interpreter against a temporary
   `/scratch` root and forks real children, so the queue-depth definition, the duplicate-id
@@ -946,7 +949,17 @@ start it, because the image still ships no `CMD` and the manifest still declares
   environment, which names reach the artifact manifest, the `429`'s `Retry-After` header that
   the client's retry policy reads, and the two forgeries the fork-without-exec model makes
   reachable — a status record written by the script, and a descendant holding the output pipe
-  open — are exercised rather than asserted about. No build or deploy script runs it yet.
+  open — are exercised rather than asserted about. Container mode drives the same wire checks
+  against the image and adds a group that has no in-process equivalent because it is about the
+  image (read-only rootfs, no writable `/tmp`, pruned venv, the SDK and matplotlib importing,
+  no credential in the child's environment). **Container mode is a partial run and its total is
+  not a fraction of the in-process total**: the groups reaching into the supervisor's own
+  objects (startup assertions, request parsing, queue, artifact manifest, startup wipe) have no
+  route over HTTP and are **not run at all**, so the harness prints them by name under "check
+  groups NOT RUN in this mode" and says so on the summary line. `skip()` is the narrower
+  mechanism — a check inside a group that ran, such as one needing the harness's own view of
+  `/scratch` — and those stay counted and listed individually. No build or deploy script runs
+  either mode yet.
 - **Three environment differences are what "not the image" looks like**, each warned about
   loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
   `GENETICS_MPLCACHE` unset leaves the font cache to be rebuilt, and `SANDBOX_SCRATCH_ROOT`
@@ -1195,6 +1208,56 @@ optimiser has processed it (4h6.18 observed 4,492,232,401 B dry-run against 517,
 actual), so scan-byte claims need real execution with `use_query_cache=False`, and the
 clustering itself should be asserted from
 `INFORMATION_SCHEMA.COLUMNS.clustering_ordinal_position`.
+
+### Running the sandbox locally (`scripts/run-sandbox-local.sh`)
+
+The sandbox is the one service with a genuine local backend, and it is deliberately not an
+exception to the section above: it runs the **same image** in a plain Docker container
+instead of a gVisor pod, with the supervisor supplied as the container's command the way
+`k8s/deployments/sandbox.yaml` will supply it as `args:`. There is no local/production fork
+in the code and none in the request flow — chat-backend's client holds one base URL either
+way.
+
+```
+./scripts/run-sandbox-local.sh            # build, (re)start, wait for /health, print the fidelity report
+./scripts/run-sandbox-local.sh --test     # ... then run scripts/test-supervisor.py --container against it
+./scripts/run-sandbox-local.sh --no-build # restart without rebuilding
+./scripts/run-sandbox-local.sh --logs     # container stdout, which is where the audit stream lands
+./scripts/run-sandbox-local.sh --stop
+```
+
+Operational specifics:
+
+- **The host port is 8081, the container port is 8080.** The container port matches the
+  manifest and the Service; the host port cannot, because the local db-api already holds 8080
+  (`genetics-results-suite-r9e`). `HOST_PORT` overrides it. It publishes on `127.0.0.1` only.
+- **It does not clone genetics-mcp-server the way `scripts/build.sh` does.** The point is to
+  run the working tree, so the SDK is staged from a local checkout: `MCP_SERVER_DIR` if set,
+  otherwise the sibling repo's worktree **of the same name** first and its main checkout
+  second — the resolve-into-the-main-checkout class `scripts/check-worktree-paths.sh` exists
+  for, and here it would silently build against a branch that carries no SDK at all.
+- **It checks `sandbox/schema` and `sandbox/stubs` rather than regenerating them**, because
+  regenerating writes tracked files a developer starting a container did not ask to change.
+  Drift warns and the build continues (`--regen` writes them). `scripts/build.sh` still
+  regenerates and still treats a failure as fatal — a pushed image documenting a stale SDK is
+  a defect; a local one is survivable.
+- **It never touches a cluster and pushes nothing.** The tag is `genetics-sandbox:local` so a
+  local build cannot be mistaken for the image the cluster pulls.
+- **The fidelity gap is printed on every start**, not buried: gVisor, the NetworkPolicy, the
+  kubelet pid limit, the seccomp profile, `emptyDir` `sizeLimit` eviction,
+  `ephemeral-storage` requests/limits (`1Gi`/`2Gi`, with **no** local analogue at all), the
+  Deployment's restart behaviour (`--restart no` here) and DNS have no local form.
+  `terminationGracePeriodSeconds: 130` **is** reproduced, by `--stop-timeout 130` plus a
+  `--stop` that calls `docker stop` rather than `docker rm -f`. One gap is a sizing trap
+  rather than missing coverage and `4h6.41`/`4h6.46` must read it before tuning anything: the
+  local `/scratch` is a tmpfs, i.e. page cache in the container's **own memory cgroup**, so
+  its bytes come out of the same 3 GiB as the child's RSS (measured 113 MiB → 414 MiB after a
+  300 MiB write), whereas the pod's `emptyDir` has no `medium: Memory`, is node-disk-backed
+  and is charged to `ephemeral-storage` instead — never to `limits.memory`. Headroom sized
+  locally is therefore up to 512 MiB more conservative than the pod needs.
+  `docs/code-execution-security.md` → "As built (`4h6.40`)" enumerates each and what it costs;
+  any control whose only enforcement is one of them is unexercised locally and must be
+  verified at deploy time.
 
 ### Documentation-drift hook
 
