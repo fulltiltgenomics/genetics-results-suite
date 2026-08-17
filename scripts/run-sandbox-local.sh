@@ -28,8 +28,12 @@ set -euo pipefail
 #                    already holds that (genetics-results-suite-r9e). The CONTAINER port
 #                    stays 8080 so the manifest and the local run agree.
 #   GENETICS_API_URL, BIGQUERY_API_URL  defaults point at host.docker.internal, i.e. the
-#                    local results-api and db-api. The manifest's values are cluster FQDNs
+#                    local results-api (:2000) and db-api (:8080) that scripts/dev-stack.sh
+#                    starts — NOT the manifest's cluster ports, where results-api is :4000
+#                    and a local :4000 is chat-api. The manifest's values are cluster FQDNs
 #                    pinned by hostAliases and resolve to nothing here.
+#   SANDBOX_RETENTION_S  shorten the artifact retention deadline so a test can watch it
+#                    expire. Unset in a normal run, which leaves the supervisor's 900s.
 #   SANDBOX_IMAGE    image tag to build/run (default genetics-sandbox:local). Deliberately
 #                    not $REGISTRY/sandbox:latest — nothing here pushes, and a local build
 #                    must not be mistakable for the image the cluster pulls.
@@ -42,8 +46,16 @@ SANDBOX_DIR="${REPO_ROOT}/sandbox"
 IMAGE="${SANDBOX_IMAGE:-genetics-sandbox:local}"
 NAME="${SANDBOX_CONTAINER_NAME:-genetics-sandbox-local}"
 HOST_PORT="${HOST_PORT:-8081}"
-GENETICS_API_URL="${GENETICS_API_URL:-http://host.docker.internal:4000/api}"
+# :2000, NOT the manifest's :4000. In the cluster results-api's Service port is 4000; on a
+# developer machine scripts/dev-stack.sh puts results-api on :2000 and CHAT-API on :4000, so
+# the cluster number pointed the SDK at chat-backend, which answers 404 on /api and never
+# looks like an auth or a data problem (measured 2026-08-17, genetics-results-suite-4h6.49).
+GENETICS_API_URL="${GENETICS_API_URL:-http://host.docker.internal:2000/api}"
 BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://host.docker.internal:8080}"
+# Empty by default, i.e. the supervisor's own 900s. Set only to make the retention deadline
+# observable in a test run; scripts/test-e2e-local.py --retention-s must be given the same
+# number, because nothing on the wire exposes it.
+SANDBOX_RETENTION_S="${SANDBOX_RETENTION_S:-}"
 
 DO_BUILD=1
 DO_TEST=0
@@ -164,6 +176,9 @@ fi
 # fidelity report at the end enumerates what has NO local form.
 # --------------------------------------------------------------------------------------
 
+RETENTION_FLAGS=()
+[ -n "${SANDBOX_RETENTION_S}" ] && RETENTION_FLAGS=(--env SANDBOX_RETENTION_S="${SANDBOX_RETENTION_S}")
+
 RUNTIME_FLAGS=()
 RUNTIME="${SANDBOX_DOCKER_RUNTIME:-}"
 if [ -z "${RUNTIME}" ] && docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' 2>/dev/null | grep -qw runsc; then
@@ -192,6 +207,7 @@ docker run -d --name "${NAME}" \
   --env GENETICS_API_URL="${GENETICS_API_URL}" \
   --env BIGQUERY_API_URL="${BIGQUERY_API_URL}" \
   --restart no \
+  "${RETENTION_FLAGS[@]}" \
   "${RUNTIME_FLAGS[@]}" \
   "${IMAGE}" /genetics/supervisor.py >/dev/null
 
