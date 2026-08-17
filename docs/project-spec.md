@@ -931,14 +931,23 @@ cannot import one definition. Do not restate it here; the essentials only:
   best-guess, and an id is spent once — a resubmission with the same one is refused.
 - **The response's artifact manifest names files and nothing else** — no paths and no
   execution id — because `read_artifact` takes a bare name and refuses anything else.
-- **The supervisor is *designed* to forward the SDK audit stream to the pod's stdout**,
-  stamping user, session and execution from the tokens' claims rather than asking the child,
-  and that would be the only thing the cluster's logging agent collects. **It does not do so
-  yet** — `sandbox/supervisor.py` marks this in place as `STUB (genetics-results-suite-4h6.45)`,
-  the one remaining hole — so today the child's audit records reach no collector. The `sub`,
-  `sid` and `jti` the stamping needs are already retained on the request. Upstream
-  attribution does not depend on this: db-api's and results-api's own `endpoint_access` lines
-  carry those three claims from the signed token and are written outside the sandbox.
+- **The supervisor forwards the SDK audit stream to the pod's stdout** (`4h6.45`), the only
+  stream the cluster's logging agent collects. It holds the read end of the child's audit fd,
+  applies the rate, byte and per-line caps there rather than in the SDK, matches every line
+  whole against the record shapes and drops what does not match, and stamps
+  `[user=…] [session=…] [execution=…]` from the tokens' `sub`/`sid`/`jti` — the prefix the SDK
+  renders from the child's own environment is discarded, because the child owns that
+  environment. **The env prefix and the signed claims are not the same evidence.** Every
+  execution also emits a summary line, so a drop the *supervisor* made is a different line from
+  an execution that produced no records. It is **not** distinguishable from suppression inside
+  the child: `logger.disabled`, the level, a filter, handler removal (`4h6.12`) or rewriting
+  `GENETICS_SDK_AUDIT_FD` before the first SDK call all leave a `records=0` summary
+  byte-identical to a script that genuinely made no SDK calls, and containing that needs the
+  child contained rather than read (`4h6.55`). What this does *not* establish is that the records are
+  true: a script can emit well-formed records for calls it never made and can read through
+  `_executor` with no record at all. For that, upstream attribution is what holds — db-api's
+  and results-api's own `endpoint_access` lines carry the same three claims from the signed
+  token and are written outside the sandbox.
 
 ### The supervisor process (`sandbox/supervisor.py`, `genetics-results-suite-4h6.39`)
 
@@ -951,18 +960,16 @@ start it, because the image still ships no `CMD` and the manifest still declares
 `command`/`args`, which is what `scripts/deploy.sh` refuses to apply until
 `genetics-results-suite-4h6.50` wires it up as the last bead of the chain.
 
-- **The per-execution limits are built; one runtime gap remains.** The wall clock and rlimits
-  (`4h6.41`), the output caps (`4h6.42`), token delivery to the child (`4h6.43`) and the
-  `/scratch` quotas, retention and reaper (`4h6.46`) landed together, sharing one poll loop and
-  one kill path: a per-execution watchdog thread kills the process group (`_fire_limit` →
-  `_kill_group`) and the reaper deletes completed executions on a 30 s tick (`reap_expired` →
-  `_forget_retained`). `docs/code-execution-security.md` → "As built (`4h6.41`, `4h6.42`,
-  `4h6.43`, `4h6.46`)" tabulates what each one is worth and what it measurably does not do.
-  What is still absent is **audit forwarding (`4h6.45`)** — the only remaining
-  `STUB (genetics-results-suite-…)` marker in `sandbox/supervisor.py`, a comment block rather
-  than a dead function, so the SDK's records go to the child's own stdout, inside the same
-  64 KiB return window as script output and reaching no collector — and the missing `CMD`
-  (`4h6.50`, above), without which nothing starts the supervisor at all.
+- **The per-execution limits are built.** The wall clock and rlimits (`4h6.41`), the output
+  caps (`4h6.42`), token delivery to the child (`4h6.43`) and the `/scratch` quotas, retention
+  and reaper (`4h6.46`) landed together, sharing one poll loop and one kill path: a
+  per-execution watchdog thread kills the process group (`_fire_limit` → `_kill_group`) and the
+  reaper deletes completed executions on a 30 s tick (`reap_expired` → `_forget_retained`).
+  The audit stream (`4h6.45`) followed, on a third drain thread sharing the same reaped-child
+  deadline. `docs/code-execution-security.md` → "As built (`4h6.41`, `4h6.42`, `4h6.43`,
+  `4h6.45`, `4h6.46`)" tabulates what each one is worth and what it measurably does not do.
+  What is still absent is the missing `CMD` (`4h6.50`, above), without which nothing starts the
+  supervisor at all.
 - **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
   pre-imported analysis modules the child inherits copy-on-write — and it therefore closes
   every inherited descriptor before running the script, or it would hold the listening socket
@@ -988,7 +995,8 @@ start it, because the image still ships no `CMD` and the manifest still declares
   `SANDBOX_CHILD_UID` names a uid nothing in this pod can switch to.
 - **`scripts/test-supervisor.py`** is the offline harness, in two modes:
   `python3 scripts/test-supervisor.py` (in-process, the fast path) and
-  `python3 scripts/test-supervisor.py --container URL` against a container started by
+  `python3 scripts/test-supervisor.py --container URL [--container-name NAME]` against a
+  container started by
   `scripts/run-sandbox-local.sh` (see *Running the sandbox locally* under Operational
   procedures). Exit 0 pass / 1 a property broke / 2 could not run, in the same style as
   `test-sandbox-docs.py` and `test-network-policies.py`. It needs no cluster, no credentials
@@ -1001,7 +1009,10 @@ start it, because the image still ships no `CMD` and the manifest still declares
   open — are exercised rather than asserted about. Container mode drives the same wire checks
   against the image and adds a group that has no in-process equivalent because it is about the
   image (read-only rootfs, no writable `/tmp`, pruned venv, the SDK and matplotlib importing,
-  no credential in the child's environment). **Container mode is a partial run and its total is
+  no credential in the child's environment). `--container-name NAME` is what lets the audit-stream
+  group run there at all: those records leave by the container's **stdout**, not over the wire, so
+  without a name to `docker logs` the group skips by name. `run-sandbox-local.sh --test` passes it.
+  **Container mode is a partial run and its total is
   not a fraction of the in-process total**: the groups reaching into the supervisor's own
   objects (startup assertions, request parsing, queue, artifact manifest, startup wipe) have no
   route over HTTP and are **not run at all**, so the harness prints them by name under "check
@@ -1322,7 +1333,7 @@ way.
 
 ```
 ./scripts/run-sandbox-local.sh            # build, (re)start, wait for /health, print the fidelity report
-./scripts/run-sandbox-local.sh --test     # ... then run scripts/test-supervisor.py --container against it
+./scripts/run-sandbox-local.sh --test     # ... then run test-supervisor.py --container --container-name against it
 ./scripts/run-sandbox-local.sh --no-build # restart without rebuilding
 ./scripts/run-sandbox-local.sh --logs     # container stdout, which is where the audit stream lands
 ./scripts/run-sandbox-local.sh --stop

@@ -223,7 +223,7 @@ cat <<EOF
 
   health   curl -s ${BASE_URL}/health
   logs     scripts/run-sandbox-local.sh --logs
-  tests    python3 scripts/test-supervisor.py --container ${BASE_URL}
+  tests    python3 scripts/test-supervisor.py --container ${BASE_URL} --container-name ${NAME}
   stop     scripts/run-sandbox-local.sh --stop
 
   chat-backend's client needs SANDBOX_URL=${BASE_URL} (it defaults to
@@ -275,5 +275,9 @@ echo "                  SIGKILL). \`docker rm -f\` or \`docker kill\` bypasses i
 
 if [ "${DO_TEST}" = "1" ]; then
   echo
-  exec python3 "${SCRIPT_DIR}/test-supervisor.py" --container "${BASE_URL}"
+  # --container-name: the audit stream (4h6.45) leaves by the container's STDOUT, not by the
+  # wire, so the harness reads it back with `docker logs`. Without the name that whole group
+  # skips by name instead of proving nothing quietly.
+  exec python3 "${SCRIPT_DIR}/test-supervisor.py" --container "${BASE_URL}" \
+    --container-name "${NAME}"
 fi

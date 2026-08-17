@@ -8,22 +8,32 @@ anything from here, because the image pip-installs only the genetics SDK's impor
 and prune_venv.py deletes the rest. Every constant below that names a wire value carries a
 pointer to the row it comes from; do not change one without changing the other.
 
-This file started as genetics-results-suite-4h6.39 (the skeleton). 4h6.41, 4h6.42, 4h6.43 and
-4h6.46 have since filled four of its five holes:
+This file started as genetics-results-suite-4h6.39 (the skeleton). Its five holes are filled:
 
   4h6.41  wall clock, pid budget, group kill (parent)  -> _apply_limits, _watchdog, _kill_group
           RLIMIT_AS (child)                            -> _apply_child_limits
   4h6.42  the 8 MiB pipe cap and the 64 KiB head+tail return  -> _drain, _cap_output
   4h6.43  per-execution token delivery by read-once file      -> _deliver_tokens
+  4h6.45  the SDK audit stream: capped, re-framed, stamped, forwarded -> _AuditForwarder
   4h6.46  /scratch sub-quotas, artifact retention, the reaper -> _watchdog, _retain, reap_expired
           the budget arithmetic is stated ONCE, above ARTIFACT_QUOTA_BYTES, and is mirrored in
           docs/code-execution-security.md's "4h6.46" table; do not restate it a second time
 
-ONE HOLE REMAINS, marked in place with `STUB (genetics-results-suite-4h6.45)`: the SDK audit
-stream is neither read, capped, re-framed, stamped nor forwarded, so the SDK's records reach
-the child's own stdout pipe (where they are indistinguishable from script output and are
-subject to the same 64 KiB window) and nothing reaches the pod's stdout, which is the only
-stream the cluster's logging agent collects.
+WHAT 4h6.45 DOES AND DOES NOT CHANGE ABOUT THE AUDIT TRAIL. The records now reach the pod's
+own stdout — the only stream the cluster's logging agent collects — attributed from the
+TOKENS' sub/sid/jti and framed by this process, with the rate, byte and per-line caps applied
+on the read end where the child cannot reach them. That makes the ATTRIBUTION and the FRAMING
+trustworthy: a child cannot name another user, cannot break the bracket framing, and cannot
+put text outside printable ASCII or the admitted record shapes on an operator's stream. It
+does NOT make the records a true account of what the script did — a script can emit
+well-formed records for calls it never made, `client._executor.<m>()` reads data with no
+record at all (4h6.33), and a child can still lose its own records by flooding its own pipe
+(bounded and counted here) or by suppressing them INSIDE its own process, where nothing on
+this end can see it happen (4h6.12's four mechanisms all still work; 4h6.55's territory). A
+zero-record summary therefore means "this supervisor read no records", not "this script made
+no SDK calls". Do not cite these lines as evidence
+of what happened under an assumption of compromise; db-api's and results-api's own
+`endpoint_access` lines, written outside this pod, are what hold there.
 
 WHAT THE CONTROLS IN THIS FILE DO NOT CONTAIN, stated because the opposite reading is the
 dangerous one. Every kill path signals the child's PROCESS GROUP. A descendant that calls
@@ -94,6 +104,49 @@ PIPE_CAP_BYTES = 8 * 1024 * 1024      # stop reading the child's pipe here AND k
 RETURN_HEAD_BYTES = 32 * 1024         # first 32 KiB returned to the model
 RETURN_TAIL_BYTES = 32 * 1024         # last 32 KiB — the traceback lives here
 ELISION_MARKER = "\n...[{} bytes elided]...\n"   # fixed text; the 64 KiB budget EXCLUDES it
+
+# -- 4h6.45, THE AUDIT STREAM'S READ-END BOUNDS. Every one of them is applied HERE, by the
+# process the child cannot reach into, and none of them is keyed on anything the child writes.
+# 4h6.12 measured what the other arrangement costs: a ceiling keyed on SANDBOX_EXECUTION_ID
+# was reset by rewriting that variable (19,622 lines/s after rotation, higher than the
+# 18,088 lines/s before the ceiling existed), and, being shared with the records that mattered,
+# it doubled as a suppression primitive — ~50ms of cheap refusals bought silence for every
+# genuine read afterwards.
+#
+# WHAT THESE BOUNDS DO AND DO NOT BUY. They bound the stream. They do NOT stop a child
+# denying attribution of its OWN later calls by flooding its own pipe — nothing on the read
+# end can, because the flood and the records share one channel. What they guarantee instead:
+# the loss is COUNTED and ANNOUNCED in supervisor framing on the pod's stdout (a notice the
+# first time each cap fires, and a summary line at the end of every execution, emitted whether
+# or not anything was dropped), and it is charged to the FLOODER ALONE — the pipe, the byte
+# budget and the token bucket are per execution, so one execution cannot silence another's
+# records. A process-global budget here would reintroduce exactly that, one level up.
+CHILD_AUDIT_FD = 4                    # the number the SDK is told to write on; see _child_main
+
+# A record longer than this is DROPPED, never truncated: a truncated line's tail is where the
+# `rows:` field lives, so a truncation either produces something that no longer parses (and is
+# then dropped anyway, one step later and after buying the memory) or, worse, a prefix that
+# parses as a DIFFERENT record than the child wrote. The house rule for identity-bearing text
+# is replace-don't-truncate (_sanitise_error_type, the SDK's `<invalid>`); this is the same
+# rule applied to a whole record. Sized well above a real record: the SDK's line is a ~120-byte
+# prefix plus a function name and an argument summary whose values are individually capped at
+# 64 characters.
+AUDIT_LINE_MAX_BYTES = 4096
+
+# The per-execution byte budget, counted over EVERYTHING read off the fd including bytes that
+# are then dropped. ~5,000 records at a typical ~200 bytes. Past it the reader KEEPS READING
+# AND DISCARDS, exactly as the status pipe does and deliberately unlike the output pipe: a
+# reader that stopped would block the child's next audit write, and blocking the child inside
+# a successful data call would turn an observability bound into an execution failure.
+AUDIT_STREAM_MAX_BYTES = 1024 * 1024
+
+# The rate cap, as a token bucket over LINES. A record that reached the executor cost an HTTP
+# round-trip, so a genuine sustained rate above this needs ~100 concurrent in-flight SDK calls
+# per second for the whole execution; the burst covers an `asyncio.gather` of a few dozen.
+# A script that exceeds it loses records — visibly, with a count, which is the difference
+# between this and the in-SDK ceiling it replaces.
+AUDIT_RATE_PER_S = 100.0
+AUDIT_RATE_BURST = 200
 
 # -- 4h6.41, the memory bound.
 #
@@ -304,6 +357,13 @@ ENV_RETENTION_S = "SANDBOX_RETENTION_S"
 # first; docs/code-execution-security.md section 4 is where the two halves are recorded.
 ENV_TOKEN_FILE = "SANDBOX_TOKEN_FILE"
 TOKEN_FILE_NAME = "tokens.json"
+
+# The name the SDK looks the audit fd's NUMBER up under (4h6.45). Read by
+# genetics-mcp-server src/genetics_mcp_server/sdk/client.py `_AUDIT_FD_ENV`, which installs a
+# handler on it and switches propagation off. The number has to be in the child's environment
+# for the SDK to find it, so the script finds it too and can write whatever it likes there —
+# which is why everything that arrives is re-parsed and re-framed rather than believed.
+ENV_AUDIT_FD = "GENETICS_SDK_AUDIT_FD"
 
 DEFAULT_SCRATCH_ROOT = "/scratch"
 NSSWITCH_PATH = "/etc/nsswitch.conf"
@@ -602,11 +662,17 @@ class ExecutionDirs:
             # environment. The path is not a secret. See _deliver_tokens for what this does
             # and — more importantly — what it does not bound.
             ENV_TOKEN_FILE: self.tokens,
+            # 4h6.45. The number, not a path: the fd itself is set up by _child_main, which
+            # dups the audit pipe's write end onto exactly this number before the script runs.
+            ENV_AUDIT_FD: str(CHILD_AUDIT_FD),
             # The SDK's audit prefix reads these three per call (section 6). They are the
             # token's own sub/sid/jti, which the supervisor has already checked against the
-            # body. Setting them makes the child's line render; it does NOT make it
-            # trustworthy — the child can write anything to its own audit fd, which is why
-            # 4h6.45 re-stamps on the read end from the tokens rather than believing these.
+            # body. THEY ARE NOT WHAT ATTRIBUTES THE RECORD. The supervisor DISCARDS whatever
+            # prefix arrives on the audit fd and re-stamps from job.req.claims, because the
+            # child owns its own environment and can rewrite all three between two SDK calls.
+            # They are still set, for the shape below and for nothing else: the SDK renders
+            # them into the line it writes, the sandbox's own stubs document them, and an
+            # in-process (non-sandbox) host has no supervisor to stamp anything.
             "SANDBOX_USER": str(claims_any.get("sub", "")),
             "SANDBOX_SESSION_ID": str(claims_any.get("sid", "")),
             "SANDBOX_EXECUTION_ID": str(claims_any.get("jti", "")),
@@ -837,7 +903,27 @@ def _child_status(type_, message, tb):
     ).encode("utf-8", "replace")
 
 
-def _child_main(code, env, cwd, out_w, status_w):
+def _relocate_above(fd, ceiling):
+    """A copy of `fd` numbered above `ceiling`, or `fd` itself if it already is.
+
+    The kernel picks the pipe numbers, so status_w or audit_w can legitimately BE 3 or 4 —
+    in which case `dup2(status_w, CHILD_STATUS_FD)` silently closes the other pipe's write
+    end and the SDK writes its audit records into a closed descriptor. `os.dup` returns the
+    LOWEST free number, so it can hand back another fd inside the fixed range; the loop keeps
+    each intermediate open (which is what makes the next dup pick a higher one) and closes
+    them once a number above the range is reached. The original is left to
+    _close_inherited_fds a few lines later, along with everything else not in the keep-set.
+    """
+    walked = []
+    while fd <= ceiling:
+        walked.append(fd)
+        fd = os.dup(fd)
+    for spare in walked[1:]:
+        os.close(spare)
+    return fd
+
+
+def _child_main(code, env, cwd, out_w, status_w, audit_w):
     """Runs in the forked child. Never returns.
 
     HOW THE CHILD REPORTS ITS EXCEPTION was left unsettled by the contract and is settled
@@ -850,6 +936,11 @@ def _child_main(code, env, cwd, out_w, status_w):
     The supervisor therefore treats what arrives here as untrusted input — re-capping it, and
     discarding it outright when the child exited 0 (see _response). A child that is killed
     writes nothing, which the contract already anticipates: type "Killed", null traceback.
+
+    THE AUDIT FD (4h6.45) IS THE SAME ARRANGEMENT for the same reason. `audit_w` is dup'd onto
+    CHILD_AUDIT_FD and named to the SDK by GENETICS_SDK_AUDIT_FD; the script runs with that fd
+    open and can write anything it likes there, so the supervisor re-parses and re-frames every
+    record on the read end (_AuditForwarder) rather than believing the framing that arrives.
     """
     exit_code = 0
     try:
@@ -869,10 +960,17 @@ def _child_main(code, env, cwd, out_w, status_w):
         # window or doubles the budget.
         os.dup2(out_w, 1)
         os.dup2(out_w, 2)
-        if status_w != CHILD_STATUS_FD:
-            os.dup2(status_w, CHILD_STATUS_FD)
+        fixed = max(CHILD_STATUS_FD, CHILD_AUDIT_FD)
+        status_w = _relocate_above(status_w, fixed)
+        audit_w = _relocate_above(audit_w, fixed)
+        os.dup2(status_w, CHILD_STATUS_FD)
+        # 4h6.45. A SECOND fixed number, for the SDK's audit records only. It must be in the
+        # keep-set below or it is closed a few lines later and every record the SDK emits
+        # raises inside a successful data call.
+        os.dup2(audit_w, CHILD_AUDIT_FD)
         os.set_inheritable(CHILD_STATUS_FD, True)
-        _close_inherited_fds({CHILD_STATUS_FD})
+        os.set_inheritable(CHILD_AUDIT_FD, True)
+        _close_inherited_fds({CHILD_STATUS_FD, CHILD_AUDIT_FD})
 
         os.environ.update(env)
         os.umask(0o077)
@@ -911,7 +1009,7 @@ def _child_main(code, env, cwd, out_w, status_w):
         os._exit(exit_code if isinstance(exit_code, int) and 0 <= exit_code < 256 else 1)
 
 
-def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None):
+def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None, sink=None):
     """Read a pipe until EOF or until `grace` seconds after `reaped` is set.
 
     TWO BEHAVIOURS AT `limit`, selected by `on_limit`, and they are not interchangeable.
@@ -935,6 +1033,18 @@ def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None)
     `reaped` is set by the caller once waitpid has returned; after that this gives the
     already-buffered bytes `grace` seconds to arrive and then abandons the fd.
 
+    `sink` (4h6.45, the AUDIT pipe) hands every block STRAIGHT to a consumer and buffers
+    nothing, so `limit` does not apply and the returned bytes are empty. It is used where the
+    consumer owns its own bounds and needs them applied AS THE BYTES ARRIVE — a rate cap
+    cannot be enforced on a buffer handed over at EOF — and where holding the stream in the
+    supervisor's memory to re-emit it later would be the flooding primitive the caps exist to
+    remove. The deadline, the EINTR handling and the abandon path are shared with the other
+    two pipes deliberately: the audit write end is inherited by an escaped descendant exactly
+    as the output pipe's is, so EOF is not something waiting longer can produce. If the
+    consumer ever raises, this keeps reading and DISCARDS: it cannot fall back to buffering
+    (there is no `limit` on this pipe to buffer against) and it must not stop reading, or the
+    child blocks in `os.write` on a full pipe inside a call that was succeeding.
+
     Returns (bytes, total_seen, stopped_at_limit, abandoned).
     """
     chunks = []
@@ -942,6 +1052,7 @@ def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None)
     stopped = False
     deadline = None
     abandoned = False
+    discarding = False
     while True:
         if deadline is None and reaped is not None and reaped.is_set():
             deadline = time.monotonic() + grace
@@ -966,6 +1077,25 @@ def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None)
         if not block:
             break
         total += len(block)
+        if sink is not None:
+            try:
+                sink(block)
+            except Exception:
+                # KEEP DRAINING AND DISCARDING. Setting `sink = None` here would drop this
+                # stream into the buffering branch below, which is reached with `limit=None`
+                # on the audit pipe (deliberately: the forwarder does the capping) and raises
+                # TypeError on the next block, killing this thread — after which nothing reads
+                # the fd, the 64 KiB pipe fills, and a still-running child BLOCKS in os.write
+                # inside a successful data call until the wall clock kills it. That is the
+                # exact failure the keep-reading-and-discard design exists to prevent, so the
+                # recovery must not be worse than no recovery at all.
+                LOG.exception("audit sink failed; this stream is drained and DISCARDED from "
+                              "here on, and nothing more from it is forwarded")
+                sink = None
+                discarding = True
+            continue
+        if discarding:
+            continue
         if not stopped:
             chunks.append(block)
             if sum(len(c) for c in chunks) >= limit:
@@ -1532,7 +1662,18 @@ class Supervisor:
 
         out_r, out_w = os.pipe()
         st_r, st_w = os.pipe()
-        env = dirs.child_env(job.req.claims[TOKEN_AUDIENCES[0]])
+        # 4h6.45. Created BEFORE the fork because that is the only way a descriptor reaches a
+        # forked child, and read by this process alone.
+        audit_r, audit_w = os.pipe()
+        claims = job.req.claims[TOKEN_AUDIENCES[0]]
+        env = dirs.child_env(claims)
+        # THE STAMP COMES FROM THE CLAIMS, NOT FROM THE BODY AND NOT FROM THE CHILD.
+        # parse_execute_request has already refused the request unless both tokens agree on
+        # jti/sub/sid and those match execution_id/user/session_id, so either audience's claims
+        # will do; taking them from the token is what makes this evidence rather than an echo.
+        audit = _AuditForwarder(
+            str(claims.get("sub", "")), str(claims.get("sid", "")), str(claims.get("jti", ""))
+        )
         code = job.req.code
 
         sys.stdout.flush()
@@ -1540,10 +1681,11 @@ class Supervisor:
         started = time.monotonic()
         pid = os.fork()
         if pid == 0:
-            _child_main(code, env, dirs.tmp, out_w, st_w)
+            _child_main(code, env, dirs.tmp, out_w, st_w, audit_w)
             os._exit(70)  # unreachable; _child_main never returns
         os.close(out_w)
         os.close(st_w)
+        os.close(audit_w)
         job.pid = pid
         job.deadline = started + job.req.timeout_s
         # job.pgid IS DELIBERATELY NOT SET HERE, and an earlier version of this line is why.
@@ -1558,6 +1700,7 @@ class Supervisor:
 
         out_box = {}
         st_box = {}
+        audit_box = {}
         reaped = threading.Event()
         fields = ("raw", "total", "stopped", "abandoned")
         t_out = threading.Thread(
@@ -1571,8 +1714,18 @@ class Supervisor:
                 zip(fields, _drain(st_r, _STATUS_READ_LIMIT_BYTES, reaped))),
             daemon=True,
         )
+        # `limit=None`: with a sink, _drain buffers nothing and applies no bound of its own —
+        # the byte, rate and per-line caps are the forwarder's, applied as the bytes arrive.
+        # Passing AUDIT_STREAM_MAX_BYTES here would read as a second enforcement point that
+        # does not exist.
+        t_audit = threading.Thread(
+            target=lambda: audit_box.update(
+                zip(fields, _drain(audit_r, None, reaped, sink=audit.feed))),
+            daemon=True,
+        )
         t_out.start()
         t_st.start()
+        t_audit.start()
         try:
             wait_status = _reap(job)
             # The child's own lifetime, measured before the drain. Timing the drain instead
@@ -1583,17 +1736,25 @@ class Supervisor:
             reaped.set()
             t_out.join(DRAIN_GRACE_S + 5.0)
             t_st.join(DRAIN_GRACE_S + 5.0)
+            t_audit.join(DRAIN_GRACE_S + 5.0)
             # Closing an fd another thread is blocked on is undefined, so a thread that
             # somehow outlived its own deadline costs two leaked descriptors rather than a
             # read against a reused number. _drain always returns within `grace`, so this
             # branch is a backstop and is logged loudly if it ever fires.
-            for name, thread, fd in (("stdout", t_out, out_r), ("status", t_st, st_r)):
+            for name, thread, fd in (("stdout", t_out, out_r), ("status", t_st, st_r),
+                                     ("audit", t_audit, audit_r)):
                 if thread.is_alive():
                     LOG.error("%s drain thread for %s did not stop; leaking its read end",
                               name, job.req.execution_id)
                 else:
                     os.close(fd)
-        if out_box.get("abandoned") or st_box.get("abandoned"):
+            # AFTER the join, so nothing is still feeding it, and in the finally so that an
+            # execution which failed anywhere above still accounts for its own audit stream.
+            # The summary is emitted unconditionally: "this script made no SDK calls" and
+            # "this script's records were dropped" are then different lines on the pod's
+            # stdout rather than the same silence.
+            audit.close()
+        if out_box.get("abandoned") or st_box.get("abandoned") or audit_box.get("abandoned"):
             # Not an error for this response: the child is reaped and its answer is complete.
             # It does mean something escaped the child's process group and still holds the
             # write end — and having escaped the group, it is a process no signal here
@@ -2312,39 +2473,361 @@ def _deliver_tokens(job):
 
 
 # --------------------------------------------------------------------------------------
-# STUB (genetics-results-suite-4h6.45): the SDK audit stream. A COMMENT AND NOT A FUNCTION,
-# deliberately. This was a `_audit_pipe(job)` that was defined, never called, and returned
-# None while its docstring described a pipe, four caps and a re-stamper — a seam that
-# describes itself falsely is worse than an absent one, because a reader greps for the
-# mechanism, finds a function, and stops looking. Every word of the handoff is kept; only the
-# claim to be code is dropped.
+# The SDK audit stream (4h6.45)
 #
-# Owed: a second pipe whose read end the supervisor holds, its number in the child's
-# GENETICS_SDK_AUDIT_FD; rate, byte and per-line caps applied ON THE READ END, where the child
-# cannot reach them; the child's framing re-parsed and re-framed as untrusted input;
-# `[user=…] [session=…] [execution=…]` stamped from the TOKENS' sub/sid/jti (job.req.claims —
-# retained here for exactly this) and never from the body or from the child; and the result
-# forwarded to the pod's own stdout, the only stream the logging agent collects.
+# The child writes SDK audit records on CHILD_AUDIT_FD; the supervisor holds the read end and
+# is the only thing that decides what is recorded. Three sites make that true and all three
+# are load-bearing: the fd exists BEFORE the fork (_execute_inner), it is dup'd onto a fixed
+# number and kept out of the close sweep (_child_main), and its number is named to the SDK in
+# the child's environment (ExecutionDirs.child_env).
 #
-# It cannot be filled in one place. An fd reaches the child only by existing before the fork,
-# so 4h6.45 edits three sites:
-#
-#   * _execute: create the pipe BEFORE `os.fork()`, pass the write end into _child_main
-#     alongside out_w/st_w, close it in the parent immediately after the fork, and drain the
-#     read end on a third thread that shares the `reaped` event and DRAIN_GRACE_S deadline the
-#     other two use — the audit pipe is inherited by escaped descendants exactly as the output
-#     pipe is.
-#   * _child_main: dup the write end onto a fixed number the way status_w is dup'd onto
-#     CHILD_STATUS_FD, and add that number to the `_close_inherited_fds({...})` keep-set. A
-#     number missing from that set is closed a few lines later and the SDK writes to a closed
-#     fd.
-#   * ExecutionDirs.child_env: export the fd number as GENETICS_SDK_AUDIT_FD, next to the
-#     three SANDBOX_* identity variables the SDK's prefix already reads.
-#
-# UNTIL IT LANDS: the SDK's audit records go to the child's stdout, where they are
-# indistinguishable from script output, are subject to the same 64 KiB return window, and
-# reach no collector at all.
+# WHY THE READ END AND NOT THE SDK. 4h6.12 defeated every in-process control by running it:
+# records were forged with `logging.getLogger("genetics_mcp_server.sdk.audit").info(...)` and
+# with `os.write` to the fd number the script reads from its own environment, and silenced
+# with `logger.disabled`, the level, a filter and handler removal. The audited code and the
+# emitter share an address space, so that is a property of where the code runs. Nothing below
+# tries to defend the child's side of the fd — it assumes the child owns it completely.
 # --------------------------------------------------------------------------------------
+
+
+# The three fields the supervisor STAMPS. Checked the way _sanitise_error_type checks a
+# child-supplied error.type, and for the same reason: a value that breaks the framing produces
+# a line an operator's tools read back as something else. These come from the TOKENS, so this
+# is not defence against the script — `sub` is whatever the identity provider put in the
+# claim, and a `]` in it would close the bracket early while a 100 KB one would put 100 KB on
+# the stream per record. REPLACED, never truncated: `<invalid>` keeps the field's position so
+# the line still parses and is unmistakably not an identity, where a truncation of
+# `admin@finngen.fi.attacker.test` manufactures a different, credible-looking one (4h6.12
+# measured exactly that shape on the SDK side).
+_AUDIT_IDENTITY_RE = re.compile(r"\A[A-Za-z0-9_.:/@|+-]{1,64}\Z")
+_AUDIT_BAD_IDENTITY = "<invalid>"
+
+# WHAT A RECORD IS ALLOWED TO LOOK LIKE. The child's framing is untrusted input, so a line is
+# not "cleaned up" — it either matches one of these exactly, from the marker to the end of the
+# line, or it is dropped and counted. Anything laxer re-opens the forgery the whole bead
+# exists to close: `search()`-based parsers (including this repo's own
+# scripts/analyze_conversations.py) match a record ANYWHERE in a line, so a child that appends
+# `[user=admin@finngen.fi] [session=s] [execution=e] Executing SDK function: sql with input:
+# {} rows: 1` to an otherwise ordinary record would otherwise have written a genuine-looking
+# access under someone else's name.
+#
+# The charsets are bounded by what the SDK can emit AND — where the SDK's own bound turns out
+# to be weaker than it looks — by what may go on an operator's stream. Function names are
+# Python identifiers and exception types are dotted identifiers. The argument summary is
+# `_summarize_arguments`' dict rendering, whose values are a repr of a scalar, a repr of an
+# identifier-shaped string (the SDK's `_AUDIT_SAFE_VALUE_RE`) or `<type:N>`/`<type>` — PLUS
+# the bare string `<unavailable>`, with no braces at all, which is what that function returns
+# when `signature.bind_partial` raises TypeError. That shape is not exotic and is not an
+# attack: one extra positional argument or one unknown keyword in an ordinary script produces
+# it, so omitting it put a genuine record of a genuine mistake into dropped_unparseable, which
+# an operator reads as tampering.
+#
+# WHY THE CLASS IS TIGHTER THAN THE SDK'S, which is ASCII already. `<type>` renders
+# `type(value).__name__`, and a script owns that outright, so the emitting side is not where
+# this can be held — the read end is. Printable ASCII minus `[`, `]`, `{`, `}` and a backslash
+# costs the SDK nothing, because it cannot emit anything else, and it buys two things: the
+# operator's bracket framing stays unforgeable from inside the summary, and a record stays ONE
+# line — U+2028, U+2029 and U+0085 each split a line under `str.splitlines()`, which is what
+# this repo's own harness and plenty of log tooling read records with.
+_AUDIT_FN_RE = r"[A-Za-z_][A-Za-z0-9_]{0,63}"
+_AUDIT_ERR_RE = r"[A-Za-z_][A-Za-z0-9_.]{0,63}"
+_AUDIT_ARGS_RE = r"(?:\{[^{}\[\]\\\x00-\x1f\x7f-\U0010ffff]{0,1024}\}|<unavailable>)"
+
+# `[0-9]`, never `\d`: Python's `\d` matches every Unicode decimal digit, so `rows: ١٢٣` was
+# forwarded and the analyzer's `int()` read it back as 123 — a row count nobody wrote.
+_AUDIT_DIGITS = "[0-9]"
+
+_AUDIT_BODY_RES = (
+    re.compile(
+        rf"\AExecuting SDK function: {_AUDIT_FN_RE} with input: {_AUDIT_ARGS_RE} "
+        rf"rows: {_AUDIT_DIGITS}{{1,12}}(?: error: {_AUDIT_ERR_RE})?(?: cancelled)?\Z"
+    ),
+    re.compile(
+        rf"\ARejected SDK function: {_AUDIT_FN_RE} with input: {_AUDIT_ARGS_RE} "
+        rf"error: {_AUDIT_ERR_RE}\Z"
+    ),
+    # The SDK's own refusal-budget notice, admitted as a fixed literal with one number in it.
+    # It is the one statement about the channel worth carrying across — scripts/
+    # analyze_conversations.py scans for it, and lands the number in
+    # `notices["truncated_at"]`. THE NUMBER IS CHILD-SUPPLIED and nothing here can check it:
+    # the supervisor does not count the SDK's refusals, so a child that writes this line
+    # itself picks the figure (999999999 was measured going through). The literal text around
+    # it is what is bounded — the notice cannot become a channel for chosen PROSE, and it
+    # carries no `rows:` field so it can never be read as a data access. The cross-check for
+    # the number is the supervisor's own per-execution summary, which the child cannot write.
+    # The SDK's other meta record, the shared-stream warning, is deliberately NOT admitted: it
+    # says the records may be forged because no dedicated fd was configured, which on this
+    # path is false and would make the analyzer distrust a stream the supervisor stamped.
+    re.compile(
+        rf"\ASDK audit truncated after {_AUDIT_DIGITS}{{1,9}} records; further REFUSED SDK "
+        r"calls in this process are NOT recorded\. Calls that reached the executor are still "
+        r"recorded in full\.\Z"
+    ),
+)
+
+_AUDIT_MARKERS = (
+    "Executing SDK function: ",
+    "Rejected SDK function: ",
+    "SDK audit truncated after ",
+)
+
+# Fixed text, one per cap, emitted at most once per execution. NO CHILD-CHOSEN BYTES, for the
+# reason the SDK's own meta channel documents: a notice that quotes what it is complaining
+# about hands the thing being bounded a way to write into the operator's log. None of them can
+# parse as a data access — no `Executing SDK function:` marker and no trailing `rows:` field.
+_AUDIT_NOTICES = {
+    "line": "SDK audit stream: a record over %d bytes was DROPPED (not truncated)"
+            % AUDIT_LINE_MAX_BYTES,
+    "rate": "SDK audit stream: over %d records/s; records are being DROPPED"
+            % int(AUDIT_RATE_PER_S),
+    "bytes": "SDK audit stream: past the %d-byte per-execution budget; records are being "
+             "DROPPED" % AUDIT_STREAM_MAX_BYTES,
+    "unparseable": "SDK audit stream: a line that is not a well-formed SDK record was DROPPED",
+}
+
+_AUDIT_EMIT_LOCK = threading.Lock()
+
+
+def _audit_identifier(value):
+    return value if _AUDIT_IDENTITY_RE.match(value or "") else _AUDIT_BAD_IDENTITY
+
+
+def _audit_record_body(text):
+    """The re-framable body of one child line, or None if there is not one.
+
+    Everything before the marker — the SDK's asctime, its logger name, its level, and the
+    `[user=…] [session=…] [execution=…]` prefix it renders from the child's own environment —
+    is DISCARDED rather than parsed. The prefix in particular is exactly the field this bead
+    exists to stop believing, and re-emitting any of it would put child bytes on the pod's
+    stdout under supervisor framing.
+    """
+    if text.endswith("\r"):
+        text = text[:-1]
+    start = None
+    for marker in _AUDIT_MARKERS:
+        found = text.find(marker)
+        if found >= 0 and (start is None or found < start):
+            start = found
+    if start is None:
+        return None
+    body = text[start:]
+    for pattern in _AUDIT_BODY_RES:
+        if pattern.match(body):
+            return body
+    return None
+
+
+def _audit_emit(text):
+    """Put one already-framed record on the POD'S OWN STDOUT, and flush it.
+
+    Written to the stream rather than through LOG, for two reasons that are both about
+    delivery rather than style. The logging configuration belongs to main(), so a supervisor
+    embedded differently — the test harness does exactly this — would discard the whole
+    control at the root logger's default level, silently. And stdout is BLOCK-buffered when it
+    is a pipe, which is what it is under both `docker logs` and the kubelet, so an unflushed
+    record arrives minutes late or, if the process is killed, never.
+    """
+    # The same shape logging's %(asctime)s renders in main()'s basicConfig, milliseconds and
+    # all: one stdout stream carrying two timestamp formats makes a reader parse two.
+    now = time.time()
+    stamp = "%s,%03d" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                         int((now % 1) * 1000))
+    with _AUDIT_EMIT_LOCK:
+        try:
+            sys.stdout.write(f"{stamp} INFO [supervisor.audit] {text}\n")
+            sys.stdout.flush()
+        except Exception:
+            # A failing stdout must not turn a successful execution into a failed one; the
+            # same contract _emit has on the SDK side.
+            LOG.exception("could not write an audit record to stdout")
+
+
+class _AuditForwarder:
+    """Cap, re-parse, re-frame, stamp and forward one execution's SDK audit stream.
+
+    ONE INSTANCE PER EXECUTION, and that is a bound in its own right. The byte budget and the
+    token bucket live here, so a flooding script spends ITS OWN execution's budget and cannot
+    reach the next one's — a process-global budget on the read end would have rebuilt 4h6.12's
+    suppression primitive one level up, where the flooder silences somebody else.
+
+    WHAT IS AND IS NOT PROMISED. Every record that leaves here is attributed from the tokens
+    the supervisor holds, framed by the supervisor, and made of bytes that matched one of the
+    shapes above — so a child cannot name another user, cannot break the framing and cannot
+    put text outside those shapes on the operator's stream. It CAN still lose its own records
+    by flooding its own pipe: no read-end control can separate the flood from the records when
+    they share one channel. What is guaranteed is narrower than "loss is never silent": every
+    drop THIS CLASS makes announces itself the first time its cap fires and is counted in the
+    per-execution summary close() always emits, so a SUPERVISOR-SIDE drop is distinguishable
+    from an execution that produced no records.
+
+    IT IS NOT DISTINGUISHABLE FROM CHILD-SIDE SUPPRESSION, and no read-end control can make it
+    so. A script that disables the SDK's logger, drops its level, installs a filter, removes
+    the handler (4h6.12 measured all four) or simply rewrites GENETICS_SDK_AUDIT_FD to 1
+    before its first SDK call writes nothing to this fd, and the summary it produces is
+    BYTE-IDENTICAL to the summary of a script that made no SDK calls: `records=0 dropped_*=0
+    bytes=0`. Both are honest statements about what this fd carried. Neither is a statement
+    about what the script did — for that, db-api's and results-api's own endpoint_access
+    lines, written outside the pod, are what hold. Making in-process suppression observable
+    needs the child contained rather than read (4h6.55) and is not attempted here.
+
+    Also not promised, because nothing here can promise it: that the records describe what the
+    script actually did. A script that makes no SDK calls at all and writes well-formed
+    records by hand produces a clean stream, and `client._executor.<method>()` reads data with
+    no record at all (4h6.33). These lines bound WHO a record is attributed to and WHAT SHAPE
+    it can take, not whether it happened.
+    """
+
+    def __init__(self, user, session, execution, emit=None, clock=time.monotonic):
+        self.user = _audit_identifier(user)
+        self.session = _audit_identifier(session)
+        self.execution = _audit_identifier(execution)
+        self._emit = emit if emit is not None else _audit_emit
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._buf = bytearray()
+        self._skipping = False
+        self._over_budget_open = False
+        self._tokens = float(AUDIT_RATE_BURST)
+        self._refilled = clock()
+        self._announced = set()
+        self._closed = False
+        self.bytes_seen = 0
+        self.forwarded = 0
+        self.dropped_rate = 0
+        self.dropped_oversize = 0
+        self.dropped_unparseable = 0
+        self.dropped_over_budget = 0
+
+    def feed(self, block):
+        """Consume one block off the fd. Never blocks and never raises at the caller."""
+        with self._lock:
+            if self._closed:
+                return
+            before = self.bytes_seen
+            self.bytes_seen += len(block)
+            room = max(0, AUDIT_STREAM_MAX_BYTES - before)
+            cut = room < len(block)
+            if cut:
+                # PAST THE BUDGET THE READER KEEPS READING AND DISCARDS — the status pipe's
+                # behaviour, not the output pipe's. Stopping the read would block the child's
+                # next audit write, and a child blocked inside a successful data call turns an
+                # observability bound into an execution failure.
+                #
+                # The discarded records are counted by their newlines, PLUS the unterminated
+                # one at the end of the discarded stream (tracked across blocks by
+                # _over_budget_open and added in close()). Counting newlines alone reported
+                # dropped_over_budget=0 for a flood that contained none, leaving only `bytes=`
+                # to say anything had been lost at all.
+                tail = block[room:]
+                self.dropped_over_budget += tail.count(b"\n")
+                self._over_budget_open = not tail.endswith(b"\n")
+                self._announce("bytes")
+                block = block[:room]
+            self._buf += block
+            while True:
+                nl = self._buf.find(b"\n")
+                if nl < 0:
+                    break
+                line = bytes(self._buf[:nl])
+                del self._buf[: nl + 1]
+                if self._skipping:
+                    # The tail of a line already dropped as oversize. If the child never
+                    # terminated that line, whatever it wrote next is part of the SAME line
+                    # and goes with it: one line in, one drop counted. That is not a lost
+                    # record going uncounted — without a newline there was never a second
+                    # record to count — but it does mean an unterminated oversize write
+                    # swallows what follows it, so the oversize notice is the only signal.
+                    self._skipping = False
+                    continue
+                self._line(line)
+            if cut:
+                # THE BUDGET CAN FALL MID-RECORD, and what is left in the buffer is then a
+                # FRAGMENT the child chose the length of. Forwarding it would put a prefix
+                # that parses as a DIFFERENT record than the child wrote under the real user's
+                # stamp — `rows: 999999999` shears to `rows: 9`, a trailing ` error: X` or
+                # ` cancelled` shears off entirely — and it would be counted as forwarded, so
+                # nothing downstream could tell. Replace-don't-truncate, the same rule
+                # AUDIT_LINE_MAX_BYTES states: the fragment is dropped, and it was already
+                # counted above by the newline that terminated it in the discarded part.
+                # Nothing more can be appended either — bytes_seen only grows, so `room` stays
+                # 0 for the rest of this execution.
+                self._buf.clear()
+                self._skipping = False
+            elif len(self._buf) > AUDIT_LINE_MAX_BYTES:
+                # The cap is on the SUPERVISOR'S buffer as much as on the record: a child
+                # writing one megabyte-long line without a newline must not be able to make
+                # the supervisor hold it. Counted once for the whole line, not once per block.
+                if not self._skipping:
+                    self.dropped_oversize += 1
+                    self._announce("line")
+                self._buf.clear()
+                self._skipping = True
+
+    def close(self):
+        """Flush the last unterminated line and emit the per-execution summary, once."""
+        with self._lock:
+            if self._closed:
+                return
+            if self._buf and not self._skipping:
+                # EOF terminates a record as well as a newline does. Only a buffer that was
+                # never cut by the byte budget reaches here — feed() clears a truncated one at
+                # the cut rather than leaving a fragment for this line to forward.
+                self._line(bytes(self._buf))
+            self._buf.clear()
+            if self._over_budget_open:
+                # the discarded stream ended mid-record; that record was lost too
+                self.dropped_over_budget += 1
+            self._closed = True
+            self._emit(self._stamp(
+                "SDK audit stream: records=%d dropped_rate=%d dropped_oversize=%d "
+                "dropped_unparseable=%d dropped_over_budget=%d bytes=%d"
+                % (self.forwarded, self.dropped_rate, self.dropped_oversize,
+                   self.dropped_unparseable, self.dropped_over_budget, self.bytes_seen)
+            ))
+
+    def _line(self, raw):
+        if len(raw) > AUDIT_LINE_MAX_BYTES:
+            self.dropped_oversize += 1
+            self._announce("line")
+            return
+        # PARSE BEFORE SPENDING A TOKEN, and more generally: NOTHING THAT IS DROPPED SPENDS
+        # ONE. The bucket bounds how many records reach an operator, so a line that can never
+        # reach one must not empty it — 200 lines of pad produced dropped_rate=63 with
+        # records=0, junk starving the genuine records the cap was sized for. Parsing first
+        # costs a regex match bounded by AUDIT_LINE_MAX_BYTES. The oversize branch above spends
+        # no token for the same reason, and the volume of junk is bounded by the byte budget
+        # rather than by this bucket.
+        body = _audit_record_body(raw.decode("utf-8", "replace"))
+        if body is None:
+            self.dropped_unparseable += 1
+            self._announce("unparseable")
+            return
+        if not self._take_token():
+            self.dropped_rate += 1
+            self._announce("rate")
+            return
+        self.forwarded += 1
+        self._emit(self._stamp(body))
+
+    def _take_token(self):
+        now = self._clock()
+        self._tokens = min(
+            float(AUDIT_RATE_BURST), self._tokens + (now - self._refilled) * AUDIT_RATE_PER_S
+        )
+        self._refilled = now
+        if self._tokens < 1.0:
+            return False
+        self._tokens -= 1.0
+        return True
+
+    def _stamp(self, body):
+        return f"[user={self.user}] [session={self.session}] [execution={self.execution}] {body}"
+
+    def _announce(self, kind):
+        if kind in self._announced:
+            return
+        self._announced.add(kind)
+        self._emit(self._stamp(_AUDIT_NOTICES[kind]))
 
 
 # --------------------------------------------------------------------------------------

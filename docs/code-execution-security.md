@@ -1233,9 +1233,9 @@ would call it. An implementer of either side of *this* contract should build `/h
 
 #### What the supervisor owes beyond the request and the response
 
-**The audit stream.** `4h6.12` handed over a written specification rather than a puzzle, and
-it is an obligation of this contract even though it is not a field in it. The supervisor
-holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
+**The audit stream (built — `4h6.45`).** `4h6.12` handed over a written specification rather
+than a puzzle, and it is an obligation of this contract even though it is not a field in it.
+The supervisor holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
 
 - applies the rate, byte and per-line caps **on the read end**, where the child cannot reach
   them — every in-process bound was defeated by running it, because the audited code and the
@@ -1244,8 +1244,8 @@ holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
   anything is recorded;
 - **stamps `[user=…] [session=…] [execution=…]` from the tokens' `sub`, `sid` and `jti`** —
   from the credential it holds, never from the body's `user`/`session_id` (which are only
-  checked against the claims) and never by asking the child, which is what makes those three
-  fields render `unknown` today;
+  checked against the claims) and never by asking the child. The prefix the SDK renders from
+  the child's own environment is **discarded**, not merged;
 - forwards the re-framed records to the **pod's own stdout**, the only stream the cluster's
   logging agent collects. In the local Docker backend that is the container's stdout —
   identical code, different collector, and the one place the deployment difference shows up
@@ -1254,6 +1254,34 @@ holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
 Consequence for the client: **the response body carries no audit records and must not be
 expected to.** The trail leaves out of band, and a client that reads only the response learns
 nothing about what the script read.
+
+**What the read-end caps do and do not buy**, because the opposite reading is the one that
+gets cited later. They bound the stream and they cannot be reset from the child: the byte
+budget and the token bucket live in the supervisor, one instance per execution, so a flooding
+script spends **its own** budget and cannot silence the next execution's records — a
+process-global budget here would have rebuilt `4h6.12`'s suppression primitive one level up.
+What they do not do is stop a child denying attribution of **its own** later calls by flooding
+its own pipe; no read-end control can, because the flood and the records share one channel.
+What is guaranteed instead is narrower, and the narrowness is the point: every drop the
+*supervisor* makes announces itself once, in supervisor framing, and is counted in the summary
+line every execution emits (`records=… dropped_rate=… dropped_oversize=… dropped_unparseable=…
+dropped_over_budget=… bytes=…`) whether or not anything was dropped — so a **supervisor-side**
+drop is a different line from an execution that produced no records.
+
+**It is not distinguishable from child-side suppression, and no read-end control can make it
+so.** A script that disables the SDK's logger, drops its level, installs a filter, removes the
+handler (`4h6.12` measured all four, and they are still listed under "No IN-PROCESS mechanism
+can make these records trustworthy" below) or simply rewrites `GENETICS_SDK_AUDIT_FD` to `1`
+before its first SDK call writes nothing to the fd at all, and the summary it produces is
+**byte-identical** to the summary of a script that made no SDK calls: `records=0 dropped_rate=0
+dropped_oversize=0 dropped_unparseable=0 dropped_over_budget=0 bytes=0`. Both are honest
+statements about what that fd carried; neither is a statement about what the script did. Do not
+read `records=0` as "this script made no SDK calls". Making in-process suppression observable
+needs the child *contained* rather than *read* — `4h6.55` — and is not attempted here. Measured in
+the real image: a child writing 2,000 records in one `write()` recorded
+`records=202 dropped_rate=1798`; one writing 1.3 MB recorded `dropped_over_budget=3869` and
+still exited `status: "ok"`, because past the byte budget the reader keeps reading and
+discards rather than blocking the child.
 
 **What the supervisor cannot do, so no field may imply it.** Under the decided shared-uid
 model (option (b), forced — see "The uid choice") the container holds no `CAP_SETUID`,
@@ -1297,7 +1325,7 @@ must be distinguishable by the client from a script failure: `strategy: Recreate
 no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
 analysis failed" (`4h6.47`).
 
-### As built (`4h6.39`) — the supervisor skeleton, and the one hole still in it
+### As built (`4h6.39`) — the supervisor skeleton, and how its five holes were closed
 
 `sandbox/supervisor.py` implements the contract above: the HTTP front door, the queue, the
 per-execution directory and child environment, the startup assertions and the fork/reap.
@@ -1335,15 +1363,18 @@ so no legitimate record is lost. This matters beyond tidiness: the client return
 unchanged, so a forged record tells the model its own successful analysis failed, and the
 code that writes it is model-influenceable by the prompt-injection path in §6.4.
 
-**This section was written when five behaviours were missing. Four have since landed** —
+**This section was written when five behaviours were missing. All five have since landed** —
 `4h6.41` (wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing), `4h6.42` (the two output
-bounds), `4h6.43` (token delivery) and `4h6.46` (quotas, retention, reaper); see "As built
-(`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" below for what each of them actually does and what
-it measurably does not. **One is still absent**, and it is a runtime hole, not a TODO:
+bounds), `4h6.43` (token delivery), `4h6.45` (the audit stream) and `4h6.46` (quotas,
+retention, reaper); see "As built" below for what each of them actually does and what it
+measurably does not.
 
-| owner | absent | consequence today |
-|---|---|---|
-| `4h6.45` | audit forwarding | no audit fd exists, so the SDK's records go to the **child's own stdout** — indistinguishable from script output, subject to the same 64 KiB return window, and reaching no collector at all, because the cluster's logging agent collects the pod's stdout and nothing forwards the child's. The handoff that used to live in a `_audit_pipe(job)` function is now a **comment block** in `sandbox/supervisor.py` at the same place: that function was defined, never called, and returned `None` while its docstring described a pipe, four caps and a re-stamper, which is a seam that describes itself falsely. Every word of the handoff is kept. It cannot be a drop-in in any case — a descriptor reaches the child only by existing before the fork, so `4h6.45` edits `_execute` (create the pipe pre-fork, drain the read end on a third thread sharing the same reaped-child deadline), `_child_main` (dup it to a fixed number and add that number to the `_close_inherited_fds` keep-set) and `child_env` (export `GENETICS_SDK_AUDIT_FD`) |
+`4h6.45` could not be a drop-in and was not: a descriptor reaches the child only by existing
+before the fork, so it edits `_execute_inner` (create the pipe pre-fork, drain the read end on
+a third thread sharing the same reaped-child deadline the other two use), `_child_main` (dup
+it onto `CHILD_AUDIT_FD` and add that number to the `_close_inherited_fds` keep-set — a number
+missing from that set is closed a few lines later and every SDK record raises inside a
+successful data call) and `child_env` (export `GENETICS_SDK_AUDIT_FD`).
 
 The lossy UTF-8 decode of `output` **is** contract behaviour and is implemented: invalid
 bytes become U+FFFD, and there is no alternate encoding and no `encoding` field.
@@ -1390,10 +1421,13 @@ in the code:
   artifacts directory instead would silently promote every scratch file the script writes
   into the manifest.
 - **`SANDBOX_USER`, `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID` are set in the child**
-  from the tokens' `sub`/`sid`/`jti`, which closes half of the "all three render `unknown`"
-  gap section 6 records. It closes only half: the child can write anything to its own audit
-  fd, so `4h6.45` must still re-stamp on the read end from the tokens rather than believing
-  these.
+  from the tokens' `sub`/`sid`/`jti`, and **they are not what attributes a collected record.**
+  The child owns its environment and can rewrite all three between two SDK calls, so `4h6.45`
+  discards the prefix the SDK renders from them and re-stamps from the claims on the read end.
+  They are still set: the SDK renders the line, the shipped stubs document them, and an
+  in-process (non-sandbox) host has no supervisor to stamp anything. **The environment prefix
+  and the signed claims are not the same evidence**, and only the second one survives to a
+  collector.
 - **The startup wipe removes everything under `/scratch` except the supervisor's own
   directory.** After a restart the supervisor holds no record of what was live or retained —
   that state is in memory and does not survive the process — so nothing under `/scratch`
@@ -1516,13 +1550,22 @@ configuration: the audit stream goes to the container's stdout, collected by `do
 rather than by the cluster's logging agent. That is the single place the deployment
 difference shows in what the supervisor does, and it was already anticipated above.
 
-**`scripts/test-supervisor.py --container URL`** drives the contract against the running
-container over HTTP and adds a group of checks that only exist there, because they are
+**`scripts/test-supervisor.py --container URL [--container-name NAME]`** drives the contract
+against the running container over HTTP and adds a group of checks that only exist there,
+because they are
 properties of the **image**: the read-only root filesystem, the absence of a writable `/tmp`,
 the pruned venv (no `pip`, no `setuptools`, no `google-auth`), the genetics SDK importing,
 matplotlib producing a PNG from the baked font cache under a read-only rootfs, no credential
 anywhere in the child's environment, and the child running as 65532 rather than the
-advertised-and-unreachable 65533. In-process mode is unchanged and remains the fast path.
+advertised-and-unreachable 65533. `--container-name NAME` additionally lets the audit-stream
+group read the container's own stdout via `docker logs`, which is the only place those records
+appear; without it that group skips by name. In-process mode is unchanged and remains the fast
+path. Both modes also compare the harness's **copy** of `analyze_conversations.py`'s
+`SDK_CALL_RE` against the literal in a `genetics-mcp-server` checkout beside this one, read off
+disk with `ast` rather than imported (the sandbox image installs only the SDK's import closure,
+so the two repos cannot share a module). Watching only the supervisor side would let the
+*analyzer* move while every assertion built on the stale copy kept passing; with no sibling
+checkout the comparison skips by name rather than passing quietly.
 
 **The two counts are not comparable, and the summary line says so.** Container mode runs the
 two wire groups plus the image group — nothing else. The groups that reach into the
@@ -1596,13 +1639,18 @@ Consequences for `4h6.55`, none of them acted on here:
 - Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
   file. The measurement is a strong hint about the cluster, not a result from it.
 
-### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`) — the per-execution limits, and what each one is worth
+### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.45`, `4h6.46`) — the per-execution limits, and what each one is worth
 
-Four of `4h6.39`'s five holes, landed together in `sandbox/supervisor.py` because they share
-one poll loop and one kill path. **Every limit below was watched firing in the real image**
-via `scripts/run-sandbox-local.sh --test`, not reasoned about; the checks live in
-`scripts/test-supervisor.py`'s `limits`, `tokens`, `retention` and `retained ceiling` groups
-and run in **both** modes.
+`4h6.39`'s five holes. Four of them landed together in `sandbox/supervisor.py` because they
+share one poll loop and one kill path; `4h6.45` (the audit stream) followed. **Every limit
+below was watched firing in the real image** via `scripts/run-sandbox-local.sh --test`, not
+reasoned about; the checks live in `scripts/test-supervisor.py`'s `limits`, `tokens`,
+`retention`, `retained ceiling` and `audit stream` groups. The first four run in **both** modes.
+The `audit stream` group runs in container mode **only when `--container-name NAME` is given** —
+its output leaves by the container's stdout rather than over the wire — and skips by name
+otherwise; `run-sandbox-local.sh --test` supplies it. The `audit stream units` group, which
+calls `_AuditForwarder` and `_drain` directly, is in-process only and is listed among the groups
+container mode never invokes.
 
 #### One watchdog, one kill path, and the two reap hazards it had to be written around
 
@@ -1709,8 +1757,8 @@ authoritative one.
 - **stderr is interleaved into the same pipe as stdout** (settled by `4h6.39`, restated
   because `4h6.42` was asked to record the decision): section 2 budgets **one** 64 KiB window,
   and splitting it across two streams either halves the window or doubles the budget. The
-  SDK's audit records are **not** separated out today — that is `4h6.45`'s, and until it
-  lands they land in this same stream.
+  SDK's audit records **are** separated out, onto their own fd (`4h6.45`), so they are not
+  charged against this window and are not indistinguishable from script output.
 
 #### `4h6.43`/`4h6.44` — the read-once token file, which is NOT an exposure bound
 
@@ -1752,8 +1800,8 @@ with the body's `user`/`session_id`/`execution_id` is a `400`. This matters beca
 pre-existing fail-open branch (unset `INTERNAL_API_SECRET` disables auth with a startup
 warning) is exactly what an uncredentialed run would reach.
 
-The `sub`/`sid`/`jti` claims stay on the request object for `4h6.45` to stamp audit records
-from. The supervisor is the only component that both holds the token and sits outside the
+The `sub`/`sid`/`jti` claims stay on the request object and `4h6.45` stamps audit records from
+them. The supervisor is the only component that both holds the token and sits outside the
 child's address space, which is why `4h6.12` put the stamping here.
 
 **The SDK half (`4h6.44`), as built.** It lives in genetics-mcp-server's
@@ -1822,6 +1870,84 @@ counted at all. That is a deliberate difference in kind — db-api's cost is Big
 results-api's is egress and pod memory — not an oversight, but it does mean "the per-execution
 counters now apply" is true of results-api's four counters and of db-api's byte budget, and is
 **not** a statement that db-api counts requests. It does not.
+
+#### `4h6.45` — the audit stream: read, capped, re-framed, stamped, forwarded
+
+A second pipe, created before the fork, dup'd onto `CHILD_AUDIT_FD` (4) in the child and named
+to the SDK as `GENETICS_SDK_AUDIT_FD`. The supervisor holds the read end and drains it on a
+third thread that shares the `reaped` event and `DRAIN_GRACE_S` deadline the output and status
+pipes use — the audit write end is inherited by an escaped descendant exactly as the output
+pipe's is, so EOF is not something waiting longer can produce.
+
+`_AuditForwarder`, one instance per execution, does four things and each was demonstrated:
+
+- **Caps, on the read end.** `AUDIT_LINE_MAX_BYTES` (4 KiB, per record), `AUDIT_STREAM_MAX_BYTES`
+  (1 MiB, per execution, counted over everything read including what is then dropped) and a
+  token bucket (`AUDIT_RATE_PER_S` 100, `AUDIT_RATE_BURST` 200). An over-long record is
+  **dropped, never truncated**: a truncation removes the tail where `rows:` lives, so it either
+  produces something that no longer parses or a prefix that parses as a *different* record —
+  the same replace-don't-truncate rule `_sanitise_error_type` applies to a child-supplied
+  `error.type`. **The same rule holds at the byte budget**, which is the one place a cut is not
+  the reader's choice: the child picks where the boundary falls by padding, so the partial
+  record left in the buffer when the budget bites is **discarded, never flushed at close** — a
+  validator padded to the budget with oversize lines (which spend no rate token) and turned
+  `rows: 999999999` into a forwarded `rows: 9` under the real user's stamp, counted as
+  `records=1`. Past the byte budget the reader **keeps reading and discards**, the status
+  pipe's behaviour and deliberately not the output pipe's: stopping would block the child's
+  next audit write, and a child blocked inside a successful data call turns an observability
+  bound into an execution failure. What is discarded is counted by its newlines **plus the
+  unterminated record at the end**, so a flood carrying no newline at all still reports a
+  `dropped_over_budget` rather than only a larger `bytes=`.
+- **Re-parses and re-frames.** Every line is matched **whole** against three shapes — the SDK's
+  `Executing SDK function:` record, its `Rejected SDK function:` record, and its refusal-budget
+  notice as a fixed literal — and anything that does not match is dropped and counted. Laxity
+  here is the forgery: `search()`-based parsers, including this repo's own
+  `scripts/analyze_conversations.py`, match a record *anywhere* in a line, so a child appending
+  `[user=admin@finngen.fi] … Executing SDK function: sql … rows: 1` to an otherwise ordinary
+  record would otherwise have written a genuine-looking access under someone else's name. The
+  argument summary is admitted as **printable ASCII minus `[`, `]`, `{`, `}` and backslash**, or
+  as the bare literal `<unavailable>` — the two things `_summarize_arguments` can return, the
+  second being what it returns when `signature.bind_partial` raises `TypeError`, i.e. whenever an
+  ordinary script passes one extra positional or one unknown keyword. That charset is **tighter
+  than the SDK's own**, deliberately: `_summarize_value` falls through to
+  `f"<{type(value).__name__}>"` and a script owns `__name__`, so the emitting side is not where
+  this can be held. Non-ASCII was measured reaching the container's stdout inside an otherwise
+  genuine record — U+2028, U+2029 and U+0085 each split the record into **two** lines under
+  `str.splitlines()`, and U+202E reverses how the rest of it reads. Row counts are matched with
+  `[0-9]`, never `\d`, which in Python is every Unicode decimal digit: `rows: ١٢٣` was forwarded
+  and the analyzer's `int()` read back 123. The SDK's shared-stream warning is deliberately
+  **not** admitted: on this path it is false, and forwarding it would make the analyzer distrust
+  a stream the supervisor stamped. Its refusal-budget notice **is** admitted, and the number in
+  it is **child-supplied** — nothing on the read end counts the SDK's refusals, so a child can
+  write the notice itself with a figure of its choosing (`999999999` was measured); the literal
+  text around it is what is bounded, and the supervisor's own summary is the cross-check.
+- **Keeps reading even when forwarding fails.** If the sink raises, the drain thread discards
+  the rest of that stream and keeps reading the fd. It may not stop: nothing else reads it, the
+  64 KiB pipe fills, and a still-running child blocks in `os.write` inside a call that was
+  succeeding — the same reason the byte budget discards rather than stops.
+- **Stamps identity from the tokens.** `[user=…] [session=…] [execution=…]` come from the
+  claims' `sub`/`sid`/`jti`, sanitised on the same charset-and-replace rule (a value that would
+  break the framing renders `<invalid>`). Everything before the record marker — the SDK's
+  asctime, logger name, level and its own prefix — is discarded rather than parsed.
+- **Forwards to the pod's own stdout**, written to the stream directly rather than through
+  `LOG`: the logging configuration belongs to `main()`, and stdout is block-buffered when it is
+  a pipe (which is what it is under both `docker logs` and the kubelet), so each record is
+  flushed. In the local Docker backend this is the container's stdout — the same code, a
+  different collector.
+
+MEASURED IN THE IMAGE, from a child writing directly on fd 4: a forged
+`[user=admin@finngen.fi]` prefix and a rewritten `SANDBOX_USER` produced a record stamped
+`[user=dave@finngen.fi]`, and the string `admin@finngen.fi` appeared nowhere in the container's
+stdout; a record with a second record appended was dropped whole (`dropped_unparseable=1`, and
+`rows: 99` never appeared); a 1 MiB line produced `dropped_oversize=1` with none of its bytes
+on the stream; 2,000 records in one `write()` produced `records=202 dropped_rate=1798`; and
+1.3 MB produced `dropped_over_budget=3869` with the execution still returning `status: "ok"`.
+
+**What this does not make true.** The records still do not bound what a hostile script *did*:
+it can emit well-formed records for calls it never made, `client._executor.<method>()` reads
+data with no record at all (`4h6.33`), and a child can still lose its own records by flooding
+its own pipe. What is bounded is **who a record is attributed to** and **what shape it may
+take**, and that the loss is counted rather than silent.
 
 #### `4h6.46` — `/scratch` sub-quotas, retention and the reaper
 
@@ -3471,39 +3597,44 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
    aggregate budget on either service rather than running for the full 120 seconds.
-3. **The SDK records what it reads — the trail is now attributable, and is still not
-   collected until `4h6.45`.** Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
+3. **The SDK records what it reads — the trail is attributable, and it is now collected.**
+   Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
    wrapper emits one structured line carrying function, argument summary and row count
    (`4h6.12`), and db-api logs `sid`, `sub` and `jti` per request. Four limits, all present
    in the code today, and none of them cosmetic:
-   - **Attributable now, and it was not before.** The line's
-     `[user=…] [session=…] [execution=…]` prefix is read per call from `SANDBOX_USER`,
-     `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID`, which the supervisor sets in the child's
-     environment from the sandbox token's `sub`, `sid` and `jti` claims (`supervisor.py`,
-     `ExecutionDir.child_env`); an earlier draft said nothing in either repo set them and all three
-     rendered `unknown`. Both halves of token delivery have landed — the supervisor writes the
+   - **WHICH IDENTITY IS AUTHORITATIVE, since two are rendered.** The SDK renders
+     `[user=…] [session=…] [execution=…]` per call from `SANDBOX_USER`, `SANDBOX_SESSION_ID`
+     and `SANDBOX_EXECUTION_ID`, which the supervisor does set in the child's environment from
+     the token's `sub`, `sid` and `jti` (`supervisor.py`, `ExecutionDirs.child_env`) — an
+     earlier draft of this file said nothing set them and all three rendered `unknown`, which
+     is out of date. **On the collected path that prefix is not what attributes the record.**
+     The supervisor discards it and re-stamps from the same claims on the read end (`4h6.45`),
+     because the child owns its environment and can rewrite all three between two calls. **The
+     environment prefix and the signed claims are not the same evidence**, and only the second
+     one leaves the pod. Both halves of token delivery have landed — the supervisor writes the
      token file and names it in `SANDBOX_TOKEN_FILE` (`4h6.43`), the SDK reads and unlinks it
      and sends the audience-bound token (`4h6.44`) — so db-api's and results-api's
-     `endpoint_access` lines carry the same three values from the token itself. **The
-     environment prefix and the wire claims are not the same evidence**: the child owns its own
-     environment, so a script can rewrite all three before an SDK call, while the token's
-     claims are signed and the script cannot alter them. Trust the upstream lines; treat the
-     SDK's prefix as a convenience.
-   - **No line reaches a collector.** The cluster's logging agent collects the *pod's*
-     stdout; the child's streams go to the supervisor's pipe and nothing forwards them.
-     Until `4h6.45` does, the control produces records that nothing ingests.
-   - **Not tamper-evident, with or without a dedicated fd.** `GENETICS_SDK_AUDIT_FD`
-     separates the records from stdout — the supervisor holds the read end, the child writes
-     nothing else there, and propagation is switched off so inherited handlers cannot copy
-     them back onto a shared stream. It does not separate them from the *script*: the fd
-     number must be in the child's environment for the SDK to find it, so
-     `os.write(int(os.environ["GENETICS_SDK_AUDIT_FD"]), …)` puts arbitrary bytes straight on
-     it. Without the fd — the state today — the records additionally share stderr with the
-     audited script, so a forged line parses cleanly through this repo's own parser under any
-     user and session it likes; per-value escaping is irrelevant when the writer owns the
-     stream. The SDK emits a once-per-process warning saying exactly that, in the stream
-     itself, and `scripts/analyze_conversations.py` repeats it in any report built from such
-     a log.
+     `endpoint_access` lines carry the same three values from the token itself, and the join
+     across the three sinks closes on one `jti`.
+   - **The lines now reach a collector.** The cluster's logging agent collects the *pod's*
+     stdout, and `4h6.45` forwards the re-framed records there (locally: the container's
+     stdout, where `scripts/run-sandbox-local.sh --logs` shows them). Before it, the child's
+     streams went into the supervisor's pipe and nothing forwarded them, so the control
+     produced records nothing ingested.
+   - **The fd never separated the records from the *script*, and still does not — the
+     supervisor does.** The fd number must be in the child's environment for the SDK to find
+     it, so `os.write(int(os.environ["GENETICS_SDK_AUDIT_FD"]), …)` puts arbitrary bytes
+     straight on it. What changed is what happens next: every line is matched whole against the
+     record shapes and re-emitted under the supervisor's stamp, so a child can still *write*
+     anything but cannot get a forged identity, a broken frame or chosen prose past the read
+     end. Measured: a rewritten `SANDBOX_USER` plus a hand-written `[user=admin@finngen.fi]`
+     prefix reached the container's stdout as `[user=dave@finngen.fi]`, with the forged string
+     nowhere in the log. On a **shared** stream — anything that is not this fd — none of that
+     holds: a forged line parses cleanly through this repo's own parser under any user it
+     likes, and per-value escaping is irrelevant when the writer owns the stream. The SDK emits
+     a once-per-process warning saying so, in the stream itself, and
+     `scripts/analyze_conversations.py` repeats it in any report built from such a log; a
+     report built from a sandbox log should never carry it.
    - **`_executor` calls are not audited at all.** Instrumentation sits on the curated
      surface; `get_client()._executor.<method>()` is one attribute access away from a
      sandboxed script and returns the same data with no line emitted (`4h6.33`). So this is
@@ -3536,20 +3667,31 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    a script cannot write chosen text into an operator's log. Row count is the only content
    signal that survives there.
 
-   **None of that makes the records trustworthy, and no in-process mechanism can.** A
-   validator defeated every control above from inside the sandbox: forging records by calling
+   **No IN-PROCESS mechanism can make these records trustworthy, which is why the enforcement
+   is not in-process.** A validator defeated every control inside the SDK from inside the
+   sandbox: forging records by calling
    `logging.getLogger("genetics_mcp_server.sdk.audit").info(...)` directly and by `os.write`
    to the audit fd number the script reads from its own environment, and suppressing them via
    `logger.disabled`, the level, a filter, and handler removal. As long as the audited code
    and the audit emitter share an address space this is the consequence of where the code
    runs, not a list of gaps to patch one by one — a dedicated fd separates the stream from
-   stdout, not from the script. **These records are therefore a best-effort observability
-   signal, not a security control**, until enforcement moves out of the process, which is what
-   `4h6.45` now owes: the *supervisor* reads the fd and applies the rate, byte and per-line
-   caps on the read end where the child cannot reach them; the *supervisor*, which holds the
-   sandbox token, stamps `[user=…] [session=…] [execution=…]` from its `sub`/`sid`/`jti`
-   claims instead of asking the child who it is; and the child's framing is untrusted input,
-   re-parsed and re-framed before anything is recorded.
+   stdout, not from the script. `4h6.45` moved the enforcement out of the process: the
+   *supervisor* reads the fd and applies the rate, byte and per-line caps on the read end where
+   the child cannot reach them; the *supervisor*, which holds the sandbox token, stamps
+   `[user=…] [session=…] [execution=…]` from its `sub`/`sid`/`jti` claims instead of asking the
+   child who it is; and the child's framing is untrusted input, re-parsed and re-framed before
+   anything is recorded. **What that buys is precise, and it is less than "trustworthy
+   records": attribution and framing, not truth.** A script can still emit well-formed records
+   for calls it never made, `_executor` reads are invisible to all of this, and a child can
+   still lose its own later records by flooding its own pipe — bounded, counted and announced
+   when the *supervisor* is the one dropping them. **The four in-process suppression mechanisms
+   above are untouched by `4h6.45` and remain completely silent**: they stop the bytes before
+   the fd, so the supervisor sees an empty stream and says so with the same `records=0` summary
+   an execution that made no SDK calls produces. The read end bounds what a child can *write*
+   to an operator, not what it can *withhold*. It also says nothing about a `setsid()` escapee or a child reading
+   `/proc/self/mem`: `4h6.55` bounds those and nothing here does. For "what did that script
+   actually read, under an assumption of compromise", the answer remains db-api's and
+   results-api's `endpoint_access` lines, written outside this pod.
 4. **The sandbox grants no data the caller lacked.** The same user can already query the
    same views through the existing tool surface. The sandbox changes the *shape* of
    access, not its scope.
@@ -3566,19 +3708,21 @@ which are unaffected: no sink, capped bytes and rows, no data the caller lacked.
 conversation" — the earlier wording of control 3, and false in every part. Attribution is the
 axis on which the sandbox is a **regression** rather than a wash: the same reads through the
 existing MCP tool surface already carry the user and the session in chat-backend's
-`Executing tool:` lines, and script-driven reads would not, so enabling the sandbox ahead of
-token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) buys a query path whose "who ran that?" is
-unanswerable. It is still *bounded* — nothing leaves the user's own session, nothing new is
-reachable. Token delivery has now landed on both sides — the supervisor writes the read-once
-file (`4h6.43`) and the SDK reads it and sends the audience-bound token (`4h6.44`) — so the
-**upstream** half of the trail is attributable today: db-api's and results-api's
-`endpoint_access` lines carry `sub`, `sid` and `jti` from the signed token. What is still
-missing is the sandbox's own records, which go nowhere until `4h6.45` lands supervisor-side
-enforcement and audit forwarding. And the gap is not only that the records go
-uncollected: under an assumption of compromise they are untrustworthy by construction, since
-the script and the emitter share a process (control 3). Do not cite 6.2 as evidence of
-after-the-fact attribution before then, and do not cite a *present* SDK record as evidence of
-what a script did.
+`Executing tool:` lines, and script-driven reads did not, so enabling the sandbox ahead of
+token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) would have bought a
+query path whose "who ran that?" is unanswerable. It is still *bounded* — nothing leaves the
+user's own session, nothing new is reachable. Both halves have now landed. Token delivery:
+the supervisor writes the read-once file (`4h6.43`) and the SDK reads it and sends the
+audience-bound token (`4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
+`sub`, `sid` and `jti` from the signed token. Collection: the supervisor reads the audit fd,
+caps it on the read end, re-frames every record and stamps it from those same claims onto the
+pod's stdout (`4h6.45`), so the sandbox's own records now reach a collector and join to the
+upstream ones on `jti`. **The remaining limit is not collection, it is what a record proves.**
+Under an assumption of compromise the SDK's records still do not establish what a script did —
+the script and the emitter share a process, so it can write well-formed records for calls it
+never made and read data through `_executor` with no record at all. So: cite the SDK records
+for "what did a well-behaved script read", cite the supervisor's stamp for "whose execution
+was that", and cite `endpoint_access` for anything that has to hold against a hostile one.
 
 ### `read_artifact` (`4h6.15`): lifecycle, authorization, and the path allow-list
 
@@ -3891,18 +4035,18 @@ The controls, all of which work regardless of what the model was persuaded to wr
    attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
    mount the attachment directory or the PVC. A script sees the files it was given, not the
    directory they came from.
-6. **It is partly visible — the upstream half only, and with the limits in 6.2's control 3.**
-   Token delivery has landed on both sides (`4h6.43`, `4h6.44`), so db-api's and results-api's
-   `endpoint_access` lines now carry `sub`, `sid` and `jti` from the signed token and an
-   injected script's *data access* is reconstructable after the fact. The SDK's own call log is
-   not: the supervisor neither enforces on nor forwards the child's audit stream until
-   `4h6.45`, so those records reach no collector and cover nothing an injected script does
-   through `_executor`. An injected script is precisely the case they cannot answer either way:
-   it runs in the same process as the emitter, so it can forge and suppress SDK records at will
-   — and it can rewrite `SANDBOX_USER`/`SANDBOX_SESSION_ID`/`SANDBOX_EXECUTION_ID` in its own
-   environment — so only the upstream `endpoint_access` lines, written outside the sandbox from
-   claims the script cannot sign, hold against it. Read the SDK-side half as a property the
-   design provides, not one it provides yet.
+6. **It is visible, with the limits in 6.2's control 3.** Token delivery has landed on both
+   sides (`4h6.43`, `4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
+   `sub`, `sid` and `jti` from the signed token and an injected script's *data access* is
+   reconstructable after the fact. The SDK's own call log is now collected too (`4h6.45`) and
+   its `[user=…] [session=…] [execution=…]` is stamped by the supervisor from the same claims,
+   so rewriting `SANDBOX_USER`/`SANDBOX_SESSION_ID`/`SANDBOX_EXECUTION_ID` no longer changes
+   what an operator reads. **An injected script is still exactly the case those records cannot
+   answer on their own**: it runs in the same process as the emitter, so it can write
+   well-formed records for calls it never made, drop its own by flooding (bounded, counted and
+   announced by the supervisor, but still lost), and read through `_executor` with no record at
+   all. Only the upstream `endpoint_access` lines, written outside the sandbox from claims the
+   script cannot sign, hold against it.
 7. **Explicitly NOT a control:** system-prompt instructions telling the model to ignore
    injected content, or to refuse suspicious scripts. Those reduce frequency; they are not
    a boundary and no control above depends on them.
