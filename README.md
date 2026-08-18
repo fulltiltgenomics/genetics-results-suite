@@ -456,8 +456,9 @@ Both trees use the same five ports, so `up` frees each port first and one tree s
 time; switching back is `down` then `up --tree main`. A port is only freed when its holder
 is this suite's — checked against `/proc/<pid>/cwd` and the command line — so an unrelated
 app on `:3000` or `:8080` is reported and left alone (`--force` overrides) rather than
-killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **chr22-only**
-subset — smoke-test with `SMARCB1`, not `APOE`. Nothing in this script touches the cluster. See "Running the local dev stack" in
+killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **full-size**
+copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) — any gene
+on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
 `docs/project-spec.md`.
 
 ## Services
