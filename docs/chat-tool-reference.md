@@ -229,24 +229,93 @@ verbosity value serves everyone), block 1 is only this user's instruction envelo
 
 ### 4a. The base system prompt
 
-`genetics-mcp-server/src/genetics_mcp_server/config/defaults.py:7-261`, a single
-`_DEFAULT_SYSTEM_PROMPT` string of ~255 lines. `default_system_prompt(app_name)` returns it
-with the literal `"FinnGenie"` replaced by `settings.app_name` — and *only* that token; the
-consortium name "FinnGen" lacks the `ie` suffix and survives.
+`genetics-mcp-server/src/genetics_mcp_server/config/defaults.py`, `_PROMPT_BLOCKS` — a tuple
+of `_Block`s, **not** a single string. `default_system_prompt(app_name, tool_names=...)`
+emits only the blocks whose tool mentions are all present in `tool_names`, then replaces the
+literal `"FinnGenie"` with `settings.app_name` — and *only* that token; the consortium name
+"FinnGen" lacks the `ie` suffix and survives. `tool_names=None` disables the filtering and
+emits every block (the pre-`genetics-results-suite-4h6.69` behaviour), so **the full text is
+not what any request receives**.
 
-Its sections, in order: Core Principles; Analyzing data (the three-pass method); Tool Usage
-Guidelines; Mouse Model Evidence (search_mgi); Variant Annotation Sources; Functional /
-Regulatory Readouts; HLA / the MHC region; Protein Annotation (UniProt); Data Sources and
-Resource Names; Pseudo Credible Sets; Subagent Orchestration; Multi-Step and Follow-Up
-Questions; Response Style; Handling Uncertainty; Out of Scope and Limitations;
-Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology; Phenotype Reports.
+Gating is DERIVED FROM THE BLOCK TEXT: a block is dropped if it names a tool that is not in
+the list. Three explicit modifiers only ever subtract further — `excludes` (suppress this
+wording when a tool IS present, used to pick between per-surface variants of the same
+guidance), `requires_any` (for text that presupposes a capability without naming a tool,
+e.g. the SQL guidance, reachable either through `query_database` or through the SDK's `sql()`
+inside `run_analysis`), and `requires_all` (a real precondition on specific tools, stated
+rather than left implicit in the text — the text gate is itself an all-of-them rule, which is
+right for a name the block tells the model to call and wrong for one it merely cites as an
+example, so an `(e.g. …)` aside otherwise holds the surrounding rule hostage).
+
+Because the gate suppresses a block for ANY unavailable name in it, a tool named in passing
+takes its whole block with it. **Domain science and grounding rules therefore live in blocks
+that name no tool**, with only the "which tool" clause split off into its own gated block —
+that is why the HLA section, the pseudo-credible-set labelling obligation, the case-sensitive
+`data_type` values and the membership/re-query rules survive on `bigquery` and `code`, which
+reach `credible_sets_v` and `hla_associations_v` through SQL. Section headings are likewise
+ungated wherever their body is: `## Data Sources and Resource Names` is its own block, since
+a gated heading over an ungated body reparents the body under the preceding section.
+
+`chat_api.py` builds the prompt from `service.resolve_local_tool_names(request.tool_profile,
+request.enable_tools)` (`llm_service.py`), which is the same profile + feature-flag +
+subagent-liveness resolution that produces the tool list itself. So on the **Anthropic**
+path the prompt is a function of the tool list and the two cannot drift apart. This does
+NOT hold for `provider="openai"`: `_stream_openai` takes neither `enable_tools` nor
+`tool_profile` and never sets `tools`, so that provider gets zero tools while receiving the
+prompt assembled for the full local set. Pre-existing behaviour, unchanged here — the OpenAI
+path has never carried tools.
+
+Sections in the **unfiltered** text, in order: Core Principles; Analyzing data (the
+three-pass method); Tool Usage Guidelines; Mouse Model Evidence (search_mgi); Variant
+Annotation Sources; Functional / Regulatory Readouts; HLA / the MHC region; Protein
+Annotation (UniProt); Data Sources and Resource Names; Pseudo Credible Sets; Subagent
+Orchestration; Choosing How to Get Data; Response Style; Handling Uncertainty; Out of Scope
+and Limitations; Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology;
+Phenotype Reports.
+
+What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
+`ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
+`default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these:
+
+| profile | tools | prompt chars | dropped relative to the unfiltered text |
+|---|---|---|---|
+| `None` (default) | 65 | ~29,100 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
+| `api` | 63 | ~29,000 | the above, plus the `query_database` wording variants; gains the SDK schema route |
+| `bigquery` | 23 | ~25,500 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
+| `rag` | 18 | ~19,600 | the above, plus HLA, the credible-set grounding rules, the database section and Choosing How to Get Data entirely |
+| `code` | 7 | ~21,100 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
+
+`tests/test_system_prompt.py` pins three properties across those profiles with
+`ENABLE_SUBAGENTS` both true and false:
+
+- **absence** — every tool name appearing in the emitted prompt is in the resolved tool
+  list. It tokenises the prompt itself rather than reusing the gate's own matcher, so the
+  two implementations have to agree.
+- **presence** — the emitted section headings are pinned per profile, and the load-bearing
+  science and grounding strings are asserted present. Absence-only assertions could not see
+  text going missing, which is how the over-subtraction above survived review.
+- **structure** — no body line may land under a different heading than it has in the
+  unfiltered text, and no heading may be emitted with no body under it.
+
+A fourth property, **routing**, is deliberately not parametrised over the profiles: every
+surface that can reach data emits exactly one arm-routing sentence, checked over ~80 tool sets
+synthesised from the full list by removing single tools and flag-shaped tool families (see
+"Choosing How to Get Data" below). Profile-parametrised checks could not see the defect it
+guards, because all five profiles carry the example tools the arbitration cited.
+
+`tests/test_llm_service.py::TestResolveLocalToolNames` pins the resolution itself: that
+`MCP_ENABLED=false` advertises nothing, and that `ENABLE_SUBAGENTS=true` with a dead
+`subagent_service` still hides `launch_subagents`. Those two disabling reasons must stay
+distinguishable in tests — `_CapturingService` in `test_chat_api.py` therefore holds a live
+`subagent_service`, so subagent guidance is absent from those prompts because of the flag
+and only the flag.
 
 The passages that steer tool choice — the load-bearing ones — quoted verbatim:
 
 ```text
 - Choose the right tool for the question. Do not call multiple tools that return the same information
 - Read tool descriptions carefully - they explain when to use each tool
-- **When a user provides 3 or more variants, ALWAYS use analyze_variant_list (or the variant_list_analysis skill) instead of calling per-variant tools repeatedly.** This applies regardless of format (one per line, space-separated, comma-separated, etc.)
+- **When a user provides 3 or more variants, ALWAYS use analyze_variant_list instead of calling per-variant tools repeatedly.** This applies regardless of format (one per line, space-separated, comma-separated, etc.)
 - **When investigating genes**, always check both GWAS evidence (get_credible_sets_by_gene) and rare-variant burden evidence (get_gene_based_results, get_exome_results_by_gene). Gene-based burden results are an independent line of evidence from GWAS and should be included in any gene-focused analysis
 - **get_gene_based_results returns only genebass p < 1e-4 rows, so a gene missing from it is not a gene without a burden result.** To say a gene was tested and came out null in a given trait, use get_gene_based_results_by_phenotype (unfiltered, one trait) or query gene_burden_results_v in the database (unfiltered, every gene x annotation x trait)
 ```
@@ -256,12 +325,58 @@ The passages that steer tool choice — the load-bearing ones — quoted verbati
 - **Never present output you have not received yet.** Do not write a table, count, or effect estimate with empty cells or placeholders such as `[from query]` or `[to confirm]`, and do not end a turn by announcing a query you have not run. Announcing a call is not making one: if answering needs data, call the tool in the same turn and write the table only from the result that came back. If you cannot get the data, say what is missing instead of laying out the shape of an answer you do not have
 ```
 
-The API-vs-database preference, verbatim (section "Multi-Step and Follow-Up Questions"):
+The routing arbitration (section "Choosing How to Get Data"), **one variant per surface**.
+Emitted when the api tools and `query_database` are both present — i.e. profile `None`:
 
 ```text
-- **Prefer API tools over the database.** The API tools and the database access the same underlying data. Use dedicated API tools (e.g., get_credible_sets_by_gene, get_exome_results_by_gene, get_gene_based_results) even when querying multiple genes — calling a tool several times is fine and gives cleaner results than writing SQL.
-- Only fall back to the database for queries that genuinely cannot be expressed with the API tools: complex joins, custom aggregations across many phenotypes, or filters the API tools don't support.
+- **Prefer the dedicated API tools over the database.** They access the same underlying data. Use a dedicated tool (e.g. get_credible_sets_by_gene, get_exome_results_by_gene, get_gene_based_results) even when querying several genes — calling a tool several times is fine and gives cleaner results than writing SQL.
+- Fall back to the database for queries that genuinely cannot be expressed with the API tools: complex joins, custom aggregations across many phenotypes, or filters the API tools do not support.
+```
+
+Emitted whenever `run_analysis` is present — which is every profile except `rag`, and which a
+feature flag in front of that tool (`genetics-results-suite-4h6.56`) would remove with no
+edit to the prompt:
+
+```text
+- **Write one script with run_analysis when an answer needs several retrievals combined.** One script can query, join, filter and summarise in a single call, and its intermediate rows never enter this conversation — so prefer it when the work is a chain (fetch, then fetch again keyed on the first result, then aggregate) or when the intermediate data is large and only the summary matters. Call list_capabilities first for the exact SDK signatures rather than guessing them, print what you want to see, and print a SUMMARY — counts, top rows, the statistic asked for — rather than dumping raw rows.
+- For a question a single tool answers, call the tool. A script is not cheaper than one call.
+```
+
+The `api`-only, `bigquery`-only and `code`-only surfaces get one-line variants instead
+("The API tools are the data path here", "The database is the data path here", "Scripts are
+the only data path on this surface"). Both blocks are followed by:
+
+```text
+- When a follow-up question refers to results from a previous step, think about which of the paths above can answer it.
 - Always review your full set of available tools before concluding that data is unavailable.
+```
+
+Exactly one of those four sentences is emitted on **any** surface that can reach data
+(`get_credible_sets_by_gene`, `query_database` or `run_analysis`) — never zero, never two.
+Which one turns on two facts: whether the per-entity API tools are present
+(`get_credible_sets_by_gene` is the sentinel the database-only variant already excludes on)
+and whether `query_database` is. The two API-side variants used to encode the first fact only
+by naming those tools in their `(e.g. …)` list, so a flag removing any one example — say
+`get_gene_based_results` — dropped the sentence on the text gate while the other variants
+stayed suppressed by their own `excludes`, and the entire API-vs-database arbitration vanished,
+leaving the `run_analysis` bullet unopposed on the very benchmark built to compare them. The
+precondition is a `requires_all` now and each `(e.g. …)` list is its own block, so an absent
+example costs the examples and not the arbitration. `TestEverySurfaceWithADataPathIsRouted` in
+`genetics-mcp-server/tests/test_system_prompt.py` holds the invariant over ~80 synthesised tool
+sets rather than over the five profiles — every profile carries all three example tools, which
+is why profile-by-profile checking could not see the dependence.
+
+The prompt no longer carries a "call `get_database_schema` first" instruction: that is a
+precondition of one tool, and it lives in `query_database`'s own description, which travels
+with the tool and is what MCP clients see.
+
+A surface with `run_analysis` but no `query_database` — profiles `api` and `code` — reaches
+the same views through the SDK's `sql()` and has neither of those tools, so it would read
+all the SQL guidance above with no way to discover a column. It gets the SDK's route
+instead, emitted only there (`excludes={query_database}`, `requires_any={run_analysis}`):
+
+```text
+`genetics.sql(...)` inside a script is the only route to the database on this surface. Discover the schema before writing a query — `genetics.schema()` returns the column-level schema of every view and `genetics.schema('credible_sets_v')` just one — rather than guessing a column name.
 ```
 
 The routing table for annotation sources, verbatim:
@@ -300,12 +415,15 @@ And the `list_datasets` mandate:
 The prompt also names the database exclusions explicitly:
 
 ```text
-It does NOT contain per-variant **consequence / allele-frequency / rsID / pathogenicity** annotations — those come from `get_variant_annotations` (FinnGen), `get_myvariant_annotations` (clinical/functional), or the gnomAD MCP tools, and you must NEVER query the database for them.
+It does NOT contain per-variant **consequence / allele-frequency / rsID / pathogenicity** annotations, and you must NEVER query the database for them — it accesses the same underlying data, not extra consequence/frequency columns.
 ```
 
-**The base prompt makes no mention of `run_analysis`, `list_capabilities`, `read_artifact`
-or code execution at all.** Its "Subagent Orchestration" section documents
-`launch_subagents` — a tool that is disabled in the deployed configuration. See section 7.
+**Both of the gaps this section used to record are closed** (`genetics-results-suite-4h6.69`).
+The prompt's "Choosing How to Get Data" section now names `run_analysis` and
+`list_capabilities` and states the script-vs-tool arbitration that previously lived only
+inside `run_analysis`'s description; and "Subagent Orchestration" is emitted only when
+`launch_subagents` is in the resolved tool list, so it is absent under the deployed
+`ENABLE_SUBAGENTS: "false"`. See section 4a for the mechanism and section 7 item 6.
 
 ### 4b. Verbosity
 
@@ -437,15 +555,20 @@ is verbatim; the full descriptions are in section 8.
 
 **Code execution** — the one instruction that inverts everything above
 
-- `run_analysis`: *"Use this instead of chaining data-access tools: one script can query, join, filter and summarise in a single call."* and *"call list_capabilities first for the exact signatures rather than guessing"* and *"PRINT EVERYTHING YOU WANT TO SEE"*.
+- `run_analysis`: *"One script can query, join, filter and summarise in a single call."* and *"call list_capabilities first for the exact signatures rather than guessing"* and *"PRINT EVERYTHING YOU WANT TO SEE"*.
 - `list_capabilities`: *"Call this before writing a script instead of guessing function names."*
 - `read_artifact`: *"It CANNOT retrieve artifacts written by run_analysis: those live in the sandbox and no retrieval path to them exists yet. Do not call it for a run_analysis artifact — have the script print what you need instead."*
 
-This is the sharpest conflict in the surface, and it is unmediated: `run_analysis`'s
-description says to use it *instead of* chaining data-access tools, while the system prompt
-(section 4a) says to *prefer API tools* and gives 62 data-access tools their own routing
-rules. Nothing in the system prompt mentions `run_analysis`, so the arbitration exists only
-inside the two tool descriptions.
+**This used to be the sharpest conflict in the surface, and it was unmediated.**
+`run_analysis`'s description said to use it *instead of* chaining data-access tools, while
+the system prompt said to *prefer API tools* and gave 62 data-access tools their own routing
+rules; nothing in the prompt mentioned `run_analysis`, so the arbitration existed only inside
+a tool description, invisible to anyone reading the prompt.
+`genetics-results-suite-4h6.69` moved it: the "instead of" clause is gone from the
+description (which now states the capability only) and the preference between the three data
+paths is stated once, in the prompt's "Choosing How to Get Data" section, in the variant that
+matches the tools in force. `run_analysis` is the one tool description that changed — nothing
+is lost for MCP clients, which never see this tool at all.
 
 ## 6. External MCP servers
 
@@ -538,13 +661,13 @@ does not currently match, verified against source on 2026-08-18.
    made `code` selectable: on a cluster with no deployed sandbox a user can now pick a profile
    whose **primary** tool cannot work at all, and the other six are search tools.
    `genetics-results-suite-4h6.56` (P1, open) owns it.
-6. **`launch_subagents` is advertised to the model in the base system prompt but is disabled
-   in the deployed configuration.** The prompt's whole "Subagent Orchestration" section
-   (`defaults.py:161-186`) documents a tool that `ENABLE_SUBAGENTS: "false"`
-   (`k8s/deployments/chat-backend.yaml:128`) removes from the tool list, and the system
-   prompt has no conditional assembly — the section is sent regardless. The prompt's Tool
-   Usage Guidelines also reference "the variant_list_analysis skill", which is a subagent
-   skill and is equally unreachable.
+6. ~~**`launch_subagents` is advertised to the model in the base system prompt but is
+   disabled in the deployed configuration.**~~ FIXED by `genetics-results-suite-4h6.69`.
+   The prompt's "Subagent Orchestration" section and its "the variant_list_analysis skill"
+   reference are now emitted only when `launch_subagents` is in the resolved tool list, so
+   `ENABLE_SUBAGENTS: "false"` (`k8s/deployments/chat-backend.yaml:128`) removes both the
+   tool and its guidance. Same mechanism covers "Phenotype Reports" behind
+   `ENABLE_PHENOTYPE_REPORT`. See section 4a.
 7. **`read_artifact` is advertised even though its description says it cannot do the thing
    the adjacent tool produces.** It reads `SANDBOX_ARTIFACTS_DIR`, which must resolve under a
    hardcoded `/scratch/` prefix (`executor.py:392-395`, `5566-5578`) that chat-backend has no
@@ -1823,7 +1946,7 @@ List the `genetics` SDK surface available to analysis scripts, one module at a t
 Description as sent to the model:
 
 ```text
-Run a Python script against the genetics data in a sandbox and get back what it printed. Use this instead of chaining data-access tools: one script can query, join, filter and summarise in a single call.
+Run a Python script against the genetics data in a sandbox and get back what it printed. One script can query, join, filter and summarise in a single call.
 
 Write the script against the `genetics` SDK — call list_capabilities first for the exact signatures rather than guessing. PRINT EVERYTHING YOU WANT TO SEE: only the script's output comes back (stdout and stderr interleaved, capped at 64 KiB with the middle elided). The value of the last expression is not returned.
 
