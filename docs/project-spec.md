@@ -195,6 +195,10 @@ client-side reconnect and no persistence of partial assistant turns.
 │   └── terraform.tfvars      # active variable values (not committed)
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
+    ├── chat-tool-reference.md # verbatim transcription of what the LLM receives: every tool
+    │                         #   name/description/schema, the TOOL_PROFILES membership, the
+    │                         #   system prompt, verbosity fragments and instruction envelope,
+    │                         #   and the chat surface vs the /mcp surface
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── code-execution-security.md # threat model and security design of record for the
     │                         #   model-authored-code sandbox (isolation, egress, credentials,
@@ -1962,6 +1966,33 @@ one clears it. Both stores live at module scope in the browser
 (`src/features/chat/useChatOptions.ts`, `useInstructionSets.ts`) because `ChatPage` remounts
 `LLMChat` on every conversation switch, and each keeps the current value separate from the default
 for the reason above.
+
+### Tool profiles, and the `code` profile (`genetics-results-suite-4h6.16`)
+
+The **Tools** option above is the `tool_profile` field, and it is resolved by **two** mechanisms in
+`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
+to whole tool **categories** (`api`, `bigquery`, `rag`); `TOOL_PROFILE_TOOLS` maps a profile to an
+explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
+filtering at all*, not a union of the profiles, and an unrecognised string degrades silently to
+general-only rather than raising, because the value is read back from `chat_messages` rows written
+by older clients.
+
+The second mechanism exists for `code`, the minimal code-execution surface: `run_analysis`,
+`list_capabilities`, `read_artifact`, `search_genes`, `search_phenotypes`,
+`search_scientific_literature`, `lookup_variants_by_rsid` — **seven tools against the default 68**,
+and no external (gnomAD / Open Targets) or RAG tools either. That set is not expressible as
+categories: its three orchestration tools share a category with `launch_subagents`, which must stay
+out, and its four search tools share `general` with 14 others. Recategorising tools to make it fit
+was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises and what
+subagent skills declaring `tool_categories={"general","api"}` may call — so the profile layer grew
+the ability to name tools instead. No existing profile's resolved set changed.
+
+It **ships dark**: no server-side default moved, so `profile=null` still yields the full surface;
+selection is per request for local A/B work, and rollback is deleting one dict entry. The bead's
+`search_entities` / `search_literature` names do not exist anywhere in the codebase — the
+consolidation that would create them is deferred, and revisiting it is what would change this
+profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
+in `docs/chat-tool-reference.md` § 3.
 
 ## Conversation analysis pipeline
 
