@@ -1994,6 +1994,34 @@ consolidation that would create them is deferred, and revisiting it is what woul
 profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
 in `docs/chat-tool-reference.md` § 3.
 
+#### Selecting a profile from the browser
+
+The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
+execution** (`code`); `rag` is a real server-side profile that has deliberately never been
+user-facing. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
+rode along with every request while nothing could change it — which is why the row above described
+a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
+A/B'd against the full one. The default is unchanged: **All**.
+
+The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
+backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
+an **unrecognised** profile to `null`, and `null` is the **largest** surface, not the smallest. So a
+list left behind by a new profile does not fail, it silently runs the maximal arm; a benchmark
+driven through the browser would be invalid with no visible symptom. The server makes the opposite
+call for the same input (unknown → general-only). Both are deliberate — the value comes back from
+`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise —
+and the inconsistency is recorded rather than resolved. What keeps it safe is that `TOOL_PROFILES`
+in `src/features/chat/chat.types.ts` is the single list every narrower reads, `TOOL_PROFILE_LABELS`
+in `LLMChat.tsx` is a `Record<ToolProfile, …>` so a new profile is a **type error** until the UI has
+decided about it (`null` there means "deliberately not offered", which is `rag`), and
+`useChatOptions.test.ts` / `LLMChat.options.test.tsx` drive their cases off that list and pin the
+unknown-value behaviour explicitly.
+
+**Hazard, unresolved** (`genetics-results-suite-4h6.56`): `run_analysis` is the primary tool of the
+`code` profile and has no feature flag, so on any cluster **without a deployed sandbox** a user can
+now pick a profile whose main tool cannot work at all. Locally the sandbox is running and this is
+fine; it is a deployment-ordering constraint, not a browser bug.
+
 ## Conversation analysis pipeline
 
 The chat backend's conversations are scored for topic, quality and disposition by an LLM-based
