@@ -130,11 +130,17 @@ serves (~90 s warm, longer cold); everything else answers in seconds.
 ### The dev dataset
 
 `--tree worktree` defaults db-api to `DATASET_ID=genetics_dev` — `phewas-development.genetics_dev`,
-region `europe-west1`, built by `genetics-results-suite-g08`. It is a **chr22-only** subset
-(3.6 M rows against production's 1.1 B), full schema, all 15 tables and 15 views populated.
+region `europe-west1`, built by `genetics-results-suite-g08`. Since **2026-08-18 it is
+FULL SIZE**: all 15 tables carry every production row — 755,813,602 rows / 136.69 GB,
+each table's count identical to its `genetics_results` counterpart. (Production's 1.1 B
+total is larger only because it also holds the three `credible_sets_exp_*` experiment
+tables, 115 M rows each, which dev deliberately does not have — they are `4h6.18`'s and
+`genetics-results-suite-4ci` proposes dropping them.)
 
-- **Smoke-test with a chr22 gene.** `SMARCB1` works. `APOE` is chr19 and every by-gene
-  method returns zero rows against it — that is the subset, not a broken stack.
+- **Any gene smoke-tests now**, on any chromosome — all 23 are present. `APOE` (chr19)
+  returns 2,758 credible sets and 17,059 gene-burden rows. Before the widening it
+  returned zero, and the old advice to smoke-test only with a chr22 gene like `SMARCB1`
+  no longer applies. Zero rows for a common gene now means a broken stack, not a subset.
 - Two views differ from production on purpose: `hla_associations_v` has different column
   names (`genetics-results-suite-94c`) and `credible_sets` has a different storage layout
   (`genetics-results-suite-eyg`, consumer-transparent through `credible_sets_v`). The other
@@ -156,8 +162,32 @@ region `europe-west1`, built by `genetics-results-suite-g08`. It is a **chr22-on
 
 Not to be confused with `genetics_results_dev`, the *rehearsal* dataset of
 [docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md) — a zero-copy clone created and torn
-down around a specific DDL change. `genetics_dev` is a persistent subset for running the
-stack.
+down around a specific DDL change. `genetics_dev` is a persistent full-size copy for
+running the stack.
+
+**Reloading it: `TRUNCATE` + `INSERT … SELECT`, never `CREATE OR REPLACE TABLE`.** Dev is
+not a copy of production and a CTAS or a `bq cp`/clone would silently destroy what makes
+it dev. Measured on 2026-08-18, **no dev table's schema is identical to its production
+counterpart**: all 15 carry column descriptions and `NOT NULL` (`REQUIRED`) modes that
+production lacks entirely — production's columns are without exception `NULLABLE` and
+undescribed. (Partitioning is *not* a difference: production range-partitions on `chr`
+the same way, and clusters identically on every table except `credible_sets`, whose keys
+`eyg` swapped to `data_type, resource, variant, pos`.) A CTAS inherits neither the
+partitioning nor the clustering nor the descriptions, and flattens every column to
+`NULLABLE`, which would flip db-api's `/schema` from `REQUIRED`; a clone would overwrite
+the dev schema with production's outright. Truncating the existing table and inserting
+into it with an **explicit column list** (read from
+`bq show --schema` so column order cannot silently shift) preserves all of it. The
+2026-08-18 full load did exactly this for all 15 tables: 180 s wall clock, 133.75 GiB
+scanned, USD 0.65, and production verified byte-identical in table membership, row counts
+and `size_bytes` before and after.
+
+`credible_sets` is the one table needing a transform rather than a straight column copy:
+dev's base table **stores** `variant` and `resource`, production's only computes them in
+`credible_sets_v` (`genetics-results-suite-eyg`). Take the two expressions verbatim from
+production's view — `CONCAT(chr,':',pos,':',ref,':',alt)` and its 11-branch resource
+`CASE` — rather than reinventing them. `hla_associations` needs no transform: its base
+table is column-identical to production and the renames live only in dev's view.
 
 **Running a second copy:** a dev VM often already has the suite running from the main clones on
 exactly these ports. If you are bringing up a second copy (from a worktree, a branch, a second
@@ -320,7 +350,7 @@ export ATTACHMENT_STORAGE_PATH=$HOME/data/attachments
 
 # --- db-api (:8080) ---
 export PROJECT_ID=$GCP_PROJECT
-export DATASET_ID=genetics_results   # genetics_dev for the chr22 subset — see "The dev dataset".
+export DATASET_ID=genetics_results   # genetics_dev for the full-size dev copy — see "The dev dataset".
                                      # UNSET means genetics_results too, i.e. PRODUCTION
 export PORT=8080
 EOF
@@ -472,7 +502,7 @@ Two things look testable here and are not. Do not record either as verified from
 | `tabix: ... unknown URL scheme` / GCS errors | htslib built without `--enable-libcurl --enable-gcs` |
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
 | Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
-| Every by-gene query returns zero rows | db-api is on `genetics_dev`, which is **chr22 only** — try `SMARCB1`. `dev-stack.sh status` prints the dataset |
+| Every by-gene query returns zero rows | Not the dataset: `genetics_dev` has been full-size since 2026-08-18, so a common gene returning nothing is a real fault. Confirm the dataset with `dev-stack.sh status`, then look at db-api itself |
 | Code execution posts at db-api, or "sandbox" answers look like SQL errors | `SANDBOX_URL` is unset and its default is `127.0.0.1:8080`, which is db-api here; set `http://127.0.0.1:8081` (`genetics-results-suite-6um`) |
 | An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names — `genetics-results-suite-94c`'s expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |

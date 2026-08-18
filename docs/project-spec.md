@@ -1348,9 +1348,16 @@ What is load-bearing about it:
 - **`status` reads `DATASET_ID` from `/proc/<pid>/environ`**, because `/health` does not
   report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
   `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.
-- **`--tree worktree` defaults db-api to `genetics_dev`**, the persistent chr22-only subset
-  (`genetics-results-suite-g08`): full schema, all 15 tables and views, 3.6 M rows against
-  production's 1.1 B. Smoke tests need a chr22 gene — `SMARCB1`, not `APOE`. It is a
+- **`--tree worktree` defaults db-api to `genetics_dev`**, the persistent full-size copy
+  (`genetics-results-suite-g08`): all 15 tables and views, and since 2026-08-18 every
+  production row — 755,813,602 rows / 136.69 GB, each table matching its `genetics_results`
+  counterpart exactly. Production's 1.1 B is larger only by the three `credible_sets_exp_*`
+  tables dev deliberately omits. Any gene smoke-tests, on any of the 23 chromosomes;
+  `APOE` no longer returns zero. Reload it with `TRUNCATE` + `INSERT … SELECT` and an
+  explicit column list, never a CTAS or clone — no dev table's schema equals production's
+  (all 15 carry descriptions and `REQUIRED` modes that production, uniformly `NULLABLE`
+  and undescribed, does not), and a CTAS inherits neither those, nor the `chr` range
+  partitioning, nor the clustering. It is a
   different object from the `genetics_results_dev` *rehearsal* clone of
   [docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md), which is created and torn down
   around one DDL change.

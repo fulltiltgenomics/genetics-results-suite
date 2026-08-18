@@ -17,8 +17,9 @@ still standing.** A read-only survey on 2026-08-13 established:
 - one application namespace, `genetics`. No `genetics-dev`;
 - exactly three BigQuery datasets — `genetics_api_logs`, `genetics_chat_logs`,
   `genetics_results`. No dev copy of any of them. (**Since 2026-08-14 there is a fourth**,
-  `genetics_dev` — a persistent chr22-only subset the local dev stack points db-api at,
-  `genetics-results-suite-g08`. It is a different object from the `genetics_results_dev`
+  `genetics_dev` — a persistent **full-size** copy the local dev stack points db-api at,
+  `genetics-results-suite-g08`, widened from its original chr22-only subset to all
+  755,813,602 rows / 136.69 GB on 2026-08-18. It is a different object from the `genetics_results_dev`
   clone this document builds: that one is created and torn down around a single DDL
   rehearsal, this one stays. See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
 - the `daly` profile is a **second production brand** (its own project, region, domain,
@@ -143,6 +144,13 @@ scans bill at the normal rate. 4h6.18's measurement pass cost roughly USD 2–2.
 350–400 GB scanned; a rehearsal of the same shape costs the same again. Use
 `--dry_run` for everything that only needs to be *validated*, and reserve executed
 queries for the things dry-run cannot answer (below).
+
+**The separate, permanent `genetics_dev` is now a real storage line of its own.** It is
+not a clone and shares no blocks with production: widening it from the chr22 subset to
+full size on 2026-08-18 took it from 0.57 GB to **136.69 GB**, roughly USD 2.70/month of
+europe-west1 active logical storage, standing until someone deletes it. Reloading it
+costs another ~134 GiB of scan (~USD 0.65) because it is `TRUNCATE` + `INSERT … SELECT`
+from production, not a clone — see [local-dev-vm.md](local-dev-vm.md), "The dev dataset".
 
 ### `--dry_run` cannot verify clustering. This trap is load-bearing.
 
