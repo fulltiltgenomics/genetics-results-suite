@@ -178,7 +178,12 @@ existing profile's resolved set changed when `code` landed;
 
 Selection: `POST /chat/v1/chat` field `tool_profile` (`chat_api.py:284`), persisted per
 message in `chat_messages.tool_profile`, defaulted per user from the `chat_tool_profile`
-key of `user_settings`.
+key of `user_settings`. It is also selectable from the browser: genetics-results-browser's
+**Tools** control offers All / API / Database / **Code execution**, `rag` being the one
+profile deliberately kept out of the UI. Note the two ends disagree about an unknown
+string — the browser resolves it to `null`, which is the **full** surface, where the server
+degrades to general-only; both refuse to raise because the value is read back from stored
+rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
 
 | `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
 |---|---|---|---|---|---|
@@ -529,7 +534,10 @@ does not currently match, verified against source on 2026-08-18.
    today" — yet its definition is still in every chat turn's tool list, with a description
    telling the model to prefer it over chaining data-access tools. The failure is handled
    (`executor.py:5816-5849` reports `SandboxTokenUnavailable` with `retryable: False` rather
-   than letting the model loop), but the tool is *offered*.
+   than letting the model loop), but the tool is *offered*. This got sharper once the browser
+   made `code` selectable: on a cluster with no deployed sandbox a user can now pick a profile
+   whose **primary** tool cannot work at all, and the other six are search tools.
+   `genetics-results-suite-4h6.56` (P1, open) owns it.
 6. **`launch_subagents` is advertised to the model in the base system prompt but is disabled
    in the deployed configuration.** The prompt's whole "Subagent Orchestration" section
    (`defaults.py:161-186`) documents a tool that `ENABLE_SUBAGENTS: "false"`
