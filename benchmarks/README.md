@@ -130,6 +130,33 @@ saved run proves what each arm was given rather than leaving it to be re-derived
 that has since moved. A server too old to have the endpoint warns and continues — the run is
 still valid, it just cannot carry the proof.
 
+## Raise the chat service's rate limit BEFORE a full run
+
+`chat_api` rate-limits per user: **`RATE_LIMIT_PER_HOUR` defaults to 20 and
+`RATE_LIMIT_PER_DAY` to 100**. This set is 106 model turns, so a full run exceeds both.
+
+This does not fail cleanly, which is why it needs saying. Measured 2026-08-19: a full run
+against the defaults produced **8 ok / 16 error / 29 not_attempted per arm** — the turns
+replayed before the refusal kept their cost, everything after cascaded, and the saved report
+still looked complete (20 cases, both arms, correct `arm_tools`) while carrying **8 of 53**
+matched pairs. It reads as a finished benchmark of a handful of questions.
+
+```bash
+RATE_LIMIT_PER_HOUR=2000 RATE_LIMIT_PER_DAY=10000 scripts/dev-stack.sh up chat-api
+```
+
+`dev-stack.sh` does not set these, so they must be exported into the environment it starts
+chat-api from, and chat-api must be **restarted** for a change to take effect. Verify:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -f genetics_mcp_server.chat_api | head -1)/environ | grep RATE_LIMIT
+```
+
+The harness now aborts on the first 429 with exit 2 rather than spending the rest of the
+plan rediscovering it, and the scorecard refuses to present a rate-limited report as a
+benchmark. Neither recovers the money already spent on the turns that succeeded, so raise
+the limit first.
+
 ## Running it
 
 The stack must be up first, and both arms must see `SANDBOX_ENABLED=true` with the sandbox
