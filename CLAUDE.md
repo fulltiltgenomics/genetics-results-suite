@@ -102,7 +102,12 @@ docs wrong in a way that repo can detect.
 
 # Code Conventions
 
-1. Project structure contains `docs/`, `k8s/`, `scripts/`, and `terraform/` folders at the root
+1. The root layout is enumerated in `docs/project-spec.md` ("Project structure") and
+   **nowhere else** — a second copy here is a second list to rot, which is the exact
+   failure the doc-ownership section above warns about, and this line was that failure:
+   it named four directories for a tree that has had `configs/`, `keycloak/` and
+   `sandbox/` for some time. Adding a root directory means adding it to that tree in the
+   same commit.
 2. Code should be self-descriptive
    - Only add comments for tricky or complex parts of the code (explaining WHY something is done)
    - NO redundant and trivial comments that simply restate what the code does
