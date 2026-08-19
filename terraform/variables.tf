@@ -52,6 +52,24 @@ variable "manage_iam" {
   default     = true
 }
 
+variable "sandbox_pool_enabled" {
+  description = "Create the dedicated gVisor (GKE Sandbox) node pool. Default false: scripts/deploy.sh runs `terraform apply -auto-approve` on every full deploy, so a pool gated on nothing would be created by an ordinary deploy that nobody opted into. This flag gates whether the RESOURCE EXISTS and must never appear inside its node_config — see the comment on google_container_node_pool.sandbox_nodes."
+  type        = bool
+  default     = false
+}
+
+variable "sandbox_machine_type" {
+  description = "Machine type for the dedicated gVisor sandbox node pool. ForceNew: changing it destroys and recreates the pool, so migrate via a new pool plus cordon/drain instead. Whether e2-standard-2 meets GKE Sandbox's requirements on this cluster is unverified (genetics-results-suite-5r2)."
+  type        = string
+  default     = "e2-standard-2"
+}
+
+variable "sandbox_node_service_account" {
+  description = "GCP service account email for the gVisor sandbox node pool. Required whenever sandbox_pool_enabled is true; the checks live as lifecycle preconditions on the pool resource, not here, so a deployment that does not create the pool is not forced to invent a value. The default is \"\" purely so terraform does not prompt interactively — it is not a usable value: empty would mean the Compute Engine default SA (typically roles/editor), and reusing genetics-suite would put the suite's BigQuery/GCS roles on the node running untrusted code. Create a dedicated GSA holding only roles/logging.logWriter, roles/monitoring.metricWriter, roles/monitoring.viewer, roles/stackdriver.resourceMetadata.writer and roles/artifactregistry.reader. Terraform neither creates this SA nor checks what roles it holds."
+  type        = string
+  default     = ""
+}
+
 variable "min_node_count" {
   description = "Minimum number of nodes per zone"
   default     = 1

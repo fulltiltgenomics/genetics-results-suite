@@ -6,7 +6,7 @@ in the supervisor puts them in pages the forked child inherits copy-on-write, so
 child pays neither the disk read nor the module-init cost.
 
 Owned by the image (genetics-results-suite-4h6.6); *called* by the supervisor
-(genetics-results-suite-4h6.14), which must call prewarm() once at startup, before the
+(genetics-results-suite-4h6.39), which must call prewarm() once at startup, before the
 first fork and before it drops any privilege.
 
 matplotlib is the expensive one and the reason the ordering matters: importing

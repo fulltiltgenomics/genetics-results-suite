@@ -51,7 +51,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT variant, chr, pos, ref, alt, rsid, most_severe, gene_most_severe,
        AF, AC_Het, AC_Hom, INFO
-FROM genetics_results.variant_annotation_v
+FROM variant_annotation_v
 WHERE rsid = 'rs11591147'
 ```
 
@@ -60,7 +60,7 @@ WHERE rsid = 'rs11591147'
 ```sql
 WITH cs AS (
   SELECT DISTINCT chr, variant, trait, trait_original, pip, mlog10p, beta
-  FROM genetics_results.credible_sets_v
+  FROM credible_sets_v
   WHERE resource = 'finngen' AND data_type = 'GWAS'
     AND trait_original = 'K11_IBD_STRICT' AND pip > 0.1
 )
@@ -68,7 +68,7 @@ SELECT cs.trait_original, cs.variant, va.rsid, va.most_severe, va.gene_most_seve
        cs.pip, cs.mlog10p, cs.beta, va.AF, va.AC_Het, va.AC_Hom,
        va.EXOME_enrichment_nfe, va.INFO
 FROM cs
-JOIN genetics_results.variant_annotation_v va ON va.chr = cs.chr AND va.variant = cs.variant
+JOIN variant_annotation_v va ON va.chr = cs.chr AND va.variant = cs.variant
 ORDER BY cs.pip DESC
 ```
 
@@ -78,7 +78,7 @@ ORDER BY cs.pip DESC
 SELECT variant, rsid, most_severe, gene_most_severe, AF,
        ROUND(LEAST(AF, 1 - AF), 5) AS maf, AC_Het, AC_Hom,
        EXOME_enrichment_nfe, GENOME_enrichment_nfe
-FROM genetics_results.variant_annotation_v
+FROM variant_annotation_v
 WHERE gene_most_severe = 'PCSK9'
   AND most_severe IN ('missense_variant', 'frameshift_variant', 'stop_gained',
                       'splice_acceptor_variant', 'splice_donor_variant')

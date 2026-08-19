@@ -18,15 +18,24 @@ class GeneticsClient:
     def __init__(self, executor: ToolExecutor | None = None) -> None:
         """Endpoint URLs are read from the environment and are NOT arguments.
 
-        The client attaches INTERNAL_API_SECRET to every request it makes, so any way for
-        a script to point it at a host of its choosing is a way to exfiltrate the secret
-        that authenticates to both results-api and db-api. `executor` remains injectable
-        for the in-process callers that already hold a configured one.
+        Inside the sandbox the client attaches the PER-EXECUTION token the supervisor
+        delivered, audience-bound to the destination it is going to, and never
+        INTERNAL_API_SECRET (genetics-results-suite-4h6.44; the machinery is
+        `tools/executor.py`'s `_load_sandbox_tokens` and `_SandboxTokenAuth`). That is what
+        makes results-api's four per-execution counters apply at all: the shared secret
+        satisfies `is_internal_caller` and reaches every handler while resolving no sandbox
+        principal, so a request carrying it is served with no accounting whatsoever
+        (genetics-results-suite-0lf). Any way for a script to point this at a host of its
+        choosing is still a way to hand that token somewhere it should not go, which is why
+        the endpoints are not parameters. `executor` remains injectable for the in-process
+        callers that already hold a configured one.
 
-        MITIGATION, not the answer: a script that can import this module can also read
-        os.environ. The SDK must eventually carry a short-lived scoped token instead of
-        INTERNAL_API_SECRET — see genetics-results-suite docs/code-execution-security.md
-        and tasks genetics-results-suite-4h6.9 / .14.
+        NOT A CONFIDENTIALITY BOUNDARY: a script that can import this module can read the
+        token out of the client, out of the supervisor's inherited address space, and — for
+        a resident process left by an earlier execution — out of another execution's token
+        file. What bounds that is genetics-results-suite-4h6.55, not anything here. The
+        token's value is that it is short-lived, scoped, and ATTRIBUTABLE, so the quota
+        controls above it are no longer inert.
         """
         ...
 
@@ -132,8 +141,9 @@ class GeneticsClient:
         suite uses.
 
         Rank on `mlog10p` — `pval` underflows to a literal 0 for the strongest signals
-        (coeliac DQB1*02:01 is mlog10p 1596). Only the `allele=` shape carries its column
-        names through an empty result; results-api returns a bare `[]` with no schema.
+        (coeliac DQB1*02:01 is mlog10p 1596). Both shapes carry their column names through
+        an empty result, so filtering a no-hit phenotype gives an empty frame rather than
+        ColumnNotFoundError.
         """
         ...
 
@@ -328,9 +338,11 @@ class GeneticsClient:
         """Run read-only SQL against the genetics BigQuery views.
 
         The db-api rejects anything that is not a plain SELECT over the exposed views, so
-        this is the escape hatch for joins the typed functions above do not cover. Qualify
-        every table as `genetics_results.<view>`; the schema docs' examples are written that
-        way.
+        this is the escape hatch for joins the typed functions above do not cover. Name every
+        table by its bare view name (`FROM credible_sets_v`) — do NOT prefix it with a
+        project or dataset, and do not wrap it in backticks. db-api resolves each name
+        against the dataset it was configured with, so the same script runs unchanged
+        against dev and production data. The schema docs' examples are written that way.
 
         Like the `limit=` functions, a truncated result RAISES rather than returning a
         prefix — a short frame with no signal would make every downstream count and join

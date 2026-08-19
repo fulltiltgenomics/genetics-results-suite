@@ -55,7 +55,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT resource, dataset, trait, trait_original, gene, annotation, variant,
        mlog10p, beta, se, af_overall, ac, an
-FROM genetics_results.exome_variant_results_v
+FROM exome_variant_results_v
 WHERE gene = 'NOD2' AND annotation = 'pLoF'
 ORDER BY mlog10p DESC
 ```
@@ -64,7 +64,7 @@ ORDER BY mlog10p DESC
 
 ```sql
 SELECT resource, dataset, gene, annotation, trait, mlog10p, beta, af_overall, ac
-FROM genetics_results.exome_variant_results_v
+FROM exome_variant_results_v
 WHERE variant = '16:50729867:G:GC'
 ORDER BY mlog10p DESC
 ```
@@ -73,7 +73,7 @@ ORDER BY mlog10p DESC
 
 ```sql
 SELECT DISTINCT gene, variant, annotation, af_overall, ac, an
-FROM genetics_results.exome_variant_results_v
+FROM exome_variant_results_v
 WHERE gene = 'TLN2' AND annotation = 'pLoF' AND resource = 'genebass'
 ORDER BY ac DESC
 ```

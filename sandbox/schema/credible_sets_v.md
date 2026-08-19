@@ -63,7 +63,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT resource, dataset, data_type, trait, trait_original, cell_type,
        pip, mlog10p, beta, cs_id, cs_size, most_severe, gene_most_severe
-FROM genetics_results.credible_sets_v
+FROM credible_sets_v
 WHERE chr = 12 AND variant = '12:111446804:T:C'
 ORDER BY mlog10p DESC
 ```
@@ -72,7 +72,7 @@ ORDER BY mlog10p DESC
 
 ```sql
 SELECT DISTINCT dataset, trait, trait_original
-FROM genetics_results.credible_sets_v
+FROM credible_sets_v
 WHERE resource = 'finngen' AND data_type = 'GWAS'
   AND (LOWER(trait) LIKE '%colorectal%' OR LOWER(trait_original) LIKE '%colorectal%')
 ORDER BY trait
@@ -87,7 +87,7 @@ WITH leads AS (
          most_severe, gene_most_severe,
          ROW_NUMBER() OVER (PARTITION BY resource, dataset, trait, cell_type, cs_id
                             ORDER BY pip DESC, mlog10p DESC) AS rn
-  FROM genetics_results.credible_sets_v
+  FROM credible_sets_v
   WHERE resource = 'finngen' AND data_type = 'GWAS' AND trait_original = 'K11_IBD_STRICT'
 )
 SELECT * EXCEPT (rn) FROM leads
@@ -100,7 +100,7 @@ ORDER BY chr, pos
 ```sql
 SELECT resource, dataset, data_type, trait, trait_original, cell_type, cs_id, cs_size,
        COUNT(*) AS n_variants, MAX(pip) AS max_pip, MAX(mlog10p) AS max_mlog10p
-FROM genetics_results.credible_sets_v
+FROM credible_sets_v
 WHERE chr = 1 AND pos BETWEEN 113259226 AND 114244415 AND pip > 0.01
 GROUP BY resource, dataset, data_type, trait, trait_original, cell_type, cs_id, cs_size
 ORDER BY max_mlog10p DESC
@@ -111,7 +111,7 @@ ORDER BY max_mlog10p DESC
 ```sql
 SELECT variant, gene_most_severe, most_severe, trait, trait_original,
        pip, mlog10p, beta, maf
-FROM genetics_results.credible_sets_v
+FROM credible_sets_v
 WHERE resource = 'finngen' AND data_type = 'GWAS'
   AND most_severe IN ('frameshift_variant', 'stop_gained', 'stop_lost', 'start_lost',
                       'splice_acceptor_variant', 'splice_donor_variant')
@@ -124,11 +124,11 @@ ORDER BY pip DESC, mlog10p DESC
 ```sql
 WITH g AS (
   SELECT chr, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end
-  FROM genetics_results.gene_annotations_v WHERE symbol = 'SEMA4B' GROUP BY chr
+  FROM gene_annotations_v WHERE symbol = 'SEMA4B' GROUP BY chr
 )
 SELECT c.resource, c.dataset, c.trait, c.trait_original, c.cs_id, c.variant,
        c.pip, c.mlog10p, c.beta, c.most_severe, c.gene_most_severe
-FROM genetics_results.credible_sets_v c
+FROM credible_sets_v c
 JOIN g ON c.chr = g.chr AND c.pos BETWEEN g.gene_start - 200000 AND g.gene_end + 200000
 WHERE c.data_type = 'GWAS' AND c.pip > 0.1
 ORDER BY c.mlog10p DESC
@@ -138,7 +138,7 @@ ORDER BY c.mlog10p DESC
 
 ```sql
 SELECT resource, dataset, data_type, cell_type, variant, pip, mlog10p, beta, cs_id
-FROM genetics_results.credible_sets_v
+FROM credible_sets_v
 WHERE chr = 1 AND trait = 'PCSK9' AND data_type IN ('eQTL', 'pQTL', 'sQTL')
 ORDER BY mlog10p DESC
 ```
@@ -149,8 +149,8 @@ ORDER BY mlog10p DESC
 SELECT COUNT(*) AS n_associations,
        COUNT(DISTINCT cs.trait) AS n_peaks,
        COUNT(DISTINCT cs.cell_type) AS n_cell_types
-FROM genetics_results.credible_sets_v cs
-JOIN genetics_results.peak_to_gene_v l
+FROM credible_sets_v cs
+JOIN peak_to_gene_v l
   ON l.peak_id = cs.trait AND l.cell_type = cs.cell_type
 WHERE cs.data_type = 'caQTL' AND l.symbol = 'IL7R' AND cs.chr = 5
 ```

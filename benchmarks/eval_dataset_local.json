@@ -1,0 +1,203 @@
+[
+  {
+    "session_id": "local-01-gene-location",
+    "topic": "gene lookup",
+    "complexity": "simple",
+    "expected_shape": "single iteration; the sandbox's fixed startup cost should be visible as a regression here",
+    "user_turns": [
+      {"role": "user", "content": "What chromosome is PCSK9 on, and what are its coordinates?"},
+      {"role": "user", "content": "How long is the gene in kb?"}
+    ]
+  },
+  {
+    "session_id": "local-02-phenotype-counts",
+    "topic": "phenotype metadata",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "How many cases and controls does type 2 diabetes have in FinnGen?"},
+      {"role": "user", "content": "What about rheumatoid arthritis and coeliac disease?"}
+    ]
+  },
+  {
+    "session_id": "local-03-hla-coeliac",
+    "topic": "HLA",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "Which HLA alleles are associated with coeliac disease?"},
+      {"role": "user", "content": "Which of those is the strongest, and what is its effect size?"}
+    ]
+  },
+  {
+    "session_id": "local-04-credible-sets-variant",
+    "topic": "fine-mapping",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "Is the variant 19:11089362:C:T in any fine-mapped credible set?"},
+      {"role": "user", "content": "What is its PIP in each one?"}
+    ]
+  },
+  {
+    "session_id": "local-05-open-chromatin-datasets",
+    "topic": "dataset inventory",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "What open chromatin datasets do you have, and what tissues do they cover?"},
+      {"role": "user", "content": "Which one has the most cell types?"}
+    ]
+  },
+  {
+    "session_id": "local-06-burden-ldlr",
+    "topic": "gene burden",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "What is the strongest gene burden association for LDLR?"},
+      {"role": "user", "content": "Is the direction of effect consistent with what you would expect for LDL cholesterol?"}
+    ]
+  },
+  {
+    "session_id": "local-07-nearest-genes",
+    "topic": "variant annotation",
+    "complexity": "simple",
+    "expected_shape": "single iteration",
+    "user_turns": [
+      {"role": "user", "content": "What genes are nearest to 6:32588205:T:C?"},
+      {"role": "user", "content": "Is that variant in a credible set for any autoimmune trait?"}
+    ]
+  },
+  {
+    "session_id": "local-08-finemap-locus",
+    "topic": "fine-mapping",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "Show me the fine-mapped credible sets in a 500kb window around SEMA4B."},
+      {"role": "user", "content": "Which of those have a coding lead variant?"},
+      {"role": "user", "content": "For the strongest one, what is the effect direction and which trait is it?"}
+    ]
+  },
+  {
+    "session_id": "local-09-coloc-eqtl",
+    "topic": "colocalization",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "Does the FinnGen inflammatory bowel disease signal near IL23R colocalize with any eQTL?"},
+      {"role": "user", "content": "Which tissues, and what are the PP.H4 values?"},
+      {"role": "user", "content": "Do the two credible sets share their lead variant?"}
+    ]
+  },
+  {
+    "session_id": "local-10-caqtl-peaks",
+    "topic": "caQTL",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "How many caQTL associations does FOXP3 have, and in which cell types?"},
+      {"role": "user", "content": "Which chromatin peaks are those, and how far are they from the gene?"},
+      {"role": "user", "content": "Are any of those peaks also open in B cells?"}
+    ]
+  },
+  {
+    "session_id": "local-11-exome-across-traits",
+    "topic": "exome",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "What exome variant associations does TYK2 have across all traits?"},
+      {"role": "user", "content": "Restrict that to protein-altering variants with p < 1e-6."},
+      {"role": "user", "content": "Which traits show a protective direction?"}
+    ]
+  },
+  {
+    "session_id": "local-12-mpra-evidence",
+    "topic": "MPRA",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "Do you have MPRA evidence for any variant in the FinnGen coeliac disease credible sets?"},
+      {"role": "user", "content": "Which of those show allelic effects, and in which cell lines?"},
+      {"role": "user", "content": "How do the MPRA effect sizes compare to the fine-mapping PIPs?"}
+    ]
+  },
+  {
+    "session_id": "local-13-hla-autoimmune-compare",
+    "topic": "HLA",
+    "complexity": "moderate",
+    "user_turns": [
+      {"role": "user", "content": "Compare the HLA associations for coeliac disease, type 1 diabetes and rheumatoid arthritis."},
+      {"role": "user", "content": "Which alleles are shared between at least two of them?"},
+      {"role": "user", "content": "For the shared ones, do the effect directions agree?"}
+    ]
+  },
+  {
+    "session_id": "local-14-burden-coloc-crosswalk",
+    "topic": "cross-view aggregation",
+    "complexity": "complex",
+    "expected_shape": "long tail; keeping intermediate rows out of context is the mechanism under test",
+    "user_turns": [
+      {"role": "user", "content": "Take the 20 genes with the strongest gene burden associations in FinnGen. How many of them also have a colocalizing eQTL?"},
+      {"role": "user", "content": "Make that a table with gene, best burden trait, burden p-value, and the coloc partner tissue."},
+      {"role": "user", "content": "Which of those genes have concordant effect directions between the burden test and the eQTL?"}
+    ]
+  },
+  {
+    "session_id": "local-15-credset-size-compare",
+    "topic": "cross-dataset comparison",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "For traits fine-mapped in both FinnGen and UKBB, how do credible set sizes compare?"},
+      {"role": "user", "content": "Show the distribution rather than just the mean — median, quartiles and the tail."},
+      {"role": "user", "content": "Are the FinnGen sets systematically smaller for the traits with more cases?"}
+    ]
+  },
+  {
+    "session_id": "local-16-recurrent-loci",
+    "topic": "cross-trait aggregation",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "Across FinnGen's immune-mediated disease endpoints, which loci appear in credible sets for more than three different traits?"},
+      {"role": "user", "content": "Exclude the MHC region and redo that."},
+      {"role": "user", "content": "For the top five, what genes are nearby and is there any eQTL colocalization?"}
+    ]
+  },
+  {
+    "session_id": "local-17-dual-evidence-genes",
+    "topic": "cross-view aggregation",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "Build me a list of genes that have both an exome burden association at p < 1e-6 and a colocalization with an eQTL."},
+      {"role": "user", "content": "How many are there, and what traits do they implicate?"},
+      {"role": "user", "content": "Which of them are already known drug targets in your data?"}
+    ]
+  },
+  {
+    "session_id": "local-18-caqtl-ibd-celltypes",
+    "topic": "regulatory annotation",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "Which cell types show the most caQTL signal at FinnGen IBD risk loci?"},
+      {"role": "user", "content": "Normalize that by how many peaks each cell type has overall — is the enrichment real?"},
+      {"role": "user", "content": "Pick the top cell type and list the genes those peaks are linked to."}
+    ]
+  },
+  {
+    "session_id": "local-19-coding-lead-fraction",
+    "topic": "fine-mapping statistics",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "For the 50 highest-PIP credible sets in FinnGen type 2 diabetes, what fraction have a protein-coding lead variant?"},
+      {"role": "user", "content": "How does that compare to the genome-wide fraction across all FinnGen traits?"},
+      {"role": "user", "content": "Is the difference statistically meaningful given the sample sizes?"}
+    ]
+  },
+  {
+    "session_id": "local-20-gene-evidence-summary",
+    "topic": "multi-source synthesis",
+    "complexity": "complex",
+    "user_turns": [
+      {"role": "user", "content": "Summarize every line of evidence you have linking SLC39A8 to disease."},
+      {"role": "user", "content": "Which of those is the strongest, and what would you want to see to be convinced it is causal?"},
+      {"role": "user", "content": "Is there any regulatory evidence — open chromatin, caQTL or MPRA — at the same variants?"}
+    ]
+  }
+]

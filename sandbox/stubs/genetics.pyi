@@ -6,16 +6,31 @@
 
 """The `genetics` SDK — importable data access for scripts.
 
-    import genetics_mcp_server.sdk as genetics
+    import genetics                       # inside a run_analysis script
+    import genetics_mcp_server.sdk        # the package itself, anywhere else
 
     df = genetics.credible_sets(gene="IL7R")
     df.filter(pl.col("pip") > 0.5)
 
-A script needs no knowledge of HTTP, tokens, base URLs or result envelopes: endpoints and
-credentials come from the environment (GENETICS_API_URL, BIGQUERY_API_URL,
-INTERNAL_API_SECRET), every function returns a polars DataFrame, and a failed request
-raises GeneticsError instead of returning a success flag to check. Endpoints are read from
-the environment ONLY and cannot be set from a script — see the note above `_URL_SETTINGS`.
+`genetics` is an alias the sandbox image installs (`sandbox/genetics_alias.py`), aliased
+through `sys.modules` so both names are the same object rather than two copies of the
+client state. It exists because every surface a script's author can read already calls this
+package `genetics` and the import path did not, which cost every session several executions
+of probing to discover (genetics-results-suite-706). Outside the sandbox only the package
+name works.
+
+A script needs no knowledge of HTTP, tokens, base URLs or result envelopes: endpoints come
+from the environment (GENETICS_API_URL, BIGQUERY_API_URL), every function returns a polars
+DataFrame, and a failed request raises GeneticsError instead of returning a success flag to
+check. Endpoints are not settable from a script — see the note above `_URL_SETTINGS`.
+
+In the sandbox the credential is the PER-EXECUTION token pair the supervisor minted for
+this execution and named to the child by path in SANDBOX_TOKEN_FILE, attached per request
+and bound to the destination it is going to — never INTERNAL_API_SECRET, which the sandbox
+image does not hold (genetics-results-suite-4h6.44; `tools/executor.py`'s
+`_load_sandbox_tokens` and `_SandboxTokenAuth`). Outside the sandbox — the service
+processes and local runs — the client still authenticates with INTERNAL_API_SECRET. The two
+are mutually exclusive with no fallback between them.
 
 Nothing here imports the chat backend, the MCP server or the databases, so the package can
 be installed into a sandbox image on its own.
@@ -135,8 +150,9 @@ def hla(
     suite uses.
 
     Rank on `mlog10p` — `pval` underflows to a literal 0 for the strongest signals
-    (coeliac DQB1*02:01 is mlog10p 1596). Only the `allele=` shape carries its column
-    names through an empty result; results-api returns a bare `[]` with no schema.
+    (coeliac DQB1*02:01 is mlog10p 1596). Both shapes carry their column names through
+    an empty result, so filtering a no-hit phenotype gives an empty frame rather than
+    ColumnNotFoundError.
     """
     ...
 
@@ -345,9 +361,11 @@ def sql(query: str, *, max_rows: int = 100000) -> pl.DataFrame:
     """Run read-only SQL against the genetics BigQuery views.
 
     The db-api rejects anything that is not a plain SELECT over the exposed views, so
-    this is the escape hatch for joins the typed functions above do not cover. Qualify
-    every table as `genetics_results.<view>`; the schema docs' examples are written that
-    way.
+    this is the escape hatch for joins the typed functions above do not cover. Name every
+    table by its bare view name (`FROM credible_sets_v`) — do NOT prefix it with a
+    project or dataset, and do not wrap it in backticks. db-api resolves each name
+    against the dataset it was configured with, so the same script runs unchanged
+    against dev and production data. The schema docs' examples are written that way.
 
     Like the `limit=` functions, a truncated result RAISES rather than returning a
     prefix — a short frame with no signal would make every downstream count and join

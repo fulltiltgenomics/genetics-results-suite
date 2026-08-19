@@ -7,10 +7,11 @@ One file per view. Read the file for the view a question is about; the columns, 
 conventions and worked example SQL are all there. Query them with genetics.sql(...) — see
 the SDK stubs in the directory named by GENETICS_STUBS_DIR.
 
-Every view lives in the BigQuery dataset `genetics_results`. Qualify each one as
-`genetics_results.<view>`, the way the worked examples below are written: the query service
-sets no default dataset, and its fallback that patches an unqualified name is a regular
-expression that cannot tell a table position from a string literal.
+Name each view by its bare name — `FROM <view>`, the way the worked examples below are
+written. Do NOT add a project or dataset prefix, and do NOT wrap the name in backticks: the
+query service rewrites a bare name in a table position to the dataset it was configured
+with, and that rewrite is what makes the same query work against whichever dataset it is
+serving. A backticked or already-qualified name skips the rewrite and fails.
 
 Each query runs under three ceilings: 25,000 returned rows, 50 GB scanned per query, and 200
 GB scanned across one execution. Exceeding any of them raises GeneticsError — a truncated

@@ -77,7 +77,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT trait1, trait1_original, resource2, dataset2, data_type2, trait2, cell_type2,
        PP_H4_abf, clpp, hit1, hit2, hit1_beta, hit2_beta, cs1_id, cs2_id
-FROM genetics_results.colocalization_v
+FROM colocalization_v
 WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
   AND data_type2 IN ('eQTL', 'pQTL', 'sQTL', 'caQTL')
   AND PP_H4_abf > 0.8
@@ -90,7 +90,7 @@ ORDER BY PP_H4_abf DESC
 SELECT resource1, dataset1, data_type1, trait1, trait1_original,
        resource2, dataset2, data_type2, trait2, cell_type2,
        PP_H4_abf, PP_H3_abf, hit1, hit2, cs_overlap, cs1_id, cs2_id
-FROM genetics_results.colocalization_v
+FROM colocalization_v
 WHERE chr = 19 AND region_start_min < 8500000 AND region_end_max > 8300000
   AND PP_H4_abf > 0.5
 ORDER BY PP_H4_abf DESC
@@ -101,7 +101,7 @@ ORDER BY PP_H4_abf DESC
 ```sql
 SELECT data_type1, dataset1, trait1, cell_type1, data_type2, dataset2, trait2, cell_type2,
        PP_H4_abf, hit1, hit2, hit1_mlog10p, hit2_mlog10p
-FROM genetics_results.colocalization_v
+FROM colocalization_v
 WHERE (trait1 = 'PCSK9' OR trait2 = 'PCSK9') AND PP_H4_abf > 0.8
 ORDER BY PP_H4_abf DESC
 ```
@@ -113,7 +113,7 @@ SELECT trait2_original, resource2, COUNT(DISTINCT cs1_id) AS n_loci,
        ROUND(MAX(PP_H4_abf), 3) AS max_pp_h4,
        COUNTIF(SIGN(hit1_beta) = SIGN(hit2_beta)) AS n_same_direction,
        COUNTIF(SIGN(hit1_beta) != SIGN(hit2_beta)) AS n_opposite_direction
-FROM genetics_results.colocalization_v
+FROM colocalization_v
 WHERE resource1 = 'finngen' AND trait1_original = 'K11_IBD_STRICT'
   AND data_type1 = 'GWAS' AND data_type2 = 'GWAS' AND PP_H4_abf > 0.8
 GROUP BY trait2_original, resource2

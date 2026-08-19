@@ -60,7 +60,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT symbol, chr, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end,
        strand, ensembl_gene_id
-FROM genetics_results.gene_annotations_v
+FROM gene_annotations_v
 WHERE symbol IN ('PCSK9', 'NOD2', 'TLN1')
 GROUP BY symbol, chr, strand, ensembl_gene_id
 ORDER BY symbol
@@ -69,7 +69,7 @@ ORDER BY symbol
 ### Enumerate protein-coding genes in an HGNC gene group (here GPCRs, group 139), excluding olfactory receptors, with coordinates
 
 ```sql
-SELECT symbol, chr, gene_start, gene_end FROM genetics_results.gene_annotations_v WHERE 139 IN UNNEST(gene_group_ids)
+SELECT symbol, chr, gene_start, gene_end FROM gene_annotations_v WHERE 139 IN UNNEST(gene_group_ids)
   AND locus_type = 'gene with protein product'
   AND NOT ('Olfactory receptors' IN UNNEST(gene_group_names))
 ```
@@ -79,7 +79,7 @@ SELECT symbol, chr, gene_start, gene_end FROM genetics_results.gene_annotations_
 ```sql
 WITH gpcr AS (
   SELECT symbol, chr, gene_start, gene_end
-  FROM genetics_results.gene_annotations_v
+  FROM gene_annotations_v
   WHERE 139 IN UNNEST(gene_group_ids)
     AND locus_type = 'gene with protein product'
     AND NOT ('Olfactory receptors' IN UNNEST(gene_group_names))
@@ -87,7 +87,7 @@ WITH gpcr AS (
        COUNT(DISTINCT c.trait1_original) AS n_gwas_traits,
        COUNT(*) AS n_coloc_pairs,
        ROUND(MAX(c.PP_H4_abf), 3) AS max_pp_h4
-FROM gpcr a JOIN genetics_results.colocalization_v c
+FROM gpcr a JOIN colocalization_v c
   ON SPLIT(c.trait2, '.')[OFFSET(0)] = a.symbol
  AND c.chr = a.chr
 WHERE c.data_type2 = 'pQTL'
