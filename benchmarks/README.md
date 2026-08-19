@@ -90,11 +90,45 @@ exists to test whenever the model reaches for `run_analysis`, so the measured ga
 system prompt is assembled from the tool list in force, so this arm also loses every mention
 of `run_analysis` from its prompt automatically — verified, the word does not appear.
 
-**A typo in `--arm-a` is silent and costly.** `get_anthropic_tools` resolves an unrecognised
-profile to `{"general"}` — 18 tools — and nothing raises. `--arm-a all` is safe only because
-the harness maps the literal `"all"` to `None` before sending. Any other misspelling produces
-a crippled baseline that runs fine and reports plausible numbers. Check the arm's tool count
-in the report before trusting a run.
+### Knowing for sure what each arm was given
+
+Ask the running server. `/chat/v1/tools/resolved` resolves through
+`service.resolve_local_tool_names` — the same call the system prompt is assembled from — so
+what it reports is what the model was handed:
+
+```bash
+curl -s 'http://localhost:4000/chat/v1/tools/resolved?tool_profile=nocode' | jq '.count, .known_profile'
+curl -s 'http://localhost:4000/chat/v1/tools/resolved?tool_profile=code'   | jq '.count, .known_profile'
+curl -s 'http://localhost:4000/chat/v1/tools/resolved'                     | jq '.count'  # the `all` arm
+```
+
+Measured 2026-08-19 against the local stack: `all` 65, `nocode` 62, `code` 7, `bigquery` 23,
+and `all` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`.
+
+**Do not use `/chat/v1/tools` for this** — it returns `TOOL_DEFINITIONS` raw, with no profile
+filter, no feature flags, and neither the BigQuery nor the subagent list. It cannot answer
+what an arm ran with.
+
+**A typo in `--arm-a` is silent and costly**, which is why the harness now refuses it.
+`get_anthropic_tools` resolves an unrecognised profile to `{"general"}` — 18 tools — and
+nothing raises, deliberately, because the value comes back from rows written by older
+clients. So `--arm-a nocod` would have produced a crippled baseline that runs fine and
+reports plausible numbers. The harness resolves both arms against the server before spending
+anything and **aborts with exit 2 if either is unknown**, on the `--dry-run` path too:
+
+```
+ERROR: http://localhost:4000 does not recognise these arm profiles: nocod. An
+unrecognised profile silently degrades to general-only (18 tools), so this run
+would have measured a surface you did not intend.
+```
+
+The same check catches the other version of this: a profile added on disk but not loaded by
+a **running** server, which is one forgotten restart away locally.
+
+The resolved counts and names are recorded in the report under `config.arm_tools`, so a
+saved run proves what each arm was given rather than leaving it to be re-derived from a tree
+that has since moved. A server too old to have the endpoint warns and continues — the run is
+still valid, it just cannot carry the proof.
 
 ## Running it
 
