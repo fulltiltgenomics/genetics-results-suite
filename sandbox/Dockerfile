@@ -37,6 +37,14 @@ RUN /opt/venv/bin/pip install -r /build/requirements.txt
 COPY .sdk-src/ /build/sdk-src/
 RUN /opt/venv/bin/pip install --no-deps /build/sdk-src
 
+# `import genetics`, the name every doc a script's author can read already uses
+# (genetics-results-suite-706). Copied rather than shipped from the wheel: the alias is a
+# promise the SANDBOX makes, and `genetics` is too generic a top-level name to claim in
+# chat-backend and mcp-server, which install the same package. Placed before the prune and
+# the compileall so it is bytecode-baked like everything else; `prune_venv.prune_sdk` walks
+# only site-packages/genetics_mcp_server, so this file is outside its reach by construction.
+COPY genetics_alias.py /opt/venv/lib/python3.11/site-packages/genetics.py
+
 # Everything below runs the *system* interpreter with PYTHONPATH at the venv's
 # site-packages rather than /opt/venv/bin/python3, because the next step deletes
 # /opt/venv/bin. That is also exactly how the final image runs (same CPython minor

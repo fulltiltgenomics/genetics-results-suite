@@ -148,7 +148,8 @@ client-side reconnect and no persistence of partial assistant turns.
 │                             #   and the `genetics` login theme
 ├── sandbox/                  # sandbox image build context (distroless, no shell, uid 65532)
 │                             #   for model-authored Python; SDK pip-installed from
-│                             #   genetics-mcp-server at build time. See
+│                             #   genetics-mcp-server at build time and importable as
+│                             #   `genetics` (genetics_alias.py). See
 │                             #   docs/code-execution-security.md
 ├── scripts/
 │   ├── build-all.sh          # build and push all Docker images
@@ -888,9 +889,17 @@ deletes the rest, so the two ends (`4h6.39` in this repo, `4h6.47` in genetics-m
 cannot import one definition. Do not restate it here; the essentials only:
 
 - **A small fixed set of routes and no others**: a health endpoint the `readinessProbe`
-  reads, and one execute endpoint, plain HTTP/1.1 JSON. No HTTP-layer authentication — the
-  sandbox holds no credential to verify against, so the ingress allow-list is the
-  authentication.
+  reads, one execute endpoint, and one artifact-read endpoint, plain HTTP/1.1 JSON. No
+  HTTP-layer authentication — the sandbox holds no credential to verify against, so the
+  ingress allow-list is the authentication.
+- **Artifacts come back out only as images, and only automatically** (`GET /artifact`,
+  `genetics-results-suite-8z1`). A script that saves a figure has it shown to the user:
+  chat-backend fetches image artifacts of a completed run itself, streams them as `image` SSE
+  chunks, and strips the base64 before the tool result reaches the model. The unguessable
+  per-execution `execution_id` — never rendered to the model — is the authorisation, and only
+  **retained** (completed) executions are served. Nothing the model calls reaches the route,
+  and no other artifact type is retrievable; general artifact reads and the sid-scoped
+  resolution remain `genetics-results-suite-4h6.52`.
 - **Nothing in the request or response depends on Kubernetes**, so the local Docker backend
   (`4h6.40`) speaks the identical contract; the client holds one base URL. What differs
   (gVisor, NetworkPolicy, `hostAliases`, `emptyDir`) is deployment only.
