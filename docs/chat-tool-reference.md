@@ -46,8 +46,8 @@ All tool definitions are in one file:
 | `TOOL_DEFINITIONS` | 15 | 65 tools — 18 `general`, 44 `api`, 3 `orchestration` |
 | `BIGQUERY_TOOL_DEFINITIONS` | 1616 | 2 tools — `query_database`, `get_database_schema` (category `bigquery`) |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1669 | 1 tool — `launch_subagents` (category `orchestration`) |
-| `TOOL_PROFILES` | 1713 | 3 category-union profiles: `api`, `bigquery`, `rag` |
-| `TOOL_PROFILE_TOOLS` | 1735 | 1 explicit-allow-list profile: `code` (7 tool names) |
+| `TOOL_PROFILES` | 1724 | 4 category-union profiles: `api`, `bigquery`, `rag`, `nocode` |
+| `TOOL_PROFILE_TOOLS` | 1773 | 1 explicit-allow-list profile: `code` (7 tool names) |
 | `get_anthropic_tools()` | 1748 | builds the Anthropic-format list handed to the chat model |
 | `register_mcp_tools()` | 1824 | registers FastMCP handlers — the `/mcp` surface |
 
@@ -193,8 +193,23 @@ rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
 | `"api"` | categories: general + api + orchestration | 66 | 63 | yes | no |
 | `"bigquery"` | categories: general + bigquery + orchestration | 24 | 23 | yes | no |
 | `"rag"` | categories: general only | 18 | 18 | **no** | yes |
+| `"nocode"` | categories: general + api + bigquery | 64 | 62 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
 | any other string | `TOOL_PROFILES.get(profile, {"general"})` → general only | 18 | 18 | yes | no |
+
+`"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
+cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
+pre-code-execution surface can reach for the mechanism under test. Under the **deployed**
+flags `null` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`
+(65 → 62, measured 2026-08-19).
+
+That equivalence is a property of the deployed flags, **not** of the category. Excluding
+`orchestration` also excludes `launch_subagents`, which is the fourth tool in that category
+— it just never reaches a request, because `enable_subagents` defaults to false and
+`llm_service._disabled_tools` strips it again when the subagent service did not initialize,
+both *before* the profile filter. With **all flags on** the gap is therefore four tools, not
+three, which is why the two columns above differ by more than the disabled-tool count. Turn
+`ENABLE_SUBAGENTS` on and `nocode` stops being "the old surface" until this row is re-derived.
 
 Three behaviours worth stating plainly:
 
@@ -285,6 +300,7 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 | `api` | 63 | ~29,000 | the above, plus the `query_database` wording variants; gains the SDK schema route |
 | `bigquery` | 23 | ~25,500 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
 | `rag` | 18 | ~19,600 | the above, plus HLA, the credible-set grounding rules, the database section and Choosing How to Get Data entirely |
+| `nocode` | 62 | ~28,400 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-19: 29,063 → 28,368 chars) |
 | `code` | 7 | ~21,100 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
 
 `tests/test_system_prompt.py` pins three properties across those profiles with

@@ -71,11 +71,39 @@ entire reason this number is written down before the run rather than after it.
 An arm that never calls `run_analysis` reports `None` (not measured), not `0` — so a zero in
 the report is a real zero.
 
+## The arms: `nocode` vs `code`, NOT `all` vs `code`
+
+**Arm A is `nocode`, not the harness's default `all`.** `--arm-a all` sends
+`tool_profile: null`, and that profile **contains `run_analysis`** — measured 2026-08-19,
+`all` = 65 local tools under the deployed flags, `run_analysis` among them, and `api` and
+`bigquery` carry it too. Only `rag` (18 tools) excludes it, and rag is far too narrow to
+stand for the old surface.
+
+Left at `all`, the A/B compares *"65 tools including code execution"* against *"7 tools,
+code only"* — both arms able to run scripts. That is not old vs new, and it fails in a
+direction that is easy to miss: arm A picks up the same context-growth saving the code arm
+exists to test whenever the model reaches for `run_analysis`, so the measured gap
+**understates** the code arm while the baseline stops being the pre-epic system at all.
+
+`nocode` (`{general, api, bigquery}`, 62 tools deployed) is `all` minus exactly
+`{run_analysis, list_capabilities, read_artifact}`. Since genetics-results-suite-4h6.69 the
+system prompt is assembled from the tool list in force, so this arm also loses every mention
+of `run_analysis` from its prompt automatically — verified, the word does not appear.
+
+**A typo in `--arm-a` is silent and costly.** `get_anthropic_tools` resolves an unrecognised
+profile to `{"general"}` — 18 tools — and nothing raises. `--arm-a all` is safe only because
+the harness maps the literal `"all"` to `None` before sending. Any other misspelling produces
+a crippled baseline that runs fine and reports plausible numbers. Check the arm's tool count
+in the report before trusting a run.
+
 ## Running it
 
 The stack must be up first, and both arms must see `SANDBOX_ENABLED=true` with the sandbox
 actually reachable. A baseline arm replayed against an unreachable sandbox is being steered
 toward a path that fails at the transport, which depresses arm A and inflates arm B's win.
+That hazard is much smaller with `nocode` than it was with `all` — an arm with no
+`run_analysis` in its tool list has no code path to be steered toward — but arm B still needs
+the sandbox up.
 
 ```bash
 # 1. bring everything up (chat-api :4000, results-api :2000, db-api :8080)
@@ -91,7 +119,7 @@ cd ~/suite/genetics-mcp-server/.claude/worktrees/db-only-architecture
 .venv/bin/python -m genetics_mcp_server.scripts.replay_benchmark \
   --dataset ~/suite/genetics-results-suite/.claude/worktrees/db-only-architecture/benchmarks/eval_dataset_local.json \
   --base-url http://localhost:4000 \
-  --arm-a all --arm-b code \
+  --arm-a nocode --arm-b code \
   --model claude-opus-5 --provider anthropic \
   --dry-run
 

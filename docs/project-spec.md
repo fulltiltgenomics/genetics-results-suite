@@ -1986,8 +1986,8 @@ for the reason above.
 
 The **Tools** option above is the `tool_profile` field, and it is resolved by **two** mechanisms in
 `genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
-to whole tool **categories** (`api`, `bigquery`, `rag`); `TOOL_PROFILE_TOOLS` maps a profile to an
-explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
+to whole tool **categories** (`api`, `bigquery`, `rag`, `nocode`); `TOOL_PROFILE_TOOLS` maps a
+profile to an explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
 filtering at all*, not a union of the profiles, and an unrecognised string degrades silently to
 general-only rather than raising, because the value is read back from `chat_messages` rows written
 by older clients.
@@ -2008,6 +2008,17 @@ selection is per request for local A/B work, and rollback is deleting one dict e
 consolidation that would create them is deferred, and revisiting it is what would change this
 profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
 in `docs/chat-tool-reference.md` § 3.
+
+`nocode` is the fourth category-union profile, added for the genetics-results-suite-4h6.23 A/B and,
+like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
+offer it, so nothing stores it and the browser's unknown→`null` narrowing is never exercised by it.
+It resolves to `{general, api, bigquery}`: `null` minus exactly `run_analysis`,
+`list_capabilities` and `read_artifact` under the deployed flags (65 → 62, measured 2026-08-19).
+It exists because `null` **is not** a pre-code-execution baseline — `null` contains `run_analysis`,
+so an arm meant to represent the old surface could reach for the mechanism under test. Note the
+equivalence rides on a runtime flag, not on the category: excluding `orchestration` also excludes
+`launch_subagents`, which only stays out because `enable_subagents` defaults to false. Turn it on
+and `nocode` is no longer "the old surface".
 
 #### Selecting a profile from the browser
 
