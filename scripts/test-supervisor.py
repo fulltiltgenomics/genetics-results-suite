@@ -413,6 +413,56 @@ def test_manifest(tmp):
     check("manifest: no path, no execution id, no url",
           all(set(e) == {"name", "size", "content_type"} for e in entries))
 
+    # Every name build_manifest withheld must also be unreadable, and for the same reason:
+    # the two run the same checks so the manifest never advertises what the read refuses,
+    # and the read never serves what the manifest hid.
+    data, ctype = sup.read_artifact_bytes(d, "plot.png")
+    check("artifact read: returns the bytes and the name's content type",
+          data == b"\x89PNG" * 4 and ctype == "image/png", f"got {len(data)} {ctype}")
+    for name, status in (
+        ("link.txt", 404),          # symlink
+        ("hardlink.csv", 404),      # st_nlink != 1
+        ("subdir", 404),            # not a regular file
+        ("absent.png", 404),
+        ("trailing.png ", 400),     # _name_is_retrievable
+        ("../../etc/passwd", 400),
+        ("new\nline.txt", 400),
+        ("", 400),
+    ):
+        expect_request_error(f"artifact read: refuses {name!r}",
+                             lambda n=name: sup.read_artifact_bytes(d, n),
+                             status, "NotFound" if status == 404 else "InvalidRequest")
+
+    with open(os.path.join(d, "big.bin"), "wb") as fh:
+        fh.write(b"x" * 100)
+    expect_request_error("artifact read: an oversize artifact is 413, not a truncated body",
+                         lambda: sup.read_artifact_bytes(d, "big.bin", max_bytes=99),
+                         413, "ArtifactTooLarge")
+
+
+def test_artifact_scoping(tmp):
+    """The id is the authorisation, and only a RETAINED execution has one."""
+    root = os.path.join(tmp, "scoping")
+    os.makedirs(root)
+    eid = "11111111-1111-4111-8111-111111111111"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    with open(os.path.join(dirs.artifacts, "plot.png"), "wb") as fh:
+        fh.write(b"\x89PNG")
+
+    s = sup.Supervisor(root, ready=True)
+    expect_request_error("artifact scoping: a directory that exists but is not retained is 404",
+                         lambda: s.read_artifact(eid, "plot.png"), 404, "NotFound")
+    expect_request_error("artifact scoping: a malformed execution id is 400",
+                         lambda: s.read_artifact("../other", "plot.png"), 400, "InvalidRequest")
+
+    s._retained_ids.add(eid)
+    data, ctype = s.read_artifact(eid, "plot.png")
+    check("artifact scoping: a retained execution serves its artifact",
+          data == b"\x89PNG" and ctype == "image/png", f"got {data!r} {ctype}")
+    expect_request_error("artifact scoping: retention does not widen the name rules",
+                         lambda: s.read_artifact(eid, "../plot.png"), 400, "InvalidRequest")
+
 
 # --------------------------------------------------------------------------------------
 # 5. end to end over HTTP, with real forks
@@ -578,15 +628,34 @@ def test_http(server):
             execution_id=payload["execution_id"]))
         check("http: duplicate execution_id -> 409 DuplicateExecutionId",
               status == 409 and dup["error"]["type"] == "DuplicateExecutionId", f"got {status} {dup}")
-        if server.host_scratch is None:
-            # There is no artifact-retrieval route in this contract (4h6.52 owns it), so a
-            # container's retained artifacts are not observable from outside it at all.
-            skip("http: the first execution's artifacts survive the refusal",
-                 "container mode: no host view of /scratch and no artifact route")
-        else:
-            check("http: the first execution's artifacts survive the refusal",
-                  os.path.exists(os.path.join(server.host_scratch, payload["execution_id"],
-                                              "artifacts", "out.csv")))
+        # GET /artifact is what makes this observable in container mode too, where there is
+        # no host view of /scratch at all
+        status, _, art = server.request(
+            "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
+        check("http: the first execution's artifacts survive the refusal",
+              status == 200 and base64.b64decode(art["content_base64"]) == b"a,b\n",
+              f"got {status} {art}")
+        check("http: /artifact reports the size and the name's content type",
+              art["size"] == 4 and art["content_type"] == "text/csv", f"got {art}")
+
+        status, _, body = server.request(
+            "GET", f"/artifact?execution_id={payload['execution_id']}&name=absent.csv")
+        check("http: /artifact 404s for a name the execution did not write",
+              status == 404 and body["error"]["type"] == "NotFound", f"got {status} {body}")
+        status, _, body = server.request(
+            "GET", f"/artifact?execution_id={payload['execution_id']}"
+                   "&name=..%2F..%2Fetc%2Fpasswd")
+        check("http: /artifact refuses a name that is a path",
+              status == 400 and body["error"]["type"] == "InvalidRequest", f"got {status} {body}")
+        status, _, body = server.request(
+            "GET", "/artifact?execution_id=00000000-0000-4000-8000-000000000000&name=out.csv")
+        check("http: /artifact 404s for an execution id it does not hold",
+              status == 404 and body["error"]["type"] == "NotFound", f"got {status} {body}")
+        status, _, body = server.request("GET", "/artifact?execution_id=not-a-uuid&name=out.csv")
+        check("http: /artifact rejects a malformed execution id",
+              status == 400 and body["error"]["type"] == "InvalidRequest", f"got {status} {body}")
+        status, _, body = server.request("POST", "/artifact", body={})
+        check("http: POST /artifact -> 405", status == 405, f"got {status}")
 
         # an uncaught exception
         status, _, body = server.request("POST", "/execute", body=make_body(
@@ -2065,8 +2134,9 @@ def run_in_process():
         print("queue")
         test_queue(tmp)
         test_peer_gone()
-        print("artifact manifest")
+        print("artifact manifest and retrieval")
         test_manifest(tmp)
+        test_artifact_scoping(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
         print("end to end over HTTP")

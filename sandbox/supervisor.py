@@ -75,6 +75,7 @@ import sys
 import threading
 import time
 import traceback as _traceback
+import urllib.parse
 from collections import deque
 
 # --------------------------------------------------------------------------------------
@@ -248,6 +249,14 @@ REAPER_POLL_S = 30.0
 # scan from costing seconds.
 DIRENT_COST_BYTES = 512
 ARTIFACT_ENTRY_BUDGET = 1024          # entries directly under artifacts/ AND the manifest cap
+
+# The largest artifact GET /artifact will hand back, chosen against MAX_RESPONSE_BYTES rather
+# than against what a plot needs: the body is base64 (+33%) inside a JSON envelope, so 512 KiB
+# of file is ~700 KiB of body and stays clear of the 1 MiB cap. Reaching that cap instead would
+# make _cap_response answer "response too large", which reads as a supervisor fault; a 413 here
+# names the actual reason. A matplotlib PNG at the SDK's default dpi is a few tens of KiB, so
+# this bounds a pathological artifact, not an ordinary figure.
+ARTIFACT_READ_MAX_BYTES = 512 * 1024
 EXECUTION_ENTRY_BUDGET = 20000        # entries anywhere under /scratch/<id>; also the scan cap
 
 # CLEANUP AND ACCOUNTING MUST NOT BE BOUNDED BY THE BUDGET THEY EXIST TO RESTORE. A live
@@ -827,6 +836,69 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
     return entries, omitted
 
 
+def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
+    """(bytes, content_type) for one artifact, or raise RequestError.
+
+    THE CHECKS RUN HERE, INSIDE THE SANDBOX, against the directory the child actually wrote
+    to — which is the whole point of serving this over HTTP rather than letting chat-backend
+    open a path (docs/code-execution-security.md §6). They are `build_manifest`'s checks in
+    the same order and for the same reasons, so nothing the manifest advertised is
+    unretrievable and nothing it withheld becomes reachable by asking directly:
+
+      * `_name_is_retrievable` first — a bare name, no separators, no control characters.
+      * the directory fd is opened O_NOFOLLOW and the file is opened *relative to it*, so
+        neither the artifacts directory nor the file can be a symlink out of /scratch/<id>.
+      * regular file with st_nlink == 1 — no FIFO to block the read on, no device, and no
+        hard link to something outside the tree.
+
+    Not-found is deliberately indistinguishable across "no such name", "not a regular file"
+    and "the open failed": the caller learns only whether the artifact it was told about is
+    there, which is all it needs and all a probe should get.
+    """
+    if not _name_is_retrievable(name):
+        raise RequestError(400, "InvalidRequest", "not a retrievable artifact name")
+    try:
+        dfd = os.open(artifacts_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise RequestError(404, "NotFound", "no such artifact")
+    try:
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+        except OSError:
+            raise RequestError(404, "NotFound", "no such artifact")
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise RequestError(404, "NotFound", "no such artifact")
+            if st.st_size > max_bytes:
+                raise RequestError(
+                    413,
+                    "ArtifactTooLarge",
+                    f"artifact is {st.st_size} bytes; the limit is {max_bytes}",
+                )
+            # Bounded by max_bytes and not by st_size: the size was read before the read, and
+            # a setsid() escapee still holding a write handle can grow the file in between
+            # (see this module's docstring on what the kill path does not contain).
+            chunks = []
+            remaining = max_bytes + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(remaining, 1 << 20))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dfd)
+    data = b"".join(chunks)
+    if len(data) > max_bytes:
+        raise RequestError(
+            413, "ArtifactTooLarge", f"artifact exceeds the {max_bytes} byte limit"
+        )
+    return data, mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
 def _iter_dir_names(path, limit):
     """At most `limit` names from `path` (a path or a directory fd), streamed.
 
@@ -1338,6 +1410,34 @@ class Supervisor:
         # endpoint at all.
         code = 200 if status == "ok" else 503
         return code, {"status": status, "busy": busy, "queued": queued}
+
+    def read_artifact(self, execution_id, name):
+        """(bytes, content_type) for an artifact of a RETAINED execution, or raise.
+
+        RETAINED ONLY, not running. The caller that has an execution_id is the one that
+        submitted it and has already been answered, so by the time it can ask, the execution
+        is over and `_retain` has trimmed the directory. Serving a running one would hand
+        back a file mid-write, and would do it for the only execution whose bytes are still
+        moving — a half-written PNG is worse than a 404.
+
+        The id is the authorisation. It is a uuid4 minted per execution by chat-backend and
+        never shown to the model (`parse_execute_request` requires it to equal the tokens'
+        jti), so it cannot be guessed and cannot be walked; combined with the NetworkPolicy
+        that decides who reaches this port at all, that is the same standing /execute has.
+        There is no per-session check here — the sid-scoped resolution
+        genetics-results-suite-4h6.52 specifies belongs in chat-backend, which is the only
+        side that knows which session owns which execution.
+        """
+        if not isinstance(execution_id, str) or not EXECUTION_ID_RE.fullmatch(execution_id):
+            raise RequestError(400, "InvalidRequest", "execution_id must be a lowercase uuid4")
+        with self._lock:
+            retained = execution_id in self._retained_ids
+        if not retained:
+            # One shape for "never existed", "still running" and "reaped": which of the three
+            # it is would tell a caller holding a guessed id something about the pod's state.
+            raise RequestError(404, "NotFound", "no such execution")
+        dirs = ExecutionDirs(self.scratch_root, execution_id)
+        return read_artifact_bytes(dirs.artifacts, name)
 
     def begin_drain(self):
         self.draining = True
@@ -2895,6 +2995,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # status code, and a client polling for recovery wants busy/queued in the 503 as
             # much as in the 200.
             self._send_json(code, payload)
+        elif path == "/artifact":
+            self._artifact()
         elif path == "/execute":
             self._send_request_error(RequestError(405, "MethodNotAllowed", "use POST"))
         else:
@@ -2902,7 +3004,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self._route()
-        if path == "/health":
+        if path in ("/health", "/artifact"):
             self._send_request_error(RequestError(405, "MethodNotAllowed", "use GET"))
             return
         if path != "/execute":
@@ -2912,12 +3014,48 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _method_not_allowed(self):
         path = self._route()
-        if path in ("/health", "/execute"):
+        if path in ("/health", "/execute", "/artifact"):
             self._send_request_error(RequestError(405, "MethodNotAllowed", "unsupported method"))
         else:
             self._send_request_error(RequestError(404, "NotFound", "no such route"))
 
     do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed
+
+    # -- GET /artifact ------------------------------------------------------------------
+
+    def _artifact(self):
+        """One artifact of a retained execution, base64 in the uniform JSON envelope.
+
+        Base64 rather than the raw bytes with their own content type, so that this route
+        answers in the same shape as every other one and `_send_json`'s outgoing cap stays
+        the single choke point. The 33% is affordable at ARTIFACT_READ_MAX_BYTES.
+        """
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        params = urllib.parse.parse_qs(query, keep_blank_values=True)
+        execution_id = (params.get("execution_id") or [""])[0]
+        name = (params.get("name") or [""])[0]
+        try:
+            data, content_type = SUPERVISOR.read_artifact(execution_id, name)
+        except RequestError as exc:
+            self._send_request_error(exc, execution_id=execution_id or None)
+            return
+        except OSError as exc:
+            LOG.error("reading artifact %r of %s failed: %s", name, execution_id, exc)
+            self._send_request_error(
+                RequestError(500, "InternalError", "artifact could not be read"),
+                execution_id=execution_id,
+            )
+            return
+        self._send_json(
+            200,
+            {
+                "execution_id": execution_id,
+                "name": name,
+                "content_type": content_type,
+                "size": len(data),
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            },
+        )
 
     # -- POST /execute ------------------------------------------------------------------
 

@@ -528,7 +528,9 @@ record for cross-repo concerns.
 ### As built (`4h6.6`) — what shipped, and the two places it departs from the above
 
 `sandbox/` in this repo: `Dockerfile`, `requirements.txt` (pinned analysis deps),
-`build-checks.py` (build-time assertions), `prewarm.py`, `schema/` and `stubs/`. Built by
+`build-checks.py` (build-time assertions), `prewarm.py`, `supervisor.py`,
+`prune_venv.py`, `genetics_alias.py` (installed into the venv as `genetics.py`), `schema/`
+and `stubs/`. Built by
 `build-all.sh` and by `build.sh sandbox`, tagged from this repo's HEAD like `monitor` and
 `keycloak`, with the genetics-mcp-server commit recorded in the image label
 `com.fulltiltgenomics.genetics-mcp-server-ref` because the tag alone does not identify the
@@ -577,6 +579,19 @@ files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every s
 the suite trusts. `sandbox/prune_venv.py` therefore cuts the installed package to an
 explicit `SDK_ALLOWLIST`, and `build-checks.py` asserts the surviving set *equals* it, so
 the surface grows deliberately rather than with the next `pip install`.
+
+**One file in `site-packages` is not part of that distribution: `genetics.py`**
+(`sandbox/genetics_alias.py`, copied by the Dockerfile — `genetics-results-suite-706`). It
+is three lines that rebind `sys.modules[__name__]` to `genetics_mcp_server.sdk`, so
+`import genetics` — the name `run_analysis`'s description, `list_capabilities`' module
+enum, the shipped `stubs/genetics.pyi` and `schema/README.md` all already use — resolves to
+the SDK **itself** rather than to a second module object with its own copy of the client
+state. It ships only here: `genetics` is too generic a top-level name to claim in
+chat-backend and mcp-server, which install the same distribution. It is outside
+`prune_sdk`'s reach by construction (that walks `site-packages/genetics_mcp_server` only)
+and outside `_sdk_surface`'s assertion for the same reason; a separate build check asserts
+the *identity*, not merely that the import succeeds. Disclosure: it names
+`genetics_mcp_server.sdk`, which the stubs already do.
 
 **`config/settings.py` used to be in the closure; it no longer is** (`l41`). It reached
 the image because `sdk/client.py` imports `tools/executor.py`, whose module-level `from
@@ -821,9 +836,10 @@ media type and ignores its parameters**, so a bare `application/json` — which 
 `4h6.47` sends — is accepted exactly as the charset form is; the `415` row below means the
 *media type* is not `application/json`. Stated because this paragraph and that row phrase it
 differently, and a supervisor doing an exact string compare against the charset form would
-`415` every request the client makes. Exactly two routes exist — `GET /health` and
-`POST /execute` — and there is no third; any other path is `404`, any other method on these
-two is `405`.
+`415` every request the client makes. Exactly three routes exist — `GET /health`,
+`POST /execute` and `GET /artifact` — and there is no fourth; any other path is `404`, any
+other method on these three is `405`. `GET /artifact` is the only one whose input is a query
+string rather than a body, because it carries no secret (see its subsection below).
 
 **There is no HTTP-layer authentication on `/execute`, and that is a decision rather than an
 omission.** The sandbox pod holds no credential it could verify a caller against, and giving
@@ -1222,14 +1238,67 @@ event. It is noted here only so nobody adds that assertion later and gets a flak
 else under the directory goes immediately (section 6). The manifest is what chat-backend
 records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
 
-**Unsettled: there is no artifact-retrieval endpoint in this contract.** Section 6 specifies
-that `read_artifact` proxies over HTTP to the sandbox, while the code that landed reads a
-local directory named by `SANDBOX_ARTIFACTS_DIR` — chat-backend has no `/scratch` and never
-will, so that path is inert rather than wrong. A third route (something like
-`GET /artifacts/<execution-id>/<name>`) is therefore still owed, and it is **not invented
-here**: `genetics-results-suite-4h6.52` owns it, together with the sid-scoped resolution that
-would call it. An implementer of either side of *this* contract should build `/health` and
-`/execute` and nothing else.
+#### `GET /artifact` — one file back out, for images only
+
+The third route, added by `genetics-results-suite-8z1`. It is **the retrieval half of
+`4h6.52` and does not close it**: `4h6.52` also owes the sid-scoped resolution that would let
+the *model* ask for an arbitrary artifact by name, and that half is still open. Nothing the
+model can call reaches this route.
+
+```
+GET /artifact?execution_id=<uuid4>&name=<bare name>
+```
+
+```json
+{ "execution_id": "…", "name": "manhattan.png", "content_type": "image/png",
+  "size": 20481, "content_base64": "iVBORw0KGgo…" }
+```
+
+**Who may read what.** The `execution_id` **is** the authorisation. It is a uuid4 minted per
+execution by chat-backend, equal to the tokens' `jti` (the supervisor refuses a request where
+they differ), and it is never rendered to the model — `_render_analysis` strips it from
+everything the model sees, which is the same property that lets the manifest carry no id. So
+the only caller that can name an execution is the one that submitted it. Combined with the
+NetworkPolicy that decides who reaches port 8080 at all, that is exactly the standing
+`/execute` has; this route adds no new trust assumption, only a new thing to read.
+
+**Retained executions only.** A running execution is not served: its bytes are still moving
+and a half-written PNG is worse than a 404. By the time the submitter has the id in a
+response, the execution is over and `_retain` has trimmed the directory. `404 NotFound` is
+returned identically for "never existed", "still running" and "already reaped" — which of the
+three it is would tell a caller holding a guessed id something about the pod's state.
+
+**The checks run inside the sandbox**, against the directory the child actually wrote to,
+which is the entire reason this is an HTTP route rather than chat-backend opening a path.
+`read_artifact_bytes` applies `build_manifest`'s checks in the same order —
+`_name_is_retrievable`, `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` on the directory, the file opened
+**relative to that descriptor** with `O_NOFOLLOW`, regular file with `st_nlink == 1` — so
+nothing the manifest advertised is unretrievable and nothing it withheld becomes reachable by
+asking directly.
+
+| condition | status | `error.type` |
+|---|---|---|
+| served | 200 | — |
+| `execution_id` not a lowercase uuid4, or `name` fails `_name_is_retrievable` | 400 | `InvalidRequest` |
+| no such retained execution, or no such file, or not a regular file | 404 | `NotFound` |
+| file larger than `ARTIFACT_READ_MAX_BYTES` (512 KiB) | 413 | `ArtifactTooLarge` |
+
+The 512 KiB cap is set against `MAX_RESPONSE_BYTES` (1 MiB), not against what a plot needs:
+base64 is +33% inside a JSON envelope, so 512 KiB of file is ~700 KiB of body and stays clear.
+Letting `_cap_response` fire instead would answer "response too large", which reads as a
+supervisor fault; a 413 names the real reason. A matplotlib PNG at the SDK's default dpi is a
+few tens of KiB. **This is a fourth number** and is not the manifest's 4 MiB `read_artifact`
+limit, the 64Mi per-execution artifact quota, or the 512Mi `emptyDir` `sizeLimit`.
+
+**What chat-backend does with it.** After a `status: ok` execution, `_fetch_analysis_images`
+fetches at most **four** artifacts whose manifest `content_type` starts with `image/` and
+whose listed size is under the cap, and attaches them to the tool result under `images`.
+`llm_service` then streams each as an `image` SSE chunk and **strips `images` from the dict
+before it is serialised into the `tool_result`** — base64 in the model's context is tokens
+paid for a thing the model cannot see. Nothing else in `artifacts/` is fetched; the
+`artifacts_note` still tells the model to print what it needs to read. `fetch_artifact` never
+raises: every refusal above, plus an unreachable sandbox, means "there is no picture", and
+losing the analysis to save the figure would be the wrong trade.
 
 #### What the supervisor owes beyond the request and the response
 
@@ -1575,9 +1644,12 @@ manifest, the startup wipe) are **not run at all** over HTTP, because no route r
 that is most of the in-process checks. They are printed by name under "check groups NOT RUN in
 this mode" at the end of every container run, so a container total cannot be read as a
 near-complete fraction of the in-process total. `skip()` is the narrower mechanism and its
-claim is unchanged: it covers a check *inside a group that ran* — e.g. one needing the
-harness's own view of `/scratch`, which there is no artifact route to provide (`4h6.52`) — and
-those are counted and listed individually. Implementing the missing groups over the wire is
+claim is unchanged: it covers a check *inside a group that ran* — one needing the harness's
+own view of `/scratch`, which a container does not give it — and those are counted and listed
+individually. One such skip has since become a real check in both modes: the retained
+artifacts of a refused-duplicate execution are now read back over `GET /artifact`
+(`genetics-results-suite-8z1`) instead of by looking at the host filesystem, so container mode
+verifies it too. Implementing the missing groups over the wire is
 not this bead's scope; being honest about their absence is.
 
 **One thing only became visible in a container.** In-process, the harness and the supervisor
@@ -3754,9 +3826,12 @@ What *is* preventable is data leaving the user's own conversation. The controls:
 
 1. **There is no sink** — and this claim depends on the no-DNS decision in section 3. The
    only two ways bytes leave the pod are stdout (capped at 64 KiB to the model, 8 MiB from
-   the pipe) and `/scratch` (512 MiB, retrievable only by `read_artifact` over the
-   chat-backend-only ingress path, bound to the chat session that submitted the script —
-   see the `read_artifact` subsection below for the mechanism). No internet egress, no PVC,
+   the pipe) and `/scratch` (512 MiB, retrievable only over the chat-backend-only ingress
+   path and only as **image artifacts**, at most four per run and 512 KiB each, fetched by
+   chat-backend against an `execution_id` it minted for the submitting session — see
+   `GET /artifact` in section 2 and the `read_artifact` subsection below). Both sinks are
+   therefore bound to the chat session that submitted the script, and neither is addressable
+   by the script itself. No internet egress, no PVC,
    no other service, **and no DNS**: with kube-dns egress allowed this claim would be
    false, because subdomain-label encoding sustains roughly 200 KB/s and needs no response
    (section 3, "On DNS"). If DNS is ever restored, this control is downgraded from "no
@@ -4114,11 +4189,20 @@ nothing else — there is no session argument, no execution argument, and no ser
 resolution of a name against the executions belonging to a `sid`. Which execution's
 artifacts are reachable rests **entirely** on `SANDBOX_ARTIFACTS_DIR` pointing at the right
 directory, constrained only by the structural checks above. The authorization mechanism
-specified earlier in this section, the HTTP path from chat-backend to the sandbox pod, and
-the manifest that name resolution would consult are all still design, and belong to
-`genetics-results-suite-4h6.52`. They were never `4h6.11`'s — that task is closed and did not
-do them, so do not read its state as evidence any of this landed. Until `4h6.52` lands, the
-retrievability claims 6.2 and 6.4 lean on are met by deployment configuration, not by code.
+specified earlier in this section and the manifest that name resolution would consult are
+still design, and belong to `genetics-results-suite-4h6.52`. They were never `4h6.11`'s —
+that task is closed and did not do them, so do not read its state as evidence any of this
+landed. Until `4h6.52` lands, the retrievability claims 6.2 and 6.4 lean on are met by
+deployment configuration, not by code.
+
+**What `genetics-results-suite-8z1` did and did not change here.** The HTTP path from
+chat-backend to the sandbox pod now exists — `GET /artifact`, specified in section 2 — but
+`read_artifact` **does not use it** and is unchanged: it still reads
+`SANDBOX_ARTIFACTS_DIR` locally and still tells the model it cannot reach a `run_analysis`
+artifact. The only caller of the new route is `_fetch_analysis_images`, which resolves the
+`execution_id` server-side from the run it just performed and fetches image artifacts
+automatically. So the route removes the "there is nowhere to proxy to" blocker for `4h6.52`
+without touching the tool or its scoping gap.
 
 **Deployment note — an availability concern, not a security one.** `_open_artifacts_dir`
 verifies the descriptor through `/proc/self/fd/`. If the sandbox pod ever runs with a masked
@@ -4197,10 +4281,14 @@ The controls, all of which work regardless of what the model was persuaded to wr
    volume is ever re-added as the recorded degradation section 2 describes, the supervisor
    wipes it completely before every fork. There is nothing to wipe in the shipping design;
    the wipe is the obligation attached to the degradation, not a standing control. And
-   `/scratch/<id>/artifacts` survives completion only for 15 minutes and
-   only for the originating chat session (see the `read_artifact` subsection). With that,
-   there is no way for injected code to influence a later turn, a later conversation, or
-   another user.
+   `/scratch/<id>/artifacts` survives completion only for 15 minutes and only for the
+   originating chat session (see the `read_artifact` subsection). `GET /artifact` does not
+   widen this: it is addressable only with the `execution_id` chat-backend minted, that id
+   is never shown to the model or to a script, and only chat-backend's automatic image fetch
+   for the run it just performed ever calls it — an injected script cannot ask for another
+   execution's artifacts because it cannot reach the route and cannot name a second id. With
+   that, there is no way for injected code to influence a later turn, a later conversation,
+   or another user.
 5. **Attachments are copy-in, not mount-in.** chat-backend may copy specific user-supplied
    attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
    mount the attachment directory or the PVC. A script sees the files it was given, not the

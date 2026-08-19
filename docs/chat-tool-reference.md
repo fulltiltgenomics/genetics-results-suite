@@ -5,12 +5,14 @@ descriptions and system-prompt text handed to the LLM by chat-backend, and the (
 tool set registered on the standalone MCP server. It is a transcription of code, not a
 design overview.
 
-**Derived 2026-08-18** from these commits:
+**Derived 2026-08-18** from these commits, with the `run_analysis`, `read_artifact` and
+`list_capabilities` descriptions refreshed 2026-08-19 for `genetics-results-suite-8z1`
+(image artifacts) and `-706` (the `genetics` import name):
 
 | repo | worktree | commit |
 |---|---|---|
 | `genetics-results-suite` | `db-only-architecture` | `a308de2` (working tree, `master`) |
-| `genetics-mcp-server` | `db-only-architecture` | `3f323ae` |
+| `genetics-mcp-server` | `db-only-architecture` | `3f323ae` (+ working tree, `8z1`) |
 | `genetics-results-api` | `db-only-architecture` | `0c853c0` |
 | `genetics-results-db` | `db-only-architecture` | `f6f31d4` |
 
@@ -1931,7 +1933,7 @@ Get schema for database tables. **Always call this before query_database** to di
 Description as sent to the model:
 
 ```text
-List the `genetics` SDK surface available to analysis scripts, one module at a time. Returns signatures with their docstrings. Call this before writing a script instead of guessing function names. Modules: 'genetics' (the sync functions a script calls), 'client' (the awaitable GeneticsClient form), 'errors' (what a script catches). Omit `module` for a cheap index of module names and the functions each exports.
+List the `genetics` SDK surface available to analysis scripts, one module at a time. Returns signatures with their docstrings, and the `usage` line saying exactly how to import it. Call this before writing a script instead of guessing function names. Modules: 'genetics' (the sync functions a script calls), 'client' (the awaitable GeneticsClient form), 'errors' (what a script catches). Omit `module` for a cheap index of module names and the functions each exports.
 ```
 
 | parameter | type | req | default | enum / items | description |
@@ -1948,9 +1950,9 @@ Description as sent to the model:
 ```text
 Run a Python script against the genetics data in a sandbox and get back what it printed. One script can query, join, filter and summarise in a single call.
 
-Write the script against the `genetics` SDK — call list_capabilities first for the exact signatures rather than guessing. PRINT EVERYTHING YOU WANT TO SEE: only the script's output comes back (stdout and stderr interleaved, capped at 64 KiB with the middle elided). The value of the last expression is not returned.
+Write the script against the `genetics` SDK — `import genetics` — and call list_capabilities first for the exact signatures rather than guessing. PRINT EVERYTHING YOU WANT TO SEE: only the script's output comes back (stdout and stderr interleaved, capped at 64 KiB with the middle elided). The value of the last expression is not returned.
 
-Files the script writes to its artifacts directory are reported as a manifest of names and sizes, but their CONTENTS CANNOT BE RETRIEVED — so a plot or a table that matters must also be summarised in what the script prints.
+Files the script writes to its artifacts directory are reported as a manifest of names and sizes. An IMAGE artifact is fetched and shown to the user automatically — save a figure and it appears, so do not also render the plot as text or emit a markdown image placeholder for it. Every OTHER artifact's contents CANNOT BE RETRIEVED, so a table that matters must also be printed.
 
 Each run is independent: no variables, files or imports survive from one call to the next, so a follow-up script must redo the work it needs.
 ```
@@ -1968,7 +1970,7 @@ Each run is independent: no variables, files or imports survive from one call to
 Description as sent to the model:
 
 ```text
-Read a named file from this server's local artifacts directory. Takes the artifact NAME exactly as reported in a manifest — never a path and never an execution id. Returns text inline, and binary content base64-encoded with its content type. It CANNOT retrieve artifacts written by run_analysis: those live in the sandbox and no retrieval path to them exists yet. Do not call it for a run_analysis artifact — have the script print what you need instead.
+Read a named file from this server's local artifacts directory. Takes the artifact NAME exactly as reported in a manifest — never a path and never an execution id. Returns text inline, and binary content base64-encoded with its content type. It CANNOT retrieve artifacts written by run_analysis: those live in the sandbox and this tool does not reach it. Do not call it for a run_analysis artifact — image artifacts are shown to the user automatically, and for anything else have the script print what you need instead.
 ```
 
 | parameter | type | req | default | enum / items | description |
