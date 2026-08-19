@@ -130,6 +130,39 @@ cd ~/suite/genetics-mcp-server/.claude/worktrees/db-only-architecture
 #    (drop --limit; --judge is Opus-5 spend ON TOP, doubled by both presentation orders)
 ```
 
+### The per-question scorecard
+
+`replay_benchmark` reports distributions, which answer *"which arm is cheaper"* and cannot
+answer *"on which questions"*. For the second view:
+
+```bash
+.venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json
+.venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json --csv
+```
+
+One row per case, both arms side by side, over four numbers: **wall clock to done, USD,
+tool calls, and the judge's verdict**. It re-measures nothing — it reads the saved report,
+so it is free to re-run, and it works on an old report.
+
+Two things it deliberately refuses to do:
+
+- **A case whose turns did not all succeed on both arms is marked `*` and left out of the
+  TOTAL**, with the reason printed. An arm that aborted spent less time, less money and
+  fewer tool calls than one that finished; summing those side by side scores failure as
+  efficiency. This is the same reasoning as the harness's own matched analysis.
+- **The judge column is a pairwise verdict, not a score.** `pairwise_judge` picks a winner
+  or a tie per turn, blind and in both presentation orders — there is no absolute per-arm
+  quality number, and turning wins into points would imply a scale it never produced. A
+  multi-turn case shows a tally. A `!` means the judge could identify an arm from the answer
+  text on some turn, i.e. the blinding did not hold there.
+
+Costs that were interval-priced (no cache split on the stream) show the bracket midpoint
+with `~`; an unrecognised model shows `n/p`, never `0.00`.
+
+The judge column needs per-pair verdicts in the report, which `pairwise_judge` persists
+under `judging.pairs`. A report judged by an older build says so rather than showing a
+silently empty column.
+
 ### The two arms bill to two different keys
 
 The replayed turns never use a key from your shell. The harness is an HTTP client — it POSTs
