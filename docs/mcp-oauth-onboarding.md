@@ -31,6 +31,9 @@ arbitrary parties cannot register clients on the realm.
 - **Which identity provider** their users have: Google, Apple, or Microsoft — see
   [Identity providers](#identity-providers) below. This is the step most likely to need lead
   time, so ask early.
+- **Whether their app holds a long-lived background session** rather than re-authenticating the
+  user per interaction. If it does, it needs `offline_access` — see
+  [Sessions longer than 10 hours](#sessions-longer-than-10-hours).
 
 What you hand back: `client_id`, `client_secret`, `issuer`, `mcp_url`, scopes, and the flow
 (authorization code + PKCE S256). The registration script prints this block for you.
@@ -62,6 +65,41 @@ Send the secret over a secure channel, not email or Slack DM.
 > `scripts/keycloak-register-brainzzz.sh` is the original one-off for the brainzzz client and
 > is kept only for that client's declarative template. **Do not copy it** for new customers —
 > use the generic script above.
+
+### Sessions longer than 10 hours
+
+The realm keeps Keycloak's default **SSO Session Max of 10 hours**, and a normal refresh token
+cannot outlive the SSO session — so a customer app that holds a background session (rather than
+re-authenticating each user interaction) hits a hard 10h wall and has to send the user through a
+browser login again. Customers report this as "the session dies after 10 hours".
+
+The fix is the `offline_access` scope, which gets them an offline token instead: a refresh token
+that survives logout and SSO-session expiry, bounded by the offline-session idle timeout (30 days
+by default). The generic registration script does **not** assign it — it is a deliberate per
+customer decision, because an offline token is a credential that outlives logout. Assign it as an
+*optional* scope when a customer needs it:
+
+```sh
+NAMESPACE=genetics
+POD="$(kubectl get pods -n $NAMESPACE -l app=keycloak -o jsonpath='{.items[0].metadata.name}')"
+kc() { kubectl exec -n $NAMESPACE "$POD" -- /opt/keycloak/bin/kcadm.sh "$@"; }
+# (authenticate kcadm first — see the Microsoft section for the credentials block)
+CID="$(kc get clients -r genetics -q clientId=<clientId> \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
+# GET /client-scopes takes no query filter, so pick the id out of the full list
+SID="$(kc get client-scopes -r genetics \
+  | python3 -c 'import json,sys; print(next(c["id"] for c in json.load(sys.stdin) if c["name"]=="offline_access"))')"
+kc update "clients/$CID/optional-client-scopes/$SID" -r genetics -b '{}'   # endpoint ignores the body
+```
+
+For **brainzzz** this is already wired into `keycloak/brainzzz-client.json.template` and
+`scripts/keycloak-register-brainzzz.sh`, so re-running that script is enough.
+
+Then tell the customer to add `offline_access` to the `scope` they send on the authorize request —
+without that, nothing changes. Keycloak does not error on a scope it will not grant; it silently
+omits it, so an unchanged 10h expiry is the only symptom. Full mechanics, including the
+`offline_access` realm role users need, are in
+[keycloak-apple-signin.md](keycloak-apple-signin.md) § Sessions longer than 10 hours.
 
 ## Step 2 — allow-list their emails
 
@@ -292,3 +330,4 @@ test identity is a standing hole in the only access control on this path.
 | Forbidden page at sign-in, "not authorized to use this application" | realm allow-list attributes not synced — re-run `keycloak-bind-allowlist.sh` |
 | Sign-in succeeds but Keycloak has no email for the user | IdP returns no `email` claim; add the attribute mapper (Microsoft section, step 3) |
 | Customer's MCP client tries to self-register and fails | expected — DCR is off; they must use the pre-registered `client_id`/`client_secret` |
+| Session dies after ~10 hours, user must log in again | `offline_access` not requested by the client, or not assigned to it — see [Sessions longer than 10 hours](#sessions-longer-than-10-hours) |

@@ -156,7 +156,8 @@ The **brainzzz** integration ships as a confidential (web-application) client:
   other deployments are unaffected). It carries the dev/staging/prod redirect URIs under
   `brainzzz-*.dsp-eng-tools.broadinstitute.org/api/auth/genegenie/callback`, PKCE (S256), and an
   **audience mapper** that stamps `aud = ${OAUTH_RESOURCE_URL}` (`https://<host>/mcp`) into access
-  tokens — required, or the mcp-server rejects the token on its audience check.
+  tokens — required, or the mcp-server rejects the token on its audience check. It also carries
+  `offline_access` as an **optional** client scope (see below).
 - Because the realm import only runs on a fresh DB, the template does **not** update an
   already-running realm. To create/update the client live (idempotent), run:
 
@@ -165,7 +166,37 @@ The **brainzzz** integration ships as a confidential (web-application) client:
   ```
 
   It uses `kcadm.sh` inside the keycloak pod (admin creds from `keycloak-secrets`) to upsert the
-  client and its `mcp-audience` mapper. Re-run it to rotate the secret or change redirect URIs.
+  client, its `mcp-audience` mapper and its `offline_access` optional scope. Re-run it to rotate
+  the secret or change redirect URIs.
+
+### Sessions longer than 10 hours (`offline_access`)
+
+The realm does not override Keycloak's session defaults, so **SSO Session Max is 10 hours**. An
+ordinary refresh token cannot outlive the SSO session it belongs to, so a client that only asks
+for `openid email profile` is hard-capped at 10h no matter how diligently it refreshes — after
+that its user has to go through an interactive browser login again.
+
+`offline_access` is the way out. When the client includes it in the authorize request, Keycloak
+issues an **offline token**: a refresh token that survives logout and SSO-session expiry, bounded
+instead by the offline-session idle timeout (default **30 days** — the client must refresh at
+least that often; Offline Session Max is disabled by default).
+
+Three things all have to hold, and the failure is silent if any is missing — Keycloak does not
+error on a scope it will not grant, it just leaves it out of the token:
+
+1. the client has `offline_access` as an assigned (default or optional) client scope. Prefer
+   **optional**: the client then chooses per request whether to ask for a long-lived session;
+2. the user has the `offline_access` realm role. It is part of `default-roles-genetics`, so this
+   holds unless someone has pruned the realm's default roles;
+3. the client actually sends `scope=... offline_access` on `/protocol/openid-connect/auth`.
+   Point 3 lives in the customer's application, not here.
+
+Verify by decoding the resulting refresh token: an offline token has `"typ": "Offline"`. Or run
+`SCOPE="openid email profile offline_access" ./scripts/keycloak-get-token.sh`.
+
+Offline sessions are the reason to keep them per-client and deliberate: they are credentials that
+outlive logout. They are listed and revocable per user and per client in the admin console
+(Sessions → Offline), and users can revoke them from their own account console.
 
 To onboard **another** app, don't hand-edit the realm — run the generic reconcile script, which
 creates a confidential client + the MCP audience mapper and lets Keycloak generate the secret (so
