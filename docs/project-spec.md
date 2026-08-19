@@ -126,6 +126,12 @@ client-side reconnect and no persistence of partial assistant turns.
 ## Project structure
 
 ```
+├── benchmarks/               # inputs for the paired A/B replay benchmark (the harness itself
+│   │                         #   is genetics-mcp-server's replay_benchmark.py)
+│   ├── eval_dataset_local.json  # hand-authored question set — NOT a production replay; see
+│   │                         #   the README for what that costs the comparison
+│   └── README.md             # provenance, the two deliberate exclusions, the unfilled
+│                             #   script-failure pre-registration, and the run procedure
 ├── configs/
 │   ├── rag/                  # RAG experiment configs (not k8s manifests)
 │   ├── datasets.yaml              # canonical dataset/resource definitions (single source of truth)
