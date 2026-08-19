@@ -51,7 +51,22 @@ chosen after seeing the number. The harness measures it directly: `llm_service` 
 `script_result` chunk per `run_analysis` with five disjoint outcomes, and sandbox faults are
 excluded from both sides of the rate (4h6.71).
 
-> **Threshold: NOT YET SET.** Write it into genetics-results-suite-4h6.23 before running.
+> **Threshold: 10%. Set 2026-08-19, before any paid run.**
+>
+> Applies to `script_failure_rate` exactly as the harness defines it:
+> `(executed_failed + model_rejected) / (executed_ok + executed_failed + model_rejected)`.
+> `infra` (sandbox faults) and `TurnBudgetExceeded` are in neither half.
+>
+> **At or under 10%** — acceptable; the failure rate does not block defaulting the code arm
+> on, and the decision falls to the cost and quality gates.
+> **Above 10%** — do not default it on whatever the cost line says. The fix is better stubs
+> and error messages, not a rollout (carried over from genetics-results-suite-4h6.22).
+
+**Boundary rule, also pre-registered.** This set yields roughly 50–80 script attempts, so a
+rate near 10% carries a few points of sampling noise. Judge on the point estimate, but if the
+95% interval straddles 10%, the result is **inconclusive** — say so and widen the sample.
+Do not round toward whichever answer the cost line makes convenient. That temptation is the
+entire reason this number is written down before the run rather than after it.
 
 An arm that never calls `run_analysis` reports `None` (not measured), not `0` — so a zero in
 the report is a real zero.
