@@ -197,6 +197,32 @@ The judge column needs per-pair verdicts in the report, which `pairwise_judge` p
 under `judging.pairs`. A report judged by an older build says so rather than showing a
 silently empty column.
 
+### Checking what the model actually did
+
+Every turn records its full tool-call sequence under `tool_calls_detail` — name, arguments
+and order, one entry per `tool_use` block, with `tool_calls` being its length so the count
+and the listing cannot disagree. **Arguments are stored verbatim and untruncated, including
+`run_analysis`'s entire script.** That is the point: a count says the code arm made one call
+where the baseline made six, and cannot say whether the one call asked for the right thing.
+
+```bash
+# ordered call sequence per case and arm, arguments elided to fit
+.venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json --tools
+.venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json --tools \
+  --case local-14-burden-coloc-crosswalk --arg-width 200
+
+# the whole untruncated argument, e.g. the script the model wrote
+jq '.turns[] | select(.case_id=="local-14-burden-coloc-crosswalk")
+    | {arm, turn_index, tool_calls_detail}' /tmp/full.json
+```
+
+Previews in `--tools` are elided and mark it with `…`; the report always holds the full
+value. Tool *results* are deliberately not recorded — a single call can return thousands of
+rows, and the question this answers is what the model **asked for**.
+
+Note `secret=true` does not redact these. `llm_service` omits tool input from its log line,
+not from the `done` chunk, so a replayed question's arguments do land in the report.
+
 ### The two arms bill to two different keys
 
 The replayed turns never use a key from your shell. The harness is an HTTP client — it POSTs
