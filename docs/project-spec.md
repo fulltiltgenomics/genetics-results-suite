@@ -13,7 +13,8 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — unauthenticated
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 Authorization: Bearer requests bypass both and hit results-api
-                     │                 (FastAPI, port 4000) directly
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld instead proxies out
+                     │                 to the external LD API (see "Frontend CSP and the LD proxy")
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth;
                      │                 /.well-known/oauth-protected-resource[/mcp] served unauthenticated
@@ -41,7 +42,7 @@ Internal only (ClusterIP + NetworkPolicy):
 | Service | Source Repo | Port | Description |
 |---------|-----------|------|-------------|
 | frontend | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
+| bff | genetics-results-browser (`bff/Dockerfile`) | 5000 | Backend-for-frontend: assembles browser `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld`, and passes other `/api/*` calls through. Shares the frontend repo and image tag; image `genetics-results-browser-bff` |
 | auth-gateway | — (nginx config) | 8080 | Auth gateway with oauth2-proxy integration; also serves the keycloak login path `<domain>/auth` |
 | oauth2-proxy | — (upstream image) | 4180 | OIDC login against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | 8080 | Identity broker: Google + Apple sign-in, single OIDC issuer |
@@ -69,6 +70,42 @@ in-code defaults, so they are tuning knobs, not requirements:
 The container entrypoint (`genetics-results-api`'s `start.sh`) also raises `ulimit -n`
 to 65536 as defense-in-depth. Keep `TABIX_FILTER_WORKERS` in step with the deployment's
 CPU `limits` if you change them.
+
+### Frontend CSP and the LD proxy
+
+The frontend nginx (`genetics-results-browser/nginx.prod.conf`) serves a Content-Security-Policy
+with `connect-src 'self'`, so the SPA can only issue XHR/fetch to its own origin. The LD lookup
+view used to call `https://api.finngen.fi/api/ld` straight from the browser; once the CSP shipped,
+every lookup failed with `TypeError: Failed to fetch`.
+
+The call is therefore proxied server-side: the browser requests `GET /api/v1/ld` (bff
+`ldRoute.ts`), which validates `variant`/`window`/`panel`/`r2_thresh` and forwards them to
+`LD_API_URL` (default `https://api.finngen.fi/api/ld`, set explicitly in
+`k8s/deployments/bff.yaml`). The route is mounted ahead of the generic passthrough so it never
+reaches results-api. `window` is bounded to the LD server's own 100,000–5,000,000 bp range and
+`panel` to `[A-Za-z0-9_-]+`; the query string is assembled with `URLSearchParams`, so a variant id
+is encoded rather than spliced in; upstream 400/404 pass through, everything else becomes 502 (60s
+timeout → 504). The bff has no egress NetworkPolicy, so this outbound call is permitted.
+
+That window is the **total** width, centred on the query variant (`window=1000000` returns
+±500 kb), so a pairwise lookup must ask for twice the distance between the two variants, and no
+setting reaches a partner more than 2.5 Mb away. The UI clamps its request at 5 Mb and refuses a
+pair further apart than 2.5 Mb up front (both derived from one `MAX_LD_WINDOW` constant in
+`LDContainer.tsx`). Before that, pairs 2.5-5 Mb apart asked for a window the server rejects and
+failed with a bare 400.
+
+Note that `/api/v1/ld` is browser-only: auth-gateway sends `Authorization: Bearer` requests under
+`/api/` straight to results-api (`@api_bearer`), which has no such route, so a programmatic client
+gets a 404 there and should call the LD API itself.
+
+Two consequences worth keeping in mind when editing either side:
+
+- Any **new external host the browser must reach directly** needs an explicit CSP source added in
+  `nginx.prod.conf` — the alternative (and the default choice here) is to proxy it through the bff.
+  `media-src 'self' https://sound.peal.io` is the one such exception, for the remote mp3s
+  `Header.tsx` plays; without it they fall back to `default-src 'self'` and are blocked.
+- The CSP lives in the frontend image, the proxy in the bff image. They share a repo and tag, so
+  ship them together (`build.sh frontend` + `build.sh bff`, then `rollout.sh` both).
 
 ### chat-backend shutdown and stream draining
 
