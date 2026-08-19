@@ -64,7 +64,7 @@ A parent means the values are scoped by that column, so enumerate the pair.
 ```sql
 SELECT l.symbol, cs.cell_type, cs.trait AS peak_id, cs.cs_id,
        cs.chr, cs.pos, cs.ref, cs.alt, cs.pip, cs.mlog10p
-FROM genetics_results.credible_sets_v cs JOIN genetics_results.peak_to_gene_v l
+FROM credible_sets_v cs JOIN peak_to_gene_v l
   ON l.peak_id = cs.trait AND l.cell_type = cs.cell_type
 WHERE cs.data_type = 'caQTL' AND l.symbol = 'IL7R' ORDER BY cs.cell_type, cs.chr, cs.pos
 ```
@@ -74,13 +74,13 @@ WHERE cs.data_type = 'caQTL' AND l.symbol = 'IL7R' ORDER BY cs.cell_type, cs.chr
 ```sql
 SELECT peak_id, COUNT(DISTINCT cell_type) AS n_cell_types,
        MAX(hurdle_zero_nlog10p) AS best_nlog10p
-FROM genetics_results.peak_to_gene_v WHERE symbol = 'IL7R' GROUP BY peak_id ORDER BY best_nlog10p DESC
+FROM peak_to_gene_v WHERE symbol = 'IL7R' GROUP BY peak_id ORDER BY best_nlog10p DESC
 ```
 
 ### Genes a caQTL credible set variant may act on, via its peak
 
 ```sql
-SELECT DISTINCT l.symbol, l.gene_id, cs.cell_type, cs.trait AS peak_id, cs.pip FROM genetics_results.credible_sets_v cs JOIN genetics_results.peak_to_gene_v l
+SELECT DISTINCT l.symbol, l.gene_id, cs.cell_type, cs.trait AS peak_id, cs.pip FROM credible_sets_v cs JOIN peak_to_gene_v l
   ON l.peak_id = cs.trait AND l.cell_type = cs.cell_type
 WHERE cs.data_type = 'caQTL'
   AND cs.chr = 5 AND cs.pos = 1104823 AND cs.ref = 'C' AND cs.alt = 'T'

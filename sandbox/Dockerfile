@@ -37,6 +37,14 @@ RUN /opt/venv/bin/pip install -r /build/requirements.txt
 COPY .sdk-src/ /build/sdk-src/
 RUN /opt/venv/bin/pip install --no-deps /build/sdk-src
 
+# `import genetics`, the name every doc a script's author can read already uses
+# (genetics-results-suite-706). Copied rather than shipped from the wheel: the alias is a
+# promise the SANDBOX makes, and `genetics` is too generic a top-level name to claim in
+# chat-backend and mcp-server, which install the same package. Placed before the prune and
+# the compileall so it is bytecode-baked like everything else; `prune_venv.prune_sdk` walks
+# only site-packages/genetics_mcp_server, so this file is outside its reach by construction.
+COPY genetics_alias.py /opt/venv/lib/python3.11/site-packages/genetics.py
+
 # Everything below runs the *system* interpreter with PYTHONPATH at the venv's
 # site-packages rather than /opt/venv/bin/python3, because the next step deletes
 # /opt/venv/bin. That is also exactly how the final image runs (same CPython minor
@@ -99,6 +107,12 @@ COPY --from=builder /out/group /etc/group
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /out/mplcache /genetics/mplcache
 COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
+# The supervisor (genetics-results-suite-4h6.39). Shipping it does NOT make the image
+# start one: there is still no CMD, and k8s/deployments/sandbox.yaml still declares no
+# command/args, which is what scripts/deploy.sh refuses to apply until 4h6.50 wires it.
+# It is here so the image can be run as a supervisor at all — `docker run <img>
+# /genetics/supervisor.py` — which is what genetics-results-suite-4h6.40 needs.
+COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
 COPY --chown=65532:65532 schema/ /genetics/schema/
 COPY --chown=65532:65532 stubs/ /genetics/sdk/
 
@@ -129,7 +143,7 @@ ENV GCE_METADATA_HOST=169.254.169.254 \
     SANDBOX_SUPERVISOR_UID=65532 \
     SANDBOX_CHILD_UID=65533 \
     SANDBOX_SHARED_GID=65532
-# Deliberately NOT set here, and owned by genetics-results-suite-4h6.14 because they
+# Deliberately NOT set here, and owned by genetics-results-suite-4h6.39 because they
 # are per-execution: TMPDIR, HOME, MPLCONFIGDIR, XDG_CACHE_HOME and PYTHONPYCACHEPREFIX
 # all point inside /scratch/<execution-id> (section 2, writable paths). Setting them to
 # a fixed path in the image would create exactly the cross-execution shared directory
@@ -139,7 +153,8 @@ USER 65532:65532
 WORKDIR /genetics
 
 # ENTRYPOINT is the bare interpreter so the image is inspectable (`docker run <img> -c
-# ...`) and so 4h6.14 can supply the supervisor as the command without rebuilding.
-# There is no CMD: the supervisor module is genetics-results-suite-4h6.14's to add, and
+# ...`) and so the supervisor can be supplied as the command without rebuilding
+# (genetics-results-suite-4h6.50 wires it into k8s/deployments/sandbox.yaml).
+# There is no CMD: the supervisor module is genetics-results-suite-4h6.39's to add, and
 # a placeholder default here would be indistinguishable from a real one at runtime.
 ENTRYPOINT ["/usr/bin/python3"]

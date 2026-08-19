@@ -67,13 +67,30 @@ tables:
 
     examples:                      # optional -- example SQL queries for agents
       - description: string        # what the query demonstrates
-        sql: string                # the SQL query text
+        sql: string                # the SQL query text; name views BARE (`FROM <view>`) --
+                                   # no project/dataset prefix and no backticks around the
+                                   # name (see below)
 
     categorical_columns:           # optional -- low-cardinality columns exposed in /schema
       <column_name>: string | null
         # null: flat list of distinct values
         # string: values depend on this parent column (e.g. "resource")
 ```
+
+### Field details for `tables.<table>.examples`
+
+`sql:` must name every view by its **bare** name — `FROM credible_sets_v`, never
+`FROM genetics_results.credible_sets_v` and never `` FROM `credible_sets_v` ``
+(`genetics-results-suite-bee`). These examples are copied verbatim into
+`sandbox/schema/<view>.md` and are what a sandboxed agent imitates, so the convention here
+becomes the convention in generated queries. db-api's `_qualify_tables` rewrites a bare
+name in a table position to `` `{PROJECT_ID}.{DATASET_ID}.{view}` `` before its allow-list
+check, which is what lets one binary serve `genetics_dev` and `genetics_results` with no
+change to the SQL. Two ways to get this wrong, both silent here and loud at query time:
+qualifying the name yourself pins the example to one dataset, and **backticking it without
+qualifying it** defeats the rewrite entirely — the regex is `\b(FROM|JOIN)\s+<name>\b` and
+does not match a backtick after the whitespace, so the name reaches BigQuery unqualified
+and fails to resolve.
 
 ### Field details for `tables.<table>.column_types`
 

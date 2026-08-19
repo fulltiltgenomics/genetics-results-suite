@@ -33,7 +33,10 @@ Internal only (ClusterIP + NetworkPolicy):
   ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server
   ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
   ├── keycloak          (identity broker, port 8080) — reached via the /auth path on the primary domain
-  └── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
+  ├── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
+  └── sandbox           (code execution, port 8080)  — reachable from chat-backend ONLY; egress
+                                                       limited to db-api + results-api; not applied
+                                                       unless ENABLE_SANDBOX=true
 ```
 
 ## Services
@@ -50,6 +53,7 @@ Internal only (ClusterIP + NetworkPolicy):
 | chat-backend | genetics-mcp-server | 8000 | LLM chat with MCP tools |
 | mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
 | db-api | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
+| sandbox | sandbox/ (local build context; SDK from genetics-mcp-server) | 8080 | Code-execution sandbox for model-authored Python. gVisor node pool, dedicated KSA, one `emptyDir` and no other mount. Applied only when `ENABLE_SANDBOX=true`, which `scripts/deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false); see "The sandbox Deployment" below |
 | rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only) |
 | monitor | — (scripts/monitor/) | — | CronJob: health checks, BQ summary, log alerts → Slack |
 | analyze-conversations | genetics-mcp-server (same image) | — | Nightly CronJob: LLM scoring of chat conversations (see below) |
@@ -122,6 +126,12 @@ client-side reconnect and no persistence of partial assistant turns.
 ## Project structure
 
 ```
+├── benchmarks/               # inputs for the paired A/B replay benchmark (the harness itself
+│   │                         #   is genetics-mcp-server's replay_benchmark.py)
+│   ├── eval_dataset_local.json  # hand-authored question set — NOT a production replay; see
+│   │                         #   the README for what that costs the comparison
+│   └── README.md             # provenance, the two deliberate exclusions, the unfilled
+│                             #   script-failure pre-registration, and the run procedure
 ├── configs/
 │   ├── rag/                  # RAG experiment configs (not k8s manifests)
 │   ├── datasets.yaml              # canonical dataset/resource definitions (single source of truth)
@@ -144,7 +154,8 @@ client-side reconnect and no persistence of partial assistant turns.
 │                             #   and the `genetics` login theme
 ├── sandbox/                  # sandbox image build context (distroless, no shell, uid 65532)
 │                             #   for model-authored Python; SDK pip-installed from
-│                             #   genetics-mcp-server at build time. See
+│                             #   genetics-mcp-server at build time and importable as
+│                             #   `genetics` (genetics_alias.py). See
 │                             #   docs/code-execution-security.md
 ├── scripts/
 │   ├── build-all.sh          # build and push all Docker images
@@ -153,6 +164,11 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── test-e2e-local.py     # end-to-end run_analysis verification against the live local
+│                             #   stack (4h6.49). Needs dev-stack.sh + run-sandbox-local.sh up
+│   ├── dev-stack.sh          # start/stop the five local dev servers from one tree
+│                             #   (main checkouts or worktrees) against one dataset.
+│                             #   See docs/local-dev-vm.md
 │   ├── bq-dev-dataset.sh     # stand up / verify / tear down the BigQuery rehearsal
 │                             #   dataset. See docs/bigquery-dev-dataset.md
 │   ├── chat_usage_stats.sh   # chat usage counts from the BigQuery chat-log sink
@@ -186,6 +202,10 @@ client-side reconnect and no persistence of partial assistant turns.
 │   └── terraform.tfvars      # active variable values (not committed)
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
+    ├── chat-tool-reference.md # verbatim transcription of what the LLM receives: every tool
+    │                         #   name/description/schema, the TOOL_PROFILES membership, the
+    │                         #   system prompt, verbosity fragments and instruction envelope,
+    │                         #   and the chat surface vs the /mcp surface
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── code-execution-security.md # threat model and security design of record for the
     │                         #   model-authored-code sandbox (isolation, egress, credentials,
@@ -390,10 +410,10 @@ builder owns and that a new dataset must be added to.
 - **db-api** is internal-only (NetworkPolicy) **and** requires `Authorization: Bearer $INTERNAL_API_SECRET` on every endpoint except `/health`. The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is itself reachable from outside, so anything that could drive mcp-server could reach BigQuery behind it. That path fails open (with a startup warning) if the env var is unset, so local runs and mid-rollout clusters keep working — **the sandbox token path below does not inherit that**.
 - **Sandbox execution tokens** (`genetics-results-suite-4h6.9`, design: `docs/code-execution-security.md` §4). The code-execution sandbox must never hold `INTERNAL_API_SECRET`, which authenticates the *service*, never expires, and would let a model-authored script reach both backends forever. Instead chat-backend mints a **short-lived HS256 JWT per audience per execution**, signed with a *separate* key `SANDBOX_TOKEN_SIGNING_KEY` (`genetics-secrets` key `sandbox-token-signing-key`, generated by `create-secrets.sh`) that chat-backend, db-api and results-api mount and the sandbox does not. Claims: `iss=chat-backend`, `aud` = `db-api` **or** `results-api` (so a token captured from one cannot be replayed at the other), `sub` = the authenticated user, `sid` = the chat session id (this is what makes `endpoint_access` lines attributable to a conversation), `jti` = the execution id (also the `/scratch/<id>` directory name, joining logs across chat-backend, the sandbox SDK and db-api), `iat`/`exp` 5 minutes apart, and a `scope` whose presence is required and whose value is not yet interpreted. Both validators **discriminate on the JOSE `alg` header, never on dot count** — three-segment JWTs are also what every Google Identity Token looks like, and routing on dots would 401 that entire class of results-api caller. A sandbox-shaped bearer is validated only as a sandbox token: hard 401 on failure, never a fallthrough to the shared-secret comparison (which would degrade a malformed token into "is this string equal to the secret") and never on to `verify_oauth2_token`. Reading the unverified header is safe because it only *selects* a validator — each branch pins its own algorithm and key. In db-api the branch sits **ahead of** the fail-open early return; in results-api it is a new case 0 ahead of the four `genetics-results-suite-fad` precedence cases, and reports the caller as `sandbox:<user>` so a script is never mistaken for a verified human. `SANDBOX_ENABLED` (a separate required input, true once the sandbox Deployment exists) makes both services `sys.exit(1)` rather than warn when either secret is unset — without it, a script could simply omit the `Authorization` header and be served by the fail-open branch with nothing to attribute it to. Both validators also assert the minter's invariants rather than trusting them: an **empty** `sub`, `sid` or `jti` is rejected (PyJWT's `require` catches only missing/null, and a blank one attributes the query to nobody), and `aud` must be a **string**, because PyJWT reads a list `aud` as membership and `["db-api","results-api"]` would otherwise validate at both services. Both pass `leeway=5` to `jwt.decode` for minter/verifier clock skew — the 300s ttl covers skew only in the past direction, while PyJWT ≥ 2.10 rejects `iat > now` outright — and the separate 300s `iat` age check stays exact. The principal each validator resolves is left on `request.state` (`request.state.principal` in db-api — a `SandboxPrincipal`, the string `"internal"`, or `None`; `request.state.sandbox_principal` in results-api), which is the hook the caps below key on.
 - **Per-credential row and byte caps** (`genetics-results-suite-4h6.28`, design: `docs/code-execution-security.md` §4). The tight limits are the **default**, relaxed only for a *verified non-sandbox* credential — the inverse of keying them on the sandbox audience, which would let a caller widen its limits by presenting a weaker credential or none at all. **db-api**: `maximum_bytes_billed` 50 GB per query (vs the operator's `MAX_BYTES_BILLED`, 100 GB), a 25 000-row response cap (vs `MAX_ROWS`, 100 000), and an aggregate **200 GB per `jti`** enforced by a bounded in-process LRU counter — over budget is a **429, never a truncated result**. The budget spans **all four** of db-api's BigQuery paths: `/query` charges the dry run's estimate *before* the bytes are spent and reconciles afterwards, while `/schema`'s distinct-value scans, `/stats` and `/tables/{t}/sample` — none of them cached at the HTTP layer, and none with a dry run to price them — go through one shared helper that refuses to start a job once the budget is spent and charges what the job processed once it finishes, so the budget can be overshot by at most one query's `maximum_bytes_billed`. `/schema`'s scans run at the **triggering** caller's ceiling and are charged to it; previously they passed no request and so ran at the relaxed 100 GB ceiling, twice the sandbox per-query cap, for free. That does not contaminate the shared `_get_categorical_values` cache across callers, because a job over the triggering caller's ceiling fails and leaves the cache unpopulated for the next caller to retry. Charge and reconcile are in `total_bytes_processed`, not `total_bytes_billed`: a dry run reports only the former, so it is the one figure available on both sides of the correction. A query that raises between the charge and the reconcile is refunded in a `finally`, so syntax errors do not consume a budget they never spent. The relax condition here is exactly one thing, a successful `hmac.compare_digest` against `INTERNAL_API_SECRET`; the fail-open branch's `None` principal stays tight. The row cap is clamped **in the handler**: `QueryRequest.max_rows` carries a class-level `le=MAX_ROWS` evaluated once at model-definition time, so it cannot vary per credential, and tightening the module-level `MAX_ROWS` would move that bound for every caller in the process. The counter is in-process and db-api runs `replicas: 1` with no HPA, so today it is exact — **at more than one replica it would bound spend per replica, not globally**; `k8s/deployments/db-api.yaml` carries a comment on `replicas: 1` saying so, and a cross-replica budget needs shared state and is deliberately not in v1. **results-api** carries its own response-**byte** cap (16 MiB) and **no row cap**, enforced by `SandboxResponseCapMiddleware` innermost of GZip so it measures the payload the caller decodes; a capped response is buffered precisely so the answer can be a 429 rather than a truncated stream, the buffer is handed downstream without a copy, and a relaxed response is never buffered or inspected. The row cap was removed deliberately: counting rows meant `json.loads` over the whole body on the event loop — a memory amplifier only a sandbox caller could trigger, on a `replicas: 1` pod — and it never bound TSV, the default `format` of every bulk range endpoint, while the byte cap was already the binding one. Exceeding the cap now **tears the producer down** by raising out of `send`, rather than discarding chunks a generator keeps producing; that generator is GCS range reads plus the tabix filter pool on the real endpoints. Its relax condition is **broader** — *any* verified non-sandbox principal (shared secret, Google id_token, or per-user chat API token) — because auth-gateway's `@api_bearer` location routes programmatic clients straight here with their own token and deliberately no shared secret, so an hmac-only rule would put verified humans on the sandbox caps on the bulkiest endpoints in the suite. Two cases reach a handler with no principal resolved and are decided on their own terms rather than by defaulting: an `@is_public` route — re-derive the set with `grep -rn "@is_public" app/`; today **seven**: `/api/v1/rsid/variants` GET and POST, `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, `/api/v1/auth` (the route the code registers; this doc previously called it `/auth/status`), plus `/api/v1` and `/healthz` in `app/server.py` — where `auth_required` returns before `get_verified_user`, and `REQUIRE_AUTH=false` (dev only; the shipped `results-api.yaml` sets `"true"`). Both are **relaxed**. The `@is_public` case exists only while `SANDBOX_ENABLED` is `"false"`: with the sandbox deployed the anonymous surface collapses to `/healthz` (`genetics-results-suite-0lf`, below), so six of the seven get whatever their caller's principal earns them instead. Measured, tight caps there would truncate nothing today — the largest possible public response is 888 rows / 18.6 KB (`variant_sets/FinnGen_enriched_202505`) against a 16 MiB cap. What makes that exception carry **zero security delta** is not the caps but that every public route bounds its own response **for every caller**: `POST /rsid/variants` used to read an unbounded body and answer one object per id, so a script omitting its sandbox token got a strictly looser limit than the same script presenting it — the core invariant, broken — and it now enforces `MAX_RSIDS` (5 000) uniformly, with no sandbox special case, plus a bounded body read. 5 000 comes from the GET's own ceiling: h11 caps the request line and headers at 16 KiB and the shortest id costs 4 bytes in the query string, so no working GET carries more than 4 096. The measurements are in `docs/code-execution-security.md` §4. The sandbox principal is also resolved **before** both short circuits in `app/dependencies.py:auth_required`, so a sandbox token is capped on a public route and under `REQUIRE_AUTH=false` too — necessary, but not sufficient on its own, since it only tightens the caller that chose to identify itself.
-- **results-api per-execution limits** (`genetics-results-suite-4h6.29`, design: `docs/code-execution-security.md` §4). The 16 MiB cap above bounds **one** response; a script has ~120 s of wall clock and nothing bounded how many responses it asked for, at what concurrency, or how many bytes it accumulated. `app/core/sandbox_budget.py` is the analogue of db-api's `_jti_bytes` and is deliberately shaped like it — one in-process map keyed on `jti`, checked **before** the handler runs, 429 rather than truncation — with four limits, all env-configurable (db-api's are module constants; results-api payload sizes vary by dataset and format in a way BigQuery byte counts do not): aggregate response bytes per `jti` **1 GiB** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`), requests per `jti` **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`), concurrent requests per `jti` **4** (`SANDBOX_MAX_CONCURRENT_REQUESTS`) and pod-wide **8** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Concurrency is the one with a **memory** failure mode rather than a cost one — each in-flight capped request buffers up to 16 MiB on a `replicas: 1` pod that preloads the gene maps and the search index — which is why it exists at all and why the pod-wide bound is there even though the sandbox's own `concurrency: 1` makes it unreachable today. All five are declared at their defaults in `k8s/deployments/results-api.yaml` (table under "results-api deployment tuning"), and each is validated at import: below 1 turns a `>=` ceiling into "reject everything", and `..._TOTAL` below the per-execution value makes the per-execution number a lie, so both refuse to start. Admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI contract puts after the last byte of the response, a `StreamingResponse` included; the middleware verifies the bearer itself, non-raising, because `request.state.sandbox_principal` is set later by `auth_required` and a request-count bound has to be admitted before the handler runs. The reason the release cannot move to a dependency teardown is **not** that a streaming generator outlives it — measured on FastAPI 0.136.1 a `yield` dependency's exit code runs *after* the response body, so for a matched route the two are indistinguishable — but that `admit` runs for every request while a dependency is solved only for a **matched route**: an unmatched path 404s out of the router with no dependency entered, stranding the slot permanently, since `_sweep_locked` will not evict an entry with `in_flight > 0`. Bytes are charged from what was **sent**, taken from the cap middleware's own buffer, so the two cannot diverge or double-count. **Every status is buffered, capped and charged, not only 2xx**: "an error body is small" was false, because FastAPI's 422 handler echoes the offending input (measured: a 100 000-char query param produced a 100 144-byte body, and a 200 014-byte body was delivered under a 500-byte cap uncharged), which made the real egress bound the request count × whatever fits in a URI. An over-cap 2xx still becomes a 429 while an over-cap non-2xx keeps its own status with the same bounded stub body, because rewriting a 404 into a 429 loses the answer; only that stub case is uncharged. **Reject, never queue**: queueing burns the sandbox's clock on a wait the script cannot see and can admit work that finishes after its execution is dead, the same waste `4h6.28` removed. Every 429 carries `code`, `limit` and `observed` (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`, `sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_execution_tracker_full`). **Cleanup cannot evict a live execution** — the deliberate departure from db-api's LRU, which can drop a running counter and silently reset its budget: an entry is evictable only once its token is past the point `verify_sandbox_token` would accept it *and* nothing is in flight under it (covering a stream that outlives its own token); the map is hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096) and at the bound refuses the *new* execution rather than evicting a running one. In-process, so `replicas: 1` is load-bearing exactly as on db-api and `k8s/deployments/results-api.yaml` now carries the matching comment. **One limitation remains documented rather than fixed** (`docs/code-execution-security.md` §4): `sandbox_execution_tracker_full` and the pod-wide concurrency limit are pod-wide and therefore **cross-tenant** denial surfaces, sized far above honest use rather than made fair. `tests/test_sandbox_budget.py` (30 tests, offline lane) is the only thing that will report a regression: production impact is nil while `SANDBOX_ENABLED` is `"false"` and no sandbox Deployment exists.
-- **The no-credential path into the counters is closed; the internal-secret path is not** (`genetics-results-suite-0lf`, design: `docs/code-execution-security.md` §4). The four counters above are admitted from the `Authorization` header, so a request carrying none is counted against **nothing** — and the sandbox's NetworkPolicy egress reaches `results-api:4000` directly, bypassing auth-gateway, so a script could shed all four by omitting the header on any of the seven `@is_public` routes (measured: 20/20 header-less requests served with the counter map empty). That half is closed by **shrinking the anonymous surface, not by identifying the caller**: `app/dependencies.is_public_endpoint` treats only `ALWAYS_ANONYMOUS_PATHS` — `/healthz` — as servable with no principal whenever `ANONYMOUS_SURFACE_MINIMAL` is on, so every route touching a data path answers 401 to a request carrying nothing. results-api still cannot tell a sandbox request from a browser request — both arrive on `:4000` in-cluster — and for this half it does not have to. **It is *not* true that the only way into a handler is to present a credential whose presentation calls `admit`**, and earlier drafts of this bullet said so wrongly: `admit` is reached only from `_sandbox_principal`, which accepts an HS256 sandbox token and nothing else, while `INTERNAL_API_SECRET` satisfies `is_internal_caller` — measured against the real ASGI app with `SANDBOX_ENABLED=true`, `Authorization: Bearer $INTERNAL_API_SECRET` gets **200** on `/api/v1/rsid/variants` and `/api/v1/variant_sets` as `user_email=mcp-tool` with the counter map still empty. The sandbox holds that secret today and the SDK sends it on every request, so as shipped this converts "omit the header" into "send the other header"; the residual path closes only when **`genetics-results-suite-4h6.7`** stops giving the sandbox `INTERNAL_API_SECRET` (the Deployment) and **`genetics-results-suite-4h6.14`** makes the SDK send the per-execution token (the transport). The related rollout hazard is the inverse of what an earlier draft warned: flipping the flag early does **not** 401 the SDK, it leaves the SDK working while the counters bind nothing, so the flip looks successful and the control is inert. **Requiring a principal does not yet cost the browser nothing.** The BFF attaches the shared secret only on its **typed** upstream routes (`bff/upstream.ts`); the browser reaches all six narrowed routes through the BFF's **generic passthrough** (`bff/passthrough.ts`), which attaches no credential — measured against the live cluster, a header-less request through the *deployed* BFF still gets **200** from `/api/v1/auth`, and the passthrough fix exists only in genetics-results-browser's un-deployed `db-only-architecture` worktree. Usage logging cannot settle this either way: it cannot attribute callers on `@is_public` routes at all, because `state.authenticated_user` is never set there. **The control is `ANONYMOUS_SURFACE_MINIMAL`, not `SANDBOX_ENABLED`, and it defaults to on** (`genetics-results-suite-rhh`). It was gated directly on `SANDBOX_ENABLED` at first, which made one switch both the incident lever and the security lever with the security side failing **open**: `SANDBOX_ENABLED=false`, the routine action for killing the sandbox under pressure, silently re-opened all six routes. `SANDBOX_ENABLED=true` now merely *forces* the minimal surface, and widening it is an explicit `ANONYMOUS_SURFACE_MINIMAL=false` that the sandbox overrides. Defaulting it on **does** change behaviour at the next results-api deploy — those six routes stop answering anonymous callers now rather than at sandbox rollout. Most in-cluster callers admitted to `results-api:4000` by `k8s/network-policies/policies.yaml` already present a credential (auth-gateway forwards the client's own bearer, chat-backend and mcp-server send `INTERNAL_API_SECRET`), and nothing from outside the cluster reaches results-api without going through auth-gateway — but **two callers do not, so this is a three-service ordering constraint: `bff` → `mcp-server` → `results-api`.** (1) The **browser**: the BFF's credential-less generic passthrough serves all six of these routes and the fix is un-deployed (above), so results-api first means a 401 on the login-state probe, variant sets and rsid lookups. (2) An **mcp-server pod with `INTERNAL_API_SECRET` unset**, whose tool executor fell back to sending **no** `Authorization` header; `genetics-results-suite-618` turned that into a startup failure. Deploying 618 first does **not** keep that pod working — it converts a bare 401 with no local signal into a CrashLoopBackOff naming the variable. Diagnosability, not availability. **Nothing enforces the order**: `scripts/rollout.sh` documents it in its `ORDERING:` header, while `scripts/deploy.sh` restarts every Deployment in one unordered loop with results-api ahead of chat-backend and mcp-server (a warning now sits next to its `DEPLOYS` list). **Rejected**: removing `results-api:4000` from the sandbox's egress allow-list, because the SDK genuinely calls a public route (`search(rsids=...)` → `GET /v1/rsid/variants`) and 16 of its 25 functions are results-api-only; requiring the *sandbox* token specifically, which results-api cannot ask for without identifying the caller and which `/healthz` cannot satisfy for the kubelet; and a pod-wide anonymous-request bucket, which is a rate limiter (`genetics-results-suite-8zk`) that would 429 browser traffic. Enforced by `tests/test_anonymous_surface.py`, which reads the **live route table** so a new `@is_public` decorator fails a test rather than silently reopening the hole; `scripts/test-network-policies.py` cannot see route decorators and is not the right home for it.
+- **results-api per-execution limits** (`genetics-results-suite-4h6.29`, design: `docs/code-execution-security.md` §4). The 16 MiB cap above bounds **one** response; a script has ~120 s of wall clock and nothing bounded how many responses it asked for, at what concurrency, or how many bytes it accumulated. `app/core/sandbox_budget.py` is the analogue of db-api's `_jti_bytes` and is deliberately shaped like it — one in-process map keyed on `jti`, checked **before** the handler runs, 429 rather than truncation — with four limits, all env-configurable (db-api's are module constants; results-api payload sizes vary by dataset and format in a way BigQuery byte counts do not): aggregate response bytes per `jti` **1 GiB** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`), requests per `jti` **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`), concurrent requests per `jti` **4** (`SANDBOX_MAX_CONCURRENT_REQUESTS`) and pod-wide **8** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Concurrency is the one with a **memory** failure mode rather than a cost one — each in-flight capped request buffers up to 16 MiB on a `replicas: 1` pod that preloads the gene maps and the search index — which is why it exists at all and why the pod-wide bound is there even though the sandbox's own `concurrency: 1` makes it unreachable today. All five are declared at their defaults in `k8s/deployments/results-api.yaml` (table under "results-api deployment tuning"), and each is validated at import: below 1 turns a `>=` ceiling into "reject everything", and `..._TOTAL` below the per-execution value makes the per-execution number a lie, so both refuse to start. Admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI contract puts after the last byte of the response, a `StreamingResponse` included; the middleware verifies the bearer itself, non-raising, because `request.state.sandbox_principal` is set later by `auth_required` and a request-count bound has to be admitted before the handler runs. The reason the release cannot move to a dependency teardown is **not** that a streaming generator outlives it — measured on FastAPI 0.136.1 a `yield` dependency's exit code runs *after* the response body, so for a matched route the two are indistinguishable — but that `admit` runs for every request while a dependency is solved only for a **matched route**: an unmatched path 404s out of the router with no dependency entered, stranding the slot permanently, since `_sweep_locked` will not evict an entry with `in_flight > 0`. Bytes are charged from what was **sent**, taken from the cap middleware's own buffer, so the two cannot diverge or double-count. **Every status is buffered, capped and charged, not only 2xx**: "an error body is small" was false, because FastAPI's 422 handler echoes the offending input (measured: a 100 000-char query param produced a 100 144-byte body, and a 200 014-byte body was delivered under a 500-byte cap uncharged), which made the real egress bound the request count × whatever fits in a URI. An over-cap 2xx still becomes a 429 while an over-cap non-2xx keeps its own status with the same bounded stub body, because rewriting a 404 into a 429 loses the answer; only that stub case is uncharged. **Reject, never queue**: queueing burns the sandbox's clock on a wait the script cannot see and can admit work that finishes after its execution is dead, the same waste `4h6.28` removed. Every 429 carries `code`, `limit` and `observed` (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`, `sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_execution_tracker_full`). **Cleanup cannot evict a live execution** — the deliberate departure from db-api's LRU, which can drop a running counter and silently reset its budget: an entry is evictable only once its token is past the point `verify_sandbox_token` would accept it *and* nothing is in flight under it (covering a stream that outlives its own token); the map is hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096) and at the bound refuses the *new* execution rather than evicting a running one. In-process, so `replicas: 1` is load-bearing exactly as on db-api and `k8s/deployments/results-api.yaml` now carries the matching comment. **One limitation remains documented rather than fixed** (`docs/code-execution-security.md` §4): `sandbox_execution_tracker_full` and the pod-wide concurrency limit are pod-wide and therefore **cross-tenant** denial surfaces, sized far above honest use rather than made fair. `tests/test_sandbox_budget.py` (30 tests, offline lane) is the only thing that will report a regression: production impact is nil while `SANDBOX_ENABLED` is `"false"` and no sandbox Deployment is applied (the manifest exists since `4h6.7`, gated off).
+- **The no-credential path into the counters is closed; the internal-secret path is not** (`genetics-results-suite-0lf`, design: `docs/code-execution-security.md` §4). The four counters above are admitted from the `Authorization` header, so a request carrying none is counted against **nothing** — and the sandbox's NetworkPolicy egress reaches `results-api:4000` directly, bypassing auth-gateway, so a script could shed all four by omitting the header on any of the seven `@is_public` routes (measured: 20/20 header-less requests served with the counter map empty). That half is closed by **shrinking the anonymous surface, not by identifying the caller**: `app/dependencies.is_public_endpoint` treats only `ALWAYS_ANONYMOUS_PATHS` — `/healthz` — as servable with no principal whenever `ANONYMOUS_SURFACE_MINIMAL` is on, so every route touching a data path answers 401 to a request carrying nothing. results-api still cannot tell a sandbox request from a browser request — both arrive on `:4000` in-cluster — and for this half it does not have to. **It is *not* true that the only way into a handler is to present a credential whose presentation calls `admit`**, and earlier drafts of this bullet said so wrongly: `admit` is reached only from `_sandbox_principal`, which accepts an HS256 sandbox token and nothing else, while `INTERNAL_API_SECRET` satisfies `is_internal_caller` — measured against the real ASGI app with `SANDBOX_ENABLED=true`, `Authorization: Bearer $INTERNAL_API_SECRET` gets **200** on `/api/v1/rsid/variants` and `/api/v1/variant_sets` as `user_email=mcp-tool` with the counter map still empty. **The sandbox's half of that residue is now closed in the transport** (`genetics-results-suite-4h6.44`, landed): genetics-mcp-server's `tools/executor.py` builds its client from the per-execution tokens whenever `SANDBOX_TOKEN_FILE` names them, attaches the audience-bound token per destination, and **never** attaches `INTERNAL_API_SECRET` alongside or instead — the two paths are mutually exclusive in `_build_client`, because preferring the secret would silently re-open this. An unusable token file raises rather than falling back to the secret or to no header. **`genetics-results-suite-4h6.7`** keeps the Deployment half: the sandbox is never given the secret, which matters independently of what the SDK prefers, since a script that can read `os.environ` can build its own client. **What remains is intentional and is not the sandbox's**: results-api still serves an internal-secret caller unaccounted, because chat-backend, mcp-server and bff legitimately authenticate that way and none of them is a per-execution tenant — pinned by `tests/test_anonymous_surface.py::test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it`, which asserts both halves. The rollout hazard an earlier draft warned about — flipping the flag early leaves the SDK working while the counters bind nothing — is gone with the transport: a sandbox request now resolves a principal, so `admit` runs. **Requiring a principal does not yet cost the browser nothing.** The BFF attaches the shared secret only on its **typed** upstream routes (`bff/upstream.ts`); the browser reaches all six narrowed routes through the BFF's **generic passthrough** (`bff/passthrough.ts`), which attaches no credential — measured against the live cluster, a header-less request through the *deployed* BFF still gets **200** from `/api/v1/auth`, and the passthrough fix exists only in genetics-results-browser's un-deployed `db-only-architecture` worktree. Usage logging cannot settle this either way: it cannot attribute callers on `@is_public` routes at all, because `state.authenticated_user` is never set there. **The control is `ANONYMOUS_SURFACE_MINIMAL`, not `SANDBOX_ENABLED`, and it defaults to on** (`genetics-results-suite-rhh`). It was gated directly on `SANDBOX_ENABLED` at first, which made one switch both the incident lever and the security lever with the security side failing **open**: `SANDBOX_ENABLED=false`, the routine action for killing the sandbox under pressure, silently re-opened all six routes. `SANDBOX_ENABLED=true` now merely *forces* the minimal surface, and widening it is an explicit `ANONYMOUS_SURFACE_MINIMAL=false` that the sandbox overrides. Defaulting it on **does** change behaviour at the next results-api deploy — those six routes stop answering anonymous callers now rather than at sandbox rollout. Most in-cluster callers admitted to `results-api:4000` by `k8s/network-policies/policies.yaml` already present a credential (auth-gateway forwards the client's own bearer, chat-backend and mcp-server send `INTERNAL_API_SECRET`), and nothing from outside the cluster reaches results-api without going through auth-gateway — but **two callers do not, so this is a three-service ordering constraint: `bff` → `mcp-server` → `results-api`.** (1) The **browser**: the BFF's credential-less generic passthrough serves all six of these routes and the fix is un-deployed (above), so results-api first means a 401 on the login-state probe, variant sets and rsid lookups. (2) An **mcp-server pod with `INTERNAL_API_SECRET` unset**, whose tool executor fell back to sending **no** `Authorization` header; `genetics-results-suite-618` turned that into a startup failure. Deploying 618 first does **not** keep that pod working — it converts a bare 401 with no local signal into a CrashLoopBackOff naming the variable. Diagnosability, not availability. **Nothing enforces the order**: `scripts/rollout.sh` documents it in its `ORDERING:` header, while `scripts/deploy.sh` restarts every Deployment in one unordered loop with results-api ahead of chat-backend and mcp-server (a warning now sits next to its `DEPLOYS` list). **Rejected**: removing `results-api:4000` from the sandbox's egress allow-list, because the SDK genuinely calls a public route (`search(rsids=...)` → `GET /v1/rsid/variants`) and 16 of its 25 functions are results-api-only; requiring the *sandbox* token specifically, which results-api cannot ask for without identifying the caller and which `/healthz` cannot satisfy for the kubelet; and a pod-wide anonymous-request bucket, which is a rate limiter (`genetics-results-suite-8zk`) that would 429 browser traffic. Enforced by `tests/test_anonymous_surface.py`, which reads the **live route table** so a new `@is_public` decorator fails a test rather than silently reopening the hole; `scripts/test-network-policies.py` cannot see route decorators and is not the right home for it.
 - **Internal calls**: chat-backend authenticates to results-api via `INTERNAL_API_SECRET`
-- **A deployed service never falls back to no credential** (`genetics-results-suite-618`, the same contract as `4h6.9`). genetics-mcp-server's `tools/executor.py` built its client header as "bearer if `INTERNAL_API_SECRET` is set, **no header at all** if it is not", so an unset variable made every call to results-api and db-api anonymous — silently, at request time, and invisibly at the far end, since results-api's usage log attributes callers by the secret and never sees a principal on a route that resolves none (measured: 246/246 NULL `user_email` on `GET /api/v1/rsid/variants` over 90 days, which distinguishes an anonymous caller from an internal one not at all). **Only `k8s/deployments/mcp-server.yaml` marks that `secretKeyRef` `optional: true`**, so a missing key in `genetics-secrets` leaves the variable unset and that pod starts anyway — mcp-server is the only one of the two that can reach the silently-anonymous state. `k8s/deployments/chat-backend.yaml` sets no `optional` on that key, so a missing key stops it at `CreateContainerConfigError` instead of starting it credential-less. Both entrypoints still call the guard, because an **empty** value satisfies the kubelet in either Deployment and reaches the process. The two deployed entrypoints now call `config.settings.require_internal_api_secret()` — `mcp_server.main()` for the remote transports, beside the existing `MCP_API_KEY` check, and `chat_api`'s lifespan when `REQUIRE_AUTH` is true — so a pod in that state crash-loops with a message naming the variable instead of issuing anonymous requests. Deliberately **not** enforced at import, in `Settings`, or in `ToolExecutor.__init__`: a local run against an unauthenticated results-api needs no secret, and the **sandbox image holds no internal credential by design** (`_PrunedInstallSettings` — it ships only the SDK's import closure and gets a per-execution token instead, `4h6.9`/`4h6.14`). A full install that builds the client with no secret now also logs a warning naming the variable, which is the only local signal on a developer's machine. This is one leg of the ordering constraint on `genetics-results-suite-rhh` — mcp-server ships before results-api — but not the whole of it: the browser's BFF passthrough is the other credential-less caller and ships first of the three. And 618 does not keep a secret-less pod working; it makes the failure legible (CrashLoopBackOff naming the variable) instead of a bare 401.
+- **A deployed service never falls back to no credential** (`genetics-results-suite-618`, the same contract as `4h6.9`). genetics-mcp-server's `tools/executor.py` built its client header as "bearer if `INTERNAL_API_SECRET` is set, **no header at all** if it is not", so an unset variable made every call to results-api and db-api anonymous — silently, at request time, and invisibly at the far end, since results-api's usage log attributes callers by the secret and never sees a principal on a route that resolves none (measured: 246/246 NULL `user_email` on `GET /api/v1/rsid/variants` over 90 days, which distinguishes an anonymous caller from an internal one not at all). **Only `k8s/deployments/mcp-server.yaml` marks that `secretKeyRef` `optional: true`**, so a missing key in `genetics-secrets` leaves the variable unset and that pod starts anyway — mcp-server is the only one of the two that can reach the silently-anonymous state. `k8s/deployments/chat-backend.yaml` sets no `optional` on that key, so a missing key stops it at `CreateContainerConfigError` instead of starting it credential-less. Both entrypoints still call the guard, because an **empty** value satisfies the kubelet in either Deployment and reaches the process. The two deployed entrypoints now call `config.settings.require_internal_api_secret()` — `mcp_server.main()` for the remote transports, beside the existing `MCP_API_KEY` check, and `chat_api`'s lifespan when `REQUIRE_AUTH` is true — so a pod in that state crash-loops with a message naming the variable instead of issuing anonymous requests. Deliberately **not** enforced at import, in `Settings`, or in `ToolExecutor.__init__`: a local run against an unauthenticated results-api needs no secret, and the **sandbox image holds no internal credential by design** (`_PrunedInstallSettings` — it ships only the SDK's import closure and gets a per-execution token instead, `4h6.9`/`4h6.44`). A full install that builds the client with no secret now also logs a warning naming the variable, which is the only local signal on a developer's machine. This is one leg of the ordering constraint on `genetics-results-suite-rhh` — mcp-server ships before results-api — but not the whole of it: the browser's BFF passthrough is the other credential-less caller and ships first of the three. And 618 does not keep a secret-less pod working; it makes the failure legible (CrashLoopBackOff naming the variable) instead of a bare 401.
 - **External MCP servers**: chat-backend proxies tools from external MCP servers (gnomAD, Open Targets) configured via `EXTERNAL_MCP_SERVERS` secret; `EXTERNAL_MCP_EXCLUDE_TOOLS` excludes specific tools by name (comma-separated)
 - **Third-party live resources called natively**: separately from the proxied MCP servers, genetics-mcp-server calls several public APIs directly over its own unauthenticated HTTP client (never the internal secret): MouseMine/MGI (`search_mgi`), UniProt + EBI Proteins (`get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`), myvariant.info (`get_myvariant_annotations`), cBioPortal (`search_cbioportal`), and the literature/web backends (Europe PMC, Perplexity, Tavily). All are chat-backend only — excluded from the standalone mcp-server via `_mcp_disabled`. None needs an API key except Perplexity and Tavily. Per-tool behaviour is documented in `../genetics-mcp-server/docs/project-spec.md`.
 
@@ -432,7 +452,7 @@ explicitly: pin the build, or match on something build-independent.
 
     A query crossing an era boundary must OR the relevant tests together; a query keyed on any single one returns a silently wrong subset outside its era rather than an error. The sibling table `genetics_api_logs.genetics_results_api` is the `genetics-results-api-dev1` **GCE VM**, which reached the sink because the filter used to be project-wide. It is not decommissioned and not usage: it is a developer machine running the results-api **test suite** (`sourceLocation.file` points inside a checkout under `/home/jkarjala/suite/genetics-results-api`, and it emitted 1,638 entries within a single second), still producing rows today — 1,377 on 2026-08-11. Narrowing the sink filter to `resource.type="k8s_container"` in namespace `genetics` **stops that feed deliberately and with no replacement**; that is the point, since it is test noise. Neither table ever carries `httpRequest` — the middleware emits a `jsonPayload`-only record, so `httpRequest.responseSize` is structurally NULL and no response-size data exists in this sink at all
   - **Query hazard — `log_source` was renamed.** Inside `genetics_api_logs.stdout`, results-api rows carried `log_source='genetics-results-api-prod'` (40,958 rows, only 95 non-null `user_email`) up to 2026-06-03; after that results-api emits `log_source='finngenie_prod'` (12,258 rows, 12,026 non-null `user_email` — the current value). db-api rows carried `log_source` NULL until it started emitting `genetics_db_api_prod` (2026-08-12, `genetics-results-suite-tcs`). A query still filtering on the old value returns **nothing after 2026-06-03 and no error**, which is the same silent-empty-result trap as reading the wrong table
-  - **The sink's `jsonPayload` schema has no `sid`, `sub` or `jti` column**, so the sandbox-attribution fields db-api logs on a sandbox-authorized request (`api/main.py`, `require_auth`) are **not queryable in BigQuery** — they exist only in Cloud Logging / container stdout. That is expected today, since no sandbox Deployment exists and `SANDBOX_ENABLED` is `"false"` on both services, so no such row has ever reached the sink to grow the schema. Do not cite BigQuery for per-execution sandbox attribution without checking the schema again
+  - **The sink's `jsonPayload` schema has no `sid`, `sub` or `jti` column**, so the sandbox-attribution fields db-api logs on a sandbox-authorized request (`api/main.py`, `require_auth`) are **not queryable in BigQuery** — they exist only in Cloud Logging / container stdout. That is expected today, since no sandbox Deployment is applied — the manifest exists since `4h6.7` but is gated off — and `SANDBOX_ENABLED` is `"false"` on both services, so no such row has ever reached the sink to grow the schema. Do not cite BigQuery for per-execution sandbox attribution without checking the schema again
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
 - **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile` in `terraform.tfvars` unless `CONFIG_PROFILE` overrides it
 - **tfvars guard (`require_tfvars`, default `true`)**: `terraform.tfvars` is gitignored and exists only in the main checkout, so terraform run from a git worktree (`.claude/worktrees/*`) or a fresh clone would fall back to variable **defaults** — and those defaults are not a no-op subset of the live config: `enable_log_sinks=false` destroys both log sinks and their BigQuery dataset IAM members, `manage_iam=true` with an empty `node_service_account` **replaces the GKE node pool**, and `config_profile`/`oauth_email_domain` revert to the daly/Broad values. A `precondition` on `data.google_compute_global_address.static_ip` in `terraform/main.tf` asserts `fileexists("${path.module}/terraform.tfvars")`; measured behavior is that Terraform still renders the complete plan first — every resource diff, including the alarming-looking `Plan: N to add, N to change, N to destroy` — and only afterward prints `Terraform planned the following actions, but then encountered a problem:` followed by the precondition error, exiting non-zero with nothing applied. The operator will see that full destroy/replace plan scroll past above the error, which is worth knowing since it is never actually applied. `scripts/deploy.sh` refuses to `terraform apply` on the same condition (`SKIP_TERRAFORM=true`, which only reads outputs from state, still works from a worktree). Supplying values another way requires `-var require_tfvars=false` alongside the `-var-file`. Note `project_id` and `domains` have no defaults, so a worktree run stops to prompt for them first — everything else defaults silently once they are answered. **The guard does not cover every entry point.** `terraform apply -target=<resource>` prunes the graph to the target and its dependencies; the guarded data source is a dependency of nothing (only a root output references it), so its precondition never evaluates and a targeted apply from a worktree still runs with the destructive defaults. `terraform destroy` also never evaluates it, because destroy plans are driven by state, not data sources — that gap is deliberate, not an oversight, since blocking teardown on `terraform.tfvars` presence would break legitimate destroys for no safety benefit
@@ -442,8 +462,14 @@ explicitly: pin the build, or match on something build-independent.
 
 ### Node pool sizing
 
-The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
+There are **two** pools, and they are sized on different grounds.
+
+The **primary** pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
 `terraform.tfvars` profile (`max = 2` on daly), on `e2-standard-4`. One node is running today.
+
+The **sandbox** pool (`<cluster>-sandbox-pool`, `terraform/gke.tf`) is **pinned at one node**
+and exists for isolation, not capacity — see "The sandbox pool" below. It contributes **0m and
+0 GiB** to everything in the surge table that follows.
 
 > An earlier version of this section claimed the pool was pinned at
 > `min_node_count == max_node_count == 2`. That pinning was written into
@@ -456,9 +482,20 @@ The pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every liv
 **Why the surge matters.** A full `deploy.sh` rolls every deployment at once. All of them
 except chat-backend, keycloak-postgres and rag-service (which are `strategy: Recreate`) use
 the default `RollingUpdate`, so with `replicas: 1` each surges by one extra pod. Figures below
-are re-derived from `k8s/deployments/*.yaml` and from the live node (2026-08-07); "system"
-is the per-node GKE overhead (`kube-system`, `gmp-system`, `gke-managed-cim`) measured at
-876m / 1.33 GiB.
+are re-derived from `k8s/deployments/*.yaml` (2026-08-14) and from the live node (2026-08-07);
+"system" is the per-node GKE overhead (`kube-system`, `gmp-system`, `gke-managed-cim`)
+measured at 876m / 1.33 GiB.
+
+**How to re-derive: sum pods' *effective* requests, not container counts.** The scheduler
+computes a pod's effective request as `max( max(init container requests), sum(regular
+container requests) )`, **per resource**. `auth-gateway` is the case that catches people: its
+`render-config` (10m/16Mi) is an `initContainer`, and the pod declares no `restartPolicy`
+anywhere, so it is a classic init container, not a native sidecar. 10m < 50m and 16Mi < 64Mi
+on both axes, so it contributes **exactly zero** to scheduling and auth-gateway is
+**50m / 64Mi**, not 60m / 80Mi. A *native sidecar* — an entry under `initContainers:` that
+carries `restartPolicy: Always` — **would** be added to the regular sum. So check for that
+field; do not count containers. A 2026-08-14 edit of this table applied the container-count
+rule instead and inflated every peak by 20m / 32 Mi; it has been reverted.
 
 RAG is **not** profile-derived: `scripts/deploy.sh` sets `ENABLE_RAG="${ENABLE_RAG:-false}"`
 unconditionally, so rag-service is off on *every* profile unless the operator exports it. Only
@@ -467,24 +504,29 @@ deployments, not 11.
 
 | | CPU | Memory |
 |---|---|---|
-| one `e2-standard-4` allocatable | **3920m** | **12.96 GiB** |
-| app requests, daly **as deployed by default** (Keycloak on, RAG off — 10 deployments) | 1650m | 6.44 GiB |
-| app requests, daly **with `ENABLE_RAG=true`** (11 deployments) | 1900m | 6.94 GiB |
-| app requests, finngen profile (no Keycloak, no RAG) | 1300m | 5.69 GiB |
-| + per-node GKE system overhead | 876m | 1.33 GiB |
-| rollout surge, daly (either variant — rag-service is `Recreate`, so it never surges) | +1300m | +5.69 GiB |
-| rollout surge, finngen (no Keycloak) | +1050m | +5.19 GiB |
-| **peak during a full deploy — daly, default** | **3826m** | **13.45 GiB** |
-| **peak during a full deploy — daly, RAG enabled** | **4076m** | **13.95 GiB** |
-| **peak during a full deploy — finngen** | 3226m | 12.20 GiB |
+| one `e2-standard-4` allocatable | **3920m** | **12.96 GiB** (13273 Mi) |
+| app requests, daly **as deployed by default** (Keycloak on, RAG off — 10 deployments) | 1650m | 6.44 GiB (6592 Mi) |
+| app requests, daly **with `ENABLE_RAG=true`** (11 deployments) | 1900m | 6.94 GiB (7104 Mi) |
+| app requests, finngen profile (no Keycloak, no RAG — 8 deployments) | 1300m | 5.69 GiB (5824 Mi) |
+| + per-node GKE system overhead | 876m | 1.33 GiB (1362 Mi) |
+| rollout surge, daly (either variant — rag-service is `Recreate`, so it never surges) | +1300m | +5.69 GiB (+5824 Mi) |
+| rollout surge, finngen (no Keycloak) | +1050m | +5.19 GiB (+5312 Mi) |
+| **peak during a full deploy — daly, default** | **3826m** | **13.46 GiB (13778 Mi)** |
+| **peak during a full deploy — daly, RAG enabled** | **4076m** | **13.96 GiB (14290 Mi)** |
+| **peak during a full deploy — finngen** | 3226m | 12.21 GiB (12498 Mi) |
+| the sandbox, on **either** primary-pool profile | **0m** | **0 GiB** (separate pool) |
 
 So the **daly** profile as actually deployed overshoots a single node on **memory only** —
-13.45 GiB against 12.96 GiB, while its 3826m CPU peak stays under the 3920m allocatable. It
-still must get a second node; only the reason is narrower than "both axes". Turning RAG on
-pushes CPU over as well. The **finngen** profile fits, but with under 1 GiB of memory
-headroom — and that margin disappears if the analyze-conversations (512Mi) or monitor (256Mi)
-CronJob overlaps the rollout. `results-api` at 500m / 4Gi, doubling to 8Gi mid-roll, dominates
-the memory term either way.
+13778 Mi against 13273 Mi allocatable, **over by 505 Mi** — while its 3826m CPU peak stays
+under the 3920m allocatable. It still must get a second node; only the reason is narrower than
+"both axes". Turning RAG on pushes CPU over as well, so daly+RAG is over on **both** axes. The
+**finngen** profile fits, with **775 Mi** of memory headroom — and that margin disappears if
+the analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
+at 500m / 4Gi, doubling to 8Gi mid-roll, dominates the memory term either way.
+
+**Nothing above changed when the sandbox was added, and that is the whole point of giving it
+its own pool.** The sandbox contributes 0m / 0 GiB here because it is on a different pool. The
+figures are `genetics-results-suite-262`'s, unchanged.
 
 When the autoscaler does add a node for a rollout, the scheduler places pods on it and ~15
 minutes later reaps the now-idle node, evicting them with `ScaleDown: deleting pod for node
@@ -618,7 +660,419 @@ Other consequences to keep in mind:
 
 To consolidate onto one larger node instead, note that `node_config.machine_type` is ForceNew on
 `google_container_node_pool` — changing it in place destroys and recreates the pool. Do it as a
-new pool plus cordon/drain migration, not a tfvars edit.
+new pool plus cordon/drain migration, not a tfvars edit. The same applies to
+`var.sandbox_machine_type` below.
+
+### The sandbox pool
+
+`google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`: `<cluster>-sandbox-pool`,
+`e2-standard-2` (`var.sandbox_machine_type`), `sandbox_config { type = "gvisor" }`,
+`min_node_count == max_node_count == 1`. It hosts only the code-execution sandbox
+(`docs/code-execution-security.md`). It is created **only when `sandbox_pool_enabled = true`**
+(`count`); the default is `false`. Note also that `type = "gvisor"` is lowercase while the GKE
+REST enum is `GVISOR` and the provider does no normalization — whether the API accepts the
+lowercase form is unverified until the first real apply; if rejected the value becomes
+`"GVISOR"` here, in `terraform/gke.tf` and in `docs/code-execution-security.md`.
+
+**Why a second pool at all.** Not capacity — isolation. GKE Sandbox is a per-pool property, so
+gVisor's userspace syscall boundary around untrusted LLM-authored code can only be bought by
+creating a pool for it, and the consequence is that chat-backend can never be co-scheduled with
+that code. GKE taints gVisor nodes `sandbox.gke.io/runtime=gvisor:NoSchedule` automatically, so
+no other workload drifts onto it.
+
+**Why pinned when the primary pool is not.** The primary pool autoscales because its pods are
+restartable request-servers with graceful shutdown. A scale-down here would kill an in-flight
+script mid-execution, and there is no second replica. Accepted cost: **one permanently-running
+`e2-standard-2`**. The cost argument in `docs/code-execution-security.md` was originally written
+against a primary pool believed to be pinned at 2 nodes ("the sandbox contributes 0 to a budget
+that is already over"); `genetics-results-suite-262` established the primary pool actually runs
+**one** node under the live finngen profile. The pool was still chosen, on isolation grounds
+alone — do not repeat the "nearly free" framing.
+
+**Budget on that node.** CPU allocatable is arithmetic (2 vCPU, GKE reserves 70m → 1930m).
+**Memory allocatable is not known and cannot be derived offline.** The usual method — advertised
+capacity 8192 Mi, minus GKE's 1843 Mi reservation, minus the 100 Mi eviction threshold — gives
+6249 Mi, but that method provably *overstates*: applied to the measured `e2-standard-4` it
+yields 13622 Mi against a measured 13273 Mi, because real capacity is 15996 Mi rather than
+16384 Mi. So treat **6249 Mi as an upper bound**, not a value; the true figure is lower by an
+amount only a real node reports.
+
+| | CPU | Memory |
+|---|---|---|
+| one `e2-standard-2` allocatable | **1930m** | **≤ 6249 Mi** (upper bound, see above) |
+| sandbox pod **requests** (`replicas: 1`) | 500m | 1024 Mi |
+| per-node overhead that can actually land here — measured DaemonSets, see below | ~383m | ~769 Mi |
+| plus `gke-metadata-server` and the GKE Sandbox components | **undetermined** | **undetermined** |
+| **scheduled total, excluding the undetermined rows** | **~883m** | **~1793 Mi** |
+| sandbox pod **limits** (burst ceiling, not a reservation) | 1500m | 3072 Mi |
+
+**Why the primary node's 876m / 1.33 GiB does not apply here.** That measurement is the whole
+of the primary node's system load, and most of it is singletons — kube-dns, metrics-server,
+konnectivity, the autoscalers, ~487m / ~555 Mi in total — which **cannot** land on the sandbox
+node: they do not tolerate `sandbox.gke.io/runtime=gvisor:NoSchedule`. The measured breakdown is
+DaemonSets 383m / 769 Mi (these tolerate everything, so they *do* land here), ReplicaSets
+382m / 425 Mi and a StatefulSet 105m / 130 Mi (these do not). Quoting 876m for this node is an
+**over**-statement, not a lower bound.
+
+Three things that table does *not* settle, all tracked in `genetics-results-suite-5r2`:
+
+1. **`gke-metadata-server`.** It is a DaemonSet that exists only on Workload-Identity clusters,
+   and this cluster has WI off today, so its request is **undeterminable offline**. It is not
+   guessed here.
+2. **The GKE Sandbox components.** One of them is measurable: `runsc-metric-server` already
+   exists dormant in `kube-system` at 3m / 12 Mi (`desiredNumberScheduled: 0`). The rest appear
+   only once a gVisor node exists. As of 2026-08-13 the project has none anywhere.
+3. **The runsc sentry's memory is charged to the pod's cgroup, so it eats the 3Gi *limit*, not
+   the node headroom.** It therefore constrains the `RLIMIT_AS` budget the supervisor sets for
+   the child, not this table. Unmeasured, and workload-shaped. That budget is now a concrete
+   number — `genetics-results-suite-4h6.41` sets `RLIMIT_AS` to **2560 MiB**, i.e. the 3Gi
+   `limits.memory` less 512 MiB of supervisor headroom, hard-coded from
+   `k8s/deployments/sandbox.yaml` rather than read from `/sys/fs/cgroup` (see
+   `docs/code-execution-security.md`, "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)").
+   Whatever the sentry holds comes out of that same 512 MiB, so if it turns out to be large
+   the headroom is what has to grow.
+
+**On the CPU limit.** An earlier version of this section claimed the pod's 1500m ceiling was
+"deliberately not satisfiable alongside the system pods" (876m + 1500m = 2376m > 1930m). That
+rests on the wrong base: on the ~383m that can actually schedule here, 383m + 1500m = 1883m,
+which is **under** 1930m — so the alarming conclusion is not established, and it is not replaced
+with a reassuring one either, because the two undetermined rows above could move it in either
+direction. What is true regardless: limits are not reservations, so nothing here blocks at
+schedule time; `requests: 500m` is what guarantees schedulability; and a script at its full
+ceiling contends with the node's own daemons under CFS shares. If `sandbox_machine_type` ever
+changes, revisit the pod's 500m/1500m together with it.
+
+**What the pool spec carries that is not about sizing at all.** Three properties in
+`terraform/gke.tf` are load-bearing security controls, and a reviewer should check them by
+reading the source rather than a plan diff:
+
+- `workload_metadata_config { mode = "GKE_METADATA" }`, **unconditional**. Unset defaults to
+  `GCE_METADATA`, which exposes `169.254.169.254` to every pod on the node — one HTTP GET of
+  `/computeMetadata/v1/instance/service-accounts/default/token` then yields a node-level token,
+  and Workload Identity becomes irrelevant because the identity served is the node's.
+- `google_container_cluster.primary`'s `workload_identity_config` is **unconditional** as a
+  direct consequence: GKE rejects a `GKE_METADATA` pool on a cluster with no `workload_pool`,
+  and it rejects it **at apply, not at plan**. It used to be gated on `var.manage_iam`. Enabling
+  the workload pool is an in-place cluster update — it does not recreate the cluster and does
+  not change the primary pool's own (still `manage_iam`-gated) metadata mode.
+- `var.sandbox_node_service_account` is **required whenever the pool is created**, enforced by
+  `lifecycle { precondition }` blocks on the resource rather than by variable validation — so it
+  fires only when the pool actually exists, and the escape hatch is "don't create the pool",
+  never "create it with a weaker SA". Three checks: the email must match
+  `<name>@<project_id>.iam.gserviceaccount.com` **in this project** (case-folded), it must not be
+  `genetics-suite`, and it must not equal `var.node_service_account` — that last one matters most,
+  because under the live `manage_iam = false` mode the primary pool grants
+  `oauth_scopes = ["cloud-platform"]`, so sharing its SA would put the suite's entire credential
+  on the node running untrusted code. **These are format and identity checks, not a privilege
+  check.** Terraform neither creates the SA nor reads back the roles bound to it; the `gcloud`
+  recipe in `README.md` (`roles/logging.logWriter`, `roles/monitoring.metricWriter`,
+  `roles/monitoring.viewer`, `roles/stackdriver.resourceMetadata.writer`,
+  `roles/artifactregistry.reader`) is the only thing bounding them, and nothing checks that the
+  operator did not grant more. The variable keeps `default = ""` only so terraform does not
+  prompt interactively; `""` fails the first precondition.
+- `var.sandbox_pool_enabled` (**default `false`**) gates whether the pool resource exists at all,
+  via `count`. It must **never** appear inside `node_config` — no `dynamic`, no ternary, no
+  count-derived field — so the only two representable states are "no pool" and "a pool in
+  `GKE_METADATA` mode". The cluster's `workload_identity_config` stays unconditional and is
+  deliberately *not* tied to this flag: tying it would make enabling the pool a two-step apply,
+  and the apply-time failure in between invites exactly the re-gating of the metadata mode that
+  the design forbids.
+
+**The pool is only half the control, and terraform cannot supply the other half.** `GKE_METADATA`
+does not deny credentials — it swaps *node* identity for *KSA* identity. Whether that is worth
+anything depends entirely on the KSA the sandbox pod runs as, and nothing in this change
+establishes it. The house style is the failure mode: all 8 deployments in `k8s/deployments/*.yaml`
+use `serviceAccountName: genetics-suite`, which `terraform/iam.tf` binds to a GSA holding
+`bigquery.dataViewer`, `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. Whoever
+writes `k8s/deployments/sandbox.yaml` **must** give it a dedicated KSA with no
+`iam.gke.io/gcp-service-account` annotation and no `google_service_account_iam_member` binding —
+explicitly **not** `genetics-suite`, and not the namespace `default` either. Copy the house style
+and `GKE_METADATA` buys nothing at all.
+
+The explicit `oauth_scopes` (`devstorage.read_only` — **required** for Artifact Registry pulls,
+`roles/artifactregistry.reader` alone is not sufficient — plus `logging.write`, `monitoring`,
+`monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append`) are **not**
+a fourth control of that kind. In `GKE_METADATA` mode pod tokens come from the IAM Credentials
+API and are not bounded by node scopes at all. They defend the `GCE_METADATA` misconfiguration
+case and the escape-to-the-node case only. Do not cite them as the pod-facing guarantee.
+
+`kubelet_config { pod_pids_limit = 1024 }` is the outer fork-bomb backstop (a per-pod pid
+ceiling is a kubelet setting, not a pod-spec field — one more reason the sandbox needs its own
+pool). `docs/code-execution-security.md` specifies 256; GKE's documented range for
+`podPidsLimit` starts at 1024, so 256 would be rejected at pool creation. **Unconfirmed against
+this cluster** (`genetics-results-suite-5r2`); note in particular that `terraform validate` does
+*not* establish it — the provider schema is a bare optional number with no range check, so it
+passes on 256 as readily as on 1024. The number is not what contains a fork bomb anyway — the
+supervisor enforces a child pid budget far below it.
+
+**What an operator is actually walking into.** `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy, so terraform changes are **not opt-in**;
+`SKIP_TERRAFORM=true` applies manifests only and is the escape hatch. `terraform.tfvars` is
+gitignored and lives only in the **main checkout**, so setting `sandbox_pool_enabled` or
+`sandbox_node_service_account` there is a manual step this repo cannot make. And because
+`workload_identity_config` on the cluster is now unconditional while the live cluster's
+`workloadPool` is currently **empty** (`manage_iam = false`, verified via
+`gcloud container clusters list`), **the next apply enables Workload Identity on the live
+cluster whether or not the sandbox pool is enabled**. That is an in-place update and very likely
+inert today — no pool runs in `GKE_METADATA` mode and no KSA carries a WI binding — but it
+reaches production without anyone opting in, which is more than "an in-place cluster update"
+conveys. **Recorded as a known risk, not changed here:** afterwards the primary pool still has no
+explicit `workload_metadata_config` under `manage_iam = false`, so if that pool is ever
+*recreated* (`terraform/main.tf` already warns pool replacement is a live hazard) its metadata
+mode would come from GKE's cluster-derived default rather than the `GCE_METADATA` all 8 workloads
+depend on. Whether to pin the primary pool explicitly is tracked separately; nothing in `4h6.10`
+alters the primary pool's behaviour.
+
+### The sandbox Deployment
+
+`k8s/deployments/sandbox.yaml` (`genetics-results-suite-4h6.7`) holds three objects: a
+ServiceAccount `sandbox`, the Deployment, and a ClusterIP Service on 8080 → 8080. Image
+`${REGISTRY}/sandbox:latest`, one replica, `strategy: Recreate`.
+
+**It is not applied by default.** `scripts/deploy.sh` skips the file unless
+`ENABLE_SANDBOX=true`, and derives that from `sandbox_pool_enabled` in `terraform.tfvars`
+rather than making it a second, independent switch — the pod tolerates
+`sandbox.gke.io/runtime=gvisor:NoSchedule` and selects `workload=sandbox`, so applying it
+without the pool yields a pod that is Pending forever while `kubectl apply` returns 0 and the
+deploy reports success. An explicit `ENABLE_SANDBOX` in the environment still wins (for
+`SKIP_TERRAFORM=true` re-applies), and a **sandbox preflight** immediately after kubectl is
+configured — *before the first `kubectl apply` of the run* — then refuses on either of two
+preconditions: no node carrying `workload=sandbox`, or a `sandbox.yaml` that still declares
+neither `command:` nor `args:`. Both used to sit inside the `for f in deployments/*.yaml` loop,
+where `sandbox.yaml` sorts second-to-last, so `exit 1` fired only after every other manifest had
+been applied and skipped the cronjob apply, all rollout restarts and all rollout-status waits —
+a half-finished deploy whose freshly built `:latest` images were never rolled, with no summary
+line saying so. The node-check message also names the pool-just-created case: a node that has not
+yet registered the label reads identically to no pool at all, and the fix there is to wait and
+re-run rather than to change terraform. The `command`/`args` refusal exists because a manifest
+with neither **schedules and CrashLoopBackOffs** — "Pending forever" is only the no-pool case —
+and nothing downstream waits on the sandbox rollout, so the deploy would exit 0 and print success
+over a pod that can never serve; it is keyed on the manifest, not on a ticket number, so it
+clears itself the moment `4h6.50` adds `args:` — the last bead of the supervisor chain, which is
+why `4h6.39` writes the supervisor without touching this manifest. Turning the sandbox on is
+therefore a deliberate two-step: set `sandbox_pool_enabled = true` (plus
+`sandbox_node_service_account`) in the **main checkout's** gitignored `terraform.tfvars`, then
+deploy — and until the supervisor lands, that deploy is refused with `4h6.39` named.
+
+**The manifest carries no `command`/`args`, deliberately.** The image's ENTRYPOINT is the bare
+interpreter and it ships no `CMD`; the supervisor is `genetics-results-suite-4h6.39`'s to
+write (and `4h6.50`'s to wire in here), and a placeholder would be indistinguishable from a
+real one at runtime — the same reasoning that kept `CMD` out of the image. Until it lands, an
+applied pod would start
+`python3` with no script and exit, which is the second reason the gate defaults off.
+
+Security-relevant fields, and what each one is for:
+
+| Field | Value | Why |
+|---|---|---|
+| pod label / port / Service | `app: sandbox`, 8080/TCP, ClusterIP `sandbox` 8080 → 8080 | The contract `k8s/network-policies/sandbox-policy.yaml` declares. Every rule there selects `app: sandbox`; a podSelector matching nothing is silent no-coverage, and that file is the namespace's **only** Egress policy. `scripts/test-network-policies.py` asserts the pairing. |
+| `serviceAccountName` | `sandbox`, a dedicated KSA with **no** `iam.gke.io/gcp-service-account` annotation and no IAM binding | `GKE_METADATA` on the pool swaps *node* identity for *KSA* identity; it does not deny credentials. `genetics-suite` (the house style, used by 8 workloads) is bound to a GSA holding BigQuery and GCS reader roles, and the namespace `default` is a shared identity — either would make the isolation design buy nothing. |
+| `automountServiceAccountToken` | `false`, on both the SA and the pod | Denies the Kubernetes API server. It defends **nothing** against the GCP metadata server, which is reached over the network and needs no mounted token. It also avoids adding a sixth workload to `genetics-results-suite-5ho`. |
+| `enableServiceLinks` | `false` | Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST`/`_PORT` for every Service in the namespace, handing untrusted code the full internal inventory and its ClusterIPs. |
+| `runtimeClassName` / `nodeSelector` / toleration | `gvisor` / `workload: sandbox` / `sandbox.gke.io/runtime=gvisor:NoSchedule` | Pins the pod to the gVisor pool and nowhere else. `workload: sandbox` is the node label `terraform/gke.tf` sets; the taint is applied by GKE, not by terraform. |
+| `dnsPolicy` / `dnsConfig` | `None`, nameserver `127.0.0.1`, `ndots:1 timeout:1 attempts:1` | The egress policy permits no 53/UDP. Left at `ClusterFirst` a lookup that escapes `/etc/hosts` stalls through the whole resolver timeout budget against dropped packets — a hang inside the wall clock, unrepairable under `readOnlyRootFilesystem`. Against loopback it fails in microseconds instead. Depends on the image's `/etc/nsswitch.conf` listing `files` before `dns` (asserted at build time). |
+| `hostAliases` | db-api and results-api ClusterIPs, **all four name forms each** | Replaces DNS. glibc's `files` module does no search-domain expansion, so the bare name does not answer a lookup for the FQDN the rest of the suite uses. deploy.sh resolves both IPs from the live cluster and substitutes `${DB_API_CLUSTER_IP}` / `${RESULTS_API_CLUSTER_IP}`; deleting and recreating either Service requires re-rendering and rolling this Deployment. |
+| pod `securityContext` | `runAsNonRoot`, uid/gid 65532, `fsGroup: 65532` (`OnRootMismatch`), `RuntimeDefault` seccomp | 65532 is the distroless `nonroot` identity and deliberately none of the suite's other uids. The uid choice the design left open is **decided here as option (b), one shared uid** (`docs/code-execution-security.md` → "The uid choice"): option (a)'s distinct child uid needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` to `setuid` and to `chown` `/scratch/<id>` and the token file, and this container drops all capabilities with `allowPrivilegeEscalation: false`, so both calls return `EPERM`. The costs are real and the supervisor beads inherit them — `RLIMIT_NPROC` stops being a per-execution control (`4h6.41`: the supervisor must police the child's process group instead) and the token file sits within the child's same-uid reach, which read-once-and-unlink (`4h6.43`/`4h6.44`) does **not** bound — `4h6.55` measured a detached grandchild of an earlier execution reading a live token file from inside the read-once window, and recovered tokens from a completed execution by scanning `/proc/self/mem`; the bound is `4h6.55`'s resolution — and `4h6.39` must not assume it can drop privileges. `fsGroup` is therefore simply the pod's single gid, and is what makes the `emptyDir` writable by a non-root uid deterministically. |
+| container `securityContext` | `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, non-root 65532, `RuntimeDefault` | Exceeds the suite baseline. Bytecode and the matplotlib font cache are baked at build time, so nothing needs to write outside `/scratch`. `procMount` is left at its default: `Unmasked` would weaken the container, and anything hiding `/proc/self/fd` would break `read_artifact`, which verifies the artifacts directory **by descriptor** through `/proc/self/fd/<dirfd>`. |
+| volumes | exactly one `emptyDir` at `/scratch`, `sizeLimit: 512Mi` | No PVC ever (`chat-data` holds every conversation), no ConfigMap, no Secret, no pod-level `/tmp`. `/scratch` is where the mount must be: `read_artifact` refuses any `SANDBOX_ARTIFACTS_DIR` whose resolved path is not under a hardcoded `/scratch/` prefix, and refuses a symlinked one. Exceeding `sizeLimit` **evicts the pod**, so the supervisor's sub-quotas must fire first. |
+| env | `GENETICS_API_URL`, `BIGQUERY_API_URL` only | **No credentials, and none may be added** — not `INTERNAL_API_SECRET`, not `SANDBOX_TOKEN_SIGNING_KEY`. Per-execution tokens arrive in the body of chat-backend's POST and live 300s; a pod-spec value would make them static pod-lifetime credentials. `SANDBOX_ARTIFACTS_DIR` is likewise **not** set here: it is per-execution (`/scratch/<execution-id>/artifacts`) and a fixed pod-wide value would be exactly the cross-execution shared directory that removing `/tmp` prevented. |
+| resources | requests 500m / 1Gi / 1Gi ephemeral, limits 1500m / 3Gi / 2Gi ephemeral | As in "The sandbox pool" above and `docs/code-execution-security.md` § 2. The memory limit is the cgroup the runsc sentry is charged against too. |
+| probes | readiness on `/health`, **no liveness probe** | The supervisor enforces its own wall clock; a liveness probe racing a legitimate 120s execution would restart the pod and destroy it for nothing. Kubelet probes are exempt from NetworkPolicy on this dataplane, which is why `sandbox-policy.yaml` carries no probe rule. |
+| `strategy` / `terminationGracePeriodSeconds` | `Recreate` / 130 | The pool is one pinned node whose remaining headroom includes two rows this document records as undetermined, so a surge pod is not obviously schedulable; `Recreate` also keeps "one execution at a time" true cluster-wide. 130s is the 120s hard ceiling plus time to reap, answer and wipe. |
+
+`SANDBOX_ENABLED` stays `"false"` on db-api and results-api — flipping it is the separate,
+user-gated step that turns the feature on, and `scripts/test-network-policies.py` enforces the
+pairing whenever `ENABLE_SANDBOX=true`.
+
+### The sandbox HTTP contract (summary — the definition lives elsewhere)
+
+`docs/code-execution-security.md` § 2, "The HTTP contract between chat-backend and the
+supervisor" (`genetics-results-suite-4h6.38`), **owns** the wire shape between chat-backend
+and the supervisor: every field, its type, whether it is required, and what happens when it
+is absent or malformed. It is written down rather than shared as code because the sandbox
+image pip-installs only the genetics SDK's import closure and `sandbox/prune_venv.py`
+deletes the rest, so the two ends (`4h6.39` in this repo, `4h6.47` in genetics-mcp-server)
+cannot import one definition. Do not restate it here; the essentials only:
+
+- **A small fixed set of routes and no others**: a health endpoint the `readinessProbe`
+  reads, one execute endpoint, and one artifact-read endpoint, plain HTTP/1.1 JSON. No
+  HTTP-layer authentication — the sandbox holds no credential to verify against, so the
+  ingress allow-list is the authentication.
+- **Artifacts come back out only as images, and only automatically** (`GET /artifact`,
+  `genetics-results-suite-8z1`). A script that saves a figure has it shown to the user:
+  chat-backend fetches image artifacts of a completed run itself, streams them as `image` SSE
+  chunks, and strips the base64 before the tool result reaches the model. The unguessable
+  per-execution `execution_id` — never rendered to the model — is the authorisation, and only
+  **retained** (completed) executions are served. Nothing the model calls reaches the route,
+  and no other artifact type is retrievable; general artifact reads and the sid-scoped
+  resolution remain `genetics-results-suite-4h6.52`.
+- **Nothing in the request or response depends on Kubernetes**, so the local Docker backend
+  (`4h6.40`) speaks the identical contract; the client holds one base URL. What differs
+  (gVisor, NetworkPolicy, `hostAliases`, `emptyDir`) is deployment only.
+- **Execute returns once and does not stream.** A `200` covers a script that raised, timed
+  out or hit a limit; non-2xx means the supervisor did not run it at all.
+- **The wall clock is bounded and the model cannot raise it** — `run_analysis` exposes no
+  timeout parameter, and an over-ceiling request is rejected rather than clamped.
+- **One execution at a time, with a bounded queue and a bounded wait**, which with
+  `replicas: 1` and `strategy: Recreate` is the cluster-wide bound. Every figure involved —
+  the port, the timeouts, the queue depth and wait, the output cap, the manifest fields —
+  lives in the security doc, which calls the queue depth "the one tunable number here". Read
+  them there; a copy here would rot silently.
+- **The per-execution tokens travel in the POST body only** — never pod env, ConfigMap or
+  Secret, which is why the manifest declares no credentials.
+- **What the sandbox puts on the wire, and to which upstream** (`4h6.43` supervisor half,
+  `4h6.44` SDK half, both landed). The supervisor writes both tokens to
+  `/scratch/<id>/tokens.json` (mode `0600`, `O_EXCL`) and names the **path** to the child in
+  `SANDBOX_TOKEN_FILE`. genetics-mcp-server's `tools/executor.py` reads that file **once**
+  with `O_NOFOLLOW`, unlinks it in a `finally` whether or not the read succeeded, and attaches
+  the token matching the **destination** of each request — `aud: results-api` for
+  `GENETICS_API_URL`, `aud: db-api` for `BIGQUERY_API_URL`. Both validators pin `aud` as a
+  string, so a token sent to the wrong service is a hard `401`. Any other destination gets no
+  credential, and `INTERNAL_API_SECRET` is never sent from the sandbox at all. A missing or
+  unusable token file **raises before the request** rather than degrading to an
+  uncredentialed run. Two things this is not: read-once-and-unlink is **not** an exposure
+  bound (`4h6.55`, above), and the destination binding is **hygiene plus a correctness
+  property, not a control over the script** — the child is forked without exec and owns
+  `os.environ`, and both URLs are resolved on first SDK use, so a script that repoints
+  `GENETICS_API_URL` before its first call sends the results-api token to a host of its
+  choosing (reproduced). The egress allow-list in
+  `k8s/network-policies/sandbox-policy.yaml` is what stops that in the cluster; the local
+  Docker path has no NetworkPolicy and no such stop.
+- **The two upstreams meter differently.** results-api's four per-execution counters
+  (`app/core/sandbox_budget.py`) are admitted in middleware **before routing**, so every
+  request counts, unmatched paths included. db-api has **no request-count or concurrency
+  limit at all**; its per-execution control is the 200 GB aggregate byte budget keyed on
+  `jti`, checked in the handlers of its four BigQuery paths. So `genetics.sql()` is bounded
+  by spend and attributable per execution, but **not** bounded by request count or
+  concurrency, and db-api's cheap paths are uncounted. That is a difference in kind — db-api's
+  cost is BigQuery bytes, results-api's is egress and pod memory — not an oversight, but "the
+  per-execution counters now apply" must not be read as "db-api counts requests".
+- **`execution_id` is one value in three roles**: the `/scratch/<id>` directory name, the
+  `jti` of both tokens, and the log join key. Any disagreement is a `400`, never a
+  best-guess, and an id is spent once — a resubmission with the same one is refused.
+- **The response's artifact manifest names files and nothing else** — no paths and no
+  execution id — because `read_artifact` takes a bare name and refuses anything else.
+- **The supervisor forwards the SDK audit stream to the pod's stdout** (`4h6.45`), the only
+  stream the cluster's logging agent collects. It holds the read end of the child's audit fd,
+  applies the rate, byte and per-line caps there rather than in the SDK, matches every line
+  whole against the record shapes and drops what does not match, and stamps
+  `[user=…] [session=…] [execution=…]` from the tokens' `sub`/`sid`/`jti` — the prefix the SDK
+  renders from the child's own environment is discarded, because the child owns that
+  environment. **The env prefix and the signed claims are not the same evidence.** Every
+  execution also emits a summary line, so a drop the *supervisor* made is a different line from
+  an execution that produced no records. It is **not** distinguishable from suppression inside
+  the child: `logger.disabled`, the level, a filter, handler removal (`4h6.12`) or rewriting
+  `GENETICS_SDK_AUDIT_FD` before the first SDK call all leave a `records=0` summary
+  byte-identical to a script that genuinely made no SDK calls, and containing that needs the
+  child contained rather than read (`4h6.55`). What this does *not* establish is that the records are
+  true: a script can emit well-formed records for calls it never made and can read through
+  `_executor` with no record at all. For that, upstream attribution is what holds — db-api's
+  and results-api's own `endpoint_access` lines carry the same three claims from the signed
+  token and are written outside the sandbox.
+
+### The supervisor process (`sandbox/supervisor.py`, `genetics-results-suite-4h6.39`)
+
+The program the sandbox pod runs, and the thing whose absence made
+`k8s/deployments/sandbox.yaml` unapplyable. Standard library only, plus what
+`sandbox/requirements.txt` already ships — `sandbox/prune_venv.py` deletes pip and
+everything outside the SDK's import closure, so a new dependency has to be added there
+deliberately. `sandbox/Dockerfile` copies it to `/genetics/supervisor.py`; that does **not**
+start it, because the image still ships no `CMD` and the manifest still declares no
+`command`/`args`, which is what `scripts/deploy.sh` refuses to apply until
+`genetics-results-suite-4h6.50` wires it up as the last bead of the chain.
+
+- **The per-execution limits are built.** The wall clock and rlimits (`4h6.41`), the output
+  caps (`4h6.42`), token delivery to the child (`4h6.43`) and the `/scratch` quotas, retention
+  and reaper (`4h6.46`) landed together, sharing one poll loop and one kill path: a
+  per-execution watchdog thread kills the process group (`_fire_limit` → `_kill_group`) and the
+  reaper deletes completed executions on a 30 s tick (`reap_expired` → `_forget_retained`).
+  The audit stream (`4h6.45`) followed, on a third drain thread sharing the same reaped-child
+  deadline. `docs/code-execution-security.md` → "As built (`4h6.41`, `4h6.42`, `4h6.43`,
+  `4h6.45`, `4h6.46`)" tabulates what each one is worth and what it measurably does not do.
+  What is still absent is the missing `CMD` (`4h6.50`, above), without which nothing starts the
+  supervisor at all.
+- **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
+  pre-imported analysis modules the child inherits copy-on-write — and it therefore closes
+  every inherited descriptor before running the script, or it would hold the listening socket
+  and other users' in-flight connections. Two consequences of not exec'ing are handled rather
+  than assumed away: the script can also write the status pipe it is left holding, so a
+  status record is **ignored** when the child exited 0 and was not signalled (otherwise a
+  script forges `status: "error"` on its own successful run); and the child's descendants
+  inherit the output pipe, so the drain is bounded — see the next point.
+- **An execution ends when the child is reaped, not when its pipes close.** A grandchild that
+  `setsid()`s away keeps the write ends open and EOF never arrives, which used to hold the
+  only execution slot on a pipe read after the child was long gone. The drain gets 2 s past
+  `waitpid` and is then abandoned with a log line, and `duration_ms` is taken at the reap.
+  Killing the escapee is `4h6.55`'s work and not the watchdog's — a `setsid()` descendant has
+  left the process group `_kill_group` signals, which is measured, so a PID namespace per
+  execution is what contains it; the slot is freed regardless.
+- **Every writable path is per-execution.** `TMPDIR`, `HOME`, `MPLCONFIGDIR`,
+  `XDG_CACHE_HOME`, `PYTHONPYCACHEPREFIX` and `SANDBOX_ARTIFACTS_DIR` are set in the child
+  and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
+  purpose: a fixed pod-wide value recreates the cross-execution shared directory that
+  removing the pod-level `/tmp` was meant to prevent.
+- **No `setuid` and no `chown` anywhere.** Supervisor and child share uid 65532 — forced,
+  because the pod drops `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN`. The image's advertised
+  `SANDBOX_CHILD_UID` names a uid nothing in this pod can switch to.
+- **`scripts/test-supervisor.py`** is the offline harness, in two modes:
+  `python3 scripts/test-supervisor.py` (in-process, the fast path) and
+  `python3 scripts/test-supervisor.py --container URL [--container-name NAME]` against a
+  container started by
+  `scripts/run-sandbox-local.sh` (see *Running the sandbox locally* under Operational
+  procedures). Exit 0 pass / 1 a property broke / 2 could not run, in the same style as
+  `test-sandbox-docs.py` and `test-network-policies.py`. It needs no cluster, no credentials
+  and no image — it runs the real supervisor in the local interpreter against a temporary
+  `/scratch` root and forks real children, so the queue-depth definition, the duplicate-id
+  refusal, reject-don't-clamp on the timeout, the token consistency rules, the per-execution
+  environment, which names reach the artifact manifest, the `429`'s `Retry-After` header that
+  the client's retry policy reads, and the two forgeries the fork-without-exec model makes
+  reachable — a status record written by the script, and a descendant holding the output pipe
+  open — are exercised rather than asserted about. Container mode drives the same wire checks
+  against the image and adds a group that has no in-process equivalent because it is about the
+  image (read-only rootfs, no writable `/tmp`, pruned venv, the SDK and matplotlib importing,
+  no credential in the child's environment). `--container-name NAME` is what lets the audit-stream
+  group run there at all: those records leave by the container's **stdout**, not over the wire, so
+  without a name to `docker logs` the group skips by name. `run-sandbox-local.sh --test` passes it.
+  **Container mode is a partial run and its total is
+  not a fraction of the in-process total**: the groups reaching into the supervisor's own
+  objects (startup assertions, request parsing, queue, artifact manifest, startup wipe) have no
+  route over HTTP and are **not run at all**, so the harness prints them by name under "check
+  groups NOT RUN in this mode" and says so on the summary line. `skip()` is the narrower
+  mechanism — a check inside a group that ran, such as one needing the harness's own view of
+  `/scratch` — and those stay counted and listed individually. No build or deploy script runs
+  either mode yet.
+- **`scripts/test-e2e-local.py`** is the *other* harness and deliberately a separate file
+  (`genetics-results-suite-4h6.49`): it needs the whole local stack up (db-api `:8080`,
+  results-api `:2000`, the sandbox container) plus a signing key shared between chat-backend
+  and both verifiers, and BigQuery behind db-api — preconditions that would take away
+  `test-supervisor.py`'s "no cluster, no credentials, no image" property if folded in. It
+  drives chat-backend's own `sandbox_token`/`sandbox_client` code end to end and asserts on
+  what a 200 does not show: that the SDK's request appears in results-api's per-execution map
+  under the token's `jti` (with an `INTERNAL_API_SECRET` caller measured in the same run as the
+  200-with-no-accounting negative control), that the audit records carry the token's real
+  sub/sid/jti while a forged `[user=…]` line does not parse as genuine, that `execution_id`,
+  `/scratch/<id>` and both `jti`s are one value that joins across every log, that each limit
+  returns a clean structured result to the client, that a grandchild left **in** the process
+  group does not outlive the limit kill (the only path on which the supervisor signals the
+  group at all), that an unset signing key sends nothing at all, and that artifacts are still
+  present at half the container's own TTL and gone by `TTL + REAPER_POLL_S`. It refuses to
+  start unless the running container's `/genetics/supervisor.py` and `prewarm.py` are
+  byte-identical to `sandbox/`'s, and every skip is listed under `NOT MEASURED` and named in
+  the exit banner, because a green exit is not a claim that everything was measured. Measured
+  2026-08-17 with a container started as `SANDBOX_RETENTION_S=45`:
+  `scripts/test-e2e-local.py --retention-s 45` → **49 checks passed, nothing skipped** (48
+  without the flag, which only cross-checks the retention the harness reads off the container
+  itself). Against a container with no `SANDBOX_RETENTION_S` the retention group skips and the
+  run reports `NOT MEASURED (1)` with a `PARTIAL:` banner, still exiting 0. The
+  run also **reproduces `genetics-results-suite-4h6.55`**: a `setsid()` grandchild is still
+  resident after the execution is killed. Details in
+  [docs/code-execution-security.md](code-execution-security.md) §2, *As built (`4h6.49`)*.
+- **Three environment differences are what "not the image" looks like**, each warned about
+  loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
+  `GENETICS_MPLCACHE` unset leaves the font cache to be rebuilt, and `SANDBOX_SCRATCH_ROOT`
+  moves the scratch root for tests — which makes artifacts unretrievable, since
+  `read_artifact` hardcodes the `/scratch/` prefix. The image sets the first two and never
+  sets the third.
 
 ## Monitoring
 
@@ -761,7 +1215,7 @@ the `GOOGLE_TOKEN_AUDIENCE` bullet under Authentication above, `genetics-results
   - **The metadata server (169.254.169.254) is NOT demonstrably covered by this policy.** No rule permits it, but link-local/node-local traffic is exactly the class already proven *exempt* from NetworkPolicy on this dataplane in the ingress direction (kubelet probes), and the egress direction has not been tested here. The load-bearing metadata defence is the node pool's `GKE_METADATA` mode with no Workload Identity binding for the sandbox KSA, not this file.
   - **Label contract, owned by this policy:** pod label `app: sandbox`, container port **8080/TCP**, Service `sandbox` (8080 → targetPort 8080). NetworkPolicy `ports` are pod ports, not Service ports. A podSelector matching no pod is not an error — it is silent no-coverage, and here it would yield a sandbox with *unrestricted* egress.
   - **Reverse direction, and why it is currently a dead path.** An egress allow-list is necessary but not sufficient: `default-deny-ingress` drops the connection at the *receiving* end, so db-api's and results-api's own ingress rules both gained an explicit `app: sandbox` entry (that is why both rows above changed). The sandbox holds neither shared secret **by design**. Since `genetics-results-suite-4h6.9` the path is opened by a *credential*, not by widening the network rule: both services now also accept a short-lived, audience-bound sandbox token minted per execution by chat-backend (see the sandbox-execution-token bullet under Authentication). Without one, db-api still 401s a request lacking `Authorization: Bearer $INTERNAL_API_SECRET`, and results-api still 401s a request carrying neither the trusted-proxy marker nor a valid bearer.
-  - **`scripts/test-network-policies.py`** asserts all of the above offline, with no cluster and no network: it parses every file in `k8s/network-policies/` (union semantics — the mcp-server property cannot be read off one file), and checks that no rule selecting the sandbox admits mcp-server or the monitor, that the only pod admitted at all is chat-backend — swept over the **whole** inventory of apps the suite runs (the harness's `KNOWN_APPS` list, its pod-label table, *and* the `app` labels it finds in `k8s/deployments/`), because a sweep over the pod-label table alone silently passed a sandbox rule admitting `app: frontend`, `keycloak`, `keycloak-postgres` or `oauth2-proxy` — that no sandbox rule is `from:`-less, that the egress allow-list is exactly the two destinations with no `ipBlock` and no port 53, and that db-api and results-api admit the sandbox on the right ports. It also **discovers** the sandbox workload anywhere in `k8s/deployments/` by a *union* of independent tells — file name, object name, the pod's `app` label value, and the label contract itself — so `sandbox.yaml`, `sandbox-deployment.yaml`, a Deployment/Service split across two files, and a renamed file whose pod still carries `app: sandbox` all activate it, while a pod labelled `app: sandbox-runner` is still found by name so the contract check can *fail* on it rather than not see it (the label branch reads the `app` value only, never the stringified label dict — matching that adopted any pod carrying an unrelated key such as `sandbox-client: "true"`, which turned a working control into cascading false failures). Because no set of tells is exhaustive, two **locks** catch a workload that evades all of them: `SANDBOX_ENABLED` on with no discoverable sandbox is a contradiction (the deploy-ordering contract flips the flag in the same commit that lands the workload), and any workload in `k8s/deployments/` that carries one of the sandbox's **forced** pod-spec tells while being recognised by no discovery tell is refused until it is classified. Those tells are `runtimeClassName` set at all, a toleration for `sandbox.gke.io/runtime` (GKE taints the gVisor pool, and the sandbox is the only pod that may tolerate it), and a `serviceAccountName` that is present and is not `genetics-suite` (absent is *not* a tell — bff, frontend, keycloak, postgres and oauth2-proxy declare none). `automountServiceAccountToken: false` **was** a fourth tell and was removed in `genetics-results-suite-o5i`: auth-gateway adopted it as ordinary hardening, which made the lock abort the deploy over a pod that had merely been improved — and it is a control other workloads should adopt too, so keeping it would tax exactly the change the suite wants. Keying the lock on tells rather than on unknown `app` labels is deliberate: the tells are forced by the node pool's taint and by the credential guarantee, so nothing ordinary declares one, whereas the earlier `KNOWN_APPS` form made every added service arrive as `ERROR: network-policy checks failed; refusing to apply network-policies/` — a check that taxes routine work is deleted rather than fixed. Discovery and both locks cover every kind that carries a pod template — Deployment, StatefulSet, DaemonSet, ReplicaSet, **Job, CronJob and bare Pod** — with the CronJob's template read at `spec.jobTemplate.spec.template`, since a sandbox landing as a Job or a Pod would otherwise be invisible to discovery *and* to the lock that backstops it. It cross-checks the discovered workload against the label contract, and — once a workload exists — that **both `db-api.yaml` and `results-api.yaml` set `SANDBOX_ENABLED: "true"`**: nothing else couples the flag to the sandbox existing, and with the sandbox deployed and the flag still `"false"` the `sys.exit(1)` assertion never fires and a script that simply omits `Authorization` lands in db-api's fail-open branch. Both workload-dependent checks are inert with a printed note until a sandbox Deployment or Service lands. Four properties of the parser are load-bearing: `policyTypes` is **inferred** when a policy omits it (the API server does the same — an `egress:` section implies Egress, and every spec implies Ingress), otherwise a policy admitting mcp-server with the field left off would be enforced by the cluster and invisible to the harness; any peer that is not `podSelector`-only is **refused rather than interpreted**, because `- namespaceSelector: {}` admits every pod in every namespace and cannot be resolved without live Namespace objects; **every** peer of a `from:`/`to:` list is evaluated rather than short-circuited on the first match, so a refused peer sitting behind a matching one (`from: [podSelector chat-backend, ipBlock 0.0.0.0/0]`) still raises instead of passing unseen; whether a selector is widened to a **superset** match or narrowed to an exact one is chosen per call site by the **polarity of the assertion**, not per function — a must-NOT-reach check (mcp-server, the monitor) widens, so a peer such as `{app: mcp-server, role: tools}` counts as reaching and the check fails closed, while a must-REACH check (db-api/results-api admitting the sandbox) narrows, because widening there would report a dead path as live once `4h6.7` makes the pod's label set fully known; and a policy selector is matched against the sandbox as a **superset** — until `4h6.7` lands a manifest the harness knows only the contract labels, not the pod's full label set, so `matchLabels: {app: sandbox, tier: untrusted}` is treated as selecting the sandbox (it would, if the pod carries `tier`) rather than skipped, which would take that policy out of every check below in silence. `scripts/deploy.sh` runs the harness immediately before `kubectl apply -f network-policies/` and **aborts the deploy on exit 1** (a broken control), warning only on exit 2 (harness could not run — no PyYAML, or a manifest directory that is missing or does not parse, which is routed to 2 rather than 1 so an unreadable file is never reported as a broken control) — this is the only place it runs, as the repo has no CI and the pre-commit hook runs only the doc-drift check (see "Documentation-drift hook" below). The **live** test — opening a connection from the mcp-server pod to the sandbox Service and confirming it fails — is deferred to the deploy window and has not been run (`genetics-results-suite-4h6.26`, which also covers the metadata-server and ClusterIP-translation questions).
+  - **`scripts/test-network-policies.py`** asserts all of the above from the repo alone, with one deliberate exception noted below (the live sandbox probe): it parses every file in `k8s/network-policies/` (union semantics — the mcp-server property cannot be read off one file), and checks that no rule selecting the sandbox admits mcp-server or the monitor, that the only pod admitted at all is chat-backend — swept over the **whole** inventory of apps the suite runs (the harness's `KNOWN_APPS` list, its pod-label table, *and* the `app` labels it finds in `k8s/deployments/`), because a sweep over the pod-label table alone silently passed a sandbox rule admitting `app: frontend`, `keycloak`, `keycloak-postgres` or `oauth2-proxy` — that no sandbox rule is `from:`-less, that the egress allow-list is exactly the two destinations with no `ipBlock` and no port 53, and that db-api and results-api admit the sandbox on the right ports. It also **discovers** the sandbox workload anywhere in `k8s/deployments/` by a *union* of independent tells — file name, object name, the pod's `app` label value, and the label contract itself — so `sandbox.yaml`, `sandbox-deployment.yaml`, a Deployment/Service split across two files, and a renamed file whose pod still carries `app: sandbox` all activate it, while a pod labelled `app: sandbox-runner` is still found by name so the contract check can *fail* on it rather than not see it (the label branch reads the `app` value only, never the stringified label dict — matching that adopted any pod carrying an unrelated key such as `sandbox-client: "true"`, which turned a working control into cascading false failures). Because no set of tells is exhaustive, two **locks** catch a workload that evades all of them: `SANDBOX_ENABLED` on with no discoverable sandbox is a contradiction (the deploy-ordering contract flips the flag in the same commit that lands the workload), and any workload in `k8s/deployments/` that carries one of the sandbox's **forced** pod-spec tells while being recognised by no discovery tell is refused until it is classified. Those tells are `runtimeClassName` set at all, a toleration for `sandbox.gke.io/runtime` (GKE taints the gVisor pool, and the sandbox is the only pod that may tolerate it), and a `serviceAccountName` that is present and is not `genetics-suite` (absent is *not* a tell — bff, frontend, keycloak, postgres and oauth2-proxy declare none). `automountServiceAccountToken: false` **was** a fourth tell and was removed in `genetics-results-suite-o5i`: auth-gateway adopted it as ordinary hardening, which made the lock abort the deploy over a pod that had merely been improved — and it is a control other workloads should adopt too, so keeping it would tax exactly the change the suite wants. Keying the lock on tells rather than on unknown `app` labels is deliberate: the tells are forced by the node pool's taint and by the credential guarantee, so nothing ordinary declares one, whereas the earlier `KNOWN_APPS` form made every added service arrive as `ERROR: network-policy checks failed; refusing to apply network-policies/` — a check that taxes routine work is deleted rather than fixed. Discovery and both locks cover every kind that carries a pod template — Deployment, StatefulSet, DaemonSet, ReplicaSet, **Job, CronJob and bare Pod** — with the CronJob's template read at `spec.jobTemplate.spec.template`, since a sandbox landing as a Job or a Pod would otherwise be invisible to discovery *and* to the lock that backstops it. It cross-checks the discovered workload against the label contract, and — once a workload exists — that **both `db-api.yaml` and `results-api.yaml` set `SANDBOX_ENABLED: "true"`**: nothing else couples the flag to the sandbox existing, and with the sandbox deployed and the flag still `"false"` the `sys.exit(1)` assertion never fires and a script that simply omits `Authorization` lands in db-api's fail-open branch. Both workload-dependent checks are inert with a printed note until a sandbox Deployment or Service lands. Since `4h6.7` landed `k8s/deployments/sandbox.yaml`, "the file exists" and "the pod runs" are no longer the same thing — deploy.sh applies it only when `ENABLE_SANDBOX=true` — so that last check (and **only** that one; every static check runs against the manifest either way) is relaxed when the sandbox is not running. **It is keyed on the cluster, not on `ENABLE_SANDBOX`.** The env var says only that *this run will not apply* the sandbox — deploy.sh **skips** `sandbox.yaml` when the gate is off, it never deletes it — so after one gate-on deploy, any later deploy from a worktree or with `terraform.tfvars` unreadable (`SKIP_TERRAFORM=true`, the documented path for exactly that) runs gate-off against a live, serving sandbox, and relaxing on the variable alone would silence the one check that stops db-api shipping `SANDBOX_ENABLED=false` underneath it — the fail-open branch where a script that omits `Authorization` is authorized with no `sub`/`sid`/`jti`. So with the gate off and a sandbox workload in the directory the harness runs `kubectl get deployments -n genetics -o name` (its **only** cluster call; everything else stays offline) and: a live sandbox Deployment → **fail**, naming the mismatch; none → relax with a note; `kubectl` present but unable to answer → **fail closed**, because the live state is then a guess; `kubectl` absent from `PATH` → relax, saying so explicitly in the note, since deploy.sh does everything through kubectl and cannot have reached the harness without it, so that case is a manual offline run by construction. `ENABLE_SANDBOX=true` is not a way around any of it — it makes the check strict rather than relaxed. Four properties of the parser are load-bearing: `policyTypes` is **inferred** when a policy omits it (the API server does the same — an `egress:` section implies Egress, and every spec implies Ingress), otherwise a policy admitting mcp-server with the field left off would be enforced by the cluster and invisible to the harness; any peer that is not `podSelector`-only is **refused rather than interpreted**, because `- namespaceSelector: {}` admits every pod in every namespace and cannot be resolved without live Namespace objects; **every** peer of a `from:`/`to:` list is evaluated rather than short-circuited on the first match, so a refused peer sitting behind a matching one (`from: [podSelector chat-backend, ipBlock 0.0.0.0/0]`) still raises instead of passing unseen; whether a selector is widened to a **superset** match or narrowed to an exact one is chosen per call site by the **polarity of the assertion**, not per function — a must-NOT-reach check (mcp-server, the monitor) widens, so a peer such as `{app: mcp-server, role: tools}` counts as reaching and the check fails closed, while a must-REACH check (db-api/results-api admitting the sandbox) narrows, because widening there would report a dead path as live once `4h6.7` makes the pod's label set fully known; and a policy selector is matched against the sandbox as a **superset** — until `4h6.7` lands a manifest the harness knows only the contract labels, not the pod's full label set, so `matchLabels: {app: sandbox, tier: untrusted}` is treated as selecting the sandbox (it would, if the pod carries `tier`) rather than skipped, which would take that policy out of every check below in silence. `scripts/deploy.sh` runs the harness immediately before `kubectl apply -f network-policies/` and **aborts the deploy on exit 1** (a broken control), warning only on exit 2 (harness could not run — no PyYAML, or a manifest directory that is missing or does not parse, which is routed to 2 rather than 1 so an unreadable file is never reported as a broken control) — this is the only place it runs, as the repo has no CI and the pre-commit hook runs only the doc-drift check (see "Documentation-drift hook" below). The **live** test — opening a connection from the mcp-server pod to the sandbox Service and confirming it fails — is deferred to the deploy window and has not been run (`genetics-results-suite-4h6.26`, which also covers the metadata-server and ClusterIP-translation questions).
 - **Why auth-gateway takes an `ipBlock` and no node CIDR.** It is the only Ingress backend (both `genetics-suite` rules point at it) and the only NodePort Service, but it is fronted by a **NEG** (`cloud.google.com/neg: {"ingress":true}`, NEG `k8s1-35278419-genetics-auth-gateway-8080-ec38d214` reported HEALTHY on the Ingress). Container-native load balancing means the GFE connects straight to the pod IP, so there is no NodePort hop and nothing is SNAT'd to the node address — the intuitive "add the node CIDR for NodePort SNAT" is wrong here. Confirmed from the nginx access log: health checks *and* real user traffic both arrive from 35.191.0.0/16, kube-probe arrives from the link-local 169.254.4.6, and nothing else appears at all. Note that this is the GFE's own address, not the client's — the GFE does not preserve the client IP (an external scanner logged as 35.191.151.104), and the real client is only in `X-Forwarded-For`, so no client IP can be source-filtered at this layer. The NEG path is what keeps the source out of the node CIDR, not source preservation. `130.211.0.0/22` is Google's other documented LB/health-check range and is admitted defensively. The node subnet is `finngenie-subnet` **10.0.0.0/20** (pods 10.16.0.0/14, Services 10.20.0.0/20); it is recorded only because losing the NEG annotation would make it suddenly required, and losing the site is the failure mode.
 - **chat-backend applies the same trusted-proxy marker rule** (`genetics-results-suite-th2`, was a P1 hole). `auth/core.py:get_authenticated_user` honours `X-Goog-Authenticated-User-Email` only when the request also carries the marker, and holds the asserted address to `ALLOWED_EMAILS`/`ALLOWED_EMAIL_DOMAINS`; `auth/dependencies.py:auth_required` follows results-api's precedence exactly (marker + allow-listed header → that user; marker + non-allow-listed header → 401, never a downgrade to `mcp-tool`; marker alone → `mcp-tool`; header alone → 401). `auth/core.py:is_internal_caller` is the single place the secret is compared, and it accepts the marker in either transport: `X-Internal-Auth: $INTERNAL_API_SECRET` (auth-gateway's, on the only two locations that proxy to chat-backend — `location /chat/v1/` and `location = /status`) or `Authorization: Bearer $INTERNAL_API_SECRET` (results-api's and mcp-server's, unchanged). Both compare as bytes, since `hmac.compare_digest` on `str` raises `TypeError` — a 500 — for a non-ASCII value; the presented value is re-encoded **latin-1** and the configured secret **UTF-8**, over a secret the service now refuses to start with unless it is ASCII — see `genetics-results-suite-ctq` below. `POST /chat/v1/tokens/validate` is the one route with no auth dependency; it calls the same helper and additionally refuses any request that carries an identity header at all, since its genuine callers are service-to-service and never assert one. Before this, forging the header granted admin (`ENABLE_ADMIN_PAGE=true`, membership tested against `ADMIN_USERS` on the forged string), read every user's chat transcripts, and minted a plaintext per-user API token via `POST /chat/v1/tokens` — which mcp-server and results-api both accept, so it pivoted into both. `GET /chat/v1/auth` is `@is_public` and reflects the identity, so it was an unauthenticated admin-membership oracle; it needed no change of its own because it resolves through the same `get_authenticated_user`. **mcp-server does not share the identity-header half of this bug**: it reads no identity header on any path and its ASGI gate fails closed to 401 without a `Bearer`. It did carry the `compare_digest`-on-`str` half, in its own bearer gate rather than in `auth/core.py` — see the mcp-server bullet below. Two deliberate deviations from results-api:
   - `REQUIRE_AUTH=false` (local dev only; prod sets `true`) still honours the header as-is. That mode already authenticated everyone as `anonymous`, so a marker would protect nothing and only break developing as a named user.
@@ -779,7 +1233,7 @@ the `GOOGLE_TOKEN_AUDIENCE` bullet under Authentication above, `genetics-results
   - **The `try/except UnicodeEncodeError` asymmetry is deliberate and now commented.** Only results-api guards the re-encode, because only its `is_internal_caller` takes a `str`, so a direct caller can hand it anything; db-api's and chat-backend's take a starlette `Request` and can only see a value starlette itself latin-1-decoded, which re-encodes by construction. Both of those now carry a comment saying so and telling the next person to add the guard if a str-taking entry point appears.
   - Pinned in each repo by a test with a **non-ASCII secret**, by a test that the startup guard fires on non-ASCII and stays silent on ASCII and on absent, and — the case that actually changed — by a test built on a **hand-built ASGI scope** that pins which raw wire bytes authenticate. That last one **cannot** be written with `TestClient`: `starlette/testclient.py` does `value.encode()` (UTF-8) on httpx's already-decoded header str, so latin-1 wire bytes are silently rewritten before reaching the app and every case collapses into the UTF-8 one — a validator was briefly fooled by exactly this. Each such test carries that note.
 - **`GET /api/v1/auth` on results-api is not an identity oracle** (`genetics-results-suite-r0l`, measured, no code change). The route is one of the seven `@is_public` routes above, so it answers a caller with no credential at all — the shape that made chat-backend's `GET /chat/v1/auth` an unauthenticated `ADMIN_USERS` oracle before `genetics-results-suite-th2`. Probed against the real app (full middleware stack, and again over a real socket): no headers → `{"authenticated": false, "user": null}`; **forged identity header alone → the same, the address is not reflected**; marker + allow-listed identity → that address, normalized; marker alone → `authenticated: false`, since the handler asks `get_authenticated_user`, which only ever answers about the proxied *person*, not the service. `tests/test_auth_endpoint_identity.py` pins all four offline so the property stays a test rather than a re-measurement.
-- **Container privileges**: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and the `RuntimeDefault` seccomp profile are set on **the containers of the suite's own services** — `results-api`, `chat-backend`, `mcp-server`, `bff`, `db-api`, and (since `genetics-results-suite-eau`) both containers of `auth-gateway` — which since `genetics-results-suite-a7n` also add `runAsNonRoot` (uid 101) and `readOnlyRootFilesystem`, and are the only suite containers outside the sandbox to set `readOnlyRootFilesystem` at all. `runAsNonRoot` is **not** exclusive to them — `db-api` and `bff` set it too (next bullet); only the read-only rootfs is. The dynamically-created **sandbox** pods are hardened further still — `runAsNonRoot`, uid 65532, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem` **with no writable volume at all** (see `docs/code-execution-security.md` § 2) — and have no manifest anywhere in `k8s/`, so no grep over this repo will ever surface them. The controls are **not** set on the third-party and support workloads: `frontend`, `oauth2-proxy`, `keycloak`, `postgres`, `rag-service`, and the `monitor`, `analyze-conversations` and `keycloak-postgres-backup` CronJobs — **eight** workloads — all still run with the container defaults. Do not restate this as "every container". `grep -rn allowPrivilegeEscalation k8s/` (**`k8s/`, not `k8s/deployments/`**: the backup CronJob lives in `k8s/cronjobs/`, and a `k8s/deployments/`-scoped grep is exactly how it got left off this list once already) re-derives only the **hardened** side. The non-hardened side is that set's **complement**, so it cannot be grepped for at all — derive it by listing every workload manifest in `k8s/` and subtracting the hardened ones.
+- **Container privileges**: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and the `RuntimeDefault` seccomp profile are set on **the containers of the suite's own services** — `results-api`, `chat-backend`, `mcp-server`, `bff`, `db-api`, and (since `genetics-results-suite-eau`) both containers of `auth-gateway` — which since `genetics-results-suite-a7n` also add `runAsNonRoot` (uid 101) and `readOnlyRootFilesystem`, and are the only suite containers outside the sandbox to set `readOnlyRootFilesystem` at all. `runAsNonRoot` is **not** exclusive to them — `db-api` and `bff` set it too (next bullet); only the read-only rootfs is. The **sandbox** is hardened further still — `runAsNonRoot`, uid 65532, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem`, a dedicated KSA, `automountServiceAccountToken: false` and `enableServiceLinks: false`, with exactly one writable path (a 512Mi `emptyDir` at `/scratch`) and no other mount of any kind (see `docs/code-execution-security.md` § 2 and "The sandbox Deployment" above). Since `genetics-results-suite-4h6.7` it **does** have a manifest, `k8s/deployments/sandbox.yaml`, so it is grepped like everything else — but it is applied only when `ENABLE_SANDBOX=true`, so its presence in this directory does not mean a hardened pod is running. The controls are **not** set on the third-party and support workloads: `frontend`, `oauth2-proxy`, `keycloak`, `postgres`, `rag-service`, and the `monitor`, `analyze-conversations` and `keycloak-postgres-backup` CronJobs — **eight** workloads — all still run with the container defaults. Do not restate this as "every container". `grep -rn allowPrivilegeEscalation k8s/` (**`k8s/`, not `k8s/deployments/`**: the backup CronJob lives in `k8s/cronjobs/`, and a `k8s/deployments/`-scoped grep is exactly how it got left off this list once already) re-derives only the **hardened** side. The non-hardened side is that set's **complement**, so it cannot be grepped for at all — derive it by listing every workload manifest in `k8s/` and subtracting the hardened ones.
   - `db-api`, `bff` and `auth-gateway` additionally run `runAsNonRoot` (uid 10001 / 1000 / 101) since they write nothing outside their image (auth-gateway writes only into two `emptyDir`s); results-api, chat-backend and mcp-server still run as root because they raise `ulimit`, shell out to `gcloud`, cache tabix indexes, or own root-owned files on the `chat-data` PVC. chat-backend sets `fsGroup: 1032` so the pre-existing SQLite files stay writable once `CAP_DAC_OVERRIDE` is dropped.
   - **auth-gateway runs its whole pod as uid 101** (`genetics-results-suite-a7n`), which is what removes the capability exception rather than justifying it. `nginx:1.27-alpine`'s master normally starts as root and its build defaults to `--user=nginx` (`nginx -V` → `--user=nginx --group=nginx`), which the mounted config does not override, so a root master chowns `/var/cache/nginx/*_temp` to uid 101 and `setgid`/`setuid`s each worker to it — the reason `genetics-results-suite-eau` had to add `CHOWN`, `SETUID`, `SETGID` back on top of drop-ALL. A pod-level `runAsUser/runAsGroup: 101` with `runAsNonRoot: true` and `fsGroup: 101` does none of those things: nginx skips the chown entirely when it is not root, and there is no privileged master to setuid from. All three capabilities are gone from **both** containers, which now drop `ALL` and add nothing. `NET_BIND_SERVICE` remains unnecessary for the same reason as before: the only `listen` is 8080, and neither fragment `deploy.sh` injects (`${LEGACY_REDIRECT}`, `${KEYCLOAK_SERVER}`) adds a listener.
     - It costs two `emptyDir`s. `/var/cache/nginx` is `root:root 0755` in the image with none of the `*_temp` directories created, so uid 101 dies at `mkdir("/var/cache/nginx/client_temp") failed (13: Permission denied)` without one; it is mounted into the initContainer too, because `nginx -t` is not a dry run and creates those same paths (as 101, chowning nothing). It is deliberately **not** `medium: Memory` — a 50M request body or a buffered upstream response would then be charged against the container's 128Mi memory limit. `/tmp` is the second, needed because both containers now also set `readOnlyRootFilesystem: true`; the config already puts the pid file at `/tmp/nginx.pid`, and `/var/run` turns out **not** to be needed at all.
@@ -861,6 +1315,123 @@ optimiser has processed it (4h6.18 observed 4,492,232,401 B dry-run against 517,
 actual), so scan-byte claims need real execution with `use_query_cache=False`, and the
 clustering itself should be asserted from
 `INFORMATION_SCHEMA.COLUMNS.clustering_ordinal_position`.
+
+### Running the local dev stack (`scripts/dev-stack.sh`)
+
+Five servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
+chat-backend `:4000`, BFF `:5000`, db-api `:8080` — and each lives in a different repo.
+`scripts/dev-stack.sh` starts, stops and switches all five as one unit; the full
+from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
+
+```
+./scripts/dev-stack.sh up                 # worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh status             # port, health, and which tree each pid runs from
+./scripts/dev-stack.sh down
+```
+
+What is load-bearing about it:
+
+- **One tree at a time, by construction.** Both trees want the same five ports (the
+  frontend's `VITE_*` URLs, vite's `/api` proxy and the sandbox container's
+  `host.docker.internal` targets all name them), so `up` frees each port before starting on
+  it. Going back to `master` is `down` then `up --tree main`.
+- **It stops what holds the port, not what it started** — `ss` to the listening pid to its
+  process group — so it takes over hand-started tmux servers, and one signal reaches a whole
+  `npm` → `sh` → `node` tree instead of letting `tsx watch` respawn its child. **But only
+  when the holder is this suite's**: the socket says nothing about whose process it is, and
+  `:3000`/`:8080` are the ports an unrelated dev server is most likely to be sitting on. Each
+  holder's `/proc/<pid>/cwd` and command line are checked against the service's repo (main
+  checkout or any worktree beneath it) first; a stranger is reported — pid, cwd, argv — and
+  left alone, that service is skipped, and `up` exits non-zero. `--force` overrides. It also
+  refuses to run as root and never signals process group 0, 1, its own, or the one it
+  inherited from the launching terminal.
+- **Every selected tree is validated before the first port is freed**, so a missing `.venv`
+  cannot leave two services on the new tree, one killed and two still serving the old one.
+  `up` returns non-zero if any service fails preflight, has its port refused, or never
+  answers its health endpoint.
+- **The gitignored config is referenced, never copied.** `genetics-mcp-server/.env` exists
+  only in the main checkout; the script sources it by path (`MCP_ENV_FILE`) into the
+  chat-backend subshell, so no secret reaches a worktree, a command line or a log. The
+  frontend's `VITE_*` values are passed as environment variables — vite merges prefixed
+  `process.env` over its `.env` files — so a worktree needs no `.env.local` either.
+- **`SANDBOX_URL` is set explicitly to `http://127.0.0.1:8081`.** The client's default is
+  `127.0.0.1:8080`, which locally is db-api, not the sandbox (`genetics-results-suite-6um`).
+- **It provisions the sandbox's per-execution credentials** (`genetics-results-suite-4h6.49`):
+  `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are generated once into
+  `DEV_STACK_RUN_DIR` — stable across restarts, outside every repo, never in a working tree —
+  and exported with `SANDBOX_ENABLED=true`. Without them db-api and results-api resolve **no
+  sandbox principal at all** and serve the sandbox SDK with no per-execution accounting, which
+  is locally indistinguishable from the bug the tokens exist to fix
+  (`genetics-results-suite-0lf`). Override any of the three to pin a value.
+- **`status` reads `DATASET_ID` from `/proc/<pid>/environ`**, because `/health` does not
+  report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
+  `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.
+- **`--tree worktree` defaults db-api to `genetics_dev`**, the persistent full-size copy
+  (`genetics-results-suite-g08`): all 15 tables and views, and since 2026-08-18 every
+  production row — 755,813,602 rows / 136.69 GB, each table matching its `genetics_results`
+  counterpart exactly. Production's 1.1 B is larger only by the three `credible_sets_exp_*`
+  tables dev deliberately omits. Any gene smoke-tests, on any of the 23 chromosomes;
+  `APOE` no longer returns zero. Reload it with `TRUNCATE` + `INSERT … SELECT` and an
+  explicit column list, never a CTAS or clone — no dev table's schema equals production's
+  (all 15 carry descriptions and `REQUIRED` modes that production, uniformly `NULLABLE`
+  and undescribed, does not), and a CTAS inherits neither those, nor the `chr` range
+  partitioning, nor the clustering. It is a
+  different object from the `genetics_results_dev` *rehearsal* clone of
+  [docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md), which is created and torn down
+  around one DDL change.
+
+Nothing here touches a cluster: it starts local processes and reads BigQuery.
+
+### Running the sandbox locally (`scripts/run-sandbox-local.sh`)
+
+The sandbox is the one service with a genuine local backend, and it is deliberately not an
+exception to the section above: it runs the **same image** in a plain Docker container
+instead of a gVisor pod, with the supervisor supplied as the container's command the way
+`k8s/deployments/sandbox.yaml` will supply it as `args:`. There is no local/production fork
+in the code and none in the request flow — chat-backend's client holds one base URL either
+way.
+
+```
+./scripts/run-sandbox-local.sh            # build, (re)start, wait for /health, print the fidelity report
+./scripts/run-sandbox-local.sh --test     # ... then run test-supervisor.py --container --container-name against it
+./scripts/run-sandbox-local.sh --no-build # restart without rebuilding
+./scripts/run-sandbox-local.sh --logs     # container stdout, which is where the audit stream lands
+./scripts/run-sandbox-local.sh --stop
+```
+
+Operational specifics:
+
+- **The host port is 8081, the container port is 8080.** The container port matches the
+  manifest and the Service; the host port cannot, because the local db-api already holds 8080
+  (`genetics-results-suite-r9e`). `HOST_PORT` overrides it. It publishes on `127.0.0.1` only.
+- **It does not clone genetics-mcp-server the way `scripts/build.sh` does.** The point is to
+  run the working tree, so the SDK is staged from a local checkout: `MCP_SERVER_DIR` if set,
+  otherwise the sibling repo's worktree **of the same name** first and its main checkout
+  second — the resolve-into-the-main-checkout class `scripts/check-worktree-paths.sh` exists
+  for, and here it would silently build against a branch that carries no SDK at all.
+- **It checks `sandbox/schema` and `sandbox/stubs` rather than regenerating them**, because
+  regenerating writes tracked files a developer starting a container did not ask to change.
+  Drift warns and the build continues (`--regen` writes them). `scripts/build.sh` still
+  regenerates and still treats a failure as fatal — a pushed image documenting a stale SDK is
+  a defect; a local one is survivable.
+- **It never touches a cluster and pushes nothing.** The tag is `genetics-sandbox:local` so a
+  local build cannot be mistaken for the image the cluster pulls.
+- **The fidelity gap is printed on every start**, not buried: gVisor, the NetworkPolicy, the
+  kubelet pid limit, the seccomp profile, `emptyDir` `sizeLimit` eviction,
+  `ephemeral-storage` requests/limits (`1Gi`/`2Gi`, with **no** local analogue at all), the
+  Deployment's restart behaviour (`--restart no` here) and DNS have no local form.
+  `terminationGracePeriodSeconds: 130` **is** reproduced, by `--stop-timeout 130` plus a
+  `--stop` that calls `docker stop` rather than `docker rm -f`. One gap is a sizing trap
+  rather than missing coverage and `4h6.41`/`4h6.46` must read it before tuning anything: the
+  local `/scratch` is a tmpfs, i.e. page cache in the container's **own memory cgroup**, so
+  its bytes come out of the same 3 GiB as the child's RSS (measured 113 MiB → 414 MiB after a
+  300 MiB write), whereas the pod's `emptyDir` has no `medium: Memory`, is node-disk-backed
+  and is charged to `ephemeral-storage` instead — never to `limits.memory`. Headroom sized
+  locally is therefore up to 512 MiB more conservative than the pod needs.
+  `docs/code-execution-security.md` → "As built (`4h6.40`)" enumerates each and what it costs;
+  any control whose only enforcement is one of them is unexercised locally and must be
+  verified at deploy time.
 
 ### Documentation-drift hook
 
@@ -1017,8 +1588,8 @@ So:
 ### Ordered rollout: the sandbox execution token (no code ordering, one config lockout)
 
 By contrast with the two rollouts above, the sandbox credential (`genetics-results-suite-4h6.9`)
-has **no code ordering hazard**: nothing sends an HS256 bearer until `4h6.7` and `4h6.14` land
-the sandbox and `run_analysis`, so minter-first and validators-first are both safe, and every
+has **no code ordering hazard**: nothing sends an HS256 bearer until `4h6.7` and `4h6.47` land
+the sandbox and the client that calls the minter, so minter-first and validators-first are both safe, and every
 existing credential type is untouched in either single-sided state.
 
 | state | chat-backend mints | db-api / results-api verify | result |
@@ -1326,7 +1897,7 @@ complete".
 - **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (requires `REGISTRY` env var; `tag` defaults to `latest`). Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
 - **Build all images**: `./scripts/build-all.sh` — clones the service repos (branch overridable per service, all default `master` except rag-service) and builds/pushes all Docker images to Artifact Registry, including the local `monitor`, `keycloak` and `sandbox` build contexts (requires `REGISTRY` env var)
 - **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh). `sandbox` is also accepted: it builds the local `sandbox/` context rather than a clone, but still clones genetics-mcp-server for the SDK.
-- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today; `genetics-results-suite-4h6.11` has landed only on `worktree-db-only-architecture`), so a suite build stays green while the sandbox is unshippable. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py`, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell (`genetics-results-suite-4h6.31`), that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds), and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source is staged — it never skips silently. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` is written with fully qualified `genetics_results.<view>` table names: db-api sets no default dataset and its unqualified-name fallback is a regular expression that cannot tell a table position from a string literal. The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files (`genetics-results-suite-4h6.13`, now landed). See `docs/code-execution-security.md`, "Where the image lives".
+- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today; `genetics-results-suite-4h6.11` has landed only on `worktree-db-only-architecture`), so a suite build stays green while the sandbox is unshippable. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py`, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell (`genetics-results-suite-4h6.31`), that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds), and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source is staged — it never skips silently. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` names views **bare** (`FROM credible_sets_v`), with no project or dataset prefix and no backticks (`genetics-results-suite-bee`). db-api's `_qualify_tables` rewrites a bare name to `` `{PROJECT_ID}.{DATASET_ID}.{view}` `` and only in a genuine table position — the regex anchors on `FROM`/`JOIN`, so it no longer mistakes ordinary words in string literals for tables, which is what the earlier fully-qualified convention existed to avoid. Qualifying is now the failure mode rather than the fix: db-api owns the dataset identity, so the same emitted SQL serves dev and production, and the backticks must come off with the prefix because the rewrite does not match a backtick after the whitespace. The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files (`genetics-results-suite-4h6.13`, now landed). See `docs/code-execution-security.md`, "Where the image lives".
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor). It needs the **config profile** to know whether to write `keycloak-secrets` (daly only), and reads it from `terraform/terraform.tfvars`, which is gitignored and exists only in the main checkout. Without that file it **refuses with exit 1** and the same main-checkout/worktree message `deploy.sh` prints, rather than guessing a profile and writing the wrong per-profile secrets (`genetics-results-suite-1xp`); set `CONFIG_PROFILE=daly|finngen` to run it from a worktree anyway — and that `daly|finngen` is **enforced**, not advertised: any other value (a typo, a case slip like `Daly`, or a `terraform.tfvars` with no `config_profile` line, which parses to empty) also exits 1, because an unrecognised profile would otherwise fall through to `ENABLE_KEYCLOAK=false` and skip `keycloak-secrets` silently. Before that guard existed it died with exit 2 and no output at all, because the `grep` on the missing file tripped `pipefail`.
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
@@ -1410,6 +1981,72 @@ one clears it. Both stores live at module scope in the browser
 (`src/features/chat/useChatOptions.ts`, `useInstructionSets.ts`) because `ChatPage` remounts
 `LLMChat` on every conversation switch, and each keeps the current value separate from the default
 for the reason above.
+
+### Tool profiles, and the `code` profile (`genetics-results-suite-4h6.16`)
+
+The **Tools** option above is the `tool_profile` field, and it is resolved by **two** mechanisms in
+`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
+to whole tool **categories** (`api`, `bigquery`, `rag`, `nocode`); `TOOL_PROFILE_TOOLS` maps a
+profile to an explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
+filtering at all*, not a union of the profiles, and an unrecognised string degrades silently to
+general-only rather than raising, because the value is read back from `chat_messages` rows written
+by older clients.
+
+The second mechanism exists for `code`, the minimal code-execution surface: `run_analysis`,
+`list_capabilities`, `read_artifact`, `search_genes`, `search_phenotypes`,
+`search_scientific_literature`, `lookup_variants_by_rsid` — **seven tools against the default 68**,
+and no external (gnomAD / Open Targets) or RAG tools either. That set is not expressible as
+categories: its three orchestration tools share a category with `launch_subagents`, which must stay
+out, and its four search tools share `general` with 14 others. Recategorising tools to make it fit
+was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises and what
+subagent skills declaring `tool_categories={"general","api"}` may call — so the profile layer grew
+the ability to name tools instead. No existing profile's resolved set changed.
+
+It **ships dark**: no server-side default moved, so `profile=null` still yields the full surface;
+selection is per request for local A/B work, and rollback is deleting one dict entry. The bead's
+`search_entities` / `search_literature` names do not exist anywhere in the codebase — the
+consolidation that would create them is deferred, and revisiting it is what would change this
+profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
+in `docs/chat-tool-reference.md` § 3.
+
+`nocode` is the fourth category-union profile, added for the genetics-results-suite-4h6.23 A/B and,
+like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
+offer it, so nothing stores it and the browser's unknown→`null` narrowing is never exercised by it.
+It resolves to `{general, api, bigquery}`: `null` minus exactly `run_analysis`,
+`list_capabilities` and `read_artifact` under the deployed flags (65 → 62, measured 2026-08-19).
+It exists because `null` **is not** a pre-code-execution baseline — `null` contains `run_analysis`,
+so an arm meant to represent the old surface could reach for the mechanism under test. Note the
+equivalence rides on a runtime flag, not on the category: excluding `orchestration` also excludes
+`launch_subagents`, which only stays out because `enable_subagents` defaults to false. Turn it on
+and `nocode` is no longer "the old surface".
+
+#### Selecting a profile from the browser
+
+The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
+execution** (`code`); `rag` is a real server-side profile that has deliberately never been
+user-facing. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
+rode along with every request while nothing could change it — which is why the row above described
+a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
+A/B'd against the full one. The default is unchanged: **All**.
+
+The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
+backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
+an **unrecognised** profile to `null`, and `null` is the **largest** surface, not the smallest. So a
+list left behind by a new profile does not fail, it silently runs the maximal arm; a benchmark
+driven through the browser would be invalid with no visible symptom. The server makes the opposite
+call for the same input (unknown → general-only). Both are deliberate — the value comes back from
+`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise —
+and the inconsistency is recorded rather than resolved. What keeps it safe is that `TOOL_PROFILES`
+in `src/features/chat/chat.types.ts` is the single list every narrower reads, `TOOL_PROFILE_LABELS`
+in `LLMChat.tsx` is a `Record<ToolProfile, …>` so a new profile is a **type error** until the UI has
+decided about it (`null` there means "deliberately not offered", which is `rag`), and
+`useChatOptions.test.ts` / `LLMChat.options.test.tsx` drive their cases off that list and pin the
+unknown-value behaviour explicitly.
+
+**Hazard, unresolved** (`genetics-results-suite-4h6.56`): `run_analysis` is the primary tool of the
+`code` profile and has no feature flag, so on any cluster **without a deployed sandbox** a user can
+now pick a profile whose main tool cannot work at all. Locally the sandbox is running and this is
+fine; it is a deployment-ordering constraint, not a browser bug.
 
 ## Conversation analysis pipeline
 

@@ -127,6 +127,55 @@ gcloud projects add-iam-policy-binding $(terraform output -raw project_id) \
   --role="roles/artifactregistry.reader"
 ```
 
+Terraform can create a **second** node pool, `<cluster_name>-sandbox-pool` — one pinned
+`e2-standard-2` running gVisor (GKE Sandbox) for the code-execution sandbox. It is **off by
+default** (`sandbox_pool_enabled = false`), because `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy: terraform changes here are *not* opt-in,
+so a pool gated on nothing would appear on a routine deploy nobody asked for.
+
+When you set `sandbox_pool_enabled = true`, `sandbox_node_service_account` becomes **required**
+in every mode, including `manage_iam = false`. The variable carries `default = ""` only so
+terraform does not stop to prompt; `""` fails the resource's precondition. The SA must be in
+this project, must not be `genetics-suite`, and must not equal `node_service_account` (the
+primary pool's SA — that pool grants the `cloud-platform` scope, so sharing it puts the whole
+suite's credential on the node running untrusted code). Those are **format and identity checks
+only**: terraform does not create the SA and does not verify what roles it holds, so the recipe
+below is the only thing bounding them. Create it before enabling the pool:
+
+```bash
+PROJECT=$(terraform output -raw project_id)
+gcloud iam service-accounts create finngenie-sandbox-node --project="$PROJECT"
+SA="finngenie-sandbox-node@${PROJECT}.iam.gserviceaccount.com"
+for ROLE in roles/logging.logWriter roles/monitoring.metricWriter roles/monitoring.viewer \
+            roles/stackdriver.resourceMetadata.writer roles/artifactregistry.reader; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${SA}" --role="$ROLE"
+done
+```
+
+Note this pool is created with `workload_metadata_config { mode = "GKE_METADATA" }`
+unconditionally, which is why `google_container_cluster.primary`'s `workload_identity_config`
+is also unconditional — GKE rejects the former without the latter **at apply, not at plan**.
+See "The sandbox pool" in `docs/project-spec.md` before changing either.
+
+> **What the next apply does whether or not you enable the pool.** `workload_identity_config`
+> on the cluster is unconditional now, and the live cluster currently has an **empty**
+> `workloadPool` (verified with `gcloud container clusters list`) because `manage_iam = false`.
+> So the next apply **enables Workload Identity on the live cluster** — an in-place update, very
+> likely inert (no pool is in `GKE_METADATA` mode and no KSA has a WI binding), but it reaches
+> production without anyone opting into it. Two consequences worth knowing before you run it:
+> `terraform.tfvars` is gitignored and lives only in the **main checkout**, so adding
+> `sandbox_pool_enabled` / `sandbox_node_service_account` there is a manual step this repo cannot
+> make for you; and `scripts/deploy.sh` applies terraform on every full deploy, so
+> `SKIP_TERRAFORM=true` is the escape hatch if you want manifests only.
+>
+> **Known risk, recorded not fixed:** once WI is on, the primary pool has no explicit
+> `workload_metadata_config` under `manage_iam = false`. If that pool is ever *recreated*
+> (`terraform/main.tf` already warns pool replacement is a live hazard), its metadata mode would
+> come from GKE's cluster-derived default rather than the `GCE_METADATA` all 8 workloads depend
+> on. Whether to pin the primary pool explicitly is tracked separately; nothing here changes its
+> behaviour.
+
 Configure kubectl to connect to the new cluster:
 
 ```bash
@@ -244,6 +293,11 @@ does not work is assuming a `git add` from here refreshed anything.
 the git common dir, so it works from a worktree and fails loudly when it cannot resolve
 them — `check-worktree-paths.sh` no longer reports it.
 
+To **run** the suite from a worktree rather than build from it, use `scripts/dev-stack.sh`
+(below): the local dev servers otherwise keep serving the main checkouts on `master` while
+you edit a branch, and the config that makes them work — `genetics-mcp-server/.env`, the
+browser's `.env.local` — is gitignored and exists only in the main checkout.
+
 This script reports only the paths that actually diverge; it is silent in the main
 checkout. `deploy.sh`, `build-all.sh` and `build.sh` run it with `--check`, warn, and
 never block — a single-service build falls back to `APP_NAME=FinnGenie` from a worktree
@@ -356,9 +410,56 @@ copies are current, that every view and column reaches a file **with its BigQuer
 and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
 Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
-The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders. There
-is no sandbox Deployment yet. See
+The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
+
+`./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
+container** on the developer machine — no cluster, no credentials, nothing pushed — with the
+supervisor passed as the container's command, `--read-only`, `--cap-drop ALL`, uid 65532 and a
+writable `/scratch`. It publishes `127.0.0.1:8081` (the container port stays 8080; the local
+db-api already holds 8080 on the host) and prints, on every start, the list of controls that
+have **no** local form: gVisor, the NetworkPolicy, the kubelet pid limit, the exact seccomp
+profile, `emptyDir` `sizeLimit` eviction, `ephemeral-storage` requests/limits, the Deployment's
+restart behaviour and DNS — including the one that changes how limits must be sized, that the
+local `/scratch` tmpfs is charged to the container's memory cgroup while the pod's disk-backed
+`emptyDir` is charged to `ephemeral-storage` instead. `--test` then runs
+`python3 scripts/test-supervisor.py --container http://127.0.0.1:8081 --container-name NAME`
+against it (the name is what lets the audit-stream group read the container's stdout);
+`--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
+
+The Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because
+the image ships no `CMD` and the supervisor is supplied at run time — so it is applied only when
+`ENABLE_SANDBOX=true`, which `scripts/deploy.sh` derives from `sandbox_pool_enabled` in
+`terraform.tfvars`. A preflight in deploy.sh — before the first `kubectl apply` of the run, so a
+refusal cannot strand a half-finished deploy — refuses that apply if no node carries
+`workload=sandbox` (the pod would be Pending forever) or while the manifest still declares no
+`command`/`args` (it would schedule and CrashLoopBackOff while the deploy printed success); the
+second refusal names `genetics-results-suite-4h6.39` (the supervisor) and clears itself when
+`genetics-results-suite-4h6.50` wires it into the manifest. See "The sandbox Deployment" in
+`docs/project-spec.md` and
 [docs/code-execution-security.md](docs/code-execution-security.md).
+
+## Running the suite locally
+
+Everything above deploys. To run the five services from source on one machine — results-api
+`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080`, one per repo —
+see [docs/local-dev-vm.md](docs/local-dev-vm.md) for the from-scratch setup and
+`scripts/dev-stack.sh` to drive them:
+
+```bash
+./scripts/dev-stack.sh up                 # all five from the worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # all five from the main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh status             # port, health, and which tree each pid is serving
+./scripts/dev-stack.sh down
+```
+
+Both trees use the same five ports, so `up` frees each port first and one tree serves at a
+time; switching back is `down` then `up --tree main`. A port is only freed when its holder
+is this suite's — checked against `/proc/<pid>/cwd` and the command line — so an unrelated
+app on `:3000` or `:8080` is reported and left alone (`--force` overrides) rather than
+killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **full-size**
+copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) — any gene
+on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
+`docs/project-spec.md`.
 
 ## Services
 
@@ -374,6 +475,7 @@ is no sandbox Deployment yet. See
 | chat-backend | genetics-mcp-server | genetics-mcp-server | 8000 | FastAPI, LLM chat with MCP tools |
 | mcp-server | genetics-mcp-server | genetics-mcp-server | 8080 | Standalone MCP server (streamable HTTP) |
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
+| sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
 | monitor | — (scripts/monitor/) | monitor | — | CronJob (every 8h): health checks, BQ coverage, log alerts → Slack |
 
@@ -489,7 +591,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 ## Security
 
 - Network policies source-scope **every** service: db-api and rag-service only from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend and mcp-server; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server. The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
-- The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. The other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) still mount it. Eight third-party and support workloads (frontend, oauth2-proxy, keycloak, postgres, rag-service, and the monitor, analyze-conversations and keycloak-postgres-backup CronJobs) are not hardened this way; the dynamically-created sandbox pods go further still (non-root uid 65532, read-only rootfs with no writable volume). See `docs/project-spec.md` → Security.
+- The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. The other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) still mount it. Eight third-party and support workloads (frontend, oauth2-proxy, keycloak, postgres, rag-service, and the monitor, analyze-conversations and keycloak-postgres-backup CronJobs) are not hardened this way; the sandbox goes further still (non-root uid 65532, read-only rootfs, a dedicated KSA with no GCP identity, `automountServiceAccountToken: false`, `enableServiceLinks: false`, and one 512Mi `emptyDir` at `/scratch` as its only mount) — its manifest is `k8s/deployments/sandbox.yaml`, applied only when `ENABLE_SANDBOX=true`. See `docs/project-spec.md` → Security.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - Google-managed SSL certificates

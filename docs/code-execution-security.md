@@ -11,6 +11,20 @@ document decides *where* it runs, *what it can reach*, *what credential it carri
 *who can invoke it*. It does not cover the SDK's own API surface (`4h6.11`) except where
 that surface becomes a security boundary — see "Handoffs to other tasks".
 
+**And it does not: the SDK's public function list is NOT a containment boundary**
+(`genetics-results-suite-4h6.33`). A script that imports the SDK reaches the full
+`ToolExecutor` through `GeneticsClient._executor` — the underscore there is curation of the
+recommended surface, not enforcement — and httpx is present regardless, since it is the SDK's
+own transport. So a script can call anything the egress policy permits, whether or not the SDK
+wraps it, and "absent from the SDK" must never be read as "unreachable". The egress allow-list
+specified in section 3 ("Egress policy") — not the SDK — is what makes a target unreachable, with
+one exception it does not cover: link-local (169.254.169.254), where the load-bearing defence is
+the node pool's `GKE_METADATA` mode and the missing Workload Identity binding rather than this
+policy (see section 3). And it is the *specified* boundary, not yet a live one: the sandbox is not
+deployed, and `k8s/network-policies/sandbox-policy.yaml` stays decoration until
+`genetics-results-suite-4h6.7` ships a Deployment carrying the labels it selects. The SDK decides
+only what is convenient.
+
 **Threat actors, in the order they matter:**
 
 1. **A prompt-injected model.** Tool results and user-supplied attachments enter the
@@ -108,19 +122,101 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
-| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fourteen workloads use `serviceAccountName: genetics-suite` (the rest name no KSA and fall to the namespace `default`), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
+| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
 | Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
 | Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 15-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 15 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
 | CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
-| pids | `pod_pids_limit: 256` in the sandbox node pool's `kubelet_config`, plus a child pid budget **meaningfully below** 256 | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.14` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold well under 256, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.7`/`4h6.14` must implement in full if they take (a). |
+| pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.41` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.39`/`4h6.41` must implement in full if they take (a). **DECIDED: (b)** — `4h6.7` picked the shared uid, because (a) needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` that this pod drops; see "The uid choice" below for the reasoning and the two costs, and do not read "(a) is preferred" here as the state of the code. |
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
 | Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
 | Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. In exchange it removes cross-user co-tenancy *inside* the pod entirely: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. |
 | Replicas | 1 | Peak 23 turns/hour, p95 8, mean 3. Do not build for concurrency that does not exist. |
 
-### Permission contract for the second-uid option
+### What the manifest adds beyond this table
+
+`k8s/deployments/sandbox.yaml` (`genetics-results-suite-4h6.7`) implements every row above.
+Five things it declares are **not** in the table, four of them controls this document did not
+specify; the per-field rationale lives in `docs/project-spec.md` → "The sandbox Deployment"
+and is not duplicated here.
+
+- **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST` /
+  `_PORT` variables for every Service in the namespace into the pod's environment — the whole
+  internal inventory and its ClusterIPs, handed to untrusted code for free. Nothing in the
+  egress allow-list becomes reachable through them, but the disclosure is gratuitous.
+- **`dnsPolicy: None` with a `127.0.0.1` nameserver and `ndots:1 timeout:1 attempts:1`.** "On
+  DNS" below argues the resolver must not be a sink and that a *stall* is the failure shape to
+  avoid; leaving `dnsPolicy` at the default `ClusterFirst` writes kube-dns into
+  `/etc/resolv.conf` and gets exactly that stall against an egress policy that drops 53/UDP.
+  Pointing the resolver at loopback turns the stall into an immediate `ECONNREFUSED`. It is a
+  second line, not a replacement: `/etc/nsswitch.conf` ordering and `hostAliases` still do the
+  work, and the egress policy is still what denies the network.
+- **`strategy: Recreate` and no `livenessProbe`.** Both are availability decisions with a
+  security edge. A rolling update would put a second sandbox pod on a pool pinned at one node
+  and break "one execution at a time" from per-pod to per-cluster; a liveness probe racing a
+  legitimate 120s execution restarts the pod and kills the script, which the supervisor's own
+  wall clock already handles.
+- **No `command` / `args`.** The image ships no `CMD` on purpose and the supervisor (`4h6.39`)
+  does not exist yet, so an applied pod would start `python3` with no script and
+  CrashLoopBackOff — it *schedules*, so this is not the Pending case. `scripts/deploy.sh`
+  therefore refuses to apply the file at all while it declares neither field, naming `4h6.39`;
+  the refusal is keyed on the manifest and clears itself when `4h6.50` adds `args:` (the last
+  bead of the supervisor chain — `4h6.39` deliberately does not touch the manifest).
+- **The apply is gated on the node pool.** `scripts/deploy.sh` skips the file unless
+  `ENABLE_SANDBOX=true`, derived from `sandbox_pool_enabled` in `terraform.tfvars` rather than
+  being a second switch, and refuses the apply outright if no node carries `workload=sandbox`
+  — the pod tolerates a taint only the gVisor pool has, so applying it without the pool leaves
+  a permanently Pending pod behind a `kubectl apply` that returned 0. Both refusals live in a
+  **preflight that runs before the first apply of the deploy**, not in the manifest loop where
+  `sandbox.yaml` sorts second-to-last and an `exit 1` would leave every other manifest applied
+  and every rollout unrolled.
+- **`SANDBOX_ENABLED` on db-api and results-api** stays `"false"` until the separate,
+  deliberate enablement step, and `scripts/test-network-policies.py` reports that pairing as a
+  note instead of a failure **only when it has confirmed against the cluster that no sandbox
+  Deployment is live**. `ENABLE_SANDBOX` alone does not license the relaxation: it means "this
+  run will not apply it", and deploy.sh *skips* the manifest rather than deleting it, so a
+  later gate-off deploy can run against a sandbox that is still serving. A live sandbox with
+  the gate off is a hard failure there; an undeterminable cluster fails closed.
+
+### The uid choice: option (b), one shared uid — DECIDED (`4h6.7`)
+
+The pids row above obliges `4h6.7`/`4h6.41` to pick (a) or (b) explicitly. **The choice is (b):
+the supervisor and the child both run as uid 65532**, which is what `k8s/deployments/sandbox.yaml`
+now declares (`runAsUser: 65532`, `runAsGroup: 65532`, `fsGroup: 65532`, and no second uid
+anywhere).
+
+**It is forced, not preferred.** Option (a) needs three things the pod's own hardening
+forecloses: `setuid` to a second uid before the fork, a `chown` of `/scratch/<id>` to that uid,
+and a `chown` of the token file to it at mode `0400`. With `capabilities.drop: ["ALL"]` and
+`allowPrivilegeEscalation: false` the container holds no `CAP_SETUID`, `CAP_SETGID` or
+`CAP_CHOWN` — measured in this pod's shape, `setuid(65533)` and `chown(65533)` both return
+`EPERM`. Taking (a) would mean adding those three capabilities back to the one workload in the
+cluster that executes attacker-influenceable code by design, which contradicts the baseline this
+ticket exists to establish. That trade is not worth `RLIMIT_NPROC`, and it must not be made
+silently by a later ticket that reads only the "(a) is preferred" line above.
+
+**What it costs, stated plainly, because the supervisor beads inherit both — `4h6.41` the pid
+budget, `4h6.43` the token file:**
+
+- **`RLIMIT_NPROC` is not a per-execution control.** It is a limit per *real uid* across the pid
+  namespace, so a child forking to its limit also stops the supervisor forking. `4h6.41` must
+  enforce the pid budget from the supervisor — watch the child's process group and kill above a
+  threshold sized from what a legitimate script needs (tens of processes) — and treat
+  `RLIMIT_NPROC` as advisory only. The kubelet's `pod_pids_limit: 1024` remains the outer
+  backstop and is not a substitute.
+- **The token file is within the child's same-uid reach.** `/proc/<pid>/environ` is readable by
+  any process with the same uid, and mode `0600` on a supervisor-owned file does not exclude a
+  same-uid child or any helper it spawns (see the token-delivery numbered list in section 4).
+  The mitigation is lifetime, not permissions: the SDK reads the file once and unlinks it, so the
+  window is the interval before its first call, and `/scratch/<id>` is wiped regardless.
+
+**`4h6.39` must not assume it can drop privileges.** There is no uid to drop to and no capability
+to do it with; a supervisor written against option (a) will fail at runtime with `EPERM`, not at
+review. The section below is retained for the case where that trade is ever revisited *together
+with* the capability grant it requires — it does not describe what is implemented today.
+
+### Permission contract for the second-uid option (NOT IN EFFECT — see the decision above)
 
 Option (a) of the pids row — a distinct child uid — is preferred, and it silently breaks two
 things unless the ownership rules are stated. Both have an obvious wrong fix that an
@@ -197,7 +293,7 @@ first place does that, which is why the supervisor has to hold the budget.
 **Decision: yes, and this settles the node-pool question rather than complicating it.**
 
 The argument against is real: GKE Sandbox cannot be enabled on an existing pool's workloads
-selectively — it requires a pool created with `sandbox_config { sandbox_type = "gvisor" }`,
+selectively — it requires a pool created with `sandbox_config { type = "gvisor" }`,
 which is a *dedicated* pool, and gVisor's syscall interception costs measurably on the
 `mmap`/`futex`-heavy paths that numpy and polars live on.
 
@@ -209,20 +305,61 @@ arbitrary code execution — precisely our situation — reaches the node. gViso
 control in the catalogue that addresses that, and the population of people who can trigger
 script authoring includes anyone who can get a string into the model's context.
 
-The cost argument inverts on inspection. `docs/project-spec.md` ("Node pool sizing")
-records that the pinned 2 × `e2-standard-4` pool *already* overshoots one node on both axes
-during a full deploy (3951m vs 3920m allocatable CPU, 13.60 vs 12.97 GiB), and warns
-explicitly that "raising any deployment's requests, or adding a service, can re-break
-this". Putting the sandbox on the existing pool re-breaks it. Putting it on its own pool
-leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 0 GiB to it.
+**The cost argument does *not* invert, and an earlier version of this paragraph claimed it
+did.** It asserted that the primary pool was pinned at 2 × `e2-standard-4` and already
+overshot one node on both axes (3951m / 13.60 GiB), so a separate pool was nearly free.
+`genetics-results-suite-262` established that the pinning was never applied to any live
+profile — the primary pool autoscales 1-3 and runs **one** node — and re-derived the
+arithmetic: under the live **finngen** profile a full deploy peaks at 3226m / 12498 Mi
+against 3920m / 13273 Mi allocatable, i.e. it **fits**, with 775 Mi to spare. See `docs/project-spec.md`
+("Node pool sizing") for the current table. So the honest accounting is: putting the sandbox
+on the existing pool would push finngen over and force a second node; putting it on its own
+pool leaves the primary surge budget **untouched** (the sandbox contributes 0m and 0 GiB) at
+the cost of **one permanently-running `e2-standard-2`**. gVisor was chosen anyway, on the
+isolation grounds above and not on cost.
 
 **Specification for `4h6.10`:**
 
-- New `google_container_node_pool` `sandbox-pool`, `min_node_count == max_node_count == 1`
-  (the pinning rationale from the main pool applies identically: an autoscaler with room to
-  move evicts pods, and here it would kill in-flight scripts).
-- `machine_type = "e2-standard-2"`, `sandbox_config { sandbox_type = "gvisor" }`,
-  `kubelet_config { pod_pids_limit = 256 }`.
+**Implemented** as `google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`
+(`4h6.10`), behind `var.sandbox_pool_enabled` (**default `false`** — `scripts/deploy.sh` runs
+`terraform apply -auto-approve` on every full deploy, so an ungated pool would be created by a
+routine deploy nobody opted into).
+
+Two corrections against the spec as originally drafted below, and they are **not** of equal
+standing — do not read them as a pair:
+
+- **Tool-verified.** The provider argument is `sandbox_config { type = ... }`, not
+  `sandbox_type`; `terraform validate` rejects the latter outright. (One thing even this does
+  not settle: the GKE REST enum is `GVISOR` and the provider does no normalization — there is no
+  lowercase `gvisor` string in the binary — so whether the API accepts `"gvisor"` is
+  **unverified** and is a 30-second check at the first real apply. If rejected, the value becomes
+  `"GVISOR"` here and in `docs/project-spec.md` too.)
+- **Not verified by anything.** `pod_pids_limit` was raised from 256 to **1024** on the strength
+  of GKE's *documented* minimum. `terraform validate` did **not** find this and does not confirm
+  it: the provider schema is a bare optional number with no range check, so it passes on 256 as
+  readily as on 1024. `terraform/gke.tf` and `docs/project-spec.md` both mark it **UNCONFIRMED**
+  against this cluster (`genetics-results-suite-5r2`); this copy says the same. Only a real pool
+  creation settles it.
+
+- New `google_container_node_pool` `<cluster>-sandbox-pool`,
+  `min_node_count == max_node_count == 1`. The pinning rationale here is *not* inherited from
+  the main pool (which autoscales 1-3 — see `genetics-results-suite-262`): it is that a
+  scale-down would kill an in-flight script, with no second replica.
+- `machine_type = "e2-standard-2"`, `sandbox_config { type = "gvisor" }`,
+  `kubelet_config { pod_pids_limit = 1024 }`. Sizing on an `e2-standard-2`: CPU allocatable is
+  1930m; **memory allocatable is not derivable offline** — the capacity-minus-reservations method
+  gives 6249 Mi but provably overstates (the same method gives 13622 Mi for the measured
+  `e2-standard-4`, whose real allocatable is 13273 Mi), so 6249 Mi is an **upper bound**, not a
+  value. The overhead the pod actually shares the node with is **not** the primary node's
+  876m / 1.33 GiB: ~487m / ~555 Mi of that is singletons (kube-dns, metrics-server, konnectivity,
+  the autoscalers) that do not tolerate `sandbox.gke.io/runtime=gvisor:NoSchedule` and cannot
+  land here. What can is the DaemonSet set, measured at ~383m / ~769 Mi, plus `gke-metadata-server`
+  (undeterminable offline — WI is off on this cluster, so the DaemonSet does not exist) and the
+  GKE Sandbox components (of which `runsc-metric-server` is measurable, dormant at 3m / 12 Mi).
+  An earlier draft claimed the pod's 1500m ceiling was unsatisfiable alongside the system pods
+  (876m + 1500m = 2376m > 1930m); on the correct base, 383m + 1500m = 1883m < 1930m, so **that
+  conclusion is not established** — and the undetermined rows mean the reverse is not established
+  either. Full table in `docs/project-spec.md`, "The sandbox pool".
   **UNVERIFIED, and `4h6.10` must settle it before relying on either number.** Two open
   questions that cannot be answered from this checkout or read-only from the live project —
   as of 2026-08-13 the `finngenie` cluster (`europe-west1-b`) has exactly one node pool,
@@ -253,6 +390,19 @@ leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 
   `GCE_METADATA` mode, because in that mode the identity handed out is the node's and is
   not derived from the KSA at all — "the sandbox KSA has no WI binding" stops being a
   statement about anything.
+
+  **But `GKE_METADATA` is necessary, not sufficient, and `4h6.10` establishes only half of
+  the control.** It does not deny credentials; it swaps *node* identity for *KSA* identity.
+  The other half — the sandbox KSA having **no** Workload Identity binding — is established by
+  nothing in the terraform change, and the repo's house style is the failure mode: all 8
+  deployments in `k8s/deployments/*.yaml` set `serviceAccountName: genetics-suite`, and
+  `terraform/iam.tf` binds exactly that KSA to a GSA holding `bigquery.dataViewer`,
+  `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. **Whoever writes
+  `k8s/deployments/sandbox.yaml` must give it a dedicated KSA with no
+  `iam.gke.io/gcp-service-account` annotation and no `google_service_account_iam_member`
+  binding — explicitly not `genetics-suite`, and not the namespace `default` either.** Copy
+  the house style and `GKE_METADATA` buys nothing at all. The same warning is repeated in
+  `terraform/gke.tf`'s pool comment, where a reviewer of the pool will see it.
 - **`GKE_METADATA` requires cluster-level Workload Identity, so the cluster resource must
   change too — this is not optional and it is not a detail.**
   `workload_metadata_config { mode = "GKE_METADATA" }` is rejected by the GKE API unless
@@ -277,11 +427,26 @@ leaves the 2-node surge budget **untouched** — the sandbox contributes 0m and 
   never reach), and not the Compute Engine default. A new GSA carrying only what a node
   needs — `roles/logging.logWriter`, `roles/monitoring.metricWriter`,
   `roles/monitoring.viewer`, `roles/stackdriver.resourceMetadata.writer`,
-  `roles/artifactregistry.reader` — and nothing else. When `manage_iam = false` terraform
-  cannot create it, so `node_service_account` becomes a **required input** in that mode:
-  validated non-empty and failing the plan if absent, **never** falling back to `null` the
-  way the primary pool's does. `null` there means the Compute Engine default SA, which in
-  most projects carries `roles/editor`.
+  `roles/artifactregistry.reader` — and nothing else. Terraform cannot create it (and under
+  `manage_iam = false` is not allowed to), so `var.sandbox_node_service_account` is a
+  **required input whenever `sandbox_pool_enabled = true`**, in every mode, and **never** falls
+  back to `null` the way the primary pool's does. `null` there means the Compute Engine default
+  SA, which in most projects carries `roles/editor`.
+
+  **As shipped, be precise about what "validated" means: it is a format and identity check, not
+  a privilege check.** Three `lifecycle { precondition }` blocks on the pool resource (not
+  variable validations — so they fire only when the pool is actually being created, and the
+  escape hatch is "don't create the pool", never "create it with a weaker SA"): the email must
+  match `<name>@<project_id>.iam.gserviceaccount.com` in *this* project, case-folded; it must
+  not be `genetics-suite`; and it must not equal `var.node_service_account`. That third check is
+  the one that matters most and was missing from earlier drafts — under the live
+  `manage_iam = false` mode the primary pool grants `oauth_scopes = ["cloud-platform"]`, so
+  reusing its SA would put the suite's **entire credential** on the node running untrusted code.
+  **Terraform neither creates the SA nor reads back the roles bound to it.** The `gcloud` recipe
+  in `README.md` is the only thing bounding them, and nothing checks that the operator did not
+  grant more — so an over-privileged SA passes every check here. The variable keeps
+  `default = ""` only because omitting a default makes terraform prompt interactively; `""`
+  fails the first precondition.
 - **Explicit `oauth_scopes`**, not the provider default, and **the rationale is narrower
   than it looks.** An earlier draft called node scopes "the second bound on any token the
   metadata server would mint". In `GKE_METADATA` mode that is **false**: tokens handed to
@@ -363,7 +528,9 @@ record for cross-repo concerns.
 ### As built (`4h6.6`) — what shipped, and the two places it departs from the above
 
 `sandbox/` in this repo: `Dockerfile`, `requirements.txt` (pinned analysis deps),
-`build-checks.py` (build-time assertions), `prewarm.py`, `schema/` and `stubs/`. Built by
+`build-checks.py` (build-time assertions), `prewarm.py`, `supervisor.py`,
+`prune_venv.py`, `genetics_alias.py` (installed into the venv as `genetics.py`), `schema/`
+and `stubs/`. Built by
 `build-all.sh` and by `build.sh sandbox`, tagged from this repo's HEAD like `monitor` and
 `keycloak`, with the genetics-mcp-server commit recorded in the image label
 `com.fulltiltgenomics.genetics-mcp-server-ref` because the tag alone does not identify the
@@ -413,6 +580,19 @@ the suite trusts. `sandbox/prune_venv.py` therefore cuts the installed package t
 explicit `SDK_ALLOWLIST`, and `build-checks.py` asserts the surviving set *equals* it, so
 the surface grows deliberately rather than with the next `pip install`.
 
+**One file in `site-packages` is not part of that distribution: `genetics.py`**
+(`sandbox/genetics_alias.py`, copied by the Dockerfile — `genetics-results-suite-706`). It
+is three lines that rebind `sys.modules[__name__]` to `genetics_mcp_server.sdk`, so
+`import genetics` — the name `run_analysis`'s description, `list_capabilities`' module
+enum, the shipped `stubs/genetics.pyi` and `schema/README.md` all already use — resolves to
+the SDK **itself** rather than to a second module object with its own copy of the client
+state. It ships only here: `genetics` is too generic a top-level name to claim in
+chat-backend and mcp-server, which install the same distribution. It is outside
+`prune_sdk`'s reach by construction (that walks `site-packages/genetics_mcp_server` only)
+and outside `_sdk_surface`'s assertion for the same reason; a separate build check asserts
+the *identity*, not merely that the import succeeds. Disclosure: it names
+`genetics_mcp_server.sdk`, which the stubs already do.
+
 **`config/settings.py` used to be in the closure; it no longer is** (`l41`). It reached
 the image because `sdk/client.py` imports `tools/executor.py`, whose module-level `from
 genetics_mcp_server.tools.uniprot import UniProtClient` pulled `from
@@ -434,15 +614,16 @@ build-time backstop.
 
 **`tools/executor.py` still ships, and remains a residual disclosure.** `sdk/client.py`
 imports `ToolExecutor` directly and every SDK method delegates to it, so it cannot leave
-the closure without a rewrite of the SDK. With it ship the f-string SQL interpolation
-sites recorded as blocking `4h6.14`, and these environment-variable names — re-derive this
+the closure without a rewrite of the SDK. With it ship the five SQL-building
+methods an earlier draft recorded as blocking the sandbox path — their interpolation is now
+guarded by `tools/sql_safety.py`, see "Handoffs" below — and these environment-variable names — re-derive this
 list by grepping the eleven closure modules, not by trusting it:
 
 | name | where | kind |
 |---|---|---|
 | `GENETICS_API_URL`, `GENETICS_PUBLIC_API_URL`, `BIGQUERY_API_URL` | `tools/executor.py`, the `base_url` / `public_url` / `bigquery_url` properties | live `os.environ.get` |
 | `PERPLEXITY_API_KEY`, `TAVILY_API_KEY`, `LITERATURE_SEARCH_BACKEND` | `tools/executor.py`, the literature-search tools | live `os.environ.get` |
-| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read |
+| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read — and since `4h6.44` the prose is a **negation**: both stubs say the sandbox credential is the per-execution token and never this secret |
 
 The three endpoint names are a map of the injection sites in the one backend the sandbox
 may reach. The three literature-search names are live reads whose values the sandbox pod
@@ -451,18 +632,38 @@ here.
 
 `INTERNAL_API_SECRET` in the SDK docstrings and the shipped stubs is an **accepted
 residual**, not an oversight (`4h6.13` recorded the exfiltration note in `client.pyi` as
-operational knowledge the agent is meant to read). It is kept, named, for three reasons.
-The stubs exist to be read by the model writing sandbox code, and "endpoint URLs are not
-configurable because the client attaches `INTERNAL_API_SECRET` to every request" is the
-only form of that warning that lets the reader connect it to the deployment's actual
-configuration; genericised to "an internal credential" it stops being checkable and starts
-being ignorable. It also discloses nothing the reader cannot already derive: the SDK it is
-being handed authenticates on its behalf, and the header rides on every request it makes.
-And the sandbox pod does not hold the value (`4h6.9`), so `os.environ.get("INTERNAL_API_SECRET")`
-inside the sandbox returns nothing — the name is not a key to anything present. This is a
-different calculus from `config/settings.py`, which named a dozen *unrelated* variables and
-so handed over the shape of the whole internal surface rather than the one credential the
-caller is already using.
+operational knowledge the agent is meant to read) — but **the argument for keeping it has
+changed with `4h6.44`, and the earlier one is no longer available.** That argument was that
+"endpoint URLs are not configurable because the client attaches `INTERNAL_API_SECRET` to
+every request" is a warning the reader can check against the deployment. The premise is now
+false on the sandbox path: the client attaches a **per-execution, audience-bound token** and
+never the shared secret, so a stub that said otherwise would be teaching the model a
+deployment that does not exist.
+
+What the stubs say now, and why the name still appears, is the **negation** — the SDK does
+not use `INTERNAL_API_SECRET`, it uses a credential the supervisor delivers per execution.
+That is worth naming for two reasons. It remains checkable against the deployment, which is
+what made the original phrasing preferable to a genericised "an internal credential". And it
+carries the operational fact the reader actually needs: the credential in hand is short-lived
+and scoped, so a script that tries to hoard it is hoarding something that expires, and the
+endpoint URLs are still not parameters because handing *that* token to a chosen host is still
+handing a live credential somewhere it should not go.
+
+It discloses nothing the reader cannot already derive — the SDK it is being handed
+authenticates on its behalf — and the sandbox pod does not hold the value (`4h6.9`), so
+`os.environ.get("INTERNAL_API_SECRET")` inside the sandbox returns nothing: the name is not a
+key to anything present, and after `4h6.44` it is not even a key to anything the SDK would
+send. This is a different calculus from `config/settings.py`, which named a dozen *unrelated*
+variables and so handed over the shape of the whole internal surface rather than the one
+credential the caller is already using.
+
+**The stubs are generated, so this passage is checkable rather than asserted.**
+`scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
+from the SDK source, `scripts/test-sandbox-docs.py` fails if the committed stubs differ from a
+fresh generation, and `scripts/build.sh` stages them into the image. A change to the SDK's
+docstrings therefore *cannot* leave the shipped stubs describing the old transport without
+failing that check — which is what caught this row after `4h6.44` landed. Re-derive the row
+above from the regenerated stubs; do not adjust it in place.
 
 What is *not* in the residual list: `config/settings.py` and `auth/core.py` are both out of
 the closure and neither ships, so no LLM provider key, allow-list, OAuth audience or
@@ -525,12 +726,12 @@ ignored the return value would answer health checks while every plotting script 
 inside the child) and bakes the two costs that a fork cannot amortise:
 `.pyc` for the whole venv (`compileall`; the root filesystem is read-only, so without this
 every import in every execution recompiles) and the matplotlib font cache. The long-lived
-supervisor that calls `prewarm()` before its first fork is `4h6.14`'s; the image has **no
+supervisor that calls `prewarm()` before its first fork is `4h6.39`'s; the image has **no
 `CMD`**, because a placeholder supervisor would be indistinguishable from a real one at
 runtime. Cold import of the full stack measured **2.99s** in the built image — that is the
 per-execution cost pre-warming removes.
 
-**Hard contract for `4h6.14` on matplotlib, verified not assumed.** `MPLCONFIGDIR` pointing
+**Hard contract for `4h6.39` on matplotlib, verified not assumed.** `MPLCONFIGDIR` pointing
 at a read-only directory does **not** merely warn on matplotlib 3.10: with no writable
 `/tmp` it raises `OSError: Matplotlib requires access to a writable cache directory`. So the
 supervisor **must** copy `$GENETICS_MPLCACHE` (`/genetics/mplcache`, the baked font cache)
@@ -547,7 +748,9 @@ and `build-checks.py` fails the build if it is removed while polars ships),
 `PYTHONUNBUFFERED`, `PYTHONFAULTHANDLER`, `MPLBACKEND=Agg`, `GENETICS_MPLCACHE`,
 `GENETICS_SCHEMA_DIR`, `GENETICS_STUBS_DIR`, `GENETICS_PREWARM`, and
 `SANDBOX_SUPERVISOR_UID` / `SANDBOX_CHILD_UID` / `SANDBOX_SHARED_GID` (65532 / 65533 /
-65532) so `4h6.7` and `4h6.14` read the uids rather than restating them. `TMPDIR`, `HOME`,
+65532) so `4h6.7` and `4h6.39` read the uids rather than restating them — but the uid choice is
+now settled as option (b), one shared uid 65532 ("The uid choice", section 2), so
+`SANDBOX_CHILD_UID` names a uid nothing can switch to and `4h6.39` must not fork against it. `TMPDIR`, `HOME`,
 `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately **not** set:
 they are per-execution and belong under `/scratch/<execution-id>`, and a fixed value in the
 image would recreate exactly the shared cross-execution directory that removing the
@@ -563,6 +766,17 @@ fails the build on any `PLACEHOLDER*` file, so the coupling stays. `/genetics/sd
 **not** on `PYTHONPATH` and must not be added to it — the importable SDK is the real
 package in `/opt/venv`, and two copies of those names on `sys.path` would shadow silently;
 the generated stubs say so in their own header.
+
+**Neither tree names the BigQuery dataset any more (`bee`).** The worked example SQL and
+the `sql()` docstring used to be written `FROM genetics_results.<view>`, so both shipped
+directories carried the production dataset name into the image. They now name views bare
+(`FROM <view>`) because db-api rewrites a bare name in a table position to its own
+`DATASET_ID` before `authorize_query` sees it. The security consequence is small but real
+and runs one way only: the image no longer discloses which dataset backs the views, while
+the allow-list check is unchanged — it still compares fully-qualified ids, after the
+rewrite, so a script that qualifies a table itself is still refused. View *names* remain
+disclosed, as they always were, and are separately obtainable through
+`get_database_schema`.
 
 Both trees are *generated, never transcribed*. The schema markdown is rendered from this
 repo's canonical `configs/datasets.yaml` — one file per entry under `tables:`, carrying its
@@ -582,6 +796,1575 @@ a `datasets.yaml` change is visible in review.
 
 **Image size is 607 MB.** numpy, scipy, matplotlib and polars are most of it. Noted because
 the sandbox node pool is pinned at one node and pulls the image on every node replacement.
+
+### The HTTP contract between chat-backend and the supervisor (`4h6.38`)
+
+**This subsection is the interface, because there cannot be a shared module.** The image
+pip-installs only the genetics SDK's import closure and `sandbox/prune_venv.py` deletes
+everything else, so chat-backend's client (`4h6.47`) and the supervisor (`4h6.39`) cannot
+import one definition of the wire shape. Two implementers building against different
+assumptions is not recoverable by fixing one side. Every field below therefore states its
+type, whether it is required, and what happens when it is absent or malformed; a field not
+listed here does not exist.
+
+**Why it lives in section 2 rather than section 4.** Every value on this wire is a
+section-2 row's wire form — the 60s/120s wall clock, the 64 KiB output cap, concurrency 1
+with a queue, `/scratch/<execution-id>` and its quotas, and the artifact manifest. The
+tokens the body carries are section 4's decision and are **not** re-opened here; this
+subsection says only how they travel and what the supervisor does with a set that does not
+hang together.
+
+**It must not depend on Kubernetes.** A local Docker backend is coming (`4h6.40`): the same
+image runs in a plain container for development, and **the contract is identical in both**.
+Nothing in the request or the response may carry a downward-API field, a service account, a
+ClusterIP or a cluster DNS name, and the client holds exactly one configuration value — a
+base URL. What genuinely differs is deployment-only and is listed here so that nobody adds a
+wire field to compensate for it: `runtimeClassName: gvisor` and the node pool; the egress
+NetworkPolicy; `hostAliases` versus whatever the dev container resolves `db-api` and
+`results-api` with; and `/scratch` as an `emptyDir` versus a container-local directory. A
+supervisor that reads any of those to answer a request is wrong in one of the two
+deployments.
+
+#### Transport
+
+Plain HTTP/1.1 on `0.0.0.0:8080` — the container port `k8s/deployments/sandbox.yaml`
+declares and the Service maps 8080 → 8080. No TLS: on the cluster the hop is pod-to-pod and
+the ingress allow-list (section 3) is the control; in the local container the equivalent is
+binding to loopback and not publishing the port. Request and response bodies are
+`application/json; charset=utf-8`. **The supervisor parses the request's `Content-Type` as a
+media type and ignores its parameters**, so a bare `application/json` — which is what
+`4h6.47` sends — is accepted exactly as the charset form is; the `415` row below means the
+*media type* is not `application/json`. Stated because this paragraph and that row phrase it
+differently, and a supervisor doing an exact string compare against the charset form would
+`415` every request the client makes. Exactly three routes exist — `GET /health`,
+`POST /execute` and `GET /artifact` — and there is no fourth; any other path is `404`, any
+other method on these three is `405`. `GET /artifact` is the only one whose input is a query
+string rather than a body, because it carries no secret (see its subsection below).
+
+**There is no HTTP-layer authentication on `/execute`, and that is a decision rather than an
+omission.** The sandbox pod holds no credential it could verify a caller against, and giving
+it one would put a static secret in the single workload that runs attacker-influenceable
+code by design — the thing section 4 exists to prevent. The network is the authentication,
+in both deployments. Consequence, stated so it is not discovered later: anything that can
+reach port 8080 can execute code with whatever tokens it supplies, so the ingress allow-list
+is load-bearing and a dev container must not publish the port.
+
+**Everything travels in the JSON body; nothing travels in a header.** No `Authorization`, no
+`X-Execution-Id`. Headers are what proxies log, the tokens must never be logged, and a split
+between headers and body gives two places for the same value to disagree.
+
+#### `GET /health`
+
+No authentication, no request body, no query parameters. The `readinessProbe` in
+`k8s/deployments/sandbox.yaml` points here and reads only the status code.
+
+- `200` with `{"status": "ok", "busy": <bool>, "queued": <int>}` once the supervisor is
+  serving — meaning after its startup assertions have passed (`/etc/nsswitch.conf` ordering,
+  `prewarm()`; see the `4h6.39` scope and the handoff table). `busy` and `queued` are
+  informational only. **`queued` counts requests *waiting*, and does not count the one
+  executing** — the same definition the queue bound below uses, so `busy: true, queued: 0`
+  means one running and nothing behind it. Reporting a different number here from the one
+  the bound is enforced against is how a client ends up predicting the wrong `429`.
+- `503` with the same body shape before that point and while draining after `SIGTERM`, with
+  `status` holding `"starting"` in the first case and `"draining"` in the second. `status`
+  takes exactly those three values.
+- **`/health` is the one route exempt from the uniform error shape below**, and the exemption
+  is deliberate rather than an oversight: the probe reads only the status code, and a client
+  polling for recovery wants `busy`/`queued` in the 503 as much as in the 200. Stated
+  explicitly because the rule in "Error responses" is otherwise absolute, and a client that
+  parsed a `/health` 503 as `{execution_id, error}` would `KeyError` on every startup.
+- **A busy supervisor is healthy.** `/health` returns `200` while an execution is in flight.
+  Reporting `503` there would remove the pod from the Service endpoints mid-execution, which
+  with one replica means the client's own in-flight request is the last one that works and
+  every retry fails against no endpoint at all. Readiness must not flap on load.
+- The body discloses no execution id, no user, no session and no counts attributable to
+  anyone. `queued` is a depth, not an inventory.
+
+#### `POST /execute` — request
+
+One JSON object. **Unknown top-level fields are rejected with `400`** rather than ignored,
+so a field added on one side and not the other fails loudly on the first call instead of
+being silently dropped — which is the exact failure this whole subsection exists to prevent.
+The request body is capped at **1 MiB** total (`413` above it), measured on the **raw bytes
+on the wire**, and the supervisor stops reading at the cap rather than buffering past it.
+
+**The body also has a time bound: 10s from the request line to the last byte, then `408`
+with `error.type: "RequestTimeout"`.** A size cap alone does not bound a slow client, and
+with concurrency 1 a request dribbling its body holds the supervisor's only slot for as long
+as it likes — the size cap never fires because the bytes never arrive. 10s is far above any
+honest 1 MiB pod-to-pod POST and far below the wall clock, so it can only fire on a stalled
+or hostile peer.
+
+| field | type | required | absent or malformed |
+|---|---|---|---|
+| `code` | string, UTF-8 Python source, ≤ 256 KiB | yes | absent, not a string, empty or whitespace-only → `400`. Over 256 KiB → `413`. **Measured on the UTF-8 encoding of the decoded string** (`len(code.encode("utf-8"))`), not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program, and the two ends must not disagree about which one the limit is. The 1 MiB body cap is the one measured on the wire. |
+| `execution_id` | string matching `\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z` | yes | absent or non-matching → `400`. The supervisor **must not** mint one of its own. **The anchors are `\A`/`\Z` and the match is a *full* match, deliberately:** in Python `$` also matches immediately before a final newline, so the `^…$` this row used to carry accepts `"…663\n"` — which then names a directory, is exported as `SANDBOX_EXECUTION_ID` and is echoed back in the response, i.e. a log-injection primitive on the one field this table calls strict. Any implementation of this row in any language must reject a trailing newline. |
+| `tokens` | object, exactly the two keys `db-api` and `results-api`, values compact JWS strings | yes | either key missing, an extra key, or a non-string value → `400`. Never run without them. |
+| `user` | string, the authenticated end-user email | yes | absent or empty → `400`. Must equal the tokens' `sub`. |
+| `session_id` | string, the chat session id | yes | absent or empty → `400`. Must equal the tokens' `sid`. |
+| `timeout_s` | integer seconds, `1 ≤ timeout_s ≤ 120` | no, default **60** | absent → 60. Non-integer, ≤ 0, or **> 120 → `400`, not clamped** (see below). |
+
+**`execution_id` is one value in three roles**, and the strict uuid4 form is not
+fastidiousness: it becomes the `/scratch/<execution-id>` directory name, so any laxer rule
+re-opens path traversal on the one request value that names a filesystem path. The three
+roles are the directory name, the `jti` of both tokens, and the join key that makes the
+`4h6.12` audit trail, db-api's `endpoint_access` lines and chat-backend's manifest record
+line up. `mint_execution_tokens` takes an optional `execution_id=` for precisely this
+(section 4, "As built"), and it **raises `SandboxTokenUnavailable`** when the signing key is
+unset — which the client must surface, never catch and continue.
+
+**When the three roles disagree — refuse, do not pick a winner.** The supervisor decodes
+each token's payload segment **without verifying the signature** (it holds no signing key,
+deliberately, and never will) purely to read `sub`, `sid`, `jti` and `exp`. These are
+consistency checks on its own caller, **not authentication** — the security decision is
+db-api's and results-api's verification (section 4), and nothing here may be mistaken for
+it. The rules:
+
+| condition | result |
+|---|---|
+| a token is not three dot-separated segments, or its payload is not decodable JSON | `400` |
+| the two tokens' `jti` differ from each other | `400` |
+| either `jti` ≠ the body's `execution_id` | `400` |
+| a token's `aud` ≠ the key it was sent under | `400` |
+| a token's `sub` ≠ the body's `user`, or `sid` ≠ the body's `session_id` | `400` |
+| `exp` is already past **at dequeue** (see concurrency) | `409`, `error.type: "TokenExpired"` |
+
+Refusing rather than preferring one value is the point. Preferring the `jti` would name the
+directory one thing and stamp the audit another; preferring the body would hand the child
+credentials whose `jti` joins to no directory. Either way every downstream record keys on a
+value some other record does not carry, and the damage is invisible until somebody asks
+"what did that script read?" and gets nothing back. A mismatch means the tokens were not
+minted for this request, and that is a caller bug worth a hard failure on the first call.
+
+**The tokens travel in the body and nowhere else.** Never pod env, never a ConfigMap, never
+a Secret: chat-backend cannot set environment variables on a running pod, and a pod-spec
+value turns a 300s per-execution credential into a static pod-lifetime one. The supervisor
+places them in the forked child only — under the decided shared-uid model their protection
+is **lifetime** (the SDK reads the file once and unlinks it), not permissions. The
+supervisor must never log a token, must never echo one in a response, and must not keep one
+after the child is reaped.
+
+**The timeout is bounded and the model cannot raise it.** 60s default, 120s hard ceiling
+(section 2's Wall clock row). Two independent things enforce that: `run_analysis` exposes no
+timeout parameter to the model at all, so no model-authored value ever reaches this field;
+and the supervisor **rejects** `timeout_s > 120` with `400`. **Decision: reject, not clamp.**
+Clamping is a silent behaviour change on a path fed from a model-influenceable direction — a
+caller asking for 300 has either a bug or a jailbreak, and both deserve to be visible. It
+would also desync the two deadlines: the client sets its own deadline *above* what the
+supervisor can take (`4h6.47`; see the arithmetic under "When the client goes away"), and a
+silently clamped server-side value makes the client's arithmetic wrong.
+
+**Timeout semantics.** `timeout_s` is the child's wall clock measured **from the fork**, not
+from request receipt — queue wait does not count against the script. On expiry the
+supervisor `SIGTERM`s the child's process group, `SIGKILL`s after a 2s grace, reaps, and
+still answers `200` with `status: "timeout"` and whatever output was captured.
+`terminationGracePeriodSeconds: 130` is 120s plus reap, answer and wipe, so that sequence
+has to complete in seconds, not tens of them.
+
+#### Concurrency: one at a time, queued, with a bounded queue and a bounded wait
+
+**One execution at a time** (section 2's Concurrency row), and with `replicas: 1` and
+`strategy: Recreate` that is the cluster-wide bound, which is what removes cross-user
+co-tenancy inside the pod. A second concurrent `POST /execute` is **queued, not refused**:
+measured peak is 23 chat turns/hour, so a collision is rare, and turning a rare collision
+into a user-visible tool failure buys nothing.
+
+The queue is bounded in **both** dimensions, and the bound is derived rather than picked:
+a queued request holds tokens that expire at `iat + 300`, so a wait long enough to outlive
+them produces a script whose every data call `401`s. **Queue depth 2 and a maximum queued
+wait of 120s**, whichever binds first; beyond either the supervisor answers `429` with
+`Retry-After: 60`. On **dequeue** — not on receipt — it re-checks `exp`, and answers `409`
+`TokenExpired` if the wait consumed the credential. That distinction matters to the client:
+`400` means "your request was wrong", `409` means "you waited too long; re-mint and retry".
+
+**Depth 2 means at most two requests *waiting*, not counting the one executing.** So three
+requests can be in flight — one running, two queued — and the fourth gets `429`. Stated
+because the other reading (two total, i.e. one running plus one waiting) is equally
+defensible and silently differs by one, and a client treating `/health`'s `queued < 2` as
+"safe to submit" would then take `429`s it did not predict. `/health`'s `queued` uses this
+same definition.
+
+**After a `429` the client re-mints, and it re-mints a fresh `execution_id` too**, not just
+fresh tokens: the refused request never reached a fork (see the duplicate-id rule below, and
+the directory is created at dequeue, so a `429` leaves nothing behind), and reusing the id
+would collide with that rule the moment the earlier attempt did run.
+
+**`409 TokenExpired` is a defensive check and is not expected to fire, and an earlier draft
+justified it wrongly.** That draft said the `429` retry was "the only route by which it is
+reachable at all", which does not follow from its own numbers: the retry re-mints, and the
+maximum queued wait (120s) is far below the 300s TTL, so a freshly minted pair cannot expire
+in the queue. What can actually reach it is a token pair that was **not** freshly minted —
+`mint_execution_tokens` takes an optional `execution_id=`, so a caller can resubmit an older
+pair — or clock skew between the minter and the supervisor large enough to matter. Both are
+caller-side faults worth a distinct status, and the check stays; a client should handle it
+without treating it as routine.
+
+**A repeated `execution_id` is refused: `409` with `error.type: "DuplicateExecutionId"`**,
+whenever `/scratch/<execution-id>` already exists — a live execution or a completed one still
+inside its 15-minute artifact retention. After retention expires the id is reusable, which is
+harmless because nothing then refers to it. This is a normal event, not a client bug, which
+is why it has a specified outcome rather than being left to the implementer: the `429` retry
+path, the 15-minute retention and `mint_execution_tokens`' optional `execution_id=` (section
+4, "As built") together make a resubmission with the same id easy to write by accident.
+Refusing is the only one of the three plausible behaviours that preserves the invariant
+everything downstream keys on — one `execution_id` names exactly one directory, one manifest
+and one audit trail. Reusing the directory would merge two runs' artifacts into a manifest
+chat-backend has already recorded, and wiping and re-running would delete artifacts
+`read_artifact` may still be serving from the first run; both leave the `jti`/`sid` join
+`4h6.52`'s sid-scoped retrieval will build on pointing at content that is not what was
+recorded.
+
+**The maximum wait — not the depth — is the number the token lifetime constrains.** The
+inequality is `max wait + timeout_s < 300`: 120 + 120 = 240 against the real 300s TTL
+(section 4). Depth does not appear in it, and raising the depth lengthens the queue without
+lengthening any individual wait, because the wait bound cuts first. Anyone raising the
+**wait** above 180s is the one who breaks it, and gets a script whose data calls `401`
+mid-run. Note also that the 60s of slack this leaves is not free headroom: section 4
+justifies the 300s TTL partly by "a slow BigQuery job started at the last moment" plus clock
+skew, and an execution that waited the full 120s and then ran the full 120s has ~60s of token
+life left for that last-moment call rather than the ~180s section 4's reasoning assumes — so
+the wait bound trades directly against section 4's margin.
+
+**When the client goes away, the supervisor's behaviour depends on whether the child has
+been forked.** The contract tells the client to set its own deadline *above* **the maximum
+queued wait plus `timeout_s`**, so the ordinary case is that it waits; but chat-backend
+restarts, and a connection can drop. Two rules:
+
+**That deadline is 240s at `timeout_s: 120`, not 120s, and an earlier draft of this
+subsection said "above the 120s ceiling" twice.** It was wrong in the direction that
+produces a live interop bug, which is why it is called out rather than quietly fixed: the
+supervisor may hold a request for the full 120s queued wait **and then** run it for the full
+`timeout_s`, so a client that read that sentence literally and picked, say, 150s times out
+on an execution the supervisor is about to answer — and because a running child is
+deliberately not killed on disconnect, that client's retry then queues behind the child it
+abandoned. `4h6.47` implemented `max queued wait + timeout_s + margin` (255s at
+`timeout_s: 120`), which is the correct reading.
+
+- **A queued request whose connection has closed is dropped at dequeue and never forked.**
+  Nobody is waiting for the response, and running it would spend the pod's only slot and up
+  to 120s of a credential nobody will use — while the client's retry queues behind it. The
+  check is cheap and is made at dequeue, where the `exp` re-check already happens.
+- **A running child is *not* killed on disconnect. It runs to completion**, is reaped, its
+  manifest is written and its artifacts are retained for the usual 15 minutes; the response
+  it can no longer deliver is discarded. Killing it would destroy artifacts the retention
+  window promises and that a rerun may not reproduce, and peer-disconnect detection while
+  the supervisor is not reading the socket is unreliable enough that a false positive would
+  kill live executions. The slot is held for at most `timeout_s`, i.e. ≤ 120s, which is the
+  same bound the queue's max wait is derived against — an abandoned child cannot starve the
+  queue for longer than a healthy one.
+
+A chat-backend restart mid-execution is exactly this case and needs no separate handling: the
+old response is undeliverable, the artifacts survive their retention window, and the retry
+arrives with a **fresh** `execution_id` (per the duplicate rule above) and queues normally. A
+`SIGTERM` to the *supervisor* is the other direction and is already specified: it stops
+accepting (`503 NotReady`) and lets the in-flight child finish inside the 130s grace.
+
+#### `POST /execute` — response
+
+**It does not stream. One request, one response, returned once, after the child has been
+reaped.** Stated plainly because "stream stdout" (`4h6.42`) refers to the supervisor reading the child's pipe incrementally — which it must, to enforce
+the 8 MiB pipe cap — not to a streaming HTTP response. Three reasons the response cannot
+stream: the 64 KiB head-and-tail cap is uncomputable until the stream ends, because the tail
+is unknown until then; the artifact manifest and the error object are only knowable at the
+end, so a streaming body would put them after an unbounded prefix that every client must
+buffer anyway; and the model consumes the whole result in one turn regardless.
+
+**`200` means the supervisor ran the script and is reporting what happened — including a
+script that raised, timed out or was killed.** A failing script is not an HTTP failure.
+Non-2xx is reserved for the supervisor refusing or being unable to run it at all.
+
+| field | type | notes |
+|---|---|---|
+| `execution_id` | string | echo of the request value |
+| `status` | `"ok"` \| `"error"` \| `"timeout"` \| `"limit"` | `ok` = child exited 0; `error` = non-zero exit or an uncaught exception; `timeout` = wall clock fired; `limit` = a supervisor-enforced limit fired |
+| `exit_code` | integer or `null` | `null` when the child was killed by a signal or never started |
+| `signal` | integer or `null` | `null` when it exited normally. Kept separate from `exit_code` rather than folded into `128+n`, which loses which of the two happened |
+| `duration_ms` | integer | child wall clock, fork to reap; excludes queue wait |
+| `output` | string, always present, `""` if none | see below |
+| `output_bytes` | integer | total bytes read from the child's pipe before capping, up to the 8 MiB pipe cap |
+| `output_truncated` | boolean | true iff `output` is elided or the pipe cap fired |
+| `error` | object or `null` | present iff `status != "ok"`; see below |
+| `artifacts` | array of objects, always present, `[]` if none | the manifest; see below |
+| `artifacts_omitted` | integer ≥ 0 | files present in the artifacts directory that could not be listed retrievably; see below |
+
+The response carries **no token, no filesystem path, no environment and no host name**.
+
+**`output` is stdout and stderr interleaved, as the child wrote them.** Section 2 budgets
+**one** 64 KiB window (first 32 KiB + last 32 KiB) for what reaches the model, and the
+traceback the model needs is at the tail. Splitting that budget across two fields either
+halves the head-and-tail window or quietly doubles section 2's number, so the child gets one
+pipe and this contract returns one string. The SDK's audit records are **not** in it — they
+go to the dedicated fd described below. Naming the field `output` rather than `stdout` is
+deliberate: a field called `stdout` that also carries stderr is a trap for whoever reads
+this document next.
+
+**Capping and elision.** Capping is applied to **bytes**, head 32 KiB + tail 32 KiB, with the
+literal marker `\n...[<N> bytes elided]...\n` between them, where `<N>` is the decimal count
+of bytes dropped. The marker is fixed text so a client can recognise it without heuristics.
+The 64 KiB budget is the head and the tail **only — the marker is additional**, so a fully
+elided `output` encodes to 65536 bytes plus the marker's ~30. Head and tail are exactly
+32 KiB each rather than 32 KiB minus half a marker, because the alternative makes the two
+ends' arithmetic depend on the decimal width of `<N>`.
+
+**The 8 MiB pipe cap kills the child, and it is a `limit`, not an `ok`.** Section 2's Output
+cap row says the reader stops at 8 MiB from the pipe *and kills the child*; this is what that
+looks like on the wire, stated because a supervisor that instead drained and discarded the
+excess would answer `200 status:"ok" error:null` and silently violate section 2 — the whole
+point of the cap is that the supervisor's memory and the pod's CPU stop being consumed, which
+draining does not achieve. On the cap firing the supervisor `SIGTERM`s the child's process
+group, `SIGKILL`s after the same 2s grace as the timeout path, reaps, and answers **`200`**
+with `status: "limit"`, `error.type: "OutputLimit"`, `error.limit: "OutputLimit"` and
+`output_truncated: true`. `exit_code` and `signal` report how the child actually ended —
+normally `exit_code: null` with `signal` 15 or 9 depending on whether the grace expired, but
+a child that traps `SIGTERM` and exits reports its `exit_code` with `signal: null` instead.
+`status` is `"limit"` in every one of those cases: it records that the supervisor's limit
+fired, not how the process happened to die.
+
+**Output that is not valid UTF-8 is decoded lossily, and there is no alternate encoding.**
+The head/tail split cuts on byte boundaries and can bisect a multi-byte sequence, and a
+script can print arbitrary bytes in any case. The supervisor decodes with
+`errors="replace"`, so invalid bytes become U+FFFD and `output` is always a valid JSON
+string. **No base64, no `encoding` field**, because a client that has to branch on encoding
+will eventually get the branch wrong, and the model cannot read base64 usefully anyway. A
+script with binary to return writes an **artifact**; `read_artifact` already returns base64
+with an explicit `encoding` field for exactly that case (section 6).
+
+**The `error` object.**
+
+| field | type | notes |
+|---|---|---|
+| `type` | string, **open** | the child's exception class name (`ValueError`), or one of the supervisor's own reserved names: `Timeout`, `PidLimit`, `ArtifactQuota`, `ScratchQuota`, `OutputLimit`, `NonZeroExit`, `Killed`, `StartupFailure` |
+| `message` | string, ≤ 2 KiB | truncated, never omitted |
+| `traceback` | string or `null`, tail-capped at 8 KiB | `null` when the end was not an exception |
+| `limit` | string or `null` | which limit fired, when `status == "limit"`; the same vocabulary as `type` |
+
+**`type` is an open string, and the listed names are a reserved minimum.** It cannot be a
+closed enum, because half its range is the child's exception class name and the child imports
+whatever it likes. So: the supervisor's own names above are reserved — it emits no others for
+those conditions and a client may branch on them — and every other value is an opaque label
+to display, never to switch on. This is the one place the subsection's "a field not listed
+here does not exist" rule does not extend to values: it constrains the set of *fields*, not
+the set of strings a `type` may hold.
+
+**Memory exhaustion has no reserved name, and `MemoryLimit` is not one of the eight above.**
+The name exists in `sandbox/supervisor.py` as `ERR_MEMORY_LIMIT` and an earlier version of this
+table listed it, but nothing has ever emitted it and nothing can: the memory ceiling is
+`RLIMIT_AS`, which the **child** applies to itself and the kernel enforces inside the child, so
+the supervisor never sees a limit fire. What comes back is the child's own exception class —
+`status: "error"`, `error.type: "MemoryError"`, `error.limit: null` — on the *open* half of the
+range, which is what a client must match. The supervisor cannot re-label it: doing so would
+mean trusting the child to tell the ceiling apart from a plain `raise MemoryError`, and
+refusing exactly that trust is what the reserved set is for. `ERR_MEMORY_LIMIT` therefore stays
+in the supervisor's reserved set — where its only remaining job is to stop a script forging the
+name — and is deliberately absent from both `_LIMIT_MESSAGES` and this table. A client branch
+keyed on `"MemoryLimit"` is dead code; `genetics-mcp-server`'s `_analysis_hint` has one, and it
+is doubly unreachable because it sits under `status == "limit"`, which a `MemoryError` never
+produces.
+
+**`NonZeroExit` is the name for a child that exited non-zero without an uncaught exception**
+— `sys.exit(3)`, a C extension calling `exit()`, a subprocess convention. The `status` table
+already makes that a `status: "error"` case, and without a reserved name for it every
+supervisor would invent its own (`ExitCode`, `Error`, the number itself). `exit_code` carries
+the number; `traceback` is `null`.
+
+**Unsettled, and deliberately not invented here:** *how* the child reports its exception type
+and traceback to the supervisor — a structured final record on a dedicated fd, versus the
+supervisor parsing the tail of `output` — is `4h6.39`'s to settle. This contract fixes only
+the shape the supervisor emits. A supervisor that can only observe an exit status and a byte
+stream may legitimately report `type: "Killed"` with `traceback: null`; a client must
+tolerate that and must not parse `message` for meaning.
+
+#### The artifact manifest
+
+One entry per retrievable file, and **the shape is dictated by what `read_artifact` can
+actually consume** (`4h6.15`, `ToolExecutor.read_artifact` in
+`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`). That function takes a
+**bare name** and resolves it against `SANDBOX_ARTIFACTS_DIR`; it rejects separators,
+backslashes, `.`/`..`, absolute paths, NUL and anything where `Path(name).name != name`
+*before* touching the filesystem, refuses a symlinked artifacts directory, requires the
+resolved directory to sit under a hardcoded `/scratch/` prefix, opens that directory with
+`O_DIRECTORY|O_NOFOLLOW` and verifies **the descriptor** through `/proc/self/fd`, then opens
+the file relative to that descriptor with `O_NOFOLLOW|O_NONBLOCK` and refuses anything that
+is not a regular file with `st_nlink == 1`.
+
+| field | type | notes |
+|---|---|---|
+| `name` | string | the **bare** file name, e.g. `"manhattan.png"` |
+| `size` | integer | bytes, from the supervisor's `fstat` at manifest time |
+| `content_type` | string | from the **name** only |
+
+**No paths. No execution id. No URL.** An entry carrying any of those would name something
+`read_artifact` refuses by construction, and an execution id in the manifest would invite a
+model-supplied one back in — which section 6 rules out precisely because the id is
+unguessable but not confidential.
+
+The supervisor lists a file **only if it would survive that read**, which means all of:
+
+- a **regular file directly in** `/scratch/<execution-id>/artifacts` — no recursion into
+  subdirectories (their contents are unnameable by a bare name), no symlinks, no FIFOs,
+  sockets or devices;
+- `st_nlink == 1`;
+- a name that passes `read_artifact`'s own rules, and additionally is valid UTF-8, has **no
+  leading or trailing whitespace**, and has no control characters — a name the supervisor
+  cannot render is a name the model cannot ask for, and a name containing a newline would
+  forge a line break in the audit stream. The whitespace rule is not cosmetic: `executor.py`
+  does `name = name.strip()` **before** validating, so `"plot.png "` passes every other rule
+  on this list, gets listed, and is then unretrievable — the read strips it, looks up
+  `plot.png`, and returns the same indistinguishable "Artifact not found" the model gets for
+  a name that was never there. A manifest must never advertise a name the read cannot open.
+
+Anything failing those is **omitted and counted in `artifacts_omitted`**, never listed with a
+mangled name and never silently dropped: a nonzero count tells an operator something is
+there without disclosing an attacker-chosen string. Files **over `read_artifact`'s 4 MiB read
+limit are still listed** with their true size — the refusal that follows tells the model to
+write a smaller summary, which is more useful than the file appearing not to exist. Note
+these are three separate numbers and none of them is the others: the 4 MiB per-read limit,
+the 64Mi per-execution artifact quota, and the 512Mi `emptyDir` `sizeLimit` the supervisor's
+sub-quotas must keep the kubelet away from.
+
+`content_type` is derived from the name (`mimetypes.guess_type`, falling back to
+`application/octet-stream`) and **must not** be sniffed from content: `read_artifact`
+recomputes it the same way at read time, and the two answers have to agree. Entries are
+sorted by `name`.
+
+**`size` is the one field that legitimately differs between the two.** The manifest's is the
+supervisor's `fstat` at manifest time; `read_artifact` returns `len(raw)` from its own read,
+minutes later. They disagree only if something rewrote the file after the execution ended,
+which nothing in the design does — but the two numbers are produced by different code at
+different times, so a client must not assert they are equal, and a mismatch is not a security
+event. It is noted here only so nobody adds that assertion later and gets a flaky failure.
+
+`/scratch/<execution-id>/artifacts` is retained 15 minutes after completion and everything
+else under the directory goes immediately (section 6). The manifest is what chat-backend
+records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
+
+#### `GET /artifact` — one file back out, for images only
+
+The third route, added by `genetics-results-suite-8z1`. It is **the retrieval half of
+`4h6.52` and does not close it**: `4h6.52` also owes the sid-scoped resolution that would let
+the *model* ask for an arbitrary artifact by name, and that half is still open. Nothing the
+model can call reaches this route.
+
+```
+GET /artifact?execution_id=<uuid4>&name=<bare name>
+```
+
+```json
+{ "execution_id": "…", "name": "manhattan.png", "content_type": "image/png",
+  "size": 20481, "content_base64": "iVBORw0KGgo…" }
+```
+
+**Who may read what.** The `execution_id` **is** the authorisation. It is a uuid4 minted per
+execution by chat-backend, equal to the tokens' `jti` (the supervisor refuses a request where
+they differ), and it is never rendered to the model — `_render_analysis` strips it from
+everything the model sees, which is the same property that lets the manifest carry no id. So
+the only caller that can name an execution is the one that submitted it. Combined with the
+NetworkPolicy that decides who reaches port 8080 at all, that is exactly the standing
+`/execute` has; this route adds no new trust assumption, only a new thing to read.
+
+**Retained executions only.** A running execution is not served: its bytes are still moving
+and a half-written PNG is worse than a 404. By the time the submitter has the id in a
+response, the execution is over and `_retain` has trimmed the directory. `404 NotFound` is
+returned identically for "never existed", "still running" and "already reaped" — which of the
+three it is would tell a caller holding a guessed id something about the pod's state.
+
+**The checks run inside the sandbox**, against the directory the child actually wrote to,
+which is the entire reason this is an HTTP route rather than chat-backend opening a path.
+`read_artifact_bytes` applies `build_manifest`'s checks in the same order —
+`_name_is_retrievable`, `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` on the directory, the file opened
+**relative to that descriptor** with `O_NOFOLLOW`, regular file with `st_nlink == 1` — so
+nothing the manifest advertised is unretrievable and nothing it withheld becomes reachable by
+asking directly.
+
+| condition | status | `error.type` |
+|---|---|---|
+| served | 200 | — |
+| `execution_id` not a lowercase uuid4, or `name` fails `_name_is_retrievable` | 400 | `InvalidRequest` |
+| no such retained execution, or no such file, or not a regular file | 404 | `NotFound` |
+| file larger than `ARTIFACT_READ_MAX_BYTES` (512 KiB) | 413 | `ArtifactTooLarge` |
+
+The 512 KiB cap is set against `MAX_RESPONSE_BYTES` (1 MiB), not against what a plot needs:
+base64 is +33% inside a JSON envelope, so 512 KiB of file is ~700 KiB of body and stays clear.
+Letting `_cap_response` fire instead would answer "response too large", which reads as a
+supervisor fault; a 413 names the real reason. A matplotlib PNG at the SDK's default dpi is a
+few tens of KiB. **This is a fourth number** and is not the manifest's 4 MiB `read_artifact`
+limit, the 64Mi per-execution artifact quota, or the 512Mi `emptyDir` `sizeLimit`.
+
+**What chat-backend does with it.** After a `status: ok` execution, `_fetch_analysis_images`
+fetches at most **four** artifacts whose manifest `content_type` starts with `image/` and
+whose listed size is under the cap, and attaches them to the tool result under `images`.
+`llm_service` then streams each as an `image` SSE chunk and **strips `images` from the dict
+before it is serialised into the `tool_result`** — base64 in the model's context is tokens
+paid for a thing the model cannot see. Nothing else in `artifacts/` is fetched; the
+`artifacts_note` still tells the model to print what it needs to read. `fetch_artifact` never
+raises: every refusal above, plus an unreachable sandbox, means "there is no picture", and
+losing the analysis to save the figure would be the wrong trade.
+
+#### What the supervisor owes beyond the request and the response
+
+**The audit stream (built — `4h6.45`).** `4h6.12` handed over a written specification rather
+than a puzzle, and it is an obligation of this contract even though it is not a field in it.
+The supervisor holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
+
+- applies the rate, byte and per-line caps **on the read end**, where the child cannot reach
+  them — every in-process bound was defeated by running it, because the audited code and the
+  emitter share an address space;
+- treats the child's framing as **untrusted input**, re-parsing and re-framing before
+  anything is recorded;
+- **stamps `[user=…] [session=…] [execution=…]` from the tokens' `sub`, `sid` and `jti`** —
+  from the credential it holds, never from the body's `user`/`session_id` (which are only
+  checked against the claims) and never by asking the child. The prefix the SDK renders from
+  the child's own environment is **discarded**, not merged;
+- forwards the re-framed records to the **pod's own stdout**, the only stream the cluster's
+  logging agent collects. In the local Docker backend that is the container's stdout —
+  identical code, different collector, and the one place the deployment difference shows up
+  in behaviour rather than in configuration.
+
+Consequence for the client: **the response body carries no audit records and must not be
+expected to.** The trail leaves out of band, and a client that reads only the response learns
+nothing about what the script read.
+
+**What the read-end caps do and do not buy**, because the opposite reading is the one that
+gets cited later. They bound the stream and they cannot be reset from the child: the byte
+budget and the token bucket live in the supervisor, one instance per execution, so a flooding
+script spends **its own** budget and cannot silence the next execution's records — a
+process-global budget here would have rebuilt `4h6.12`'s suppression primitive one level up.
+What they do not do is stop a child denying attribution of **its own** later calls by flooding
+its own pipe; no read-end control can, because the flood and the records share one channel.
+What is guaranteed instead is narrower, and the narrowness is the point: every drop the
+*supervisor* makes announces itself once, in supervisor framing, and is counted in the summary
+line every execution emits (`records=… dropped_rate=… dropped_oversize=… dropped_unparseable=…
+dropped_over_budget=… bytes=…`) whether or not anything was dropped — so a **supervisor-side**
+drop is a different line from an execution that produced no records.
+
+**It is not distinguishable from child-side suppression, and no read-end control can make it
+so.** A script that disables the SDK's logger, drops its level, installs a filter, removes the
+handler (`4h6.12` measured all four, and they are still listed under "No IN-PROCESS mechanism
+can make these records trustworthy" below) or simply rewrites `GENETICS_SDK_AUDIT_FD` to `1`
+before its first SDK call writes nothing to the fd at all, and the summary it produces is
+**byte-identical** to the summary of a script that made no SDK calls: `records=0 dropped_rate=0
+dropped_oversize=0 dropped_unparseable=0 dropped_over_budget=0 bytes=0`. Both are honest
+statements about what that fd carried; neither is a statement about what the script did. Do not
+read `records=0` as "this script made no SDK calls". Making in-process suppression observable
+needs the child *contained* rather than *read* — `4h6.55` — and is not attempted here. Measured in
+the real image: a child writing 2,000 records in one `write()` recorded
+`records=202 dropped_rate=1798`; one writing 1.3 MB recorded `dropped_over_budget=3869` and
+still exited `status: "ok"`, because past the byte budget the reader keeps reading and
+discards rather than blocking the child.
+
+**What the supervisor cannot do, so no field may imply it.** Under the decided shared-uid
+model (option (b), forced — see "The uid choice") the container holds no `CAP_SETUID`,
+`CAP_SETGID` or `CAP_CHOWN`, and `setuid(65533)`/`chown(65533)` were measured to return
+`EPERM`. Therefore: no per-execution uid appears anywhere in this contract; `RLIMIT_NPROC` is
+not a per-execution control, so the pid budget is a supervisor-side watch on the child's
+process group and is not something a request can set; and the token file's protection is
+read-once-and-unlink, so a request field naming a token-file mode or owner would be
+meaningless. A supervisor written against option (a) fails at runtime, not at review.
+
+#### Error responses
+
+Every non-2xx response **except `GET /health`'s own `503`** is the same shape —
+`{"execution_id": <echo or null>, "error": {"type": …, "message": …}}` — so a client parses
+one object, not two. `/health` answers both `200` and `503` with its health body
+(`status`/`busy`/`queued`), for the reason given under that route; it is the single
+exception, and there are no others.
+
+| status | when | `error.type` |
+|---|---|---|
+| `400` | unparseable JSON, unknown field, missing or malformed field, token inconsistency, `timeout_s` out of range | `InvalidRequest` and a specific subtype |
+| `404` | any path other than the two | `NotFound` |
+| `405` | wrong method on `/health` or `/execute` | `MethodNotAllowed` |
+| `408` | request body not fully received within 10s | `RequestTimeout` |
+| `409` | tokens expired while queued | `TokenExpired` |
+| `409` | `execution_id` names a live or still-retained execution | `DuplicateExecutionId` |
+| `413` | body over 1 MiB, or `code` over 256 KiB | `PayloadTooLarge` |
+| `415` | request `Content-Type` is not `application/json` | `UnsupportedMediaType` |
+| `429` | queue full or maximum queued wait exceeded; carries `Retry-After` | `Busy` |
+| `500` | supervisor bug | `InternalError` |
+| `503` | `POST /execute` before startup assertions pass, or while draining after `SIGTERM` | `NotReady` |
+
+The two `409`s are distinguished by `error.type`, never by the status code, and they want
+opposite responses from the client: `TokenExpired` means re-mint and retry, `DuplicateExecutionId`
+means the id was already spent and the retry needs a fresh one.
+
+`400` and `500` bodies **never echo the request payload and never carry a filesystem path or
+a traceback** — the caller supplied the payload and the paths are the sandbox's own. A `503`
+must be distinguishable by the client from a script failure: `strategy: Recreate` plus
+`terminationGracePeriodSeconds: 130` means a deploy landing on an in-flight execution leaves
+no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
+analysis failed" (`4h6.47`).
+
+### As built (`4h6.39`) — the supervisor skeleton, and how its five holes were closed
+
+`sandbox/supervisor.py` implements the contract above: the HTTP front door, the queue, the
+per-execution directory and child environment, the startup assertions and the fork/reap.
+`scripts/test-supervisor.py` is its offline harness — no cluster, no credentials, no image;
+it runs the real supervisor in the local interpreter against a temporary `/scratch` root and
+forks real children. The image now carries the file (`sandbox/Dockerfile` copies it to
+`/genetics/supervisor.py`), which does **not** make the image start one: there is still no
+`CMD`, `k8s/deployments/sandbox.yaml` still declares no `command`/`args`, and `deploy.sh`
+still refuses to apply it. `4h6.50` clears that, last in the chain and deliberately so.
+
+**The child is forked and never exec'd.** That is what makes `prewarm()` worth anything —
+the pre-imported numpy/scipy/polars/matplotlib pages are inherited copy-on-write — and it is
+also why the child closes every inherited descriptor before running a line of the script.
+Without exec, PEP 446's non-inheritable default does nothing: the script would otherwise
+inherit the listening socket and every other in-flight client connection, and could read or
+write another user's HTTP conversation.
+
+**The one thing the contract left to this task is settled: a dedicated status pipe.** The
+child writes at most one JSON object (`type`, `message`, `traceback`) on a fixed descriptor
+and nothing else; the supervisor never parses `output` for meaning. Two reasons. The
+traceback lives at the tail of `output`, which is exactly what the 64 KiB head-and-tail cap
+elides on a chatty script; and a script can print whatever it likes, so parsing stdout lets
+the script forge its own error object. What arrives on the pipe is still **untrusted input**
+— the same process writes it — so the supervisor re-caps `message` and `traceback` and
+treats a malformed record as absent. A child that is killed writes nothing, which is the
+`type: "Killed"`, `traceback: null` case the contract already tells clients to tolerate.
+
+**The status pipe narrows the forgery it replaces; it does not close it, so the
+supervisor's own observation wins.** The child is forked and not exec'd, so the script runs
+with that descriptor open and writable: `os.write(3, b'{"type": "ValueError", …}')` followed
+by a clean exit produced `status: "error"` with `exit_code: 0` — a row the status table below
+declares impossible — until the supervisor was made to **ignore any status record when the
+child exited 0 and was not signalled**. An uncaught exception always leaves a non-zero exit,
+so no legitimate record is lost. This matters beyond tidiness: the client returns the body
+unchanged, so a forged record tells the model its own successful analysis failed, and the
+code that writes it is model-influenceable by the prompt-injection path in §6.4.
+
+**This section was written when five behaviours were missing. All five have since landed** —
+`4h6.41` (wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing), `4h6.42` (the two output
+bounds), `4h6.43` (token delivery), `4h6.45` (the audit stream) and `4h6.46` (quotas,
+retention, reaper); see "As built" below for what each of them actually does and what it
+measurably does not.
+
+`4h6.45` could not be a drop-in and was not: a descriptor reaches the child only by existing
+before the fork, so it edits `_execute_inner` (create the pipe pre-fork, drain the read end on
+a third thread sharing the same reaped-child deadline the other two use), `_child_main` (dup
+it onto `CHILD_AUDIT_FD` and add that number to the `_close_inherited_fds` keep-set — a number
+missing from that set is closed a few lines later and every SDK record raises inside a
+successful data call) and `child_env` (export `GENETICS_SDK_AUDIT_FD`).
+
+The lossy UTF-8 decode of `output` **is** contract behaviour and is implemented: invalid
+bytes become U+FFFD, and there is no alternate encoding and no `encoding` field.
+
+**Where the contract was silent, and what was chosen.** Each of these is a place two
+implementers would each pick something reasonable, so they are written down rather than left
+in the code:
+
+- **The socket binds before the startup work runs**, so `status: "starting"` is observable
+  rather than theoretical: a probe arriving during `prewarm()` gets the contract's `503` with
+  a health body instead of a connection refusal. Nothing can be executed while not ready —
+  `/execute` answers `503 NotReady` — so this widens what is *visible*, not what is allowed,
+  and a failed assertion still exits non-zero and crash-loops the pod.
+- **`Content-Type` is parsed as a media type and its parameters are ignored**, per the
+  Transport paragraph above; `scripts/test-supervisor.py` locks bare, charset-bearing and
+  oddly-cased forms so nobody replaces it with a string compare.
+- **A chunked request body is refused (`400`).** A body with no `Content-Length` cannot be
+  size-capped before it is read, which is the one thing the 1 MiB cap exists to do. The
+  contract assumes a length, and every client of it is a JSON POST that has one.
+- **The duplicate-`execution_id` check is made twice, not once.** The contract phrases the
+  rule as "`/scratch/<execution-id>` already exists", but the directory is created at
+  dequeue, so two identical ids sitting in the queue would both pass a filesystem test. The
+  supervisor therefore refuses at **accept** against the union of queued, running and
+  retained ids *and* the filesystem, and again at **dequeue** by creating the directory with
+  `mkdir` and treating `EEXIST` as the same `409`. That is a superset of the stated rule and
+  preserves the same invariant.
+- **The execution ends when the child is reaped, not when its pipes close.** The write ends
+  of the output and status pipes are inherited by every descendant, so a grandchild that
+  `setsid()`s away holds them open after the direct child exits and EOF never comes. Reading
+  to EOF therefore held the execution slot on a *pipe read* rather than on a process:
+  measured, `/health` reported `busy: true, queued: 0` with nothing running, the response
+  never arrived, and a second user waited 36 s behind a child that had lived ~10 ms. The
+  drain now gets a deadline — `DRAIN_GRACE_S` (2 s) after `waitpid` returns — and the
+  supervisor closes the read ends itself and logs the abandonment; `duration_ms` is taken at
+  the reap, so it measures the child and not the drain. This is **not** something the
+  `4h6.41` wall clock fixes, and `4h6.41` landing has not changed that: an escapee has left
+  the process group, so `killpg` returns `ESRCH` and there is nothing group-shaped left to
+  kill. **Nothing in the supervisor kills such a process** — `4h6.55` owns that — and what
+  this guarantees is only that it cannot block the queue.
+- **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
+  list carrying the right value is the same claim. Anything else is a `400`.
+- **The child's working directory is `/scratch/<id>/tmp`.** `WORKDIR` is `/genetics` on a
+  read-only root, so a script writing a relative path would fail there; pointing it at the
+  artifacts directory instead would silently promote every scratch file the script writes
+  into the manifest.
+- **`SANDBOX_USER`, `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID` are set in the child**
+  from the tokens' `sub`/`sid`/`jti`, and **they are not what attributes a collected record.**
+  The child owns its environment and can rewrite all three between two SDK calls, so `4h6.45`
+  discards the prefix the SDK renders from them and re-stamps from the claims on the read end.
+  They are still set: the SDK renders the line, the shipped stubs document them, and an
+  in-process (non-sandbox) host has no supervisor to stamp anything. **The environment prefix
+  and the signed claims are not the same evidence**, and only the second one survives to a
+  collector.
+- **The startup wipe removes everything under `/scratch` except the supervisor's own
+  directory.** After a restart the supervisor holds no record of what was live or retained —
+  that state is in memory and does not survive the process — so nothing under `/scratch`
+  belongs to a live or still-retained execution by the definition the rule uses. Wiping is
+  the conservative reading and the one the rule exists for: a crash mid-execution must not
+  leave a readable directory behind.
+- **The supervisor keeps one writable `MPLCONFIGDIR` of its own** at
+  `/scratch/.supervisor/mplconfig`, seeded from `$GENETICS_MPLCACHE`, purely so `prewarm()`
+  can import `matplotlib.pyplot` at startup. It is not shared with any child — every
+  execution still gets its own, seeded the same way — and the startup wipe keeps it by name.
+
+**No setuid, no chown, and none is attempted.** Option (b) is the shipped model: supervisor
+and child share uid 65532. Per-execution directories are `0700` and the child sets
+`umask(0o077)`; under one uid those modes keep everything else out and do nothing between
+the two processes, which is why the token file's protection has to be lifetime (`4h6.43`)
+and the pid budget has to be a supervisor-side watch (`4h6.41`).
+
+**What differs when the supervisor runs outside the image.** Every one of these is keyed on
+an environment variable `sandbox/Dockerfile` always sets, so "unset" means "not the image"
+and produces a loud warning rather than a silent behaviour change:
+
+- **`GENETICS_PREWARM` unset → `prewarm()` is skipped**, with a warning. In the image it is
+  always set, so `PrewarmError` crashes the pod exactly as the handoff table requires; on a
+  developer machine without numpy/scipy/polars/matplotlib installed the supervisor would
+  otherwise be unstartable.
+- **`GENETICS_MPLCACHE` unset → `MPLCONFIGDIR` starts empty** and matplotlib rebuilds its
+  font cache per execution (seconds), instead of the copy being free.
+- **`SANDBOX_SCRATCH_ROOT` set → the `/scratch` root moves.** Test-only, and warned about in
+  those words: `read_artifact` refuses any artifacts directory that does not resolve under a
+  **hardcoded** `/scratch/` prefix (`4h6.15`), so artifacts written under an overridden root
+  are unretrievable by construction. The image never sets it.
+- The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
+  Linux developer machine and failing it is the intended outcome elsewhere.
+
+### As built (`4h6.40`) — the local Docker backend, and the six things it does not reproduce
+
+`scripts/run-sandbox-local.sh` builds `sandbox/` and runs **the same image, the same
+entrypoint and the same supervisor** in a plain container:
+
+```
+./scripts/run-sandbox-local.sh                 # build, (re)start, wait for /health
+./scripts/run-sandbox-local.sh --test          # ... and drive the contract against it
+./scripts/run-sandbox-local.sh --no-build      # restart in seconds
+./scripts/run-sandbox-local.sh --logs          # container stdout = the audit sink
+./scripts/run-sandbox-local.sh --stop
+```
+
+**There is no local code path.** The supervisor is passed as the container's command at
+`docker run` time, exactly as `4h6.50` will pass it as `args:`; the image still ships no
+`CMD` and the manifest still declares neither `command` nor `args`, so `scripts/deploy.sh`'s
+refusal is untouched and nothing here can reach a cluster. chat-backend's client holds one
+base URL and does the same thing against both.
+
+| local flag | the manifest line it stands in for |
+|---|---|
+| `--user 65532:65532`, `--cap-drop ALL`, `--security-opt no-new-privileges` | `runAsUser`/`runAsGroup` 65532, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false` |
+| `--read-only` | `readOnlyRootFilesystem: true` |
+| `--tmpfs /scratch:…,mode=0700,uid=65532,gid=65532` | the one `emptyDir` at `/scratch`, `fsGroup: 65532` |
+| `--memory 3g --cpus 1.5` | `limits.memory` / `limits.cpu` |
+| `--pids-limit 1024` | the kubelet's `pod_pids_limit` |
+| `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer-wipe sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
+| `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
+| `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal`, on the **dev-stack's** ports (results-api `:2000`, db-api `:8080`) and not the manifest's — locally `:4000` is chat-api (`4h6.49`) | the same two variables at cluster FQDNs pinned by `hostAliases` |
+| `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 900s |
+| the supervisor as the `docker run` command | `args:` (`4h6.50`) |
+
+**What is not reproduced.** The script prints this list every time it brings the container
+up, because a fidelity gap nobody reads is the same as no fidelity gap at all:
+
+1. **gVisor.** `runc`, not `runsc`, unless the daemon has the runtime registered — the script
+   auto-detects it and says which one it used. Without it the host kernel is directly
+   reachable from model-authored code, so section 2's "userspace syscall boundary" is the one
+   control whose absence changes the threat model rather than the test coverage.
+2. **The NetworkPolicy.** There is none. Egress is **unrestricted** — the whole host network,
+   the internet, and `169.254.169.254`. Every claim in section 3 is untested locally; a
+   script that exfiltrates in this container proves nothing about the pod, in either
+   direction.
+3. **`pod_pids_limit`.** `--pids-limit 1024` is a per-**container** cgroup where the kubelet's
+   is per-**pod**. Close enough to exercise `4h6.41`'s budget, not the same backstop.
+4. **The seccomp profile.** Docker's default, not `RuntimeDefault` via containerd. They are
+   near-identical in origin and this is the one difference that turned out to be
+   load-bearing — see the measurement below.
+5. **`sizeLimit` enforcement — and, more consequentially, which budget `/scratch` is charged
+   to.** The local `/scratch` is a 512 MiB tmpfs, so over-budget writes get `ENOSPC`. Under an
+   `emptyDir` `sizeLimit` the **kubelet evicts the pod** instead — which is precisely the
+   failure `4h6.46`'s sub-quotas exist to prevent, and it **cannot happen locally**. A quota
+   implementation that only ever sees `ENOSPC` is untested against the thing it was written
+   for.
+
+   The second half of this gap is easier to miss and it changes how `4h6.41` must size its
+   limits. **A tmpfs is page cache in the container's own memory cgroup**: locally, every byte
+   under `/scratch` is charged against the *same* `--memory 3g` as the child's RSS. Measured
+   inside the running container: `memory.current` **113 MiB → 414 MiB** after writing 300 MiB
+   to `/scratch`. In the pod, `volumes.scratch.emptyDir` carries **no `medium: Memory`**, so it
+   is node-disk-backed and charged to a **different, separately limited budget** —
+   `ephemeral-storage` (requests `1Gi` / limits `2Gi`) — and **never** to `limits.memory: 3Gi`.
+   So a script holding 2.6 GiB RSS beside a 400 MiB `/scratch` is cgroup-OOM-killed locally and
+   runs fine in the pod, and an `RLIMIT_AS` or supervisor headroom tuned against this container
+   is up to 512 MiB more conservative than the pod needs. `4h6.46`'s `/scratch` polling never
+   sees the memory interaction locally at all, because in the pod there isn't one.
+6. **`ephemeral-storage` requests/limits (`1Gi`/`2Gi`).** **No local form exists at all.**
+   Docker has no equivalent knob, so the budget that actually bounds `/scratch` in the pod is
+   not merely approximated here — it is absent, and exceeding it (kubelet eviction) is
+   unobservable locally in either direction.
+7. **`restartPolicy`.** `--restart no` against a Deployment that restarts: a crash-loop bug
+   presents locally as a dead container with its logs intact and in the cluster as
+   `CrashLoopBackOff`. Deliberate, and better for development, but it is a behavioural
+   difference and belongs on this list.
+8. **DNS and `hostAliases`.** The container uses ordinary Docker DNS; the pod has
+   `dnsPolicy: None` and resolves the two service names out of `/etc/hosts`. The startup
+   `/etc/nsswitch.conf` assertion still runs and still passes, so the `files`-before-`dns`
+   requirement is exercised; the *absence* of a resolver is not.
+
+`terminationGracePeriodSeconds: 130` **is** reproduced, via `--stop-timeout 130` plus a `--stop`
+that calls `docker stop` rather than `docker rm -f` — see the table above. It is named here only
+because getting it wrong is silent: `docker kill`, `docker rm -f` or Ctrl-C on the daemon all
+SIGKILL immediately and skip the drain-reap-answer-wipe the 130s exists for.
+
+Also not reproduced, and worth naming because it is a difference in **behaviour** rather than
+configuration: the audit stream goes to the container's stdout, collected by `docker logs`
+rather than by the cluster's logging agent. That is the single place the deployment
+difference shows in what the supervisor does, and it was already anticipated above.
+
+**`scripts/test-supervisor.py --container URL [--container-name NAME]`** drives the contract
+against the running container over HTTP and adds a group of checks that only exist there,
+because they are
+properties of the **image**: the read-only root filesystem, the absence of a writable `/tmp`,
+the pruned venv (no `pip`, no `setuptools`, no `google-auth`), the genetics SDK importing,
+matplotlib producing a PNG from the baked font cache under a read-only rootfs, no credential
+anywhere in the child's environment, and the child running as 65532 rather than the
+advertised-and-unreachable 65533. `--container-name NAME` additionally lets the audit-stream
+group read the container's own stdout via `docker logs`, which is the only place those records
+appear; without it that group skips by name. In-process mode is unchanged and remains the fast
+path. Both modes also compare the harness's **copy** of `analyze_conversations.py`'s
+`SDK_CALL_RE` against the literal in a `genetics-mcp-server` checkout beside this one, read off
+disk with `ast` rather than imported (the sandbox image installs only the SDK's import closure,
+so the two repos cannot share a module). Watching only the supervisor side would let the
+*analyzer* move while every assertion built on the stale copy kept passing; with no sibling
+checkout the comparison skips by name rather than passing quietly.
+
+**The two counts are not comparable, and the summary line says so.** Container mode runs the
+two wire groups plus the image group — nothing else. The groups that reach into the
+supervisor's own objects (the startup assertions, request parsing, the queue, the artifact
+manifest, the startup wipe) are **not run at all** over HTTP, because no route reaches them;
+that is most of the in-process checks. They are printed by name under "check groups NOT RUN in
+this mode" at the end of every container run, so a container total cannot be read as a
+near-complete fraction of the in-process total. `skip()` is the narrower mechanism and its
+claim is unchanged: it covers a check *inside a group that ran* — one needing the harness's
+own view of `/scratch`, which a container does not give it — and those are counted and listed
+individually. One such skip has since become a real check in both modes: the retained
+artifacts of a refused-duplicate execution are now read back over `GET /artifact`
+(`genetics-results-suite-8z1`) instead of by looking at the host filesystem, so container mode
+verifies it too. Implementing the missing groups over the wire is
+not this bead's scope; being honest about their absence is.
+
+**One thing only became visible in a container.** In-process, the harness and the supervisor
+share an interpreter, a uid and a filesystem, so `SANDBOX_SCRATCH_ROOT` is set and `/scratch`
+is a temporary directory — the exact configuration `_scratch_root()` warns is test-only.
+Container mode is the first run in which `/scratch` is `/scratch`, the rootfs is read-only
+and `prewarm()` actually executes, and it confirmed the ordering `prewarm.py`'s docstring
+demands: a plot is produced with no writable path outside `/scratch` and no font-cache
+rebuild. Nothing in the wire contract needed changing — the supervisor answered identically
+in both modes on every shared check.
+
+#### Measurement for `4h6.55`: the namespace blocker is the seccomp profile, not the capabilities
+
+`4h6.55` (fork-without-exec plus one shared uid leaves no isolation between executions) has a
+leading candidate fix that needs a PID namespace and a mount namespace under `drop: [ALL]`,
+`allowPrivilegeEscalation: false`, uid 65532. Measured from **inside a real execution** in
+this container — i.e. from the position an attacker occupies — with the image, the shared
+uid and `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Seccomp: 2`:
+
+| call | result |
+|---|---|
+| `unshare(CLONE_NEWNS)` | `EPERM` |
+| `unshare(CLONE_NEWPID)` | `EPERM` |
+| `unshare(CLONE_NEWUSER)` | `EPERM` |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWNS\|CLONE_NEWPID)` | `EPERM` |
+
+The control experiment is what makes this useful. With **the same** uid, `--cap-drop ALL` and
+`no-new-privileges`, and **only** `seccomp=unconfined` changed: `unshare(CLONE_NEWUSER)`
+**succeeds**, and inside that user namespace `unshare(CLONE_NEWNS|CLONE_NEWPID)` **also
+succeeds**. So the blocker on the namespace calls is the **seccomp profile**, not the
+capability set and not `no_new_privs` — the profile returns `EPERM`, which is
+indistinguishable from the capability check unless you vary it.
+
+**But only the `CLONE_NEWUSER`-first route works, even unconfined.** With the profile relaxed,
+`unshare(CLONE_NEWNS)` and `unshare(CLONE_NEWPID)` *alone* still return `EPERM`: they need
+`CAP_SYS_ADMIN` in the current user namespace, which this uid does not have and the relaxed
+profile does not confer. Only entering a new **user** namespace first — where the process is
+root and therefore holds `CAP_SYS_ADMIN` in it — makes the mount and pid namespaces reachable.
+This constrains how `4h6.55`'s fix must be *written*, not just what it must be granted: a fix
+that calls `unshare(CLONE_NEWPID)` directly fails even with the profile relaxed, so the call
+has to be `CLONE_NEWUSER` first (or `CLONE_NEWUSER|…` in one call) and the uid/gid maps
+written before anything else is attempted.
+
+**`setuid(65533)` is a separate result and does not belong to the finding above.** It returns
+`EPERM` under the default profile *and* under `seccomp=unconfined` — the control leaves it
+unchanged. Its blocker is the **capability set** (no `CAP_SETUID` under `drop: [ALL]`), which
+is why option (a) is unreachable exactly as recorded, and relaxing seccomp would not recover
+it. The same holds for `chown(65533)` and `CAP_CHOWN`.
+
+Consequences for `4h6.55`, none of them acted on here:
+
+- A namespace-based fix under `RuntimeDefault` needs the profile relaxed, and "custom seccomp
+  profile" is already in **Rejected controls** above (it needs a node-local file distributed
+  by DaemonSet and referenced via `localhostProfile`). That rejection now costs something
+  concrete, so it is owed a re-examination rather than a re-citation.
+- **This says nothing about gVisor**, and gVisor is what will actually run. `runsc` implements
+  `unshare` in the sentry with its own support matrix, and the profile enforced at the host
+  applies to the sentry's syscalls, not the application's. Unmeasured, and not measurable on
+  this machine, which has no `runsc`.
+- Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
+  file. The measurement is a strong hint about the cluster, not a result from it.
+
+### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.45`, `4h6.46`) — the per-execution limits, and what each one is worth
+
+`4h6.39`'s five holes. Four of them landed together in `sandbox/supervisor.py` because they
+share one poll loop and one kill path; `4h6.45` (the audit stream) followed. **Every limit
+below was watched firing in the real image** via `scripts/run-sandbox-local.sh --test`, not
+reasoned about; the checks live in `scripts/test-supervisor.py`'s `limits`, `tokens`,
+`retention`, `retained ceiling` and `audit stream` groups. The first four run in **both** modes.
+The `audit stream` group runs in container mode **only when `--container-name NAME` is given** —
+its output leaves by the container's stdout rather than over the wire — and skips by name
+otherwise; `run-sandbox-local.sh --test` supplies it. The `audit stream units` group, which
+calls `_AuditForwarder` and `_drain` directly, is in-process only and is listed among the groups
+container mode never invokes.
+
+#### One watchdog, one kill path, and the two reap hazards it had to be written around
+
+A single daemon thread per execution polls the wall clock, the process-group size and both
+`/scratch` quotas every 200 ms. Four timers would have given four chances to get the reap
+race wrong; the drain thread's 8 MiB cap enters the same path through a callback.
+
+**Hazard 1 — a `pgid` cached at fork time is a stale pointer at a recycled pid.** Once
+`waitpid` reaps the child its pid is free for reuse, so a watchdog that decided to kill a
+moment earlier can `killpg` a group that is plausibly *the next execution's child*. The fix
+is structural rather than a narrowed window: `waitid(P_PID, …, WEXITED | WNOWAIT)` blocks
+until the child exits **without** consuming the zombie — so the pid stays un-recyclable — and
+the actual `waitpid` and the `reaped` flag are then set together under a lock every signal
+path also takes. A plain blocking `waitpid` cannot do this; it reaps before any lock can be
+taken.
+
+**Hazard 2, and it was found by running the code, not by reading it — reading the pgid back
+right after the fork returns the SUPERVISOR'S OWN process group.** The child's `setsid()` is
+the first statement of `_child_main`, but the parent wins that race routinely: the harness
+logged `child pgid is 651696, not the 651474 recorded at fork`, and 651474 was the
+supervisor's group. Had that value been trusted, the first wall-clock timeout would have
+`SIGTERM`ed the supervisor and everything in its group. The parent cannot fix it by calling
+`setpgid(pid, pid)` itself either — that makes the child a group leader and `setsid()` then
+fails with `EPERM` for a group leader. So **no pgid is cached at all**: it is resolved live at
+every use by a helper that refuses to return the supervisor's own group, and a child that has
+no group of its own yet is signalled by pid alone. Two consequences worth stating: the pid
+budget **skips** a poll rather than counting the supervisor's group against the child's
+budget, and `None` from the group scan means "unenforceable", never "empty".
+
+**What the group kill reaches, and what it does not.** It reaches the child and every
+descendant that stayed in its process group — an ordinary script's `subprocess` children. A
+descendant that calls `setsid()` **leaves the group and is not signalled**; that was measured
+with `killpg` returning `ESRCH` while the escapee kept running, and it also defeats the token
+file (below). This is the best mechanism available under the pod's constraints and it is
+**not a containment boundary**. `4h6.55` owns the one that would be, and until it lands an
+escaped process shares the pod with the next user. Nothing in the code or in this document
+should be read as claiming otherwise.
+
+#### `4h6.41` — wall clock, memory, oom_score_adj, pid budget
+
+| control | value | what fires, and what it is worth |
+|---|---|---|
+| wall clock | request `timeout_s`, default 60 s, hard ceiling 120 s (rejected, never clamped) | `SIGTERM` the group at the deadline, `SIGKILL` after `KILL_GRACE_S` (2 s), answer `200` with `status: "timeout"`, `error.type: "Timeout"`, `error.limit: null` |
+| `RLIMIT_AS` | 2560 MiB = `limits.memory` 3Gi − 512 MiB supervisor headroom, **soft and hard** | set in the **child**, because `setrlimit` on another process needs `CAP_SYS_RESOURCE`, which the pod drops. An over-large allocation is a clean `MemoryError` inside the child rather than a cgroup OOM kill whose victim the kernel picks by RSS heuristic — and which gVisor's accounting changes again, since the sentry holds memory on the application's behalf |
+
+**The hard limit is lowered too, and that is the whole control.** Setting only the soft limit
+made this **opt-out**: raising a soft limit back up to the hard limit is unprivileged, so
+`setrlimit(RLIMIT_AS, (RLIM_INFINITY, RLIM_INFINITY))` from the script succeeded — **measured
+in the real image**, after which allocating 2900 MiB produced exactly the cgroup OOM kill
+(`sig=9`) the limit exists to prevent. Lowering a hard limit *is* unprivileged and is
+irreversible without `CAP_SYS_RESOURCE`, which the pod drops, so the child cannot undo it. The
+harness asserts the undo is **refused**, in both modes, rather than asserting the soft value.
+| child `oom_score_adj` | raised to `+500` from the parent | see below; weaker than section 2 implies |
+| supervisor `oom_score_adj` | **not set, and nothing pretends to** | `-500` returned `EPERM` for the supervisor's own file *and* for the child's, measured. Lowering below the inherited floor needs `CAP_SYS_RESOURCE`. Section 2's `-500` is a **pod-spec change** (`4h6.50`), not a runtime one |
+| pid budget | 32 processes in the child's group | supervisor-side watch via `/proc/<pid>/stat`'s `pgrp` field. `RLIMIT_NPROC` is **advisory only** here: it is per real uid across the pid namespace and the two processes share uid 65532, so a child forking to its limit also stops the *supervisor* forking. Over budget kills the whole group: `status: "limit"`, `error.type: "PidLimit"` |
+
+**`RLIMIT_AS` is sized against the POD's budget, and the local container's behaviour is
+deliberately ignored.** `4h6.40` measured that the local `/scratch` is a tmpfs whose page
+cache is charged to the container's *own* 3 GiB memory cgroup (113 MiB → 414 MiB after a
+300 MiB write), while the pod's `emptyDir` is node-disk-backed and charged to
+`ephemeral-storage` (1Gi/2Gi), **never** to `limits.memory`. Tuning to the local behaviour
+would be up to 512 MiB more conservative than the pod needs. **The divergence a reader will
+hit:** a script holding ~2.4 GiB while `/scratch` holds 400 MiB can be cgroup-OOM-killed
+*locally* and run fine in the pod. The number is therefore hard-coded from
+`k8s/deployments/sandbox.yaml` rather than read from `/sys/fs/cgroup`.
+
+**`RLIMIT_AS` bounds virtual address space, not RSS, and the prewarmed child does not start
+from zero.** Measured inside the image: a child that has inherited `prewarm()`'s
+numpy/scipy/polars/matplotlib mappings already has `VmSize` ~1358 MiB against `VmRSS`
+~113 MiB, because BLAS reserves far more than it touches. So the script's own allocation
+headroom under the 2560 MiB limit is **~1.2 GiB, not ~2.5 GiB**. Raising the limit to
+"fix" that would spend the supervisor's headroom, which is the one thing keeping the cgroup
+OOM killer from having to choose between the two processes.
+
+**What the `oom_score_adj` raise is actually worth, measured rather than assumed.** The child
+starts at `0` (inherited). Writing `500` succeeds. Writing `0` again **also succeeds, from
+inside the child, at any time** — only going *below* the inherited floor is refused (`-500` →
+`EPERM`). So a script can undo it, and the honest guarantee is not "+500 holds" but "the
+child can never make itself a *better* OOM candidate than the supervisor": its adjustment
+stays in `[0, 1000]` against the supervisor's `0`. Section 2's Memory row reads as though the
+`+500`/`-500` pair is durable in both directions; neither half is, and this row is the
+authoritative one.
+
+#### `4h6.42` — the two output bounds, which are different limits
+
+- **Pipe cap, 8 MiB.** The reader **stops** at the cap and kills the group; it does not drain
+  and discard, because the cap exists so the supervisor's memory and the pod's CPU stop being
+  consumed and draining achieves neither. `output_bytes` therefore stops at the cap too,
+  which is what that field means on the wire. Answer: `status: "limit"`,
+  `error.type`/`error.limit` `"OutputLimit"`, `output_truncated: true`. A child blocked
+  writing to the now-unread pipe still dies — a pipe write is an interruptible sleep, so
+  `SIGTERM`'s default disposition ends it, and `SIGKILL` follows 2 s later regardless.
+- **Return window, 64 KiB.** First 32 KiB + `\n...[<N> bytes elided]...\n` + last 32 KiB, the
+  marker additional to the budget. Head **and** tail because the traceback is at the tail;
+  head-only truncation is the expensive failure shape, since the model then debugs against
+  output it cannot see.
+- **The cut is on bytes and never through a character.** Up to 3 bytes are trimmed from each
+  side onto a UTF-8 boundary and **counted into `<N>`**, so head + tail + elided accounts for
+  every byte. Without this the split introduces U+FFFD at both seams; the harness prints
+  `'x' + 'é' * 200000` specifically so the boundary lands mid-sequence rather than neatly
+  between two characters.
+- **`output_truncated` is true for either cause** — the pipe cap fired, or the window elided a
+  middle.
+- **stderr is interleaved into the same pipe as stdout** (settled by `4h6.39`, restated
+  because `4h6.42` was asked to record the decision): section 2 budgets **one** 64 KiB window,
+  and splitting it across two streams either halves the window or doubles the budget. The
+  SDK's audit records **are** separated out, onto their own fd (`4h6.45`), so they are not
+  charged against this window and are not indistinguishable from script output.
+
+#### `4h6.43`/`4h6.44` — the read-once token file, which is NOT an exposure bound
+
+The two tokens arrive in the POST body, are checked for consistency at parse time, and are
+written before the fork to `/scratch/<execution_id>/tokens.json`, mode `0600`, `O_EXCL`. The
+child is given the **path** in `SANDBOX_TOKEN_FILE`, never the tokens themselves — a token in
+the environment is readable through `/proc/<pid>/environ` by any process with the same uid,
+and supervisor and child share uid 65532. The supervisor never puts them in its own
+environment, never writes them to the pod spec, a ConfigMap or a Secret, and never reads the
+file back. `4h6.44` owns the other half in the SDK, and **it has landed** — see "The SDK half
+(`4h6.44`)" below for what it does and what it does not buy.
+
+**No `chown` and not mode `0400`.** That is section 2's "Permission contract" for option (a),
+which is **NOT IN EFFECT**: the pod holds no `CAP_CHOWN` or `CAP_SETUID` and both were
+measured to return `EPERM`. `0400` without the `chown` would exclude the child, which is the
+process that has to read it.
+
+**This file bounds nothing, and every earlier phrasing in this document read as though it
+did.** `4h6.55` measured, against this exact shape:
+
+- the child is forked **without exec** from a supervisor holding tokens in its address space,
+  and a raw `/proc/self/mem` scan in the child recovered them — **including from an execution
+  that had already completed and been released**. Clearing references cannot help: freed
+  Python strings stay in arenas that copy-on-write hands to the child;
+- a detached `setsid()` grandchild of an **earlier** execution read **this** execution's
+  mode-0600 file from inside the read-once window;
+- the same tokens are reachable by module global, frame walk and `gc.get_objects()`.
+
+So the file is still the right thing to build — the child needs *some* route to the
+credential, it keeps the token out of `/proc/<pid>/environ`, and it gives the SDK something to
+unlink — but **the exposure is bounded by `4h6.55`'s resolution and by nothing here.** The
+supervisor also unlinks the file itself the moment the child is reaped, whether or not the
+SDK ever read it, and `_retain` deletes it again with the rest of the directory; that is
+hygiene, not a bound.
+
+**Refusing to run uncredentialed** is enforced in `parse_execute_request`, before any
+directory exists: a token set that is incomplete, carries the wrong audience, or disagrees
+with the body's `user`/`session_id`/`execution_id` is a `400`. This matters because db-api's
+pre-existing fail-open branch (unset `INTERNAL_API_SECRET` disables auth with a startup
+warning) is exactly what an uncredentialed run would reach.
+
+The `sub`/`sid`/`jti` claims stay on the request object and `4h6.45` stamps audit records from
+them. The supervisor is the only component that both holds the token and sits outside the
+child's address space, which is why `4h6.12` put the stamping here.
+
+**The SDK half (`4h6.44`), as built.** It lives in genetics-mcp-server's
+`tools/executor.py` — `_read_and_unlink`, `_load_sandbox_tokens`, `_parse_sandbox_tokens`,
+`_SandboxTokenAuth` and `_build_client` — not in `sdk/client.py`, because the client the SDK
+delegates to is the executor's. Five properties, each with a reason:
+
+- **Read once, and unlink whether or not the read succeeded.** The unlink is in a `finally`
+  around the read, so a file the SDK failed to parse is still removed rather than left for
+  the next process with this uid. The read is capped at 64 KiB.
+- **`O_NOFOLLOW`**, for the same reason the supervisor writes with it: `/scratch` is writable
+  by the child's uid, so a symlink planted at the path would otherwise redirect the read.
+- **Per-destination audience binding.** One httpx client serves both upstreams and the two
+  tokens are not interchangeable, so the audience is chosen per request from the destination
+  (`aud: db-api` for `BIGQUERY_API_URL`, `aud: results-api` for `GENETICS_API_URL`) rather
+  than by a default header on the client. Both validators pin `aud` as a **string** and
+  refuse a list, so a token sent to the wrong service is a hard `401`, not a degraded success.
+- **Hard failure rather than an uncredentialed run.** `SANDBOX_TOKEN_FILE` being set is the
+  statement that this process is a sandbox execution; a file that is missing, unreadable,
+  not JSON, or short of either audience raises rather than falling back to
+  `INTERNAL_API_SECRET` or to no header. The sandbox path and the service path are mutually
+  exclusive by construction — the secret is never attached alongside the token, because a
+  request carrying it resolves no sandbox principal and is served with no accounting
+  (`genetics-results-suite-0lf`).
+- **A request to any other destination gets no credential.**
+
+**What the binding is worth, stated exactly.** It is hygiene against a misconfigured or
+accidentally-redirected base URL, plus the correctness property that neither upstream can be
+handed the other's token. **It is not a control over the script.** The child is forked
+without exec and therefore owns `os.environ`; `base_url` and `bigquery_url` are resolved from
+`GENETICS_API_URL`/`BIGQUERY_API_URL` on **first use**, and `sdk/__init__.py` holds
+`_client = None` until the first call. Reproduced: with a valid token file present and
+`GENETICS_API_URL` pointed at an attacker-controlled host **before** the first SDK call, the
+request went out carrying the results-api token. What stops that in the pod is the egress
+allow-list in `k8s/network-policies/sandbox-policy.yaml` and nothing in the SDK — and there is
+no NetworkPolicy in the local Docker path, so the local sandbox does not have that stop.
+
+**And it is not an exposure bound either**, for exactly the reasons the file is not: the
+token is in the child's own address space the moment the SDK reads it, `4h6.55`'s
+`/proc/self/mem` scan recovered tokens from an execution that had already completed, and a
+detached `setsid()` grandchild of an earlier execution read a live token file from inside the
+read-once window. Read-once-and-unlink is worth building and is worth nothing as a bound. The
+exposure is bounded by `4h6.55`'s resolution and by nothing here.
+
+**What the token does buy** is that the credential on the wire is 5 minutes long, scoped to
+one audience, and carries `sub`/`sid`/`jti` — so the upstream controls keyed on `jti` are no
+longer inert and every `endpoint_access` line is attributable to a user, a conversation and an
+execution. That is a real change from `INTERNAL_API_SECRET`, which never expires, is accepted
+at both services, and resolves no principal at all.
+
+**The two upstreams do not meter the same way, and the asymmetry is not "one meters and one
+does not".** Re-derive rather than trusting this:
+
+| | results-api (`app/core/sandbox_budget.py`) | db-api (`api/main.py`) |
+|---|---|---|
+| per-`jti` request count | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) | **none** |
+| per-`jti` concurrency | **4**, and **8** pod-wide | **none** |
+| per-`jti` aggregate bytes | **1 GiB** response bytes | **200 GB** BigQuery bytes processed |
+| where it is enforced | `SandboxResponseCapMiddleware`, **before routing** — an unmatched path is admitted and counted like any other | in the handlers, on the four BigQuery paths only |
+
+So `genetics.sql()` — the most expensive surface the sandbox reaches — is **bounded by spend
+and attributable per execution, but not bounded by request count or by concurrency**: a script
+can issue unlimited db-api requests at unlimited concurrency as long as each stays inside the
+200 GB aggregate, and db-api's cheap paths (`/health`, the cached `/schema` hits) are not
+counted at all. That is a deliberate difference in kind — db-api's cost is BigQuery bytes and
+results-api's is egress and pod memory — not an oversight, but it does mean "the per-execution
+counters now apply" is true of results-api's four counters and of db-api's byte budget, and is
+**not** a statement that db-api counts requests. It does not.
+
+#### `4h6.45` — the audit stream: read, capped, re-framed, stamped, forwarded
+
+A second pipe, created before the fork, dup'd onto `CHILD_AUDIT_FD` (4) in the child and named
+to the SDK as `GENETICS_SDK_AUDIT_FD`. The supervisor holds the read end and drains it on a
+third thread that shares the `reaped` event and `DRAIN_GRACE_S` deadline the output and status
+pipes use — the audit write end is inherited by an escaped descendant exactly as the output
+pipe's is, so EOF is not something waiting longer can produce.
+
+`_AuditForwarder`, one instance per execution, does four things and each was demonstrated:
+
+- **Caps, on the read end.** `AUDIT_LINE_MAX_BYTES` (4 KiB, per record), `AUDIT_STREAM_MAX_BYTES`
+  (1 MiB, per execution, counted over everything read including what is then dropped) and a
+  token bucket (`AUDIT_RATE_PER_S` 100, `AUDIT_RATE_BURST` 200). An over-long record is
+  **dropped, never truncated**: a truncation removes the tail where `rows:` lives, so it either
+  produces something that no longer parses or a prefix that parses as a *different* record —
+  the same replace-don't-truncate rule `_sanitise_error_type` applies to a child-supplied
+  `error.type`. **The same rule holds at the byte budget**, which is the one place a cut is not
+  the reader's choice: the child picks where the boundary falls by padding, so the partial
+  record left in the buffer when the budget bites is **discarded, never flushed at close** — a
+  validator padded to the budget with oversize lines (which spend no rate token) and turned
+  `rows: 999999999` into a forwarded `rows: 9` under the real user's stamp, counted as
+  `records=1`. Past the byte budget the reader **keeps reading and discards**, the status
+  pipe's behaviour and deliberately not the output pipe's: stopping would block the child's
+  next audit write, and a child blocked inside a successful data call turns an observability
+  bound into an execution failure. What is discarded is counted by its newlines **plus the
+  unterminated record at the end**, so a flood carrying no newline at all still reports a
+  `dropped_over_budget` rather than only a larger `bytes=`.
+- **Re-parses and re-frames.** Every line is matched **whole** against three shapes — the SDK's
+  `Executing SDK function:` record, its `Rejected SDK function:` record, and its refusal-budget
+  notice as a fixed literal — and anything that does not match is dropped and counted. Laxity
+  here is the forgery: `search()`-based parsers, including this repo's own
+  `scripts/analyze_conversations.py`, match a record *anywhere* in a line, so a child appending
+  `[user=admin@finngen.fi] … Executing SDK function: sql … rows: 1` to an otherwise ordinary
+  record would otherwise have written a genuine-looking access under someone else's name. The
+  argument summary is admitted as **printable ASCII minus `[`, `]`, `{`, `}` and backslash**, or
+  as the bare literal `<unavailable>` — the two things `_summarize_arguments` can return, the
+  second being what it returns when `signature.bind_partial` raises `TypeError`, i.e. whenever an
+  ordinary script passes one extra positional or one unknown keyword. That charset is **tighter
+  than the SDK's own**, deliberately: `_summarize_value` falls through to
+  `f"<{type(value).__name__}>"` and a script owns `__name__`, so the emitting side is not where
+  this can be held. Non-ASCII was measured reaching the container's stdout inside an otherwise
+  genuine record — U+2028, U+2029 and U+0085 each split the record into **two** lines under
+  `str.splitlines()`, and U+202E reverses how the rest of it reads. Row counts are matched with
+  `[0-9]`, never `\d`, which in Python is every Unicode decimal digit: `rows: ١٢٣` was forwarded
+  and the analyzer's `int()` read back 123. The SDK's shared-stream warning is deliberately
+  **not** admitted: on this path it is false, and forwarding it would make the analyzer distrust
+  a stream the supervisor stamped. Its refusal-budget notice **is** admitted, and the number in
+  it is **child-supplied** — nothing on the read end counts the SDK's refusals, so a child can
+  write the notice itself with a figure of its choosing (`999999999` was measured); the literal
+  text around it is what is bounded, and the supervisor's own summary is the cross-check.
+- **Keeps reading even when forwarding fails.** If the sink raises, the drain thread discards
+  the rest of that stream and keeps reading the fd. It may not stop: nothing else reads it, the
+  64 KiB pipe fills, and a still-running child blocks in `os.write` inside a call that was
+  succeeding — the same reason the byte budget discards rather than stops.
+- **Stamps identity from the tokens.** `[user=…] [session=…] [execution=…]` come from the
+  claims' `sub`/`sid`/`jti`, sanitised on the same charset-and-replace rule (a value that would
+  break the framing renders `<invalid>`). Everything before the record marker — the SDK's
+  asctime, logger name, level and its own prefix — is discarded rather than parsed.
+- **Forwards to the pod's own stdout**, written to the stream directly rather than through
+  `LOG`: the logging configuration belongs to `main()`, and stdout is block-buffered when it is
+  a pipe (which is what it is under both `docker logs` and the kubelet), so each record is
+  flushed. In the local Docker backend this is the container's stdout — the same code, a
+  different collector.
+
+MEASURED IN THE IMAGE, from a child writing directly on fd 4: a forged
+`[user=admin@finngen.fi]` prefix and a rewritten `SANDBOX_USER` produced a record stamped
+`[user=dave@finngen.fi]`, and the string `admin@finngen.fi` appeared nowhere in the container's
+stdout; a record with a second record appended was dropped whole (`dropped_unparseable=1`, and
+`rows: 99` never appeared); a 1 MiB line produced `dropped_oversize=1` with none of its bytes
+on the stream; 2,000 records in one `write()` produced `records=202 dropped_rate=1798`; and
+1.3 MB produced `dropped_over_budget=3869` with the execution still returning `status: "ok"`.
+
+**What this does not make true.** The records still do not bound what a hostile script *did*:
+it can emit well-formed records for calls it never made, `client._executor.<method>()` reads
+data with no record at all (`4h6.33`), and a child can still lose its own records by flooding
+its own pipe. What is bounded is **who a record is attributed to** and **what shape it may
+take**, and that the loss is counted rather than silent.
+
+#### `4h6.46` — `/scratch` sub-quotas, retention and the reaper
+
+| budget | value | enforcement |
+|---|---|---|
+| per-execution artifacts | 64 MiB **and** 1024 entries | polled; over → `status: "limit"`, `error.type: "ArtifactQuota"` |
+| per-execution total (`/scratch/<id>`, artifacts + tmp + caches) | 192 MiB **and** 20 000 entries | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
+| aggregate `/scratch` during a run (retained + live) | 480 MiB | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
+| aggregate retained artifacts | 256 MiB | oldest-first eviction when a completion breaches it |
+| retention | 15 min from completion, deleted on the next reaper tick — so the observable window is **[15 min, 15 min + 30 s]** | reaper thread, every 30 s (`REAPER_POLL_S`) |
+| manifest entries in one response | 1024 | listed; the rest counted in `artifacts_omitted` |
+
+**The budget, stated once.** `sandbox/supervisor.py` states the same arithmetic in one comment
+block above the constants and nowhere else; an earlier version stated it in two places that
+contradicted each other (`448 MiB < 512 MiB` in one, a `~200 MiB` poll overshoot in the
+other — `256 + 192 + 200 = 648` against a 512 MiB volume).
+
+```
+  RETAINED_ARTIFACTS_CEILING   256 MiB   steady state, held by oldest-first eviction; each
+                                         term is bounded — a COMPLETED retention is trimmed to
+                                         the 64 MiB artifact quota before it is retained, a
+                                         FAILURE-PATH one is neither cleaned nor trimmed and is
+                                         bounded by the 192 MiB execution quota instead
++ EXECUTION_TOTAL_QUOTA        192 MiB   the one live execution
+= 448 MiB
+<= SCRATCH_AGGREGATE_CEILING   480 MiB   = 512 MiB sizeLimit − 32 MiB for .supervisor and for
+                                         filesystem overhead the per-tree walks do not see
+```
+
+`448 <= 480` is what makes the aggregate check a **backstop rather than a second quota**: the
+two per-part budgets cannot together reach it, so it fires only on overshoot. **The kubelet
+must never be the thing that fires:** exceeding an `emptyDir` `sizeLimit` does not fail the
+write, it **evicts the pod**, killing the in-flight script and destroying every retained
+artifact in the window.
+
+**What this arithmetic does not prove.** The 32 MiB reserve is a margin, not a proof. A poll
+can miss ~200 MiB of writes, and a child that traps `SIGTERM` keeps writing for
+`KILL_GRACE_S` (2 s) after a quota fires; neither is bounded by 32 MiB and no arrangement of
+these constants would bound them. What bounds them is how fast the writer is stopped (`SIGTERM`
+immediately, `SIGKILL` 2 s later) and, afterwards, the trim. So the honest claim is: **the
+steady state is exact and sits 64 MiB under the cliff; the transient peak during a hostile
+burst is not**, and the aggregate check is what fires 32 MiB early instead of letting the
+kubelet be the thing that notices.
+
+- **Accounting is on `st_blocks` plus a per-entry floor, not `st_size`,** and both halves are
+  needed. `st_blocks` because `f.seek(512 << 20); f.write(b'x')` makes a file whose apparent
+  size is 512 MiB and whose blocks are nearly none — charging apparent size would kill that
+  script for using no space. The 512-byte per-entry floor because charging blocks *alone* said
+  a zero-length file was free: **measured**, 300 000 empty files charged 8.6 MB against the
+  192 MiB quota, so no limit fired, while the response reached 19.8 MB and the supervisor's RSS
+  went 22 MB → 166 MB. An empty file costs an inode, a directory entry, a manifest row and a
+  scan step; it is not free anywhere that matters.
+- **The entry budgets bound the watchdog's own scan, which is why the wall clock is a bound at
+  all.** The scan stops at the budget — a tree with more entries than the budget allows is over
+  it, and the exact count past that point changes no decision. Before that, one pass over
+  800 000 empty files took 8.47 s and reported 0 bytes, and `artifacts/` was walked twice
+  because it lives under the base directory: **measured**, with `timeout_s=30`, 0 files → killed
+  at 30.23 s, 200 000 → 45.51 s, 800 000 → 46.74 s. `MAX_QUEUED_WAIT_S` is 120 s, so every
+  second past the deadline is a second the next two callers spend queued or being `429`ed.
+- **The poll interval is 200 ms and is chosen against the WALL CLOCK, not the overshoot.** The
+  wall clock is the tightest of the four in the only sense that matters — it is the one bound a
+  client is told the exact value of. The overshoot is the *loosest*: at ~1 GiB/s a poll misses
+  ~200 MiB and no interval anybody would run makes that small. Three things keep the deadline
+  honest: the poll wait shrinks as the deadline approaches, the scan is entry-bounded, and the
+  clock is re-checked immediately *after* the scan so an overrun fires on that tick. The
+  harness's quota tests still pace their writes — an unpaced writer hits `ENOSPC` (locally) or
+  an eviction (in the pod) before the poll it is trying to demonstrate ever runs.
+- **`artifacts/` is TRIMMED to its quota before it is retained,** newest entries first by
+  mtime. Without this a quota kill retained its own overshoot: **measured**, a burst write
+  killed by `ArtifactQuota` at 64 MiB left 93 MiB on disk (46 % over) in 0.31 s, and at the
+  ~1 GiB/s tmpfs sustains that is ~264 MiB. Retaining it made the 256 MiB ceiling a ceiling
+  over unbounded terms. The trim runs *before* the manifest is built — the other order would
+  advertise names the trim then deletes — and what it deleted is reported in
+  `artifacts_omitted`, the field that already means "present but not listed". Newest-first
+  because the entry that blew the quota is the one being written when the kill landed.
+- **Cleanup and post-hoc accounting are not bounded by the budgets they restore**, and bounding
+  them there was circular. A *live* scan stops at the 20 000-entry budget because past that
+  point the tree is over it either way. The trim stopping there meant it sorted a truncated
+  sample and derived both the surviving entry count and the size it caches from it: **measured**,
+  25 000 zero-length files left **6 024 entries against the 1 024 budget** and reported
+  **0.5 MiB where the tree really held 2.9 MiB** — a 6× undercount that scales linearly, and
+  the number the aggregate check and the ceiling eviction then treat as fact. It is reachable
+  inside `KILL_GRACE_S` alone: ~14 000 empty-file creations/s were measured on a slow local
+  filesystem, and the pod's `emptyDir` is faster. The trim now drains in bounded passes —
+  chunk-at-a-time, a four-million-entry hard stop, and a pass that deletes nothing gives up
+  rather than looping — so the size it returns is the size that is really there. The same
+  correction applies to the **failure-path retention**, which measured only `artifacts/` on the
+  one path where nothing has cleaned `tmp/`, `home/` or the caches yet, charging up to a whole
+  192 MiB execution as zero; it measures the whole execution directory and re-checks the
+  ceiling on the spot, since nothing else re-checks it until a next completion that may never
+  come.
+- **Retained sizes are measured once and cached.** Re-walking every retained tree on every
+  completion made one 300 000-file execution a tax on all fifteen minutes of executions after
+  it. Nothing the supervisor can reach writes to a retained directory — the child is reaped and
+  the trim has already run — so the value cannot drift *for any process the kill path reaches*.
+  It **can** drift for a `setsid()` escapee, which is not in the killed process group, keeps its
+  write access to `/scratch/<id>/artifacts`, and can grow a tree after its size was cached: the
+  retained total, the ceiling eviction and the in-run aggregate check then all read low. That is
+  the same escapee section 2 records everywhere else and `4h6.55` owns; re-measuring would not
+  fix it, since the writes continue after any measurement. An earlier wording of this bullet
+  stated the no-drift claim unconditionally.
+- **The cached sizes can also double-count, in the safe direction.** Sizing follows the path it
+  is handed, so a child that replaces its own `artifacts/` with a symlink to another execution's
+  directory gets those bytes charged to both rows: the total reads **high**, so the ceiling
+  evicts earlier than it needs to, and nothing is under-protected. Deletion is unaffected —
+  `shutil.rmtree` does not traverse a symlink and the trim unlinks one rather than descending
+  it. Recorded, not fixed: a child that can plant it is already past the boundary `4h6.55` owns.
+  The guard, if that boundary ever makes it worth having, is one `lstat` before measuring.
+- **Oldest-first eviction has no "never evict the last one" guard**, and removing it was the
+  fix: with it, a single over-ceiling execution sat above the ceiling permanently, because
+  there was nothing older to evict. The trim is what protects the newest execution now, and
+  protects it properly — every retained entry is ≤ 64 MiB against a 256 MiB ceiling.
+- **On completion everything under `/scratch/<id>` is deleted except `artifacts/`**, which is
+  retained 15 minutes so `read_artifact` has something to return and is then deleted
+  unconditionally, read or not.
+- **Eviction is observable on the wire without any host view of `/scratch`:** an evicted
+  execution's id stops answering `409 DuplicateExecutionId` and becomes usable again, because
+  its directory is gone. That is what the harness asserts, in both modes.
+- **The reaper has two mechanisms because they answer different failures.** The registry
+  covers executions that *completed*. A filesystem sweep covers a directory whose job died on
+  a path that never reached `_retain` — an orphan the registry has no row for, which would
+  otherwise sit until the pod restarts; live and queued ids are excluded by name first.
+- **Retention does not survive a pod restart**, and the startup wipe (`4h6.39`) removes
+  everything unrecognised, which after a restart is everything.
+
+**`SANDBOX_RETENTION_S` is a test-only override with the same standing as
+`SANDBOX_SCRATCH_ROOT`:** loud warning on every start, never set by the image and never by
+`k8s/deployments/sandbox.yaml`. It may only **shorten** retention — a larger value is
+**refused at startup, not clamped**, because artifacts outliving what `read_artifact` was told
+is worse than a startup error, and a knob that is silently ignored is a knob that gets
+believed. It exists so the reaper can be watched deleting a directory inside a test run rather
+than fifteen minutes later; `scripts/test-supervisor.py --container URL --retention-s N`
+asserts the caller started the container that way, and **skips the retention check by name**
+when it is absent rather than quietly proving less. Measured this way in the real image: the
+supervisor logged `retention reaper removed 1 execution directory` and the id became reusable.
+
+#### `error.type` is validated on arrival, not echoed
+
+The child is forked without `exec`, so the script holds the status fd and writes the string
+that becomes `error.type`. `message` had a 2 KiB cap and `traceback` an 8 KiB tail cap from the
+start; `type` had **neither a cap nor a validator**, only the 64 KiB status-pipe read.
+**Measured against the container:** a 60 000-character `error.type` reached the response,
+bypassing the 64 KiB output window entirely and landing in a model's context, and a child
+writing `{"type": "Timeout"}` produced `error.type: "Timeout"` with `error.limit: null` — a
+shape only the supervisor is supposed to be able to emit, and one the contract invites clients
+to branch on.
+
+This is **the same defect `4h6.47` fixed on the other side of this wire**, where chat-backend's
+client applied `_redact` to `message` and not to `error_type`. Both ends had the same blind
+spot about the same field.
+
+The supervisor now requires a child-supplied `type` to be ≤ 64 bytes and to match an
+identifier or dotted qualname, and refuses its own reserved names; anything else is reported
+as `NonZeroExit`. `StartupFailure` is the one reserved name a child legitimately writes — from
+the child's own setup handler, which exits `70` and cannot reach the script — so it is admitted
+on that exit code and refused on every other. None of this narrows what the *contract* says
+`type` may hold: the reserved names are still reserved, a real exception class name still
+passes through unchanged, and the field is still an open string to a client.
+
+**The response as a whole is now bounded** at 1 MiB, the mirror of `MAX_BODY_BYTES` on the
+request. Every component is separately capped (64 KiB output, 1024 manifest entries, 64 B
+`type`, 2 KiB `message`, 8 KiB `traceback`), so a well-formed response is ~100 KiB and this
+backstop should never fire; it exists because nothing bounded the outgoing body at all, and a
+19.8 MB one was measured. Degradation drops `artifacts` first — counting them in
+`artifacts_omitted`, since a name the model cannot see is recoverable and output it never sees
+is not.
+
+#### Still not provable locally
+
+`oom_score_adj` writability and `/proc` process-group inspection under **gVisor** are
+unverified — `runsc` implements both in the sentry — and so is the kubelet's `pod_pids_limit`
+as an outer backstop (`--pids-limit` is per container, not per pod). `emptyDir` `sizeLimit`
+eviction has **no local form at all**: the local `/scratch` is a 512 MiB tmpfs that returns
+`ENOSPC`, which is a *different failure* from a pod eviction and a gentler one. These go to
+`4h6.51`, the deploy-window bead.
+
+### As built (`4h6.49`) — the end-to-end local verification: what was measured, and how
+
+`scripts/test-e2e-local.py` drives the whole path against the running local stack —
+chat-backend's **own** minting and client code (`genetics_mcp_server.sandbox_token`,
+`sandbox_client`), the sandbox container `scripts/run-sandbox-local.sh` starts, and the real
+db-api (`:8080`) and results-api (`:2000`) that `scripts/dev-stack.sh` starts. It is a separate
+file from `scripts/test-supervisor.py` on purpose: that harness needs no cluster, no
+credentials, no backends and (in its fast path) no Docker, and folding these preconditions into
+it would take that property away from everyone who re-runs it.
+
+**Measured 2026-08-17 against `genetics_dev`, with a sandbox container started as
+`SANDBOX_RETENTION_S=45 scripts/run-sandbox-local.sh`:**
+
+```
+scripts/test-e2e-local.py --retention-s 45   → OK: 49 checks passed, nothing skipped.
+scripts/test-e2e-local.py                    → OK: 48 checks passed, nothing skipped.
+```
+
+**Each count is quoted next to the command that produces it, because a count without its
+command is not a claim.** The two differ by one check and not by four: the harness *discovers*
+the container's effective retention, so the group runs either way and `--retention-s` only adds
+the cross-check that the caller's number matches. Against a container with **no**
+`SANDBOX_RETENTION_S` — the normal state — the retention group **skips**, the run prints
+`NOT MEASURED (1)` and a `PARTIAL:` banner instead of `OK:`, and it still **exits 0**. A green
+exit is not by itself a claim that everything was measured. The `INTERNAL_API_SECRET` negative
+control skips the same way if that secret is absent or does not authenticate locally. Every
+skip is listed by name under `NOT MEASURED` and counted again in the exit banner for exactly
+this reason.
+
+**The run refuses to start against a container that is not the source under test.** It reads
+`/genetics/supervisor.py` and `/genetics/prewarm.py` back out of the running container with
+`docker cp` and compares them byte for byte with `sandbox/`, exiting 2 if they differ:
+`genetics-sandbox-local` survives rebuilds and branch switches, `run-sandbox-local.sh` is
+itself modified by this change, and every check below would otherwise be a true statement about
+a program nobody is verifying. What that does **not** cover, and is not claimed:
+`sandbox/requirements.txt`, `prune_venv.py` and the genetics-mcp-server checkout the SDK is
+installed from all shape the image without appearing under `/genetics`.
+
+What each check group is worth:
+
+* **The SDK's request is in results-api's `sandbox_budget` map, keyed on the token's `jti`.**
+  A 200 is not the evidence — `app/middleware_usage_logging.py` stamps `jti` and `sid` on the
+  `endpoint_access` record only from a resolved `SandboxPrincipal`, and
+  `SandboxResponseCapMiddleware` calls `admit` for exactly that principal. The **negative
+  control is measured in the same run whenever the secret is available and authenticates** (it
+  was, in the run above): the identical request carrying `INTERNAL_API_SECRET` is served **200
+  with no `jti` at all**, which is the shape of `0lf`. Where it is not available the control
+  **skips by name** rather than being argued. Accumulation, not just
+  admission, is shown by driving `SANDBOX_MAX_CONCURRENT_REQUESTS` (4) from inside a real
+  execution with twelve concurrent SDK calls and reading the `sandbox per-execution limit
+  exceeded` records back out of results-api's log under that same `jti`.
+* **The audit records carry the real identity.** A real execution's SDK calls appear in
+  `docker logs` (the container's **stdout**, not its stderr) in the shipped analyzer's own
+  regex shape, with `user`/`session`/`execution` equal to the token's `sub`/`sid`/`jti` — never
+  `unknown` — and with the function names of the calls actually made. In the same run a script
+  writes a forged `[user=admin@finngen.fi] … Executing SDK function: …` record and a 1 MiB line
+  onto the audit fd: no record parses as `admin@finngen.fi`, everything that survives is
+  re-stamped with the real identity, and the megabyte line is **dropped, not truncated and
+  forwarded** — the supervisor's `a record over 4096 bytes was DROPPED (not truncated)` notice
+  appears under the real `execution` and its per-execution summary counts the record as
+  `dropped_oversize`, which is what a truncate-and-forward regression would fail. The forged
+  script makes a genuine SDK call first, so the two "nothing forged survives" assertions are
+  `all()`/`not any()` over a window that demonstrably contains a real record.
+* **One value, and the join closes.** `execution_id`, `/scratch/<id>`, both tokens' `jti` and
+  the child's `SANDBOX_EXECUTION_ID` are the same string, and that string appears in
+  chat-backend's result, db-api's `sandbox request authorized` record (with the same `sub` and
+  `sid`), results-api's `endpoint_access` record and the audit stream.
+* **Every limit the bead names returns a clean structured result to chat-backend's own
+  client** — not an exception, not a hang: the wall clock (`timeout`/`Timeout`), the 8 MiB pipe
+  cap (`limit`/`OutputLimit`), the per-execution artifact quota (`limit`/`ArtifactQuota`), and
+  the 64 KiB return window (`ok`, head and tail both present, elision visible and counted, with
+  `output_bytes` reporting the true pre-cap total). `test-supervisor.py`'s `limits` group
+  already watches each one fire on the wire; what is new here is that `SandboxClient.execute`
+  turns each into a result dict.
+* **The signing key is fail-closed.** With `SANDBOX_TOKEN_SIGNING_KEY` unset the execution
+  fails by name and a counting transport shows **zero** requests left the client — no fallback
+  to the shared secret and no uncredentialed request. With a *wrong* key the execution runs and
+  both backends answer **401**, and neither records a principal for that `jti`.
+* **Retention, and precisely what the two probes pin.** An artifact is still there **at half
+  the container's own TTL** (the id is still taken, `409 DuplicateExecutionId`) and gone after
+  `TTL + REAPER_POLL_S`, because `SANDBOX_RETENTION_S` shortens the deadline and **not** the
+  reaper's 30s poll. The TTL is not taken from the caller: the harness reads the container's
+  **effective** `SANDBOX_RETENTION_S` from `docker inspect` and from the supervisor's own
+  startup warning, requires the two to agree, and skips by name if they do not — `--retention-s
+  N` only *cross-checks* that value, and a mismatch is a failure rather than two probes about
+  the wrong number. This is why the presence probe waits: a `409` taken the instant the
+  execution returns is satisfied by any positive retention, one second included, so it would
+  pin nothing at all. What is established is **"still present at TTL/2, absent by TTL +
+  REAPER_POLL_S"**, not "present until the deadline" — the interval between the last probe and
+  the deadline is unmeasured, and it belongs to the reaper. The presence side is also sound
+  only while nothing else is retaining concurrently, which is why the harness refuses to start
+  against a busy sandbox. The **mechanism** is what is verified, at a shortened TTL; the
+  shipped 900s constant is read off `sandbox/supervisor.py`, not waited out.
+* **The process-group kill, on the path where the kill actually happens.** `_kill_group` has
+  exactly one call site in `sandbox/supervisor.py` and it is inside `_fire_limit`, so **the
+  group is signalled only when a limit fires**. The assertion therefore goes on an execution
+  that spawns two grandchildren and then holds the wall clock open until it is killed: the
+  grandchild that stayed **in** the group does not outlive that kill. The
+  normally-completing path is *recorded* rather than asserted, because the group is never
+  signalled there at all and asserting otherwise would be asserting a wish.
+
+**Three defects in the local setup were found by trying to run this and are fixed in the same
+change.** Each one made the local run *look* fine while proving less:
+
+1. `scripts/run-sandbox-local.sh` pointed `GENETICS_API_URL` at `host.docker.internal:4000` —
+   the cluster's results-api Service port. Locally `:4000` is **chat-api**, which answers 404
+   on `/api`; results-api is on `:2000`. The SDK was talking to chat-backend.
+2. `scripts/dev-stack.sh` provisioned no `SANDBOX_TOKEN_SIGNING_KEY`, no `INTERNAL_API_SECRET`
+   and no `SANDBOX_ENABLED`, so db-api and results-api resolved **no sandbox principal at all**
+   and served the SDK with no per-execution accounting — locally indistinguishable from the bug
+   the tokens exist to fix. It now generates both secrets once into `DEV_STACK_RUN_DIR` (stable
+   across restarts, outside every repo) and exports them with `SANDBOX_ENABLED=true`.
+3. `SANDBOX_RETENTION_S` had no way through `run-sandbox-local.sh`, so the retention deadline
+   was unobservable in container mode. It is now passed through.
+
+**Two findings on results-api, filed rather than worked around:**
+
+* Its JSON log formatter carries `sid` and `jti` out of `log_rejection`'s `extra` and **drops
+  `code`, `limit` and `observed`** — so `Rejection.code`, whose whole purpose is to make a 429
+  actionable in a log, never reaches an operator. The code *is* on the wire in the 429 body,
+  and the harness reads it there.
+* `endpoint_access` records `user_email: null` for a sandbox principal even though `sid` and
+  `jti` are stamped, so the authenticated user is not attributable from results-api's log
+  alone. db-api's record and the audit stream both carry `sub`.
+
+**Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCES here.**
+In this configuration — plain Docker, `runc`, `--pids-limit 1024` — a grandchild that
+`setsid()`s away from the execution's process group is **still resident after the execution has
+been killed by its wall clock**, while its sibling that stayed in the group is gone. Measured
+2026-08-17:
+
+```
+process group: a grandchild IN the group does not outlive a limit kill        ok
+note  after the LIMIT kill the setsid() grandchild is RESIDENT: alive=['D'] zombie=['G']
+note  the NORMALLY-COMPLETING execution's group is never signalled, and both of its
+      grandchildren are alive=['D', 'G']
+```
+
+Neither note is a pass/fail: asserting the escapee is gone would assert the comfortable answer,
+and asserting it survives would fail this harness on a property nobody has claimed. **A green
+run of this file is not evidence that `4h6.55` fails to reproduce under `runc`. It reproduces.**
+`4h6.55` is P0 and open, and this changes nothing about it.
+
+An earlier draft of this section claimed the opposite, and the mechanism by which it did is
+worth keeping written down. The probe `exec`'d `/bin/sleep`; the image is
+`gcr.io/distroless/python3-debian12:nonroot` and **has no `/bin/sleep`** — no coreutils and no
+shell at all — so both forks died in `execv` with `ENOENT` and lingered only as unreaped
+zombies carrying no marker. The scan then found nothing, and "nothing found" read as "nothing
+survived". The guard written specifically to stop that — *the grandchildren really were
+spawned* — counted the parent's `SPAWNED` lines, which the parent prints on the `pid != 0`
+branch the moment `fork()` returns, **before and regardless of** whether the child's `exec`
+succeeded. A guard on a syscall's return value is not a guard on the object's existence. The
+probe now forks without `exec`ing (the shape `scripts/test-supervisor.py` already uses), names
+each grandchild through `/proc/self/comm` (`prctl(PR_SET_NAME)` — a fork without `exec`
+inherits the parent's `argv`, so the name is the only marker available), and the parent **reads
+that name back out of `/proc/<pid>/comm`** before it goes on. The scan looks for it in
+`/proc/<pid>/stat`, and treats an unreaped zombie as *not* a survivor: the supervisor is pid 1
+and never waits on orphans, so a grandchild it killed stays visible with its name intact and
+state `Z`.
+
+**Nothing here establishes any cross-user isolation property**, and the harness says so: `4h6.55`
+has measured a child reading other executions' tokens out of inherited memory and reading and
+overwriting other executions' artifacts. `4h6.55` states the local single-developer path is not
+blocked by that; it does not become untrue because this run passed.
+
+**Not claimed, and not claimable here:** gVisor syscall behaviour, the NetworkPolicy egress
+allow-list, the kubelet's `pod_pids_limit`, RuntimeDefault seccomp, and whether `oom_score_adj`
+and `/proc` process-group inspection behave under `runsc`. Those are `4h6.51`'s.
 
 ---
 
@@ -897,13 +2680,23 @@ entire lifetime property. The mechanism is:
    the SDK reads once and unlinks. Reason: `/proc/<pid>/environ` is readable by any process
    with the same uid, and under option (b) of the pids row the supervisor and child share
    uid 65532 — so a second child, or any helper process the script spawns, can read the
-   token out of a sibling's environment. A file that is read and unlinked closes the window
-   to the interval before the SDK's first call; `/scratch/<id>` is per-execution and wiped
-   regardless. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
+   token out of a sibling's environment. `/scratch/<id>` is per-execution and wiped
+   regardless. **The file is not an exposure bound and this paragraph used to imply it was.**
+   An earlier phrasing said read-once-and-unlink "closes the window to the interval before the
+   SDK's first call". It does not close anything: `4h6.55` measured a detached `setsid()`
+   grandchild of an *earlier* execution reading this execution's mode-0600 file **inside** that
+   window, and — because the child is forked without exec from a supervisor holding the tokens
+   in its address space — measured a raw `/proc/self/mem` scan in the child recovering tokens
+   including from an execution that had already completed. The file is still worth writing (it
+   keeps the token out of `/proc/<pid>/environ` and gives the SDK something to unlink), but
+   what bounds the exposure is `4h6.55`'s resolution and nothing else. See "As built
+   (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
    unreadable by the child**, which is the process that needs it: the supervisor writes it
    and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the
    matching rule for artifacts written by the child and read by the supervisor, are in
-   section 2's "Permission contract"; option (a) is not implementable without both.
+   section 2's "Permission contract"; option (a) is not implementable without both. **Option
+   (b) is the one in effect** ("The uid choice", section 2), so this is the shared-uid case:
+   mode 0600 does not exclude the child, and read-once-and-unlink is the whole mitigation.
 4. Nothing about the tokens is written to the pod spec, to a ConfigMap, or to a Secret.
 
 **Claims (all required, all validated):**
@@ -969,7 +2762,8 @@ because the sandbox is the one caller whose input is attacker-influenced. Concre
    similarly named `genetics_api_logs.genetics_results_api` is a developer VM's test output).
    **Caveat: those three fields are not queryable in BigQuery today.** That table's
    `jsonPayload` schema has no `sid`, `sub` or `jti` column, because no sandbox-authorized
-   request has ever reached the sink to grow it — there is no sandbox Deployment and
+   request has ever reached the sink to grow it — no sandbox Deployment is applied (the manifest
+   exists since `4h6.7`, gated off) and
    `SANDBOX_ENABLED` is `"false"` on both services. Until one lands, sandbox attribution is
    readable in Cloud Logging and container stdout only, and any claim here about attributing an
    execution must be checked against the schema rather than assumed.
@@ -1052,8 +2846,12 @@ bound on a determined user is **200 GB × turns**, and nothing in this design ca
 of turns. That is tolerable here for two measured reasons, not by assumption: concurrency is
 1 with a queue, so executions serialize rather than multiply, and the measured peak is 23
 chat turns/hour — an upper bound of roughly 4.6 TB/hour scanned *if every turn ran a script
-that deliberately exhausted its budget*, which is visible in BigQuery billing and
-attributable per `sub` and `sid` through the logging in control 3 of 6.2. If a per-session or
+that deliberately exhausted its budget*, which is visible in BigQuery billing and — now that
+`4h6.43`/`4h6.44` deliver the token and db-api's `endpoint_access` line therefore carries `sub`,
+`sid` and `jti` — attributable per user and session through the db-api half of control 3 in
+6.2. The SDK-side half of that control is still neither collected nor, against a hostile
+script, trustworthy (6.2, control 3). If a
+per-session or
 per-user budget is ever wanted, the same in-process LRU counter keyed on `sid` or `sub`
 instead of `jti` provides it; it is deliberately not in v1 because a cross-turn budget needs
 shared state once replicas exceed 1.
@@ -1274,7 +3072,7 @@ section implies.**
    results-api (the README documents the variable as optional), and **the sandbox image, which
    holds no internal credential by design** — `_PrunedInstallSettings` ships the SDK's import
    closure without `config/settings.py` and the sandbox gets a per-execution token instead
-   (`4h6.9`/`4h6.14`). A full install that builds the client with no secret logs a warning naming
+   (`4h6.9`/`4h6.44`). A full install that builds the client with no secret logs a warning naming
    the variable, which is the only local signal a developer gets. Note that **only
    `k8s/deployments/mcp-server.yaml` marks the `internal-api-secret` `secretKeyRef`
    `optional: true`** — that is exactly how the variable ends up unset with the pod still
@@ -1300,19 +3098,29 @@ section implies.**
    | `GET /api/v1/rsid/variants` | 200, `user_email=mcp-tool` | `{}` |
    | `GET /api/v1/variant_sets` | 200, `user_email=mcp-tool` | `{}` |
 
-   This is not hypothetical. `sdk/client.py` states that the client attaches `INTERNAL_API_SECRET`
-   to every request and that a script able to import the module can also read `os.environ`. So on
-   the day the flag flips, a sandbox script sheds all four counters by sending the internal secret
-   **instead of** sending no header. The change converts "omit the header" into "send the other
-   header".
+   This was not hypothetical, and it is the reason the transport had to change. While
+   `sdk/client.py` authenticated with `INTERNAL_API_SECRET`, a sandbox script shed all four
+   counters by sending the internal secret **instead of** sending no header — the fix to the
+   no-credential half converted "omit the header" into "send the other header".
 
-   **The residual path closes elsewhere, in two beads, neither of them in results-api's request
-   code:** `genetics-results-suite-4h6.7` must stop giving the sandbox `INTERNAL_API_SECRET` (the
-   Deployment), and `genetics-results-suite-4h6.14` must make the SDK send the per-execution token
-   (the transport). Until both land, limitation 1 is **partially** closed and the four counters
-   bind an honest execution only.
-   `tests/test_anonymous_surface.py::test_an_internal_secret_caller_is_served_but_not_accounted`
-   encodes the residue as current behaviour and is expected to fail when those two land.
+   **The sandbox's half of that residue is now closed, in the transport rather than in
+   results-api's request code.** `genetics-results-suite-4h6.44` has landed: the SDK builds its
+   client from the per-execution tokens when `SANDBOX_TOKEN_FILE` names them, attaches the
+   audience-bound token for each destination, and **never attaches `INTERNAL_API_SECRET`
+   alongside or instead** — the two paths are mutually exclusive in `_build_client`, precisely
+   because attaching both, or preferring the secret, would silently re-open this. A missing or
+   unusable token file raises rather than falling back. `genetics-results-suite-4h6.7` keeps the
+   Deployment half: the sandbox is never given the secret in the first place.
+
+   **What remains is intentional and is not the sandbox's.** results-api still serves an
+   internal-secret caller with no accounting, because chat-backend, mcp-server and bff
+   legitimately authenticate that way and none of them is a per-execution tenant.
+   `tests/test_anonymous_surface.py::test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it`
+   pins **both** halves as current behaviour: the internal-secret path is still served
+   unaccounted, and the SDK no longer takes it. It replaces the earlier
+   `test_an_internal_secret_caller_is_served_but_not_accounted`, which recorded the residue as
+   something expected to fail once `4h6.44` landed — the residue did not go away, the *caller*
+   did.
    The invariant `app/core/limits.py` states — that omitting the header cannot buy a *looser*
    limit — held for the per-response byte cap only; for these four counters, omitting it would
    buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
@@ -1325,14 +3133,17 @@ section implies.**
 2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
    surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
    slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
-   sizing above is an argument about honest volume and says nothing about an attacker, and with
-   limitation 1 only **partially** closed — a caller presenting `INTERNAL_API_SECRET` is still
-   served with no accounting — there is still no per-tenant fairness behind either number. They
-   are sized far
+   sizing above is an argument about honest volume and says nothing about an attacker, and there
+   is no per-tenant fairness behind either number. Limitation 1's sandbox half is now closed —
+   the SDK sends the per-execution token and nothing else (`4h6.44`) — but the counters were
+   never a fairness mechanism, and the intentional internal-secret residue means an
+   internal-secret caller inside the namespace still reaches these pod-wide surfaces without
+   being accounted. They are sized far
    above honest use precisely so an honest execution never meets them, and both fail toward
    refusing new work rather than corrupting a running execution's accounting.
 
-Production impact today is nil for the counters themselves: no sandbox Deployment exists and
+Production impact today is nil for the counters themselves: no sandbox Deployment is applied (the
+manifest exists since `4h6.7`, gated off) and
 `SANDBOX_ENABLED` is `"false"` on both services, so nothing but `tests/test_sandbox_budget.py`
 (30 tests, offline lane) will report a regression in any of this. **The anonymous surface is the
 exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
@@ -1500,34 +3311,41 @@ Re-run against the fixed suite that same widening fails 2 tests. The route set i
 listed, so it cannot rot the way a count in prose does.
 `scripts/test-network-policies.py` cannot help here — it reads manifests and has no view of a
 Python decorator — which is precisely why the assertion lives with the routes.
-What these tests do **not** pin is accounting: every one of them but
-`test_an_internal_secret_caller_is_served_but_not_accounted` checks a boolean predicate rather
-than driving a request, which is exactly why the `INTERNAL_API_SECRET` bypass above was invisible
-to the suite until it was measured by hand.
+What these tests do **not** pin is accounting: only
+`test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it` drives a request; the
+rest check a boolean predicate, which is exactly why the `INTERNAL_API_SECRET` bypass above was
+invisible to the suite until it was measured by hand.
 
-*A rollout coupling this creates, and it is not the one an earlier draft described.* That draft
-said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.14` lands makes "every SDK call 401".
-**Measured false.** `sdk/client.py` authenticates with `INTERNAL_API_SECRET` read from the
-environment (the mitigation its own docstring calls insufficient), that secret satisfies
-`is_internal_caller`, and driving the real ASGI app with `SANDBOX_ENABLED=true` and
-`REQUIRE_AUTH=true` returns **200** on `/api/v1/rsid/variants` and `/api/v1/variant_sets` as
-`user_email=mcp-tool`.
+*A rollout coupling this created, and it was never the one the earliest draft described.* That
+draft said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.44` landed would make "every SDK
+call 401". **Measured false at the time**: the SDK authenticated with `INTERNAL_API_SECRET`
+read from the environment, that secret satisfies `is_internal_caller`, and driving the real
+ASGI app with `SANDBOX_ENABLED=true` and `REQUIRE_AUTH=true` returned **200** on
+`/api/v1/rsid/variants` and `/api/v1/variant_sets` as `user_email=mcp-tool`. The real hazard was
+the opposite and worse: the SDK kept working while contributing nothing to the per-execution
+budget, so the flip *looked* successful — no 401s, nothing in the logs to notice — while the
+control it was supposed to activate stayed inert.
 
-The real hazard is the opposite one, and it is worse: **the SDK keeps working while contributing
-nothing to the per-execution budget.** `admit` is reached only from `_sandbox_principal`, which
-accepts an HS256 sandbox token, so an internal-secret caller is served with
-`sandbox_budget._executions` still `{}`. The flip therefore *looks successful* — no 401s, no
-broken calls, nothing in the logs to notice — while the control it was supposed to activate is
-inert. Anyone planning the rollout against the 401 sentence plans against a risk that does not
-exist and misses the one that does.
+**`4h6.44` has landed and that hazard is gone**, along with the reasoning that produced it. The
+SDK now builds its client from the per-execution tokens, so a sandbox request resolves a
+principal, `admit` runs, and the counters are no longer empty. Two things this does **not**
+change, both easy to over-read:
 
-**The commit that lands the sandbox workload and flips the flag must also land the transport
-(`4h6.14`) and stop giving the sandbox `INTERNAL_API_SECRET` (`4h6.7`)** — not to keep the SDK
-working, which it will do regardless, but because without both the per-execution counters bind
-nothing. This is the same commit `genetics-results-suite-r22` already couples the label contract
-and the flag to; the requirement is additive, not a new one. The flag does enforce `4h6.9`'s
-contract that the SDK must never fall back to "send no credential" — that fallback stops working
-— but "send the internal secret instead" is a fallback it does *not* close.
+- The SDK does not 401 for a *missing* token either — it **raises before the request**, because
+  `SANDBOX_TOKEN_FILE` being set with an unusable file is a misconfiguration, not a caller to
+  degrade. Neither the old 401 story nor a silent-fallback story describes the current
+  behaviour.
+- `SANDBOX_ENABLED` still does not close "send the internal secret instead" *at results-api* —
+  it never could, since that path serves chat-backend, mcp-server and bff. What closed it for
+  the sandbox is that the sandbox no longer holds the secret (`4h6.7`) and the SDK no longer
+  sends it (`4h6.44`).
+
+**The commit that lands the sandbox workload and flips the flag still has to carry the
+Deployment half (`4h6.7`)**, for the same reason as before: a sandbox pod holding
+`INTERNAL_API_SECRET` re-opens the bypass regardless of what the SDK prefers, because a script
+that can read `os.environ` can build its own client. This is the same commit
+`genetics-results-suite-r22` already couples the label contract and the flag to; the
+requirement is additive, not a new one.
 
 **Why the exception has zero security delta — and the premise that had to be made true first.**
 The earlier argument was that a sandbox script is capped on these routes either way, so relaxing
@@ -1643,7 +3461,7 @@ here is still design. Three files carry the mechanism:
 | genetics-results-db | `api/sandbox_auth.py` | verify (`aud: db-api`) |
 | genetics-results-api | `app/core/sandbox_token.py` | verify (`aud: results-api`) |
 
-**The minting contract `4h6.14` calls.** One call produces the pair for an execution:
+**The minting contract `4h6.47` calls.** One call produces the pair for an execution:
 
 ```python
 from genetics_mcp_server.sandbox_token import mint_execution_tokens
@@ -1660,8 +3478,12 @@ name; the two must be the same value or the log join in `4h6.12` does not close.
 raises `SandboxTokenUnavailable` when `SANDBOX_TOKEN_SIGNING_KEY` is unset — deliberately an
 exception rather than a `None`, because every fallback from "no sandbox token" is either
 "send no credential" or "send the shared secret", which are the two outcomes this whole
-mechanism exists to prevent. `4h6.14` owns everything downstream of the return value: the
-POST body, the mode-0600 file under `/scratch/<id>`, and the child's environment.
+mechanism exists to prevent. `4h6.47` owns the POST body, and `4h6.43` everything downstream
+of it inside the pod: the mode-0600 file under `/scratch/<id>` and the child's environment. **That
+`0600` is hygiene, not a control**: under the decided shared-uid model (section 2, "The uid
+choice") the supervisor and the child run as the same uid 65532, so the mode excludes nobody
+who could otherwise read the file. The protection is **lifetime** — the SDK reads it once and
+unlinks it — and nothing should be designed as if the mode were doing work.
 
 **Deviations from the design above, all deliberate:**
 
@@ -1752,14 +3574,14 @@ presented is still honoured in dev.
 
 Unlike `fad` (bff before results-api) and `th2` (auth-gateway before chat-backend), **the
 sandbox credential path is entirely new: no caller sends an HS256 bearer today, and none will
-until `4h6.7` and `4h6.14` land the sandbox and `run_analysis`.** The sending and receiving
+until `4h6.7` and `4h6.47` land the sandbox and the client that calls the minter.** The sending and receiving
 sides can therefore ship in either order, and the table is short:
 
 | state | chat-backend mints | db-api / results-api verify | result |
 |---|---|---|---|
 | neither shipped | no | no | current behaviour, unchanged |
 | **validators only** | no | yes | **safe.** Nothing sends an HS256 bearer, so the new branch never fires. Every existing credential type is unaffected — shared secret, Google id_token, per-user API token, trusted-proxy marker |
-| **minter only** | yes | no | **safe today**, because nothing calls the minter until `4h6.14`. Were a token sent, an old db-api would 401 it at `compare_digest` and an old results-api would 401 it at `verify_oauth2_token` — a failed request, never an authorization |
+| **minter only** | yes | no | **safe today**, because nothing calls the minter until `4h6.47`. Were a token sent, an old db-api would 401 it at `compare_digest` and an old results-api would 401 it at `verify_oauth2_token` — a failed request, never an authorization |
 | both shipped | yes | yes | the sandbox path works |
 
 The real ordering constraint is **the secret, not the code**: all three Deployments mount
@@ -1846,6 +3668,43 @@ review. Follow the existing pattern including the explanatory comment: the curre
 distinguishes technical limits ("uses Perplexity API") from product decisions; this one is
 a security control and should say so.
 
+**Half of this has landed.** `4h6.15` added `read_artifact` to the literal set in the same
+change that defined the tool. That was not eagerness about a `4h6.16` deliverable: a tool is
+registered on `/mcp` from the moment its definition exists unless it is excluded, so
+deferring the exclusion would have shipped a window in which the tool was live over MCP.
+`run_analysis` joins it with `4h6.16`. The `code` `TOOL_PROFILE` and the route-level
+assertion below remain `4h6.16`'s.
+
+**`list_capabilities` is deliberately *not* excluded, and the reason is not that it
+discloses nothing.** Keeping it out of the set is still the right call — an exclusion set
+padded with names that are not security controls stops reading as a security control, and
+the next reader can no longer tell which entries are load-bearing. But an earlier version of
+this passage justified it with "it discloses no data, no session state and no execution" and
+with the claim that an MCP client can already see what it renders. The second argument is
+simply false: the SDK is not the MCP tool surface, and the catalogue is new disclosure to an
+MCP client. It is accepted **on its content**, which was measured by diffing the tool's real
+output against everything an MCP client can otherwise reach:
+
+- **Removed.** The output used to carry each module's `__doc__`, and through it
+  `INTERNAL_API_SECRET`, `GENETICS_API_URL`, `BIGQUERY_API_URL`, the name `results-api`, and
+  an internal bead id. Module docstrings are now stripped from the rendered output — the
+  index carries hand-written one-line summaries instead — so those are gone.
+- **Still disclosed, and accepted rather than denied — stated as categories, deliberately.**
+  Function docstrings are the thing the catalogue exists to render, and what they leak falls
+  into four kinds: the **settings mechanism** (e.g. `_URL_SETTINGS`), **internal service and
+  component names** (e.g. `db-api`), the **execution model** — that a code-execution sandbox
+  exists at all — and **limit and quota values** (e.g. the per-execution row and byte caps).
+  The examples are illustrative, not a list. An exhaustive enumeration has been attempted
+  twice in this passage and was incomplete both times, so the categories are the claim and a
+  reader who needs the current residue should diff the tool's real output rather than trust a
+  list here. No credential **values** are exposed, and view names are separately obtainable
+  through `get_database_schema`, which is registered.
+- **Closing the residue is a separate decision, not a follow-up here.** The only way to
+  remove it is to edit the SDK's own docstrings, which changes what a sandboxed script reads
+  when it introspects the SDK and drifts the generated `sandbox/stubs/*.pyi` against their
+  source. That trade — MCP-side disclosure against in-sandbox documentation quality — is not
+  `4h6.16`'s to make silently.
+
 **A warning, not a reinforcement: `TOOL_PROFILE` provides no protection here, and the
 intuition about it is backwards.** An earlier draft offered "the `code` `TOOL_PROFILE` is a
 chat-backend profile only and is never selected by the standalone MCP server" as a second
@@ -1878,7 +3737,8 @@ with an **offline** guard in `scripts/test-network-policies.py`. Because Network
 additive, "mcp-server cannot reach the sandbox" is a property of every file in
 `k8s/network-policies/` at once, so the guard parses them all and asserts that no rule
 selecting `app: sandbox` admits `app: mcp-server` — including via a from-less rule, which
-admits everything. It runs with no cluster and no network, which is the only kind of test
+admits everything. That guard runs with no cluster and no network — the harness's single cluster
+call is elsewhere, in the `SANDBOX_ENABLED` check's live-sandbox probe — which is the only kind of test
 available before `4h6.7` and `4h6.10` deploy anything. **The live connection test from the
 mcp-server pod to the sandbox Service is deferred to the deploy window** and tracked as
 `genetics-results-suite-4h6.26` with the other post-deploy verifications; it has not been run.
@@ -1945,7 +3805,8 @@ not code execution.
 
 **Controls, in order of effect:** no internet egress, so there is no pool to join and no
 payload to download — a miner needs both. CPU `limits: 1500m`. Wall clock 60s default /
-120s hard, not model-overridable. `pod_pids_limit: 256`. Concurrency 1 with a queue, so a
+120s hard, not model-overridable. `pod_pids_limit: 1024`, with the supervisor's own child pid
+budget far below it. Concurrency 1 with a queue, so a
 loop of submissions serializes rather than multiplying. Nothing executable persists:
 `/scratch/<id>` is deleted on completion except for the artifacts subdirectory, which is
 inert data on a 15-minute reaper (see the `read_artifact` subsection); the root filesystem
@@ -1965,9 +3826,12 @@ What *is* preventable is data leaving the user's own conversation. The controls:
 
 1. **There is no sink** — and this claim depends on the no-DNS decision in section 3. The
    only two ways bytes leave the pod are stdout (capped at 64 KiB to the model, 8 MiB from
-   the pipe) and `/scratch` (512 MiB, retrievable only by `read_artifact` over the
-   chat-backend-only ingress path, bound to the chat session that submitted the script —
-   see the `read_artifact` subsection below for the mechanism). No internet egress, no PVC,
+   the pipe) and `/scratch` (512 MiB, retrievable only over the chat-backend-only ingress
+   path and only as **image artifacts**, at most four per run and 512 KiB each, fetched by
+   chat-backend against an `execution_id` it minted for the submitting session — see
+   `GET /artifact` in section 2 and the `read_artifact` subsection below). Both sinks are
+   therefore bound to the chat session that submitted the script, and neither is addressable
+   by the script itself. No internet egress, no PVC,
    no other service, **and no DNS**: with kube-dns egress allowed this claim would be
    false, because subdomain-label encoding sustains roughly 200 KB/s and needs no response
    (section 3, "On DNS"). If DNS is ever restored, this control is downgraded from "no
@@ -1978,10 +3842,101 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
    aggregate budget on either service rather than running for the full 120 seconds.
-3. **Everything is logged.** Every SDK function call emits a structured line carrying
-   session id, function, argument summary and row count (`4h6.12`); db-api logs `sid`,
-   `sub` and `jti` per request. A dump is visible after the fact and attributable to a
-   person and a conversation.
+3. **The SDK records what it reads — the trail is attributable, and it is now collected.**
+   Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
+   wrapper emits one structured line carrying function, argument summary and row count
+   (`4h6.12`), and db-api logs `sid`, `sub` and `jti` per request. Four limits, all present
+   in the code today, and none of them cosmetic:
+   - **WHICH IDENTITY IS AUTHORITATIVE, since two are rendered.** The SDK renders
+     `[user=…] [session=…] [execution=…]` per call from `SANDBOX_USER`, `SANDBOX_SESSION_ID`
+     and `SANDBOX_EXECUTION_ID`, which the supervisor does set in the child's environment from
+     the token's `sub`, `sid` and `jti` (`supervisor.py`, `ExecutionDirs.child_env`) — an
+     earlier draft of this file said nothing set them and all three rendered `unknown`, which
+     is out of date. **On the collected path that prefix is not what attributes the record.**
+     The supervisor discards it and re-stamps from the same claims on the read end (`4h6.45`),
+     because the child owns its environment and can rewrite all three between two calls. **The
+     environment prefix and the signed claims are not the same evidence**, and only the second
+     one leaves the pod. Both halves of token delivery have landed — the supervisor writes the
+     token file and names it in `SANDBOX_TOKEN_FILE` (`4h6.43`), the SDK reads and unlinks it
+     and sends the audience-bound token (`4h6.44`) — so db-api's and results-api's
+     `endpoint_access` lines carry the same three values from the token itself, and the join
+     across the three sinks closes on one `jti`.
+   - **The lines now reach a collector.** The cluster's logging agent collects the *pod's*
+     stdout, and `4h6.45` forwards the re-framed records there (locally: the container's
+     stdout, where `scripts/run-sandbox-local.sh --logs` shows them). Before it, the child's
+     streams went into the supervisor's pipe and nothing forwarded them, so the control
+     produced records nothing ingested.
+   - **The fd never separated the records from the *script*, and still does not — the
+     supervisor does.** The fd number must be in the child's environment for the SDK to find
+     it, so `os.write(int(os.environ["GENETICS_SDK_AUDIT_FD"]), …)` puts arbitrary bytes
+     straight on it. What changed is what happens next: every line is matched whole against the
+     record shapes and re-emitted under the supervisor's stamp, so a child can still *write*
+     anything but cannot get a forged identity, a broken frame or chosen prose past the read
+     end. Measured: a rewritten `SANDBOX_USER` plus a hand-written `[user=admin@finngen.fi]`
+     prefix reached the container's stdout as `[user=dave@finngen.fi]`, with the forged string
+     nowhere in the log. On a **shared** stream — anything that is not this fd — none of that
+     holds: a forged line parses cleanly through this repo's own parser under any user it
+     likes, and per-value escaping is irrelevant when the writer owns the stream. The SDK emits
+     a once-per-process warning saying so, in the stream itself, and
+     `scripts/analyze_conversations.py` repeats it in any report built from such a log; a
+     report built from a sandbox log should never carry it.
+   - **`_executor` calls are not audited at all.** Instrumentation sits on the curated
+     surface; `get_client()._executor.<method>()` is one attribute access away from a
+     sandboxed script and returns the same data with no line emitted (`4h6.33`). So this is
+     "audited if you use the recommended surface", never "unbypassable" — false in
+     principle, not only in deployment.
+
+   Three further properties are deliberate rather than gaps. **The bound applies only to
+   refusals** — calls that never reached the executor — capped at `_AUDIT_MAX_REFUSALS = 1000`
+   per *process*, after which they are dropped and one "SDK audit truncated" notice is
+   emitted. A call that reached the executor is **never** dropped. Both halves are corrections
+   to an earlier revision that capped everything at 1000 per *execution*: that ceiling was
+   keyed on `SANDBOX_EXECUTION_ID`, which the script writes, so rotating it restored the flood
+   at 19,622 lines/s and 2.58 MB/s — *higher* than the 18,088 lines/s before the ceiling
+   existed, because each rotation also bought a truncation announcement. And the ceiling was
+   itself a suppression primitive: ~50 ms of refusals, which touch no network at all,
+   exhausted the budget, and every genuine `sql()` read afterwards emitted nothing. Silent
+   suppression on demand is strictly worse than a noisy flood. Hence the split — a refusal is
+   free to the caller and worth bounding, while a call that reached the executor already paid
+   an HTTP round-trip and is charged against the byte and row quotas the other controls rely
+   on, so it cannot be driven at flood rates. Measured after the change: a refusal flood *with*
+   id rotation settles at 0 lines/s steady-state, and 5,000 refusals followed by 25 real reads
+   records 25 of 25. **The identity fields are sanitised** on the same terms as arguments,
+   which they previously skipped: `SANDBOX_USER = "alice\n[user=admin@finngen.fi"` rendered a
+   line the shipped parser read back as `user='admin@finngen.fi'`, and a 100 KB value put
+   100,431 bytes on the stream from one legitimate call. Both are charset- and length-checked
+   now, and a failing value is *replaced* by `<invalid>` rather than truncated into something
+   plausible — the forgery renders `user='<invalid>'`, and the 100 KB case emits 197 bytes.
+   **The argument summary answers "how much", not "what"** for the most powerful calls:
+   `sql()` bodies render as `<str:N>` and every list argument as `<list:N>`, deliberately, so
+   a script cannot write chosen text into an operator's log. Row count is the only content
+   signal that survives there.
+
+   **No IN-PROCESS mechanism can make these records trustworthy, which is why the enforcement
+   is not in-process.** A validator defeated every control inside the SDK from inside the
+   sandbox: forging records by calling
+   `logging.getLogger("genetics_mcp_server.sdk.audit").info(...)` directly and by `os.write`
+   to the audit fd number the script reads from its own environment, and suppressing them via
+   `logger.disabled`, the level, a filter, and handler removal. As long as the audited code
+   and the audit emitter share an address space this is the consequence of where the code
+   runs, not a list of gaps to patch one by one — a dedicated fd separates the stream from
+   stdout, not from the script. `4h6.45` moved the enforcement out of the process: the
+   *supervisor* reads the fd and applies the rate, byte and per-line caps on the read end where
+   the child cannot reach them; the *supervisor*, which holds the sandbox token, stamps
+   `[user=…] [session=…] [execution=…]` from its `sub`/`sid`/`jti` claims instead of asking the
+   child who it is; and the child's framing is untrusted input, re-parsed and re-framed before
+   anything is recorded. **What that buys is precise, and it is less than "trustworthy
+   records": attribution and framing, not truth.** A script can still emit well-formed records
+   for calls it never made, `_executor` reads are invisible to all of this, and a child can
+   still lose its own later records by flooding its own pipe — bounded, counted and announced
+   when the *supervisor* is the one dropping them. **The four in-process suppression mechanisms
+   above are untouched by `4h6.45` and remain completely silent**: they stop the bytes before
+   the fd, so the supervisor sees an empty stream and says so with the same `records=0` summary
+   an execution that made no SDK calls produces. The read end bounds what a child can *write*
+   to an operator, not what it can *withhold*. It also says nothing about a `setsid()` escapee or a child reading
+   `/proc/self/mem`: `4h6.55` bounds those and nothing here does. For "what did that script
+   actually read, under an assumption of compromise", the answer remains db-api's and
+   results-api's `endpoint_access` lines, written outside this pod.
 4. **The sandbox grants no data the caller lacked.** The same user can already query the
    same views through the existing tool surface. The sandbox changes the *shape* of
    access, not its scope.
@@ -1990,6 +3945,29 @@ So the residual is: an authorized user extracts, into their own chat window, dat
 already authorized to see — 64 KiB at a time. That is unchanged from today and is not a
 regression. The thing the design *does* prevent is that data reaching a third party without
 passing through the user's authenticated session.
+
+**That conclusion survives control 3's state, but only half of it does — stated because an
+earlier draft leaned on the other half.** The residual above rests on controls 1, 2 and 4,
+which are unaffected: no sink, capped bytes and rows, no data the caller lacked. What does
+*not* follow any more is "a dump is visible after the fact and attributable to a person and a
+conversation" — the earlier wording of control 3, and false in every part. Attribution is the
+axis on which the sandbox is a **regression** rather than a wash: the same reads through the
+existing MCP tool surface already carry the user and the session in chat-backend's
+`Executing tool:` lines, and script-driven reads did not, so enabling the sandbox ahead of
+token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) would have bought a
+query path whose "who ran that?" is unanswerable. It is still *bounded* — nothing leaves the
+user's own session, nothing new is reachable. Both halves have now landed. Token delivery:
+the supervisor writes the read-once file (`4h6.43`) and the SDK reads it and sends the
+audience-bound token (`4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
+`sub`, `sid` and `jti` from the signed token. Collection: the supervisor reads the audit fd,
+caps it on the read end, re-frames every record and stamps it from those same claims onto the
+pod's stdout (`4h6.45`), so the sandbox's own records now reach a collector and join to the
+upstream ones on `jti`. **The remaining limit is not collection, it is what a record proves.**
+Under an assumption of compromise the SDK's records still do not establish what a script did —
+the script and the emitter share a process, so it can write well-formed records for calls it
+never made and read data through `_executor` with no record at all. So: cite the SDK records
+for "what did a well-behaved script read", cite the supervisor's stamp for "whose execution
+was that", and cite `endpoint_access` for anything that has to hold against a hostile one.
 
 ### `read_artifact` (`4h6.15`): lifecycle, authorization, and the path allow-list
 
@@ -2008,6 +3986,26 @@ property that 6.1 and 6.4 assert. The rule:
 - `/scratch/<id>/artifacts` is retained for **15 minutes** from completion, then deleted
   unconditionally by the supervisor's reaper, whether or not it was ever read. Fifteen
   minutes is longer than any plausible same-turn retrieval and far shorter than a session.
+- **The 15 minutes is a floor, not an instant.** Deletion happens on a reaper tick and the
+  reaper polls every 30 s (`REAPER_POLL_S`), so a directory is present until the
+  deadline and gone by **deadline + 30 s**; in between it may be either. Tightening the poll
+  narrows the window without closing it, and polling is also what catches orphans the retention
+  registry has no row for, so the window is stated rather than engineered away. **Anything
+  asserting this boundary** — `4h6.49` is instructed to — must assert presence at some
+  `t < TTL` and absence only at `t >= TTL + 30 s` plus its own margin, driving it with the
+  `SANDBOX_RETENTION_S` override; the override shortens the TTL but **not** the poll, so the
+  30 s term stays 30 s however short the TTL is made.
+  **The presence half of that assertion holds only while nothing else is retaining
+  concurrently.** Presence until the deadline is not unconditional: a *later* completion that
+  pushes the retained aggregate over the 256 MiB ceiling makes `_enforce_retained_ceiling`
+  evict oldest-first, and `_forget_retained` deletes a directory **before** its deadline. So
+  the boundary is "present until the deadline **unless the retained ceiling evicts it first**,
+  gone by deadline + 30 s". A test asserting presence at `t < TTL` must therefore be the only
+  thing retaining for the duration of that window — one execution, or a total well under the
+  ceiling — or it is asserting against a directory another execution is entitled to delete.
+  `scripts/test-supervisor.py`'s
+  `test_retention_expiry` already does exactly this — `retention_s + REAPER_POLL_S + 2` against
+  a container, `reap_expired()` called directly in-process — and is the shape to copy.
 - Retention does not survive a pod restart, and the supervisor wipes unrecognised
   `/scratch` entries at startup (section 2, Writable paths).
 - So "nothing persists" is now precise: **nothing persists beyond 15 minutes, and nothing
@@ -2032,12 +4030,36 @@ of the id must therefore confer nothing. The mechanism:
 **`run_analysis`'s response contract, because the resolution above depends on it.**
 chat-backend can only resolve a name against "executions it recorded" if the execution told
 it what it produced. So `run_analysis`'s response is specified here rather than left to
-`4h6.11`: alongside the 64 KiB stdout/stderr and the exit status it returns an **artifact
+the task that implements the tool (`4h6.48`), and it is **not** implemented anywhere today:
+alongside the 64 KiB stdout/stderr and the exit status it returns an **artifact
 manifest** — for each file under `/scratch/<id>/artifacts`, its `name`, `size` in bytes, and
 `content_type`. chat-backend records that manifest against the execution's `jti` and `sid`
 and serves `read_artifact` from it; the model sees the manifest and so knows what names are
 retrievable without guessing. The manifest carries **no paths and no execution id** — the
 same reason `read_artifact` takes a name.
+
+**A quota kill deletes artifacts NEWEST-FIRST, and that is visible to whoever reads the
+manifest.** When `artifacts/` is over its 64 MiB / 1024-entry quota the supervisor trims it
+back after the kill, and the victim order is mtime-descending with no size awareness: the entry
+being written when the kill landed is assumed to be the culprit. That is right for the case the
+trim exists for and wrong for an ordinary one — a script that writes a 100 MiB CSV **first** and
+then fifty small plots loses the fifty plots first, and then loses the CSV too, because no
+number of plots brings a tree under a quota one file alone exceeds. The policy is kept anyway:
+a size-aware pass would delete the large output the user actually asked for and keep incidental
+ones. The consequence a client must handle: after `status: "limit"` with
+`error.type: "ArtifactQuota"` the manifest can be **short or empty** even though the script
+wrote those files successfully, so a name the model can see in its own code may simply not be
+offered, and asking for it is a legitimate `404`. The manifest never *lies* — the trim runs
+before it is built, precisely so it cannot advertise a name that is already gone, and the
+deletions are folded into `artifacts_omitted`. **That field is a combined floor, not a trim
+counter.** It is `omitted + trimmed`: `build_manifest`'s own omissions (entries it could not
+`stat`, or that were not regular files with `st_nlink == 1`) plus the trim's deletion count,
+and the first half stops being a count of its own past the scan limit — beyond that the
+directory is no longer enumerated and the supervisor logs that `artifacts_omitted` is a floor.
+A client can read it as "at least this many names are missing", never as "the trim deleted
+exactly this many". Nothing here is a budget violation — the
+retained tree ends up under the quota either way — so it is a behaviour to describe, not a bug
+to fix.
 
 **Name collisions across executions in one `sid`: most recent wins.** Two executions in the
 same session can both write `manhattan.png`, and the resolution rule above ("executions
@@ -2068,6 +4090,130 @@ hands the model a read primitive over **every conversation in the deployment**. 
   `ENABLE_SCRIPT_EXECUTION` stays `false` (section 1), which is what makes that variable
   inert today; `read_artifact` must not be the thing that makes it live again.
 
+### As built (`4h6.15`) — the read is descriptor-based end to end, the allow-list is structural, scoping is not there yet
+
+Everything above this subsection that is not repeated here is still design. What exists is
+`ToolExecutor.read_artifact`, `ToolExecutor._open_artifacts_dir` and
+`ToolExecutor._artifacts_dir` in
+`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`, plus
+`_ARTIFACTS_DIR_PREFIX` in the same file.
+
+**Two descriptors, and every decision taken off an `fstat`.** The name is checked before the
+filesystem is touched (rejects `.`, `..`, separators, backslashes, NUL, absolute paths, and
+anything where `Path(name).name != name`), then `_validate_path` re-checks the resolved path
+against the single-entry allow-list. Both of those are advisory: both answer a question
+about a *path*, and the executing code owns the directory — under the decided option (b) it
+runs as the pod's single uid 65532, the very uid that created `/scratch/<id>`, so it owns that
+directory *a fortiori*, without any chown being needed. The enforcing layer is a pair of
+descriptors:
+
+1. `_open_artifacts_dir()` opens the configured directory **once** with
+   `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, then verifies the **descriptor** rather than the
+   path by reading `/proc/self/fd/<dirfd>` — the kernel's own name for the inode that fd
+   holds. That name must start with the hardcoded prefix and must **not** end in the
+   kernel's `" (deleted)"` suffix. It fails closed to `None`.
+2. The artifact is then opened as a **bare name relative to that fd**,
+   `os.open(name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, dir_fd=dirfd)`. `S_ISREG`, the
+   link-count check, the size check and the chunked `os.read` loop all run against that one
+   file descriptor. After `_open_artifacts_dir` returns, nothing addresses anything by path.
+
+**The lesson is why the shape looks like this.** The first version validated a path and then
+re-opened it, and a validator won that race 825 times in 6,000 calls. The fix — open once
+with `O_NOFOLLOW` — was then re-attacked and found to be the *same* defect one level up:
+`O_NOFOLLOW` guards only the **final** component, and `artifacts` is an **intermediate**
+component the child owns. `rmdir`-ing it and relinking it at another execution's retained
+artifacts between the check and the open leaked out-of-tree content **151 times in 20,000
+iterations (0.76%)**. `_validate_path` was no help at all there: it resolves both sides
+through the same swapped link, so they agree and it passes. The real defect was never the
+missing flag — it was **addressing anything by path after checking it**, and fixing that at
+one level only relocated it to the next. Re-attacking the descriptor form gave **0 leaks in
+40,000 iterations** across two swapper profiles, and the deterministic control that
+previously returned out-of-tree content now refuses.
+
+Three properties follow from taking the answer off descriptors:
+
+- The `" (deleted)"` refusal is load-bearing, not hygiene. `rmdir` followed by re-creating a
+  directory at the same path with planted content is refused, because the fd still names the
+  deleted inode and the kernel says so.
+- `O_NONBLOCK` on the file open is a control, not tidiness. `O_RDONLY` on a FIFO with no
+  writer blocks **in the kernel**, before `S_ISREG` is ever reached, so a script doing
+  `os.mkfifo(artifacts/results.tsv)` hangs the calling coroutine — and with it chat-backend
+  — indefinitely. That is a trivial in-sandbox denial of service, and it hung a validator's
+  own harness for about four minutes before the flag was added. Such a name is now refused
+  in under a millisecond, by `S_ISREG` after the non-blocking open. The flag is inert for
+  regular files, which are all that survives that check.
+- `st_nlink != 1` refuses hardlinks. Path resolution could never have caught this one at
+  all: a hardlink has nothing to resolve, so both path-based layers see an in-tree path over
+  an out-of-tree inode and pass. Stating it here means the property does not depend on
+  `fs.protected_hardlinks` being set on the node.
+
+Failures are uniform: a resolution failure, a symlink, a hardlink, a non-regular file, a
+directory that fails descriptor verification and a missing name all return the same
+`Artifact not found`, so which names exist outside the allow-list is not learnable by
+probing. An oversized file is refused rather than truncated, and the error deliberately
+omits the byte count.
+
+**The allow-list root is checked structurally, and every check fails closed.**
+`_artifacts_dir()` returns `""` — meaning artifact reads are simply not enabled — unless the
+configured directory passes both:
+
+- **It may not itself be a symlink** (`lstat`, `S_ISLNK`). This is reachable, not operator
+  error. `/scratch/<id>` is created and written by uid 65532, and under the decided option (b)
+  the child runs as that same uid — it owns the directory outright rather than by a chown, so
+  the swap is at least as reachable as it would be under (a). The child can `rmdir` its own
+  `artifacts` and relink the name at another execution's retained artifacts; because
+  `_validate_path` resolves both sides, *every* file under that target would then validate.
+  That is precisely the cross-execution channel 6.4 exists to prevent. Note that this check,
+  like `_validate_path`, is a path answer and therefore advisory — `_open_artifacts_dir`'s
+  `O_NOFOLLOW` on the directory open is what actually holds it, at the moment of use.
+- **Its resolved path must sit under a hardcoded `/scratch/` prefix**
+  (`_ARTIFACTS_DIR_PREFIX`, patched only by tests), and `_open_artifacts_dir` re-asserts the
+  same prefix against the descriptor. The prefix is what makes the chat-backend
+  misconfiguration *unreachable* rather than merely unmade: `read_artifact` is registered in
+  the chat backend, chat-backend has no `/scratch` volume and never will, so
+  `SANDBOX_ARTIFACTS_DIR=/data` — the PVC holding `chat_history.db` and `llm_config.db` —
+  cannot resolve. Before the prefix existed, a single env var staying unset was the entire
+  safety property. `SUBAGENT_ALLOWED_PATHS` gains no reader here; `_artifacts_dir` is its
+  own variable for exactly the reason the allow-list subsection above gives.
+
+**A stated limitation: the prefix check is a *location* check, not an *ownership* one.** It
+proves the descriptor names an inode under `/scratch/`; it does not prove that inode is
+*this* execution's artifacts directory. Point `SANDBOX_ARTIFACTS_DIR` at some other
+directory that happens to sit under the prefix and its contents are readable. This is not
+reachable from a sandboxed script — it requires control of the parent process's environment
+— and it is the same gap the scoping paragraph below describes, but it is worth stating
+outright rather than leaving implicit in "the env var points at the right directory".
+
+**Cross-execution scoping is not implemented.** The tool takes a bare artifact name and
+nothing else — there is no session argument, no execution argument, and no server-side
+resolution of a name against the executions belonging to a `sid`. Which execution's
+artifacts are reachable rests **entirely** on `SANDBOX_ARTIFACTS_DIR` pointing at the right
+directory, constrained only by the structural checks above. The authorization mechanism
+specified earlier in this section and the manifest that name resolution would consult are
+still design, and belong to `genetics-results-suite-4h6.52`. They were never `4h6.11`'s —
+that task is closed and did not do them, so do not read its state as evidence any of this
+landed. Until `4h6.52` lands, the retrievability claims 6.2 and 6.4 lean on are met by
+deployment configuration, not by code.
+
+**What `genetics-results-suite-8z1` did and did not change here.** The HTTP path from
+chat-backend to the sandbox pod now exists — `GET /artifact`, specified in section 2 — but
+`read_artifact` **does not use it** and is unchanged: it still reads
+`SANDBOX_ARTIFACTS_DIR` locally and still tells the model it cannot reach a `run_analysis`
+artifact. The only caller of the new route is `_fetch_analysis_images`, which resolves the
+`execution_id` server-side from the run it just performed and fetches image artifacts
+automatically. So the route removes the "there is nowhere to proxy to" blocker for `4h6.52`
+without touching the tool or its scoping gap.
+
+**Deployment note — an availability concern, not a security one.** `_open_artifacts_dir`
+verifies the descriptor through `/proc/self/fd/`. If the sandbox pod ever runs with a masked
+or otherwise restricted `/proc`, the `readlink` fails, the function fails closed, and
+`read_artifact` refuses **everything** — correct behaviour, but a total loss of the feature
+rather than a leak. Confirm `/proc/self/fd` is readable in the pod once, when
+`k8s/deployments/sandbox.yaml` is written (`4h6.7`).
+
+`read_artifact`'s exclusion from the MCP tool set landed with this change; see section 5,
+layer 1.
+
 ### 6.3 Resource exhaustion starving chat-backend
 
 **The control is physical separation, and it is the second reason for the dedicated node
@@ -2075,11 +4221,16 @@ pool.** The sandbox is the only pod tolerating `sandbox.gke.io/runtime=gvisor:No
 and chat-backend cannot schedule there. A script cannot contend for chat-backend's CPU,
 memory, page cache or pids, because it is not on the same machine.
 
-This also protects the constraint `docs/project-spec.md` documents at length: the pinned
-2 × `e2-standard-4` pool already overshoots one node during a full deploy (3951m / 13.60
-GiB against 3920m / 12.97 GiB allocatable), and the spec warns that adding a service
-re-breaks it. The sandbox adds nothing to that budget. `4h6.10` therefore re-derives
-nothing for the primary pool; it adds a pool.
+This also protects the constraint `docs/project-spec.md` documents at length. The figures
+this paragraph used to quote (a pinned 2 × `e2-standard-4` pool overshooting one node at
+3951m / 13.60 GiB) were **wrong on both the pinning and the arithmetic** — see
+`genetics-results-suite-262`. Re-derived: the primary pool autoscales 1-3, and a full deploy
+peaks at 3226m / 12498 Mi (finngen) or 3826m / 13778 Mi (daly, as deployed by default) against
+3920m / 13273 Mi allocatable — so daly is over by 505 Mi and already needs a second node on
+memory (daly with `ENABLE_RAG=true` is over on both axes at 4076m / 14290 Mi), while finngen
+fits with 775 Mi of margin.
+The sandbox adds nothing to that budget either way, which is why `4h6.10` adds a pool rather
+than re-sizing the primary one.
 
 Secondary controls, in case the sandbox is ever moved onto the shared pool: `requests`
 equal to steady-state need, `limits` bounded well under one node, replicas 1.
@@ -2130,16 +4281,30 @@ The controls, all of which work regardless of what the model was persuaded to wr
    volume is ever re-added as the recorded degradation section 2 describes, the supervisor
    wipes it completely before every fork. There is nothing to wipe in the shipping design;
    the wipe is the obligation attached to the degradation, not a standing control. And
-   `/scratch/<id>/artifacts` survives completion only for 15 minutes and
-   only for the originating chat session (see the `read_artifact` subsection). With that,
-   there is no way for injected code to influence a later turn, a later conversation, or
-   another user.
+   `/scratch/<id>/artifacts` survives completion only for 15 minutes and only for the
+   originating chat session (see the `read_artifact` subsection). `GET /artifact` does not
+   widen this: it is addressable only with the `execution_id` chat-backend minted, that id
+   is never shown to the model or to a script, and only chat-backend's automatic image fetch
+   for the run it just performed ever calls it — an injected script cannot ask for another
+   execution's artifacts because it cannot reach the route and cannot name a second id. With
+   that, there is no way for injected code to influence a later turn, a later conversation,
+   or another user.
 5. **Attachments are copy-in, not mount-in.** chat-backend may copy specific user-supplied
    attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
    mount the attachment directory or the PVC. A script sees the files it was given, not the
    directory they came from.
-6. **It is visible.** The SDK-call log and the db-api `sid`/`jti` attribution mean an
-   injected script's data access is reconstructable after the fact.
+6. **It is visible, with the limits in 6.2's control 3.** Token delivery has landed on both
+   sides (`4h6.43`, `4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
+   `sub`, `sid` and `jti` from the signed token and an injected script's *data access* is
+   reconstructable after the fact. The SDK's own call log is now collected too (`4h6.45`) and
+   its `[user=…] [session=…] [execution=…]` is stamped by the supervisor from the same claims,
+   so rewriting `SANDBOX_USER`/`SANDBOX_SESSION_ID`/`SANDBOX_EXECUTION_ID` no longer changes
+   what an operator reads. **An injected script is still exactly the case those records cannot
+   answer on their own**: it runs in the same process as the emitter, so it can write
+   well-formed records for calls it never made, drop its own by flooding (bounded, counted and
+   announced by the supervisor, but still lost), and read through `_executor` with no record at
+   all. Only the upstream `endpoint_access` lines, written outside the sandbox from claims the
+   script cannot sign, hold against it.
 7. **Explicitly NOT a control:** system-prompt instructions telling the model to ignore
    injected content, or to refuse suspicious scripts. Those reduce frequency; they are not
    a boundary and no control above depends on them.
@@ -2225,8 +4390,13 @@ abstract.
    removed from the cluster without a restart leaves a running db-api in whatever state it
    booted with. Neither is introduced by this design; both are now stated rather than
    claimed closed.
-6. **No PodDisruptionBudget in the namespace.** Node auto-upgrade or repair kills an
+6. **No PodDisruptionBudget for the sandbox.** Node auto-upgrade or repair kills an
    in-flight script. The model sees an error and retries, costing a roundtrip. Acceptable.
+   (The namespace is no longer PDB-free — `k8s/disruption-budgets/budgets.yaml` covers
+   chat-backend and results-api at `maxUnavailable: 1` since `genetics-results-suite-262`.
+   Those are protectively inert at `replicas: 1` and cover neither the sandbox nor its pool.
+   A *blocking* budget on the sandbox would be actively harmful: its pool is pinned at one
+   node, so an unsatisfiable budget would stall every upgrade and repair of that node.)
 7. **The pre-warmed interpreter.** The supervisor process forks per execution to avoid
    paying pod-schedule cost per script. The supervisor holds **no** credentials — tokens
    are passed to the forked child only. The residual is that a bug in the fork boundary
@@ -2240,6 +4410,14 @@ abstract.
 
 ## Handoffs to other tasks
 
+**Two closed beads are not evidence that any of this landed.** `genetics-results-suite-4h6.14`
+(`run_analysis`) was closed **as superseded** and split into the `4h6.38`–`4h6.52` chain; the
+rows and paragraphs above name the successor that owns each obligation, and a reference to
+`4h6.14` anywhere in this repo is stale rather than done. `genetics-results-suite-4h6.11` is
+closed and **did** ship the SDK — nothing else. Where it was cited as the owner of the
+`read_artifact` HTTP proxy or of the SQL-interpolation fix, that was never its scope; see
+`4h6.52` and the finding at the end of this section.
+
 | Task | What this document decided for it |
 |---|---|
 | `4h6.6` (image) | distroless `python3-debian12:nonroot`, uid 65532, no shell, build context `sandbox/` in **this** repo, wired into `build-all.sh`/`build.sh`. **Build-time assertion that `/etc/nsswitch.conf` exists and lists `files` before `dns` for the hosts database** — absent it, glibc defaults to `dns [!UNAVAIL=return] files` and every lookup stalls the full resolver timeout against a dropping egress policy before reaching `hostAliases`, and `readOnlyRootFilesystem: true` makes it unfixable at runtime. **No `google-auth`-based client in the image** (it probes `metadata.google.internal` by name, which is the same stall), or `GCE_METADATA_HOST` pinned to a literal IP if one is unavoidable. Second non-root uid for the child if pids option (a) is taken. |
@@ -2247,14 +4425,20 @@ abstract.
 | `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
-| `4h6.14` (`run_analysis`) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). |
-| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
+| `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
+| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **that proxy hop and the
+sid-scoped resolution are `genetics-results-suite-4h6.52`'s, not this task's; `4h6.15` shipped
+the descriptor-based local read only**; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
 
-**One finding outside this document's scope that other tasks need.** `4h6.11` notes that
-five executor methods build BigQuery SQL with f-string interpolation (`executor.py` lines
-878, 1021, 1080, 1159, 1197). Today those f-strings receive arguments the *model* chose through
-a typed tool schema. Once the SDK is called from inside a script, they receive arguments a
-*script* composed — arbitrary strings, from a prompt-injectable author. The f-string fix in
-`4h6.11` therefore stops being a hygiene item and becomes a prerequisite for the sandbox
-path. It should be treated as blocking `4h6.14`.
+**One finding outside this document's scope that other tasks need.** Five executor methods
+build BigQuery SQL by interpolation, because db-api's `/query` takes a SQL string with no
+parameter-binding channel. Under the tool surface those f-strings receive arguments the
+*model* chose through a typed tool schema; once the SDK is called from inside a script they
+receive arguments a *script* composed — arbitrary strings, from a prompt-injectable author,
+which is why this is a prerequisite for the sandbox path rather than a hygiene item.
+`genetics-results-suite-4h6.11` listed the fix in its scope and **closed without being the
+thing that delivered it**; what closes it today is `tools/sql_safety.py` in genetics-mcp-server
+(a value allow-list, not escaping — `quote_literal`, `sql_int`, `sql_float`), plus
+`executor._seg()` for the URL-path segments. Re-verify that against the code before relying
+on it: no open bead owns these sites, so nothing will report a regression.

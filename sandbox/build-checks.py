@@ -225,6 +225,26 @@ def _imports():
         assert r.returncode == 0, f"import {m} failed: {r.stderr.strip().splitlines()[-1:]}"
 
 
+@check("`import genetics` resolves to the SDK itself, not a copy of it")
+def _sdk_alias():
+    """genetics-results-suite-706. Every doc a script's author can read names the package
+    `genetics`; only the import path said `genetics_mcp_server.sdk`, and nothing reachable
+    from inside an execution disclosed that, so sessions opened by probing for it.
+
+    IDENTITY is what is asserted, not merely importability. A `from ... import *` alias
+    would import fine while being a second module object with its own copy of the SDK's
+    client state, so `genetics.configure(...)` would configure something that the
+    per-execution credential path never sees."""
+    r = subprocess.run(
+        PY + ["-c", "import genetics, genetics_mcp_server.sdk as s; "
+                    "assert genetics is s, genetics; "
+                    "from genetics import summary_stats; print(summary_stats.__module__)"],
+        capture_output=True, env=PY_ENV, text=True,
+    )
+    assert r.returncode == 0, f"import genetics failed: {r.stderr.strip().splitlines()[-1:]}"
+    assert r.stdout.strip().startswith("genetics_mcp_server.sdk"), r.stdout.strip()
+
+
 @check("passwd carries the supervisor and child uids on a shared gid")
 def _uids():
     """Section 2, pids row option (a) and the Permission contract: the child runs as a
