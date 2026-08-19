@@ -91,6 +91,32 @@ docs wrong in a way that repo can detect.
    own docs cover it.
 
 
+# Findings that are not work
+
+This repo's review cycles are adversarial and productive, and that is exactly why the
+backlog grows faster than it closes: every round surfaces real observations, and filing each
+one as a task turns an epic into an open-ended loop. Measured, 2026-08-19: 75 open beads, of
+which at least seven say **in their own description** that nothing triggers them today —
+`LATENT`, `not reachable`, `explicitly not a defect`, `nothing is broken today`. Those are
+hazard notes that were filed as work, and each one will cost a future session a full
+implement-review-fix cycle to close as "no change needed".
+
+Before filing, apply the filing gate in the global CLAUDE.md: **blocks committed work → file;
+real but unblocking → file and `bd defer` it; latent or nit → not a bead at all.**
+
+Repo-specific consequences:
+
+- **Enumeration and doc-wording findings append; they never get their own bead.** This is
+  the single largest class here — the doc-ownership section above exists because these rot
+  silently, and a thorough validator turns up one or two per cycle. `genetics-results-suite-e8e`
+  is the standing batch bead for that; add to its `notes`.
+- **A latent hazard belongs at the site, not in the tracker.** If the code has a line where
+  the hazard lives, a comment there reaches the next person who touches it. A bead does not.
+- **"Found but deliberately not fixed" is a complete outcome.** It does not need a bead to
+  be a legitimate stopping point, provided the finding is written down somewhere it will be
+  read. Say so in the close reason.
+
+
 # Software Development Behavior Guidelines
 
 1. Don't guess and do things which you are not certain about. Ask the user instead.
