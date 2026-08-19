@@ -130,6 +130,37 @@ cd ~/suite/genetics-mcp-server/.claude/worktrees/db-only-architecture
 #    (drop --limit; --judge is Opus-5 spend ON TOP, doubled by both presentation orders)
 ```
 
+### The two arms bill to two different keys
+
+The replayed turns never use a key from your shell. The harness is an HTTP client — it POSTs
+to chat-api, and **chat-api** makes the model calls, using the `ANTHROPIC_API_KEY` that
+`dev-stack.sh` reads from `MCP_ENV_FILE` (default `~/suite/genetics-mcp-server/.env`,
+gitignored, present only in the main checkout so a worktree run never gets its own copy).
+
+**The judge is a separate path.** `pairwise_judge.py` builds `anthropic.AsyncAnthropic()`
+with no arguments, which reads `ANTHROPIC_API_KEY` from **the process running the harness**.
+There is no `--api-key` flag. With the variable unset it raises at client construction —
+after the expensive replay has already happened, if you passed `--judge` inline.
+
+Point the judge at the same key:
+
+```bash
+export ANTHROPIC_API_KEY="$(grep -m1 '^ANTHROPIC_API_KEY=' \
+  "${MCP_ENV_FILE:-$HOME/suite/genetics-mcp-server/.env}" | cut -d= -f2-)"
+```
+
+The value is bare and unquoted in that file, so `cut -d= -f2-` is exact (and `-f2-` rather
+than `-f2` so a value containing `=` survives). Extracting the one variable is deliberate —
+sourcing `.env` would execute it and export everything else in it too.
+
+Because the two halves read different environments, they can bill to different accounts.
+Run the judge from the saved report rather than inline, so a missing key costs a re-judge
+rather than a re-replay:
+
+```bash
+.venv/bin/python -m genetics_mcp_server.scripts.pairwise_judge --report /tmp/full.json
+```
+
 `.venv/bin/python`, not bare `python`: the editable install points at the **main checkout**,
 so a bare interpreter in a worktree imports `genetics_mcp_server` from the wrong tree. This
 has bitten twice (genetics-results-suite-6o3).
