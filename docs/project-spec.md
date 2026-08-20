@@ -1065,7 +1065,13 @@ start it, because the image still ships no `CMD` and the manifest still declares
     re-hashes before it serves, so an artifact that was **overwritten** is refused `409
     ArtifactModified` and one that was **planted** is refused `404`. That is the integrity half.
     The **reading** half is not closable under one uid and is `genetics-results-suite-4h6.88`,
-    **open**.
+    **open**. What keeps the map out of the same-uid child's reach is **Yama
+    (`kernel.yama.ptrace_scope=1`), not the seccomp profile** — `RuntimeDefault` allows
+    `ptrace` (MEASURED, `genetics-results-suite-4h6.90`), and Yama refuses `PTRACE_MODE_ATTACH`
+    only because the supervisor is the child's *ancestor*. MEASURED under `runc`, **UNVERIFIED
+    under gVisor** (`4h6.51`). `PTRACE_MODE_READ` is a separate gate that Yama does not
+    restrict, so the child can still read the supervisor's `/proc/<pid>/environ` — see
+    `docs/code-execution-security.md` → "What the default profile blocks, re-derived".
   - **the `setsid()` resident (`genetics-results-suite-4h6.83`)** — the fork server sets
     `PR_SET_CHILD_SUBREAPER`, so an escapee whose parent exits reparents to it rather than to
     PID 1, and at the end of every execution it kills and reaps whatever has reparented (its
