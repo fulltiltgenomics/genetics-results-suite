@@ -3750,8 +3750,37 @@ both `INTERNAL_API_SECRET` and `CHAT_BACKEND_URL`, and chat-backend is the one p
 sandbox admits — so the network layer closes `mcp-server -> sandbox` but leaves
 `mcp-server -> chat-backend -> sandbox` open at the network level by construction. That
 transitive path is held shut by layer 1 (the tools are never registered on mcp-server, so
-no MCP call names them) plus chat-backend's route-level authorization, not by this policy.
+no MCP call names them) plus the identity check described next, not by this policy.
 Read layer 2 as a hop-level control, not a capability-level one.
+
+**Layer 2b — the dispatch requires a real user (`4h6.27`).** "chat-backend's route-level
+authorization" was the original answer here and it was not one: a valid
+`INTERNAL_API_SECRET` bearer with no identity header is *authenticated*, resolving to
+exactly the `mcp-tool` service identity (`genetics-results-suite-th2`), and mcp-server
+holds that secret. `ToolExecutor.run_analysis` now refuses that identity outright
+(`auth.core.SERVICE_IDENTITY`), returning the `SandboxNotConfigured` / `retryable: false`
+shape and logging at `ERROR`, so an authenticated *caller* is no longer sufficient — an
+authenticated *person* is. Enforced at the tool dispatch rather than on the HTTP route: it
+is the single point every execution passes (streaming chat, non-streaming chat, subagent
+dispatch, anything added later) and it sits immediately before `mint_execution_tokens`, so
+no per-execution credential can be minted for a subject that was refused. A route-level
+check would cover only the routes someone remembered to decorate, and would also refuse
+plain chat, which the marker identity may legitimately use.
+
+**What this does and does not close.** It refuses the marker-*alone* service identity, which
+is what a caller that sends only `INTERNAL_API_SECRET` resolves to. It does **not** make the
+transitive path unreachable, and the doc previously claimed it did. `auth/dependencies.py`
+case 1 fires whenever an identity header is present, ahead of the marker-only case 3, so any
+holder of `INTERNAL_API_SECRET` — mcp-server included — can send
+`X-Goog-Authenticated-User-Email: someone@finngen.fi` alongside the marker, pass this guard,
+and have both per-execution JWTs minted with `sub` set to the address it asserted;
+`_email_allowed` does not stop that either, since it fails **open** when no allow-list is
+configured. The transitive claim therefore rests on mcp-server not asserting an identity
+header, which nothing currently enforces — no transport distinction, no header strip at the
+chat-backend edge. That residual is real, deliberately left open here, and tracked by
+`genetics-results-suite-4h6.84`, which owns the design decision; what this layer buys is
+that a service caller cannot reach the sandbox *anonymously*, so every execution names a
+person to attribute and revoke, truthfully or not.
 
 ### Layer 3 — a test (`4h6.16`)
 
