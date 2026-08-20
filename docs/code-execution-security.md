@@ -131,7 +131,7 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
 | Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
-| Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. In exchange it removes cross-user co-tenancy *inside* the pod entirely: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. |
+| Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. It removes *simultaneous* cross-user co-tenancy inside the pod: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. **It does NOT remove co-tenancy, and an earlier version of this row claimed it did — `4h6.55` falsified that by measurement.** Concurrency 1 bounds what runs at the same *instant*; the co-tenancy is in the **queue** (up to two other users' requests are held in the supervisor while one executes) and in the **15-minute retention window** (completed executions' directories, and the address space they left behind). See "As built (`4h6.55`)" below for which of the three demonstrated consequences is closed and which two are not. |
 | Replicas | 1 | Peak 23 turns/hour, p95 8, mean 3. Do not build for concurrency that does not exist. |
 
 ### What the manifest adds beyond this table
@@ -866,8 +866,10 @@ No authentication, no request body, no query parameters. The `readinessProbe` in
   means one running and nothing behind it. Reporting a different number here from the one
   the bound is enforced against is how a client ends up predicting the wrong `429`.
 - `503` with the same body shape before that point and while draining after `SIGTERM`, with
-  `status` holding `"starting"` in the first case and `"draining"` in the second. `status`
-  takes exactly those three values.
+  `status` holding `"starting"` in the first case and `"draining"` in the second.
+- `503` with `status: "forkserver-down"` once the fork server process is gone or its control
+  socket has been poisoned (see "A dead fork server is a dead pod" below). `status` takes
+  exactly those four values.
 - **`/health` is the one route exempt from the uniform error shape below**, and the exemption
   is deliberate rather than an oversight: the probe reads only the status code, and a client
   polling for recovery wants `busy`/`queued` in the 503 as much as in the 200. Stated
@@ -964,8 +966,14 @@ has to complete in seconds, not tens of them.
 #### Concurrency: one at a time, queued, with a bounded queue and a bounded wait
 
 **One execution at a time** (section 2's Concurrency row), and with `replicas: 1` and
-`strategy: Recreate` that is the cluster-wide bound, which is what removes cross-user
-co-tenancy inside the pod. A second concurrent `POST /execute` is **queued, not refused**:
+`strategy: Recreate` that is the cluster-wide bound. **It is not what removes cross-user
+co-tenancy inside the pod, and the sentence here used to say it was.** `4h6.55` measured the
+opposite: the queue described immediately below holds up to two *other* users' requests while
+one executes, and retention holds completed ones for fifteen minutes, so the pod is co-tenanted
+by construction — just not simultaneously. What the fork server (`4h6.55` option (b), "As built"
+below) removes is the memory route between those tenants; the `/scratch` route
+(`genetics-results-suite-4h6.82`) and the escaped-process route
+(`genetics-results-suite-4h6.83`) are open. A second concurrent `POST /execute` is **queued, not refused**:
 measured peak is 23 chat turns/hour, so a collision is rare, and turning a rare collision
 into a user-visible tool failure buys nothing.
 
@@ -1712,6 +1720,208 @@ Consequences for `4h6.55`, none of them acted on here:
 - Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
   file. The measurement is a strong hint about the cluster, not a result from it.
 
+### As built (`4h6.55`) — the fork server: the process that forks has never seen a token
+
+**USER RULING: option (b).** Of the three candidates `4h6.55` put up — (a) exec after fork,
+(b) a fork server started before any request is parsed, (c) namespaces — the user chose (b),
+because it needs no seccomp profile change and no live-cluster measurement, and it keeps the
+prewarmed interpreter that (a) throws away. (c) remains the only mechanism found that would
+kill the escaped-process class, at the price the seccomp measurement above describes; it is
+neither adopted nor rejected here.
+
+#### What was actually broken
+
+`4h6.55` demonstrated, against the real supervisor forking real children, that a child could
+read **other users' tokens, source code and session ids** out of the address space it
+inherited. Four routes, all measured: a module global holding the queued victim's request; a
+frame walk reaching `job.req.tokens` and the raw request body bytes; `gc.get_objects()`
+filtered on the request type; and a scan of `/proc/self/mem`, which recovered tokens from a
+**queued** execution, a **running** one, and one **already completed and released**.
+
+The fourth route is why nothing reference-shaped could fix it. Python strings are immutable
+and freed objects stay in arenas that copy-on-write hands to the child, so `del`, `__slots__`,
+clearing references and overwriting all fail — a string explicitly dropped and
+`gc.collect()`-ed before the fork was still recoverable in the child. **The only thing that
+closes it is never letting the bytes into the process that forks.**
+
+#### What is built
+
+A **fork server**, forked out of the supervisor in `bring_up()` — *after* `prewarm()`, so it
+inherits the pre-imported analysis modules, and *before* `ready`, so it is forked from a
+supervisor that has never read a request. Every execution child is forked from that process.
+
+Per execution the supervisor sends it **one control message, `{"op": "fork"}`, and four
+descriptors** over a `SOCK_SEQPACKET` socketpair. It reads none of them. It does not learn the
+execution id, the user, the session, the code, or the directory paths — those travel in a JSON
+blob on an **anonymous descriptor** (`memfd_create`, falling back to a create-then-unlink file
+in the execution's own directory) which is passed *through* the fork server to the child, and
+which only the child reads. The fork server's whole vocabulary is three ops (`fork`, `wait`,
+`reap`) with the key set `{op, pid, nohang}`; `scripts/test-supervisor.py` asserts that key set
+against the source, because "just add the execution id to the fork message" is the change that
+silently re-opens all of this.
+
+The bar this has to meet is one sentence: **the process that calls `os.fork()` to create an
+execution child must never, at any point in its lifetime, for any execution, have held a token,
+a request body, or another user's source code.**
+
+That bar is met by an **enforced ordering, not by an unconditional "never"**, and the
+difference is a real defect that was measured. `main()` binds and starts `serve_forever`
+*before* `bring_up()`, deliberately, so that a probe arriving during the multi-second
+`prewarm()` gets `status: "starting"` rather than a connection refusal — which means requests
+**do** arrive while the fork server has not been forked yet. The readiness check originally sat
+in `Supervisor._admit`, *after* `_read_body` and `parse_execute_request` had already
+materialised both JWTs and the user's source as Python strings; the request was then refused
+with 503, but the bytes were in the arenas that `ForkServer.start()` snapshots seconds later. A
+later execution child recovered an early request's token, source and session id by the
+`/proc/self/mem` route, while a needle minted *after* `bring_up()` was not found — so the
+search was specific and those were real inherited bytes. Reachability is not theoretical
+either: an in-place container restart keeps the pod in the Service endpoints for
+`failureThreshold × periodSeconds` (~30 s) while the new supervisor is already accepting
+connections, and anything the NetworkPolicy admits can reach the pod IP directly.
+
+The fix is the ordering, in `_Handler._execute`: **not-ready and draining are refused (503
+`NotReady`, connection closed) before a byte of the body is read**, via `Supervisor.accepting()`.
+`_admit` still re-checks under the queue lock, where the admission decision is actually made.
+
+**That ordering does not fully meet the bar as stated, and the gap was measured.** `_Handler`
+inherits `rbufsize = -1`, so `BaseHTTPRequestHandler`'s request-line/header parse performs an
+8 KiB **buffered** `recv` before `_execute` is entered at all. A body that shares that TCP
+segment with its headers — any body under ~8 KiB from a normal client, and `http.client`
+concatenates them — is already raw in the supervisor's heap when the readiness check runs. The
+A/B that isolates it: **headers+body in one segment → early code, header, session id and token
+all recovered** from a child forked promptly after the refusal; **headers and body in separate
+segments → nothing recovered**. Under a realistic startup window (prewarm ~3.06 s, request at
++10 ms) nothing was recovered either — but that is arena reuse, not exclusion, and nothing
+enforces it. Reachability is unchanged from above: an in-place container restart keeps the pod
+in the Service endpoints for `failureThreshold × periodSeconds` (~30 s) while the new supervisor
+is already accepting.
+
+So the sentence that holds is the narrower one: *no Python object holding a token, a request
+body or another user's source code is constructed in the forking process before the fork* —
+`_read_body` and `parse_execute_request` never run during startup, so the module-global,
+frame-walk and `gc` routes genuinely stay clean — *but the socket read buffer can hold those
+raw bytes first, and `/proc/self/mem` reads raw bytes.* `genetics-results-suite-4h6.87` owns
+closing the gap; its two candidates are `rbufsize = 0` on the handler (closes it at the source,
+costs unbuffered header reads on the hot path and wants measuring) or formally restating the
+bar to the weaker property that is actually enforced.
+
+#### Which process holds token bytes, and how the child gets its credential
+
+| process | ever holds a token / request body / another user's code? |
+|---|---|
+| supervisor (HTTP front door) | **Yes** — it parses the request and writes the token file. It no longer forks execution children. |
+| fork server | **No Python object holding one**, ever: its address space is a snapshot of a supervisor taken before `_read_body` or `parse_execute_request` ran for any request (the readiness gate enforces that), and nothing user-shaped is ever sent to it afterwards. **Raw bytes are a measured residual** — a startup-window body that shared a TCP segment with its headers sits in the socket read buffer before the gate is consulted; see above and `genetics-results-suite-4h6.87`. |
+| execution child | Its **own** token only, and only once the SDK reads the file. |
+
+The credential route is `4h6.43`'s read-once token file, and `4h6.55`'s judgement that the
+file "buys nothing against the process it is protecting from" was a judgement about the
+*forking* process. Option (b) changes which process that is, and in doing so turns the file
+into the load-bearing part of the design: the supervisor writes `/scratch/<id>/tokens.json`
+mode 0600, names its path in the child's environment, and the child opens it. **That is a
+route from the supervisor to the child that does not pass through the process in between**,
+which is exactly what option (b) needs and what an argument-passing design cannot provide.
+
+#### What prewarm costs now
+
+Nothing extra. The fork server inherits the prewarmed `numpy`/`scipy`/`polars`/`matplotlib`
+pages from the supervisor and hands them to every child copy-on-write, exactly as before; the
+child still never execs. The cost is one additional long-lived process whose pages are shared
+rather than copied, and one socket round trip per execution. This is the entire reason (b) was
+chosen over (a), which would have paid a cold import on every execution.
+
+#### When the fork server fails: fail closed, and let Kubernetes replace the pod
+
+A second long-lived process is a second thing that can die, and all four failure paths were
+originally silent. They are handled by failing closed — never by restarting the fork server in
+process, which would re-fork it from a supervisor that *has* served requests and re-open
+finding 1 exactly.
+
+- **A failed control round trip poisons the socket permanently.** The control socket is
+  `SOCK_SEQPACKET`, so framing cannot be lost — but *alignment* can: a send that succeeded and
+  a receive that timed out leaves the peer's reply queued, and the next round trip reads the
+  previous request's answer. Measured: after an `FS_OP_WAIT` timed out, the next `FS_OP_REAP`
+  returned that `WAIT`'s `{"ok": true}`. The dangerous ordering is a **fork** whose reply is
+  lost — the fork server did fork the child and did send its pid, so the next execution would
+  adopt that stale pid and apply its limits to, watchdog, `killpg` and reap *another user's
+  child*, while its own child ran with no wall clock, no pid budget and no reaper, and reported
+  an exit status from the wrong process. So `ForkServer._round_trip` sets a broken flag inside
+  the lock on any exception, closes the socket, and every later call raises immediately. An
+  `{"error": ...}` reply is *in band* — the message was received and answered — and does not
+  poison anything.
+- **`/health` reports it.** `Supervisor.health()` calls `ForkServer.alive()`
+  (`waitpid(pid, WNOHANG)` plus the broken flag) and answers `503 forkserver-down`. Without
+  this a `SIGKILL`ed fork server left every `/execute` answering `500` forever while `/health`
+  answered `200 ok`; `k8s/deployments/sandbox.yaml` has a `readinessProbe` and deliberately no
+  `livenessProbe`, so nothing de-endpointed or replaced the pod. This is not a remote
+  possibility: the fork server shares the supervisor's pages so its RSS reads high, and it
+  keeps the inherited `oom_score_adj` of 0 while only the **child** is raised to 500 — it is a
+  plausible cgroup-OOM victim. Restoring service is the deployment's job (`4h6.50`), and 503
+  is what lets it do it.
+- **A fork server that dies mid-execution still gets its child killed.** `_reap` raises when
+  the control socket is gone, and `_execute_inner`'s `finally` used to set `job.done` first —
+  which makes `_watchdog` return without firing a limit and without killing anything, so the
+  user's code kept running for the pod's lifetime, holding CPU, memory and same-uid write
+  access to `/scratch` while later users executed. The `finally` now kills the group whenever
+  the job was forked and not reaped, *before* setting `job.done`. `_kill_group` uses
+  `os.killpg`/`os.kill` directly and never the control socket, so it works with a dead fork
+  server.
+- **A child whose `{"pid": n}` reply was lost is killed by the fork server itself.** Poisoning
+  (above) stops a stale pid being *misattributed* to the next execution, which was the dangerous
+  half, but it does not reach the process: the fork succeeded, the supervisor's round trip failed
+  before reading the answer, so `job.pid` stays `None` and neither `_execute_inner`'s `finally`
+  nor the watchdog has a pid to kill — the supervisor cannot name that process at all. This was
+  **introduced by the fork server**: before it, the supervisor forked directly and always knew
+  the pid. Left alone, the poisoned socket closes, the fork server exits on EOF and the child
+  reparents to the supervisor (PID 1 in the pod), which never waits for it — user code running at
+  uid 65532 with write access to `/scratch` for the pod's lifetime, alongside later users'
+  executions. So the fork server **keeps the set of pids it has forked and not yet been asked to
+  reap** (`FS_OP_REAP` removes a pid when it actually consumes it, or when `waitpid` says the pid
+  is not its child), and whatever is left when the control loop ends — EOF, socket error or an
+  abort — is killed and reaped by `_fs_kill_pending` before it exits: `SIGTERM`, then `SIGKILL`
+  after `KILL_GRACE_S`, one grace for the whole batch rather than one per child. Delivery is
+  `os.killpg` on the child's **own** group with the same guard as `_resolve_pgid` (shared as
+  `_own_pgid`): a child that has not reached `_child_main`'s `setsid()` yet reports the fork
+  server's group — which is the *supervisor's* group, since the fork server deliberately does not
+  `setsid()` — and is signalled by pid alone rather than taking the pod's own group down. This
+  cleanup can only run after the loop has ended, so no further `FS_OP_REAP` can arrive and it can
+  never steal a zombie the supervisor is waiting for; the normal reap path is untouched. It is
+  *not* a general zombie sweep — the fork server does not reap on a timer, only at exit. The
+  hazard class is the one `4h6.83` tracks, but this instance was opened here and is closed here.
+
+#### What this does NOT close — do not read it as more than it is
+
+- **Finding 2, cross-execution artifact read and overwrite** (`genetics-results-suite-4h6.82`).
+  One uid and one flat `/scratch`: a child can list `/scratch`, read another execution's
+  `artifacts/`, overwrite files there, and plant new ones — so the retention window can serve
+  attacker-controlled content under another user's execution id. **Open.** Untouched by the
+  fork server, which changes nothing about the filesystem.
+- **Finding 3, a `setsid()` resident that survives every group kill** (`genetics-results-suite-4h6.83`).
+  A detached grandchild of an earlier execution polls `/scratch`, reads the *next* execution's
+  mode-0600 token file inside the read-once window, and is unreachable by `killpg` because it
+  left the process group. **Open.** The fork server does not touch it: that route depends on
+  one shared uid and a file with a name, not on what the forking process holds in memory. The
+  payload descriptor is deliberately anonymous so this change does not *widen* it.
+
+`4h6.50` (wiring the supervisor into the manifest) and `4h6.51` (deploy-window verification)
+were blocked on `4h6.55` when it carried all three findings. They are now blocked on `.82` and
+`.83` as well, so **"in front of more than one user" still cannot ship.** Do not close `.82` or
+`.83` by pointing at this section.
+
+#### How it is tested
+
+`scripts/test-supervisor.py`'s `cross-execution memory isolation` group is `4h6.55`'s own probe,
+run as a real execution in a real forked child: it hunts one victim's token, code and session id
+after that execution has **completed and been released**, and a second victim's while that
+request is **queued** behind the probe, by all four routes including the raw `/proc/self/mem`
+scan. **The positive controls are what make a clean result mean anything**: a string planted in
+the supervisor module *before* the fork server is forked must be found, and must be found by the
+memory scan specifically — so a `/proc` that stops being readable (gVisor, a hardened mount)
+turns the group red instead of letting it pass vacuously. A second control repeats the bead's
+sanity probe (a string dropped and `gc.collect()`-ed before the fork); it is reported rather
+than required, because an arena can legitimately be reused between the drop and the scan.
+Needles are carried into the probe as **split halves** and never concatenated, or the probe
+would find them in its own code object.
+
 ### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.45`, `4h6.46`) — the per-execution limits, and what each one is worth
 
 `4h6.39`'s five holes. Four of them landed together in `sandbox/supervisor.py` because they
@@ -1749,7 +1959,12 @@ supervisor's group. Had that value been trusted, the first wall-clock timeout wo
 `setpgid(pid, pid)` itself either — that makes the child a group leader and `setsid()` then
 fails with `EPERM` for a group leader. So **no pgid is cached at all**: it is resolved live at
 every use by a helper that refuses to return the supervisor's own group, and a child that has
-no group of its own yet is signalled by pid alone. Two consequences worth stating: the pid
+no group of its own yet is signalled by pid alone. **`4h6.55`'s fork server deliberately does
+not `setsid()` for exactly this reason** — it stays in the supervisor's process group, so a
+child that has not yet reached its own `setsid()` still reports the supervisor's pgid and is
+still caught by that helper. A fork server in a group of its own would report a pgid the
+helper does not recognise, and the first `killpg` would take out the fork server and with it
+every future execution. Two consequences worth stating: the pid
 budget **skips** a poll rather than counting the supervisor's group against the child's
 budget, and `None` from the group scan means "unenforceable", never "empty".
 
@@ -1849,20 +2064,31 @@ which is **NOT IN EFFECT**: the pod holds no `CAP_CHOWN` or `CAP_SETUID` and bot
 measured to return `EPERM`. `0400` without the `chown` would exclude the child, which is the
 process that has to read it.
 
-**This file bounds nothing, and every earlier phrasing in this document read as though it
-did.** `4h6.55` measured, against this exact shape:
+**What this file does and does not bound, restated after `4h6.55` option (b) landed.** Three
+routes were measured against the ORIGINAL shape, in which the process holding tokens was also
+the process that forked:
 
-- the child is forked **without exec** from a supervisor holding tokens in its address space,
+- the child was forked **without exec** from a supervisor holding tokens in its address space,
   and a raw `/proc/self/mem` scan in the child recovered them — **including from an execution
-  that had already completed and been released**. Clearing references cannot help: freed
+  that had already completed and been released**. Clearing references could not help: freed
   Python strings stay in arenas that copy-on-write hands to the child;
+- the same tokens were reachable by module global, frame walk and `gc.get_objects()`;
 - a detached `setsid()` grandchild of an **earlier** execution read **this** execution's
-  mode-0600 file from inside the read-once window;
-- the same tokens are reachable by module global, frame walk and `gc.get_objects()`.
+  mode-0600 file from inside the read-once window.
 
-So the file is still the right thing to build — the child needs *some* route to the
-credential, it keeps the token out of `/proc/<pid>/environ`, and it gives the SDK something to
-unlink — but **the exposure is bounded by `4h6.55`'s resolution and by nothing here.** The
+**The first two are closed, and by the fork server rather than by anything in this file** (see
+"As built (`4h6.55`)" above): the child is now forked from a process that has never held a
+token, a request body or a line of anyone's source code. **The third is not closed** — it does
+not depend on the fork at all, only on one shared uid and a file with a name — and it is
+`genetics-results-suite-4h6.83`. So mode 0600 still bounds nothing against a same-uid resident
+and read-once-and-unlink still narrows only the window, not the reachable set.
+
+What this file *is* now is the route that makes option (b) possible, which the earlier wording
+missed entirely: the child needs its credential and the fork server must not carry it, so a
+file the **supervisor** writes and the **child** opens is the one route from one to the other
+that does not pass through the process in between. It also keeps the token out of
+`/proc/<pid>/environ` and gives the SDK something to unlink. **The residual exposure is
+`genetics-results-suite-4h6.83`'s and nothing here bounds it.** The
 supervisor also unlinks the file itself the moment the child is reaped, whether or not the
 SDK ever read it, and `_retain` deletes it again with the rest of the directory; that is
 hygiene, not a bound.
@@ -2683,14 +2909,18 @@ entire lifetime property. The mechanism is:
    token out of a sibling's environment. `/scratch/<id>` is per-execution and wiped
    regardless. **The file is not an exposure bound and this paragraph used to imply it was.**
    An earlier phrasing said read-once-and-unlink "closes the window to the interval before the
-   SDK's first call". It does not close anything: `4h6.55` measured a detached `setsid()`
-   grandchild of an *earlier* execution reading this execution's mode-0600 file **inside** that
-   window, and — because the child is forked without exec from a supervisor holding the tokens
-   in its address space — measured a raw `/proc/self/mem` scan in the child recovering tokens
-   including from an execution that had already completed. The file is still worth writing (it
-   keeps the token out of `/proc/<pid>/environ` and gives the SDK something to unlink), but
-   what bounds the exposure is `4h6.55`'s resolution and nothing else. See "As built
-   (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
+   SDK's first call". It does not close anything by itself: `4h6.55` measured a detached
+   `setsid()` grandchild of an *earlier* execution reading this execution's mode-0600 file
+   **inside** that window, and — because the child was then forked without exec from a
+   supervisor holding the tokens in its address space — measured a raw `/proc/self/mem` scan in
+   the child recovering tokens including from an execution that had already completed.
+   **The memory route is closed** by the fork server (`4h6.55` option (b), "As built (`4h6.55`)"
+   in section 2): the process that forks the child has never held a token, and the file is now
+   the route by which the supervisor reaches the child *without* passing the credential through
+   it. **The same-uid resident route is not closed** and is
+   `genetics-results-suite-4h6.83`; that is what bounds the residual exposure, and nothing here
+   does. See "As built (`4h6.55`)" and "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in
+   section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
    unreadable by the child**, which is the process that needs it: the supervisor writes it
    and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the
    matching rule for artifacts written by the child and read by the supervisor, are in

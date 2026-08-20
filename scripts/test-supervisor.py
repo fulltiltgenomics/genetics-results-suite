@@ -33,6 +33,15 @@ consistency rules, which names reach the manifest, and the Retry-After the clien
 policy reads off a 429. A wire shape that is merely plausible is the failure mode this file
 exists to catch.
 
+CROSS-EXECUTION MEMORY ISOLATION (4h6.55, option (b)) IS TESTED AS THE PROPERTY, NOT THE
+PLUMBING. The `isolation` group is the bead's own probe, run as a real execution in a real
+forked child: it hunts one victim's token, source code and session id after that execution has
+COMPLETED AND BEEN RELEASED, and a second victim's while that request is QUEUED behind the
+probe, by all four demonstrated routes — module global, frame walk, gc, and a raw
+/proc/self/mem scan. A clean result means nothing without a positive control, so the group
+carries two and fails loudly if the primary one goes quiet. A test that the fork server starts
+would prove none of this and is not what is here.
+
 Two checks are about the fork-without-exec model rather than the wire, because both were
 reachable from a script: a forged status record on fd 3 must not turn exit 0 into
 status "error", and a descendant that setsid()s away with the output pipe must not hold the
@@ -63,6 +72,7 @@ one that writes far above the rate and byte caps.
 
 import ast
 import base64
+import gc
 import http.client
 import io
 import json
@@ -291,10 +301,25 @@ def test_parsing():
 # --------------------------------------------------------------------------------------
 
 
+class _AliveForkServer:
+    """A stand-in for tests that build a Supervisor directly and are not about the fork server.
+
+    health() asks the fork server whether it is alive (a ready supervisor with none is a pod
+    that cannot execute anything and must leave the endpoints), so a bare Supervisor needs one
+    to be asked about."""
+
+    pid = -1
+
+    @staticmethod
+    def alive():
+        return True
+
+
 def test_queue(tmp):
     root = os.path.join(tmp, "queue-root")
     os.makedirs(root)
     s = sup.Supervisor(root, ready=True)
+    s.forkserver = _AliveForkServer()
 
     def job():
         return sup.Job(sup.parse_execute_request(json.dumps(make_body()).encode()), None)
@@ -514,6 +539,10 @@ class Server:
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        # Each Server brings up its own supervisor and therefore its own fork server; without
+        # this the run accumulates one idle fork server per group.
+        if self.supervisor is not None and self.supervisor.forkserver is not None:
+            self.supervisor.forkserver.close()
 
 
 class RemoteServer(Server):
@@ -2122,6 +2151,684 @@ def test_startup_wipe(tmp):
 
 
 # --------------------------------------------------------------------------------------
+# 11. cross-execution memory isolation (genetics-results-suite-4h6.55, option (b))
+# --------------------------------------------------------------------------------------
+#
+# THIS GROUP TESTS THE PROPERTY, NOT THE PLUMBING. 4h6.55 demonstrated a child recovering
+# another user's tokens, source code and session id by four routes; a test that the fork
+# server starts would prove none of them closed. So the probe below IS the bead's probe: it
+# runs as a real execution, in a real forked child, and goes looking.
+#
+# THE POSITIVE CONTROLS ARE THE LOAD-BEARING PART. A search that finds nothing proves nothing
+# unless the same search finds something it should, so the probe carries two:
+#   * a string planted in the supervisor module BEFORE the fork server is forked. It is in the
+#     fork server's inherited pages by construction, so every route that can read inherited
+#     memory MUST report it. If /proc/self/mem stops working (gVisor, a hardened /proc), this
+#     control goes red and the group fails loudly instead of passing vacuously.
+#   * the probe's own token, read from its own token file. It proves the needle shape and the
+#     matcher are capable of finding a credential in this address space.
+#
+# NEEDLES ARE CARRIED AS SPLIT HALVES and never concatenated in the probe. A probe that held
+# the whole needle would find it in its own code object and report a hit against itself.
+
+_ISOLATION_PROBE = r'''
+import gc, json, os, sys, time
+import collections
+
+PAIRS = __PAIRS__          # [[label, first_half, second_half], ...]
+SLEEP_S = __SLEEP_S__
+
+def _hit(text, a, b):
+    i = text.find(a)
+    while i != -1:
+        if text[i + len(a): i + len(a) + len(b)] == b:
+            return True
+        i = text.find(a, i + 1)
+    return False
+
+def _hit_bytes(blob, a, b):
+    a = a.encode(); b = b.encode()
+    i = blob.find(a)
+    while i != -1:
+        if blob[i + len(a): i + len(a) + len(b)] == b:
+            return True
+        i = blob.find(a, i + 1)
+    return False
+
+_SEQS = (list, tuple, set, frozenset, collections.deque)
+
+def _harvest(roots, depth=8, budget=2000000):
+    """Every string reachable from `roots`. Covers module globals, frame dicts and instance
+    attributes including __slots__, which is what the bead's routes 1-3 walked by hand."""
+    seen = set()
+    stack = [(r, 0) for r in roots]
+    n = 0
+    while stack and n < budget:
+        obj, d = stack.pop()
+        if d > depth:
+            continue
+        oid = id(obj)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        if isinstance(obj, str):
+            n += 1
+            yield obj
+            continue
+        if isinstance(obj, (bytes, bytearray)):
+            n += 1
+            yield bytes(obj).decode('utf-8', 'replace')
+            continue
+        if isinstance(obj, dict):
+            for k, v in list(obj.items())[:50000]:
+                stack.append((k, d + 1))
+                stack.append((v, d + 1))
+            continue
+        if isinstance(obj, _SEQS):
+            for v in list(obj)[:50000]:
+                stack.append((v, d + 1))
+            continue
+        dd = getattr(obj, '__dict__', None)
+        if isinstance(dd, dict):
+            stack.append((dd, d + 1))
+        for slot in getattr(type(obj), '__slots__', ()) or ():
+            try:
+                stack.append((getattr(obj, slot), d + 1))
+            except Exception:
+                pass
+
+def route_module_global():
+    roots = [m for m in list(sys.modules.values()) if getattr(m, 'SUPERVISOR', None) is not None]
+    roots = [m.SUPERVISOR for m in roots] + [getattr(m, '__dict__', {}) for m in roots]
+    return _harvest(roots)
+
+def route_frames():
+    roots = []
+    f = sys._getframe()
+    while f is not None:
+        roots.append(f.f_locals)
+        roots.append(f.f_globals)
+        f = f.f_back
+    return _harvest(roots, depth=6)
+
+def route_gc():
+    for obj in gc.get_objects():
+        for ref in gc.get_referents(obj):
+            if isinstance(ref, str):
+                yield ref
+            elif isinstance(ref, (bytes, bytearray)):
+                yield bytes(ref).decode('utf-8', 'replace')
+
+def scan_refs(route, out):
+    for text in route:
+        for label, a, b in PAIRS:
+            if label in out:
+                continue
+            if _hit(text, a, b):
+                out.add(label)
+
+def scan_mem(out):
+    """The route that decided the design: the raw address space, which no amount of dropping
+    references can clean because freed strings stay in the arenas COW hands over.
+
+    Its findings are kept SEPARATE from the reference routes'. Folding them together lets a
+    dead memory scan hide behind a live reference hit, and this is the route the bead says
+    decides the design — it has to be shown working on its own.
+    """
+    try:
+        lines = open('/proc/self/maps').read().splitlines()
+        mem = os.open('/proc/self/mem', os.O_RDONLY)
+    except OSError as exc:
+        return 'unavailable: %s' % exc
+    scanned = 0
+    try:
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 2 or 'r' not in parts[1]:
+                continue
+            path = parts[5] if len(parts) > 5 else ''
+            if path in ('[vvar]', '[vdso]', '[vsyscall]', '[vvar_vclock]'):
+                continue
+            lo, _, hi = parts[0].partition('-')
+            try:
+                lo = int(lo, 16); hi = int(hi, 16)
+            except ValueError:
+                continue
+            size = hi - lo
+            if size <= 0 or size > 64 * 1024 * 1024 or scanned > 768 * 1024 * 1024:
+                continue
+            try:
+                os.lseek(mem, lo, os.SEEK_SET)
+                blob = os.read(mem, size)
+            except OSError:
+                continue
+            scanned += len(blob)
+            for label, a, b in PAIRS:
+                if label not in out and _hit_bytes(blob, a, b):
+                    out.add(label)
+    finally:
+        os.close(mem)
+    return scanned
+
+result = {}
+for phase in ('released', 'queued'):
+    if phase == 'queued':
+        time.sleep(SLEEP_S)
+    found = set()
+    scan_refs(route_module_global(), found)
+    scan_refs(route_frames(), found)
+    scan_refs(route_gc(), found)
+    in_mem = set()
+    mem = scan_mem(in_mem)
+    result[phase] = {'found': sorted(found | in_mem), 'ref_found': sorted(found),
+                     'mem_found': sorted(in_mem),
+                     'mem': mem if isinstance(mem, str) else 'ok'}
+print('PROBERESULT ' + json.dumps(result))
+'''
+
+
+def _pair(value):
+    """A needle as two halves, so the probe never holds the whole thing."""
+    cut = len(value) // 2
+    return [value[:cut], value[cut:]]
+
+
+def test_isolation(tmp):
+    root = os.path.join(tmp, "isolation")
+    os.makedirs(root)
+
+    # PLANTED BEFORE THE SERVER IS BUILT, and that ordering is the control. bring_up() forks
+    # the fork server, so anything set on the module now is in the fork server's inherited
+    # pages and every child must be able to see it.
+    control = "FORKSRVCTL" + os.urandom(16).hex().upper()
+    sup.ISOLATION_TEST_CONTROL = control
+
+    # THE SECOND CONTROL IS THE BEAD'S OWN SANITY PROBE: a string dropped and gc.collect()-ed
+    # BEFORE the fork, which the bead measured still recoverable in the child. It is what
+    # proves the raw scan reads FREED arenas and not merely live objects, and therefore what
+    # makes "reference-based clearing cannot work" a measurement rather than a claim. It is
+    # reported rather than required — an arena can legitimately be reused or returned to the
+    # OS between the drop and the scan, and a control that is right most of the time must not
+    # be allowed to fail a suite.
+    # 4 KiB of padding so the allocation goes to malloc rather than a pymalloc pool: a 44-byte
+    # string lands in a size class that the supervisor's own startup reuses within microseconds,
+    # which makes the control skip for a reason that has nothing to do with the property.
+    freed = "FORKSRVFREED" + os.urandom(16).hex().upper() + "." * 4096
+    freed_pair = _pair(freed[:44])   # the halves survive; the whole string must not
+    sup.ISOLATION_TEST_FREED = freed
+    del sup.ISOLATION_TEST_FREED
+    del freed
+    gc.collect()
+
+    server = Server(root)
+    try:
+        # -- victim 1: runs to completion and is released before the probe starts.
+        v1 = os.urandom(12).hex().upper()
+        body1 = make_body(code=f"x = 'VICTIMCODE{v1}'\nprint('victim one')\n",
+                          user=f"v1-{v1[:8]}@b.c", session_id=f"sess-{v1}")
+        status, _, _ = server.request("POST", "/execute", body1)
+        check("isolation: the released victim executed", status == 200, f"got {status}")
+
+        # -- victim 2 will be QUEUED behind the probe. Its markers are known now so the probe
+        # can carry them; the request itself is sent after the probe is running.
+        v2 = os.urandom(12).hex().upper()
+        body2 = make_body(code=f"y = 'VICTIMCODE{v2}'\nprint('victim two')\n",
+                          user=f"v2-{v2[:8]}@b.c", session_id=f"sess-{v2}")
+
+        pairs = [
+            ["control-forkserver", *_pair(control)],
+            ["control-freed", *freed_pair],
+            ["released-token", *_pair(body1["tokens"]["db-api"].split(".")[1])],
+            ["released-code", *_pair("VICTIMCODE" + v1)],
+            ["released-session", *_pair("sess-" + v1)],
+            ["queued-token", *_pair(body2["tokens"]["db-api"].split(".")[1])],
+            ["queued-code", *_pair("VICTIMCODE" + v2)],
+            ["queued-session", *_pair("sess-" + v2)],
+        ]
+        probe_code = (_ISOLATION_PROBE
+                      .replace("__PAIRS__", json.dumps(pairs))
+                      .replace("__SLEEP_S__", "2.0"))
+        probe_body = make_body(code=probe_code, user="probe@b.c", session_id="sess-probe")
+        probe_body["timeout_s"] = 60
+
+        box = {}
+        t = threading.Thread(
+            target=lambda: box.update(zip(("status", "retry", "body"),
+                                          server.request("POST", "/execute", probe_body))),
+            daemon=True)
+        t.start()
+        # Long enough for the probe to be the running execution, short enough that victim 2 is
+        # still queued when the probe's second phase scans.
+        time.sleep(0.6)
+        box2 = {}
+        t2 = threading.Thread(
+            target=lambda: box2.update(zip(("status", "retry", "body"),
+                                           server.request("POST", "/execute", body2))),
+            daemon=True)
+        t2.start()
+        t.join(120)
+        t2.join(120)
+
+        body = box.get("body") or {}
+        check("isolation: the probe execution completed",
+              box.get("status") == 200 and body.get("status") == "ok",
+              f"got {box.get('status')} {str(body)[:300]}")
+        check("isolation: victim two was queued behind the probe and then ran",
+              box2.get("status") == 200, f"got {box2.get('status')}")
+
+        line = ""
+        for candidate in (body.get("output") or "").splitlines():
+            if candidate.startswith("PROBERESULT "):
+                line = candidate[len("PROBERESULT "):]
+        try:
+            result = json.loads(line)
+        except Exception:
+            result = None
+        check("isolation: the probe reported a result",
+              isinstance(result, dict) and set(result) == {"released", "queued"},
+              f"output was {str(body.get('output'))[:400]}")
+        if not isinstance(result, dict):
+            return
+
+        for phase in ("released", "queued"):
+            found = set(result[phase]["found"])
+            in_mem = set(result[phase]["mem_found"])
+            in_refs = set(result[phase].get("ref_found", ()))
+            check(f"isolation [{phase}]: the positive control IS reachable, so the search works",
+                  "control-forkserver" in found, f"found {sorted(found)}")
+            # SEPARATELY FROM THE MEM SCAN, because `found` is the union and the union hid a
+            # dead search: SABOTAGED, making scan_refs return immediately — which kills the
+            # module-global, frame-walk and gc routes all at once — left this suite GREEN,
+            # since the mem hit alone satisfied the check above. Three of the four advertised
+            # routes had no positive control at all.
+            check(f"isolation [{phase}]: the reference routes (module global, frame walk, gc) "
+                  f"reach the positive control on their own",
+                  "control-forkserver" in in_refs, f"the reference routes found {sorted(in_refs)}")
+            check(f"isolation [{phase}]: the raw /proc/self/mem scan reaches the fork "
+                  f"server's inherited pages",
+                  result[phase]["mem"] == "ok" and "control-forkserver" in in_mem,
+                  f"mem said {result[phase]['mem']}, found {sorted(in_mem)}")
+            if "control-freed" in in_mem:
+                check(f"isolation [{phase}]: the memory scan recovers a string FREED before "
+                      f"the fork, which is why no reference-clearing fix could have worked",
+                      True)
+            else:
+                skip(f"isolation [{phase}]: the freed-string control",
+                     "its arena was reused or returned before the scan; the live-object "
+                     "control above still proves the scan reads inherited pages")
+            leaked = sorted(found - {"control-forkserver", "control-freed"})
+            check(f"isolation [{phase}]: no other execution's token, code or session id "
+                  f"is reachable from the child", not leaked, f"LEAKED {leaked}")
+    finally:
+        server.close()
+
+
+def test_forkserver_units(tmp):
+    """The two invariants the fork server exists to hold, checked directly rather than through
+    an execution: it never receives user data, and the payload never touches a named file."""
+    payload = {"code": "print(1)", "env": {"A": "b"}, "cwd": tmp}
+    for name, forced in (("memfd", False), ("fallback", True)):
+        real = getattr(sup.os, "memfd_create", None)
+        if forced and real is not None:
+            sup.os.memfd_create = lambda *a, **k: (_ for _ in ()).throw(OSError("forced"))
+        try:
+            before = set(os.listdir(tmp))
+            fd = sup._payload_fd(payload, tmp)
+            try:
+                check(f"payload fd ({name}): leaves no name behind",
+                      set(os.listdir(tmp)) == before, f"{set(os.listdir(tmp)) - before}")
+                check(f"payload fd ({name}): round-trips code, env and cwd",
+                      sup._read_payload(fd) == (payload["code"], payload["env"], payload["cwd"]))
+            finally:
+                os.close(fd)
+        finally:
+            if forced and real is not None:
+                sup.os.memfd_create = real
+
+    big = {"code": "x" * (sup.PAYLOAD_MAX_BYTES + 1), "env": {}, "cwd": tmp}
+    fd = sup._payload_fd(big, tmp)
+    try:
+        try:
+            sup._read_payload(fd)
+        except ValueError:
+            check("payload fd: an over-cap payload is refused rather than read", True)
+        else:
+            check("payload fd: an over-cap payload is refused rather than read", False,
+                  "it was read")
+    finally:
+        os.close(fd)
+
+    # The control protocol carries an op name and nothing else. This is the check that fails
+    # if somebody later "just adds the execution id" to the fork message.
+    src = open(os.path.join(ROOT, "sandbox", "supervisor.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    sent = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_round_trip"):
+            continue
+        for arg in node.args[:1]:
+            if isinstance(arg, ast.Dict):
+                sent.append({k.value for k in arg.keys if isinstance(k, ast.Constant)})
+    check("fork server protocol: every control message is drawn from a fixed key set",
+          sent and all(keys <= {"op", "pid", "nohang"} for keys in sent), f"{sent}")
+
+    fs = sup.ForkServer.start()
+    try:
+        check("fork server: it is in the supervisor's own process group, so _resolve_pgid's "
+              "guard still catches a child that has not reached setsid()",
+              os.getpgid(fs.pid) == os.getpgrp(), f"{os.getpgid(fs.pid)} vs {os.getpgrp()}")
+        expect = "expected 4 descriptors"
+        try:
+            fs._round_trip({"op": sup.FS_OP_FORK})
+        except sup.ForkServerError as exc:
+            check("fork server: a fork without its four descriptors is refused",
+                  expect in str(exc), f"said {exc}")
+        else:
+            check("fork server: a fork without its four descriptors is refused", False, "accepted")
+        try:
+            fs._round_trip({"op": "nonsense"})
+        except sup.ForkServerError as exc:
+            check("fork server: an unknown op is refused", "unknown op" in str(exc), str(exc))
+        else:
+            check("fork server: an unknown op is refused", False, "accepted")
+    finally:
+        fs.close()
+    check("fork server: close() reaps it", fs.pid is None)
+
+    # -- A FAILED ROUND TRIP LOSES MESSAGE ALIGNMENT PERMANENTLY. SOCK_SEQPACKET cannot lose
+    # framing, but a send that succeeded followed by a receive that did not leaves the peer's
+    # reply queued: MEASURED on the unfixed tree, after an FS_OP_WAIT timed out at 0.5s the next
+    # FS_OP_REAP returned that WAIT's {'ok': True}. The ordering that matters is a fork whose
+    # reply is lost — the child WAS forked, so the next execution adopts a stale pid and
+    # watchdogs, killpgs and reaps the PREVIOUS user's child. The socket must fail closed.
+    fs = sup.ForkServer.start()
+    try:
+        real_recv = sup._fs_recv
+
+        def _timeout(*_a, **_k):
+            raise socket.timeout("timed out")
+
+        sup._fs_recv = _timeout
+        try:
+            fs._round_trip({"op": sup.FS_OP_REAP, "pid": os.getpid(), "nohang": True})
+        except sup.ForkServerError:
+            check("fork server: a round trip whose reply is lost raises", True)
+        else:
+            check("fork server: a round trip whose reply is lost raises", False, "it returned")
+        finally:
+            sup._fs_recv = real_recv
+        # The fork server answered that message and the answer is sitting in the socket. A
+        # handle that carried on would hand it back as the reply to this next, unrelated call.
+        try:
+            reply = fs._round_trip({"op": "nonsense"})
+        except sup.ForkServerError as exc:
+            check("fork server: after a failed round trip the control socket is poisoned and "
+                  "every later call refuses rather than reading the previous reply",
+                  "unusable" in str(exc), f"said {exc}")
+        else:
+            check("fork server: after a failed round trip the control socket is poisoned and "
+                  "every later call refuses rather than reading the previous reply",
+                  False, f"it answered {reply}")
+        check("fork server: a poisoned control socket is not alive()", not fs.alive())
+        # BLOCKING 2's other half: a supervisor holding a poisoned or dead fork server must
+        # report it, because sandbox.yaml has only a readinessProbe and 200 ok would leave a
+        # permanently broken pod in the Service endpoints forever.
+        sick = sup.Supervisor(os.path.join(tmp, "sick-health"), ready=True)
+        sick.forkserver = fs
+        code, payload = sick.health()
+        check("health: a supervisor whose fork server is unusable answers 503 forkserver-down, "
+              "so the readiness probe pulls the pod out of endpoints",
+              code == 503 and payload["status"] == "forkserver-down", f"got {code} {payload}")
+    finally:
+        fs.close()
+
+
+def test_forkserver_lost_fork_reply(tmp):
+    """A fork whose {"pid": n} reply never arrives must not leave the child running.
+
+    THIS IS THE HOLE 4h6.55 OPENED AND THE ONLY ONE POISONING DOES NOT CLOSE. The fork server
+    forked the child and answered; the supervisor's round trip failed before reading it, so
+    job.pid stays None and neither _execute_inner's finally nor the watchdog has a pid to kill
+    — the supervisor cannot name the process at all. Poisoning stops that pid being
+    MISATTRIBUTED to the next execution, which was the dangerous half, but the child itself
+    keeps running user code at uid 65532 with write access to /scratch for the pod's lifetime.
+    Before the fork server the supervisor forked directly and always knew the pid, so nothing
+    older covers this. The fork server tracks what it forked and kills it when the control
+    channel ends; the test steals the pid the supervisor never sees and watches it die.
+    """
+    marker = os.path.join(tmp, "lost-reply.started")
+    code = f"import os, time\nopen({marker!r}, 'w').write(str(os.getpid()))\ntime.sleep(300)\n"
+    fs = sup.ForkServer.start()
+    seen = {}
+    fds = []
+    try:
+        payload_fd = sup._payload_fd({"code": code, "env": {}, "cwd": tmp}, tmp)
+        out_r, out_w = os.pipe()
+        status_r, status_w = os.pipe()
+        audit_r, audit_w = os.pipe()
+        fds = [payload_fd, out_r, out_w, status_r, status_w, audit_r, audit_w]
+        real_recv = sup._fs_recv
+
+        def _lose_the_reply(sock, maxfds=0):
+            reply, extra = real_recv(sock, maxfds)
+            seen.update(reply or {})
+            # Do not raise until the child is demonstrably running the user's code, so this is
+            # the real ordering and not a race the fix could win by accident.
+            deadline = time.monotonic() + 30
+            while not os.path.exists(marker) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            raise socket.timeout("timed out")
+
+        sup._fs_recv = _lose_the_reply
+        try:
+            fs.fork_child(payload_fd, out_w, status_w, audit_w)
+        except sup.ForkServerError:
+            pass
+        finally:
+            sup._fs_recv = real_recv
+
+        child = seen.get("pid")
+        check("lost fork reply: the fork server forked a child and the supervisor did not "
+              "learn its pid", isinstance(child, int) and os.path.exists(marker),
+              f"reply {seen}, marker {os.path.exists(marker)}")
+        if not isinstance(child, int):
+            return
+        check("lost fork reply: the control socket is poisoned, so the stale pid cannot be "
+              "misattributed to the next execution", not fs.alive())
+
+        # _poison already closed the supervisor's end, so the fork server is at EOF and the
+        # kill is under way; fs.close() below only reaps the fork server itself.
+        gone = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except OSError:
+                gone = True
+                break
+            try:
+                with open(f"/proc/{child}/stat", "rb") as fh:
+                    raw = fh.read()
+                if raw[raw.rfind(b")") + 2: raw.rfind(b")") + 3] == b"Z":
+                    gone = True  # reparented zombie: not running user code
+                    break
+            except OSError:
+                gone = True
+                break
+            time.sleep(0.05)
+        check("lost fork reply: the fork server kills the child it forked, so a lost reply "
+              "leaves nothing running", gone, f"pid {child} is still running")
+        if not gone:
+            try:
+                os.killpg(os.getpgid(child), signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except OSError:
+                    pass
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        fs.close()
+
+
+def test_forkserver_death_mid_execution(tmp):
+    """The fork server dying under a running execution must still kill that execution's group.
+
+    _reap raises ForkServerError when the control socket dies, and _execute_inner's finally set
+    job.done BEFORE anything killed anything — so _watchdog returned on its first statement
+    without firing a limit, and neither _execute nor run kills on its error path. The request
+    500s and frees the slot while the user's code runs on for the pod's lifetime, holding CPU,
+    memory and same-uid write access to /scratch while later users execute. _kill_group signals
+    with os.killpg directly and never through the control socket, so it works here.
+    """
+    root = os.path.join(tmp, "forkserver-death")
+    os.makedirs(root)
+    server = Server(root)
+    try:
+        body = make_body(code="import time\ntime.sleep(120)\n")
+        body["timeout_s"] = 120
+        box = {}
+        t = threading.Thread(
+            target=lambda: box.update(zip(("status", "retry", "body"),
+                                          server.request("POST", "/execute", body))),
+            daemon=True)
+        t.start()
+
+        child = None
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            running = server.supervisor._running
+            if running is not None and running.pid is not None:
+                child = running.pid
+                break
+            time.sleep(0.02)
+        check("forkserver death: the victim execution reached its fork", child is not None)
+        if child is None:
+            return
+        # Its own session, so killpg on the supervisor's group is not what cleans this up.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and os.getpgid(child) == os.getpgrp():
+            time.sleep(0.02)
+
+        os.kill(server.supervisor.forkserver.pid, signal.SIGKILL)
+        t.join(90)
+        check("forkserver death: the execution is answered 500 rather than hanging",
+              box.get("status") == 500, f"got {box.get('status')} {str(box.get('body'))[:200]}")
+
+        gone = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except OSError:
+                gone = True
+                break
+            # A reparented zombie is not still running; /proc says so.
+            try:
+                with open(f"/proc/{child}/stat", "rb") as fh:
+                    raw = fh.read()
+                if raw[raw.rfind(b")") + 2: raw.rfind(b")") + 3] == b"Z":
+                    gone = True
+                    break
+            except OSError:
+                gone = True
+                break
+            time.sleep(0.05)
+        check("forkserver death: the orphaned execution child is killed, not left running for "
+              "the pod's lifetime", gone, f"pid {child} is still running")
+        if not gone:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except OSError:
+                pass
+
+        status, _, health = server.request("GET", "/health")
+        check("forkserver death: /health stops saying ok, so the readiness probe replaces "
+              "the pod instead of leaving it dead in the endpoints",
+              status == 503 and (health or {}).get("status") == "forkserver-down",
+              f"got {status} {health}")
+    finally:
+        server.close()
+
+
+def test_pre_ready_execute(tmp):
+    """A POST /execute arriving before the supervisor is ready must be refused BEFORE its body
+    is read.
+
+    main() binds and serves before bring_up() on purpose, so `status: "starting"` is observable
+    — which means requests DO arrive during the multi-second prewarm(), and ForkServer.start()
+    snapshots the address space at the end of it. The readiness check used to sit in _admit,
+    after _read_body and parse_execute_request had already made both JWTs and the user's source
+    into Python strings: an early request answered 503 was still recovered from a later
+    execution child by the /proc/self/mem route. A 503 does not take the bytes back out of the
+    arenas, so the refusal has to happen before they exist.
+    """
+    root = os.path.join(tmp, "pre-ready")
+    os.makedirs(root)
+    saved = sup.SUPERVISOR
+    real_read_body = sup._Handler._read_body
+    supervisor = sup.create(scratch_root=root)  # bound, NOT ready: nothing is forked yet
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    reads = []
+    sup._Handler._read_body = (
+        lambda self, started, _real=real_read_body: reads.append(1) or _real(self, started))
+    try:
+        payload = json.dumps(make_body(code="x = 'PREREADYNEEDLE'\n")).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+        conn.putrequest("POST", "/execute")
+        conn.putheader("Content-Type", "application/json")
+        # DELIBERATELY MORE THAN IS SENT. This is the mechanism-independent half: a supervisor
+        # that reads the body blocks here until BODY_READ_TIMEOUT_S and answers 408, so an
+        # immediate 503 is proof the bytes were never taken in.
+        conn.putheader("Content-Length", str(len(payload) + 65536))
+        conn.endheaders()
+        conn.send(payload)
+        started = time.monotonic()
+        resp = conn.getresponse()
+        raw = resp.read()
+        elapsed = time.monotonic() - started
+        status = resp.status
+        conn.close()
+        parsed = json.loads(raw.decode()) if raw else {}
+        check("pre-ready: POST /execute during bring_up() is refused 503 NotReady",
+              status == 503 and parsed.get("error", {}).get("type") == "NotReady",
+              f"got {status} {parsed}")
+        check("pre-ready: it is refused BEFORE the body is read, so no token and no source "
+              "code ever enters the process the fork server is snapshotted from",
+              not reads, f"_read_body ran {len(reads)} time(s)")
+        check("pre-ready: the refusal does not wait on the unsent body",
+              elapsed < sup.BODY_READ_TIMEOUT_S / 2, f"took {elapsed:.1f}s")
+
+        # The draining half of the same gate. Nothing is ready here, so set both states.
+        supervisor.ready = True
+        supervisor.begin_drain()
+        reads.clear()
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+        conn.putrequest("POST", "/execute")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(payload) + 65536))
+        conn.endheaders()
+        conn.send(payload)
+        resp = conn.getresponse()
+        raw = resp.read()
+        status = resp.status
+        conn.close()
+        check("pre-ready: a draining supervisor refuses the same way, before the body",
+              status == 503 and not reads, f"got {status}, _read_body ran {len(reads)} time(s)")
+    finally:
+        sup._Handler._read_body = real_read_body
+        httpd.shutdown()
+        httpd.server_close()
+        sup.SUPERVISOR = saved
+
+
+# --------------------------------------------------------------------------------------
 
 
 def run_in_process():
@@ -2139,6 +2846,14 @@ def run_in_process():
         test_artifact_scoping(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
+        print("fork server units")
+        test_forkserver_units(tmp)
+        print("fork server failure paths")
+        test_pre_ready_execute(tmp)
+        test_forkserver_lost_fork_reply(tmp)
+        test_forkserver_death_mid_execution(tmp)
+        print("cross-execution memory isolation (4h6.55 option (b))")
+        test_isolation(tmp)
         print("end to end over HTTP")
         root = os.path.join(tmp, "scratch")
         os.makedirs(root)
@@ -2239,6 +2954,13 @@ def run_container(base_url, retention_s=None, container_name=None):
         "capping and accounting units (test_cap_units) — calls _cap_output/_dir_usage directly",
         "hardening units (test_hardening_units) — calls _trim_artifacts/_cap_response/_reap directly",
         "audit stream units (test_audit_units) — calls _AuditForwarder and _drain directly",
+        "fork server units (test_forkserver_units) — drives ForkServer and _payload_fd directly",
+        "fork server failure paths (test_pre_ready_execute, test_forkserver_lost_fork_reply, "
+        "test_forkserver_death_mid_execution) — needs to bind its own pre-ready supervisor, to "
+        "drop a fork reply inside the control protocol and to SIGKILL the fork server, none of "
+        "which is reachable over the wire",
+        "cross-execution memory isolation (test_isolation) — plants its positive control in "
+        "the supervisor module before the fork server is forked, which needs the module",
     ])
 
 
