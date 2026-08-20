@@ -66,6 +66,13 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: sandbox-token-signing-key
+        # a deployment fact, not a preference: whether the sandbox this pod would submit
+        # run_analysis calls to actually exists. Declared explicitly rather than left to
+        # settings.py's own "false" default so the value is reviewable here, alongside the
+        # same-named flag on db-api and results-api — flipped to "true" only by the deploy
+        # that creates the sandbox Deployment (4h6.50), never on its own.
+        - name: SANDBOX_ENABLED
+          value: "false"
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
