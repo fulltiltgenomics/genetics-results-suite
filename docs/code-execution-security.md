@@ -971,9 +971,13 @@ co-tenancy inside the pod, and the sentence here used to say it was.** `4h6.55` 
 opposite: the queue described immediately below holds up to two *other* users' requests while
 one executes, and retention holds completed ones for fifteen minutes, so the pod is co-tenanted
 by construction — just not simultaneously. What the fork server (`4h6.55` option (b), "As built"
-below) removes is the memory route between those tenants; the `/scratch` route
-(`genetics-results-suite-4h6.82`) and the escaped-process route
-(`genetics-results-suite-4h6.83`) are open. A second concurrent `POST /execute` is **queued, not refused**:
+below) removes is the memory route between those tenants. Of the other two: the `/scratch`
+route is closed for **integrity** and open for **reading**
+(`genetics-results-suite-4h6.82` closed, `genetics-results-suite-4h6.88` open), and the
+escaped-process route is **bounded** across executions — a chain of `setsid()`'d processes is
+cleared `FS_SWEEP_MAX_ROUNDS` (4) levels deep per execution, and a deeper one loses four more
+levels on each subsequent execution — and open **within** one
+(`genetics-results-suite-4h6.83`). A second concurrent `POST /execute` is **queued, not refused**:
 measured peak is 23 chat turns/hour, so a collision is rare, and turning a rare collision
 into a user-visible tool failure buys nothing.
 
@@ -1262,13 +1266,68 @@ GET /artifact?execution_id=<uuid4>&name=<bare name>
   "size": 20481, "content_base64": "iVBORw0KGgo…" }
 ```
 
-**Who may read what.** The `execution_id` **is** the authorisation. It is a uuid4 minted per
-execution by chat-backend, equal to the tokens' `jti` (the supervisor refuses a request where
-they differ), and it is never rendered to the model — `_render_analysis` strips it from
-everything the model sees, which is the same property that lets the manifest carry no id. So
-the only caller that can name an execution is the one that submitted it. Combined with the
-NetworkPolicy that decides who reaches port 8080 at all, that is exactly the standing
-`/execute` has; this route adds no new trust assumption, only a new thing to read.
+**Who may read what.** The `execution_id` **is** the authorisation **on this HTTP surface**,
+and the qualifier is load-bearing. It is a uuid4 minted per execution by chat-backend, equal
+to the tokens' `jti` (the supervisor refuses a request where they differ), and it is never
+rendered to the model — `_render_analysis` strips it from everything the model sees, which is
+the same property that lets the manifest carry no id. So the only caller that can name an
+execution *over the wire* is the one that submitted it. Combined with the NetworkPolicy that
+decides who reaches port 8080 at all, that is exactly the standing `/execute` has; this route
+adds no new trust assumption, only a new thing to read.
+
+**It is not a filesystem property and must not be read as one.** `/scratch` is fully
+enumerable by any process at the shared uid 65532 — MEASURED from inside a second execution's
+child, which listed `/scratch`, found a previous execution's directory by name and read its
+`artifacts/private.csv`. The id being unguessable bounds who can ask *the supervisor* for
+bytes; it bounds nothing about who can open the file. That gap is
+`genetics-results-suite-4h6.88` and is **open**; see "What the retention window serves" below
+for the half that is closed.
+
+**What the retention window serves: the bytes the manifest described, or nothing**
+(`genetics-results-suite-4h6.82`). The same measurement showed the peer artifact could be
+**overwritten** and a new file **planted** beside it, so for the fifteen minutes of retention
+this route would hand attacker-controlled content back under another user's execution id, with
+a legitimate `execution_id`, a legitimate inode inside that execution's `artifacts/`, and every
+descriptor check above satisfied. `build_manifest` therefore **hashes every file it lists**
+(sha256) and keeps the map **in the supervisor's memory** — never on the filesystem, since a
+manifest written to `/scratch` would be forged in the same breath as the file it describes —
+and `read_artifact` re-hashes what it is about to return:
+
+- a name **not in the manifest** (a planted file) is `404`, refused before it is opened;
+- a name whose **bytes have changed** is `409 ArtifactModified`, a distinct answer on purpose:
+  a caller holding a legitimate id and a manifest that named the file is entitled to know that
+  the answer is "this is no longer what you were told about" rather than a `404` it would read
+  as "retention expired";
+- a file **larger than the read cap** is listed with no digest, so a later truncation under the
+  cap makes it unverifiable rather than servable;
+- an execution retained **without a manifest ever being built** (an exception before
+  `build_manifest`, which `_register_retention` covers) has an empty map and serves nothing:
+  nothing was ever advertised for it.
+
+**"In memory" is a quantity, and it is bounded.** Per execution the map is capped by
+`ARTIFACT_ENTRY_BUDGET` = 1024 entries, each a name of at most `NAME_MAX` = 255 bytes plus a
+64-char hex digest — charged 255 + 320 B, so **~0.59 MB worst case per execution**. What was
+*not* bounded is the number of retained executions: there is no count cap, and
+`RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB) cannot evict them because it is charged `st_size`
+and **1024 zero-byte files measure 0**, so an authenticated caller submitting fast executions
+that each create 1024 long-named empty artifacts accumulated ~0.5 MB per execution for the full
+`RETENTION_S` = 900 s — against a 512 Mi pod, the OOM this document names as the worst outcome.
+Retention is therefore charged a **memory** cost as well as a disk one — 512 B per retained row
+plus 320 B + the name length per digest — and `_enforce_retained_ceiling` evicts oldest-first
+when either `RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB of artifacts) or
+`RETAINED_STATE_CEILING_BYTES` (**4 MiB of digest maps**) is exceeded, which also bounds the row
+count at 4 MiB / 512 B = 8192. **The eviction fails closed**: it is `_forget_retained`, which
+drops the directory, the id and the digest map in one step, so there is no state in which an
+execution is still readable but no longer verifiable. The cost is that a caller flooding
+retention evicts older executions sooner — the same denial the disk ceiling already accepts.
+
+**What that does *not* close, stated so the bound is not overread.** It does not stop the
+**reading** (`4h6.88`, above; under one uid no filesystem mechanism bounds it). It does not
+cover **planting into a LIVE execution before `build_manifest` runs** — that window is inside
+what the manifest is built from, though it is now narrower, because the process-group kill and
+the fork server's sweep both run before `_retain` and `build_manifest`. It does not cover
+**deletion or DoS**: a same-uid process can still delete a retained artifact, and the answer is
+then an honest `404`.
 
 **Retained executions only.** A running execution is not served: its bytes are still moving
 and a half-written PNG is worse than a 404. By the time the submitter has the id in a
@@ -1288,8 +1347,9 @@ asking directly.
 |---|---|---|
 | served | 200 | — |
 | `execution_id` not a lowercase uuid4, or `name` fails `_name_is_retrievable` | 400 | `InvalidRequest` |
-| no such retained execution, or no such file, or not a regular file | 404 | `NotFound` |
+| no such retained execution, or no such file, or not a regular file, **or a name no manifest listed** | 404 | `NotFound` |
 | file larger than `ARTIFACT_READ_MAX_BYTES` (512 KiB) | 413 | `ArtifactTooLarge` |
+| **the bytes no longer hash to what the manifest recorded** | 409 | `ArtifactModified` |
 
 The 512 KiB cap is set against `MAX_RESPONSE_BYTES` (1 MiB), not against what a plot needs:
 base64 is +33% inside a JSON envelope, so 512 KiB of file is ~700 KiB of body and stays clear.
@@ -1489,8 +1549,13 @@ in the code:
   the reap, so it measures the child and not the drain. This is **not** something the
   `4h6.41` wall clock fixes, and `4h6.41` landing has not changed that: an escapee has left
   the process group, so `killpg` returns `ESRCH` and there is nothing group-shaped left to
-  kill. **Nothing in the supervisor kills such a process** — `4h6.55` owns that — and what
-  this guarantees is only that it cannot block the queue.
+  kill. What kills such a process is the fork server's end-of-execution sweep
+  (`genetics-results-suite-4h6.83`), which runs **before** the drain threads are joined and so
+  usually delivers the pipe's EOF as a side effect — but the deadline stays, because the sweep
+  can fail (a dead fork server, or a kernel where `PR_SET_CHILD_SUBREAPER` does not take) and
+  because what this guarantees on its own is only that an escapee cannot block the queue. An
+  `abandoned` warning in the log is now evidence that a control failed rather than the expected
+  outcome it used to be.
 - **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
   list carrying the right value is the same claim. Anything else is a `400`.
 - **The child's working directory is `/scratch/<id>/tmp`.** `WORKDIR` is `/genetics` on a
@@ -1890,22 +1955,29 @@ finding 1 exactly.
 
 #### What this does NOT close — do not read it as more than it is
 
-- **Finding 2, cross-execution artifact read and overwrite** (`genetics-results-suite-4h6.82`).
-  One uid and one flat `/scratch`: a child can list `/scratch`, read another execution's
-  `artifacts/`, overwrite files there, and plant new ones — so the retention window can serve
-  attacker-controlled content under another user's execution id. **Open.** Untouched by the
-  fork server, which changes nothing about the filesystem.
+- **Finding 2, cross-execution artifact read and overwrite.** One uid and one flat `/scratch`:
+  a child can list `/scratch`, read another execution's `artifacts/`, overwrite files there,
+  and plant new ones. Untouched by the fork server, which changes nothing about the filesystem.
+  It has since been **split in half**: the **integrity** half — the retention window serving
+  attacker-controlled content under another user's execution id — is **closed** by the manifest
+  digests described under `GET /artifact` above (`genetics-results-suite-4h6.82`). The
+  **reading** half is `genetics-results-suite-4h6.88` and is **open**, and under one uid no
+  filesystem mechanism bounds it.
 - **Finding 3, a `setsid()` resident that survives every group kill** (`genetics-results-suite-4h6.83`).
   A detached grandchild of an earlier execution polls `/scratch`, reads the *next* execution's
   mode-0600 token file inside the read-once window, and is unreachable by `killpg` because it
-  left the process group. **Open.** The fork server does not touch it: that route depends on
-  one shared uid and a file with a name, not on what the forking process holds in memory. The
-  payload descriptor is deliberately anonymous so this change does not *widen* it.
+  left the process group. The fork server as originally built did not touch it: that route
+  depends on one shared uid and a file with a name, not on what the forking process holds in
+  memory, and the payload descriptor is deliberately anonymous so the change did not *widen*
+  it. What closes the **cross-execution** half is the fork server being a
+  **`PR_SET_CHILD_SUBREAPER`** and sweeping what reparents to it at the end of every execution
+  — see "What the kill path reaches" below. The **intra-execution** half is open by
+  construction and cannot be closed this way.
 
 `4h6.50` (wiring the supervisor into the manifest) and `4h6.51` (deploy-window verification)
-were blocked on `4h6.55` when it carried all three findings. They are now blocked on `.82` and
-`.83` as well, so **"in front of more than one user" still cannot ship.** Do not close `.82` or
-`.83` by pointing at this section.
+were blocked on `4h6.55` when it carried all three findings, and then on `.82` and `.83`. `.88`
+(the reading half) and the gVisor verification `.51` itself owns are what remain of that gate.
+Do not close `.88` by pointing at this section.
 
 #### How it is tested
 
@@ -1968,14 +2040,51 @@ every future execution. Two consequences worth stating: the pid
 budget **skips** a poll rather than counting the supervisor's group against the child's
 budget, and `None` from the group scan means "unenforceable", never "empty".
 
-**What the group kill reaches, and what it does not.** It reaches the child and every
+**What the kill path reaches, and what it does not.** Signalling reaches the child and every
 descendant that stayed in its process group — an ordinary script's `subprocess` children. A
 descendant that calls `setsid()` **leaves the group and is not signalled**; that was measured
 with `killpg` returning `ESRCH` while the escapee kept running, and it also defeats the token
-file (below). This is the best mechanism available under the pod's constraints and it is
-**not a containment boundary**. `4h6.55` owns the one that would be, and until it lands an
-escaped process shares the pod with the next user. Nothing in the code or in this document
-should be read as claiming otherwise.
+file (below). Two changes since, and both are about what happens at the **end** of an
+execution rather than about the signal itself:
+
+- **The success path now kills the group at all** (`genetics-results-suite-4h6.66`). There are
+  two `_kill_group` call sites — a limit firing, and the stranded path where the reap did not
+  complete — and a normal completion reaches neither, because both refuse a job that is already
+  reaped. MEASURED after a `status: ok` execution: a plain forked grandchild that had stayed in
+  the process group was still running, and would have been for the pod's lifetime. The
+  completion path now signals that group, resolving the pgid **while the zombie is still held**
+  by `waitid(WNOWAIT)` — the one moment the value cannot name anything else — and re-applying
+  the own-group guard before it signals.
+- **A `setsid()` escapee is reached by PARENTAGE, which it cannot leave**
+  (`genetics-results-suite-4h6.83`). `setsid()` changes the session and the process group and
+  **not** the parent, so with `PR_SET_CHILD_SUBREAPER` set on the **fork server** an escapee
+  whose parent exits reparents to the fork server rather than to PID 1. At the end of every
+  execution the supervisor asks it to sweep: it enumerates its own children through `/proc`,
+  excludes the pids it forked and has not been asked to reap (which is exactly how its own live
+  execution child is protected), and kills and reaps the rest. This needs **no seccomp profile
+  change and no namespaces**, which is why it is available where option (c) is not.
+
+**What that does not bound, and it must not be overread.** It bounds how long a survivor
+outlives **its own** execution, and the bound is a *depth*, not a guarantee of an empty pod.
+**A process reparents only when its own parent exits**, so a chain of `setsid()`'d processes
+becomes visible to the subreaper one level at a time and the sweep has to re-enumerate: it does
+so for at most `FS_SWEEP_MAX_ROUNDS` = 4 rounds within `FS_SWEEP_BUDGET_S` = 10 s, bounded
+because a stray that forks a fresh decoy each time it is reparented would otherwise spin the
+sweep indefinitely, and because overrunning `FS_CONTROL_TIMEOUT_S` would poison the control
+socket and take the fork server down with it. So **a chain of depth n needs n rounds**, one
+execution clears four levels, a deeper chain loses four more levels per subsequent execution,
+and the remainder is logged rather than passed over in silence. MEASURED against the
+single-pass version this replaced: a depth-2 chain (A `setsid()`s, forks B, B `setsid()`s, A
+stays alive) left B **running** — state `S`, not a zombie — for the whole of the next
+execution, because at enumeration time B's parent was still alive and nothing re-scanned; B is
+outside A's process group too, so the collateral `killpg` did not reach it either. It does
+**not** bound the intra-execution window: a process forked by execution A is alive for all of A
+by construction, and reparents only when A's child exits.
+`PR_SET_CHILD_SUBREAPER` and `/proc` parentage are both **UNVERIFIED UNDER gVISOR**, which
+implements prctl and `/proc` in the sentry; `4h6.51` owns measuring it, and a subreaper that
+does not take degrades to exactly the old behaviour and logs a warning rather than failing.
+This is still **not a containment boundary** — a PID namespace per execution is the mechanism
+that would be one, at the seccomp price recorded elsewhere in this document.
 
 #### `4h6.41` — wall clock, memory, oom_score_adj, pid budget
 
@@ -2078,17 +2187,28 @@ the process that forked:
 
 **The first two are closed, and by the fork server rather than by anything in this file** (see
 "As built (`4h6.55`)" above): the child is now forked from a process that has never held a
-token, a request body or a line of anyone's source code. **The third is not closed** — it does
-not depend on the fork at all, only on one shared uid and a file with a name — and it is
-`genetics-results-suite-4h6.83`. So mode 0600 still bounds nothing against a same-uid resident
-and read-once-and-unlink still narrows only the window, not the reachable set.
+token, a request body or a line of anyone's source code. **The third is bounded, and only for the
+resident that was forked by an EARLIER execution**, which is the shape that was measured: the
+fork server is a child subreaper and sweeps what reparents to it at the end of each execution
+(`genetics-results-suite-4h6.83`), so a grandchild of execution A **whose chain is no more than
+`FS_SWEEP_MAX_ROUNDS` (4) deep** is dead before execution B's token file is written. A deeper
+chain is not: reparenting happens only when a process's own parent exits, so each execution's
+sweep peels four levels off and the remainder is still there — logged, but alive — while the
+next execution writes its file. It is **not** closed against a resident of the SAME execution, and it is
+unverified under gVisor. So mode 0600 still bounds nothing against a same-uid process, and
+read-once-and-unlink still narrows only the window rather than the reachable set — what has
+changed is which processes are alive to be in that window.
 
 What this file *is* now is the route that makes option (b) possible, which the earlier wording
 missed entirely: the child needs its credential and the fork server must not carry it, so a
 file the **supervisor** writes and the **child** opens is the one route from one to the other
 that does not pass through the process in between. It also keeps the token out of
 `/proc/<pid>/environ` and gives the SDK something to unlink. **The residual exposure is
-`genetics-results-suite-4h6.83`'s and nothing here bounds it.** The
+`genetics-results-suite-4h6.83`'s, and what bounds it is the subreaper sweep rather than
+anything in this file: a resident of an EARLIER execution is dead before this execution's file
+is written provided its chain is within the sweep's four-round depth, a deeper chain outlives
+that execution by however many levels it has left, and a resident of THIS execution is not
+bounded at all.** The
 supervisor also unlinks the file itself the moment the child is reaped, whether or not the
 SDK ever read it, and `_retain` deletes it again with the rest of the directory; that is
 hygiene, not a bound.
@@ -2345,9 +2465,11 @@ kubelet be the thing that notices.
   It **can** drift for a `setsid()` escapee, which is not in the killed process group, keeps its
   write access to `/scratch/<id>/artifacts`, and can grow a tree after its size was cached: the
   retained total, the ceiling eviction and the in-run aggregate check then all read low. That is
-  the same escapee section 2 records everywhere else and `4h6.55` owns; re-measuring would not
-  fix it, since the writes continue after any measurement. An earlier wording of this bullet
-  stated the no-drift claim unconditionally.
+  the same escapee section 2 records everywhere else; re-measuring would not fix it, since the
+  writes continue after any measurement. The window is now bounded rather than unbounded — the
+  end-of-execution sweep (`4h6.83`) kills such a process when the execution that forked it
+  completes — so the drift is whatever it managed to write before that, not for the pod's
+  lifetime. An earlier wording of this bullet stated the no-drift claim unconditionally.
 - **The cached sizes can also double-count, in the safe direction.** Sizing follows the path it
   is handed, so a child that replaces its own `artifacts/` with a symlink to another execution's
   directory gets those bytes charged to both rows: the total reads **high**, so the ceiling
@@ -2516,13 +2638,14 @@ What each check group is worth:
   only while nothing else is retaining concurrently, which is why the harness refuses to start
   against a busy sandbox. The **mechanism** is what is verified, at a shortened TTL; the
   shipped 900s constant is read off `sandbox/supervisor.py`, not waited out.
-* **The process-group kill, on the path where the kill actually happens.** `_kill_group` has
-  exactly one call site in `sandbox/supervisor.py` and it is inside `_fire_limit`, so **the
-  group is signalled only when a limit fires**. The assertion therefore goes on an execution
-  that spawns two grandchildren and then holds the wall clock open until it is killed: the
-  grandchild that stayed **in** the group does not outlive that kill. The
-  normally-completing path is *recorded* rather than asserted, because the group is never
-  signalled there at all and asserting otherwise would be asserting a wish.
+* **The process-group kill, on the path where the kill actually happens.** The assertion goes
+  on an execution that spawns two grandchildren and then holds the wall clock open until it is
+  killed: the grandchild that stayed **in** the group does not outlive that kill. The
+  normally-completing path is *recorded* rather than asserted **in this harness only**. That
+  used to be because a normal completion signalled nothing at all; since `4h6.66` and `4h6.83`
+  it does, and `scripts/test-supervisor.py`'s `survivors` group asserts both grandchildren are
+  gone, with a negative control that puts them back. What is unverified is that behaviour under
+  *this* harness's runtime, which is why the note here stayed a note.
 
 **Three defects in the local setup were found by trying to run this and are fixed in the same
 change.** Each one made the local run *look* fine while proving less:
@@ -2548,11 +2671,14 @@ change.** Each one made the local run *look* fine while proving less:
   `jti` are stamped, so the authenticated user is not attributable from results-api's log
   alone. db-api's record and the audit stream both carry `sub`.
 
-**Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCES here.**
-In this configuration — plain Docker, `runc`, `--pids-limit 1024` — a grandchild that
-`setsid()`s away from the execution's process group is **still resident after the execution has
-been killed by its wall clock**, while its sibling that stayed in the group is gone. Measured
-2026-08-17:
+**Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCED here,
+and the measurement below PREDATES the subreaper sweep.** In this configuration — plain Docker,
+`runc`, `--pids-limit 1024` — a grandchild that `setsid()`s away from the execution's process
+group was **still resident after the execution had been killed by its wall clock**, while its
+sibling that stayed in the group was gone. Measured 2026-08-17, and kept as the record of the
+defect rather than as current behaviour: `4h6.83` now kills such a process at the END of the
+execution by parentage, and `4h6.66` kills the group on the completing path, both asserted in
+`scripts/test-supervisor.py`. Neither has been re-measured under **this** harness.
 
 ```
 process group: a grandchild IN the group does not outlive a limit kill        ok
@@ -2561,10 +2687,11 @@ note  the NORMALLY-COMPLETING execution's group is never signalled, and both of 
       grandchildren are alive=['D', 'G']
 ```
 
-Neither note is a pass/fail: asserting the escapee is gone would assert the comfortable answer,
-and asserting it survives would fail this harness on a property nobody has claimed. **A green
-run of this file is not evidence that `4h6.55` fails to reproduce under `runc`. It reproduces.**
-`4h6.55` is P0 and open, and this changes nothing about it.
+Neither note is a pass/fail. When they were written, asserting the escapee was gone would have
+asserted the comfortable answer; the property now exists and is asserted in
+`scripts/test-supervisor.py` instead, where the negative control can be run. **A green run of
+this file has never been evidence about that property either way** — it asserts only the limit
+path's in-group kill.
 
 An earlier draft of this section claimed the opposite, and the mechanism by which it did is
 worth keeping written down. The probe `exec`'d `/bin/sleep`; the image is
@@ -2917,9 +3044,12 @@ entire lifetime property. The mechanism is:
    **The memory route is closed** by the fork server (`4h6.55` option (b), "As built (`4h6.55`)"
    in section 2): the process that forks the child has never held a token, and the file is now
    the route by which the supervisor reaches the child *without* passing the credential through
-   it. **The same-uid resident route is not closed** and is
-   `genetics-results-suite-4h6.83`; that is what bounds the residual exposure, and nothing here
-   does. See "As built (`4h6.55`)" and "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in
+   it. **The same-uid resident route is closed for a resident of an EARLIER execution and open
+   for one of the SAME execution** (`genetics-results-suite-4h6.83`): the fork server is a
+   child subreaper and sweeps what reparents to it at the end of every execution, so the
+   measured shape — a grandchild of execution A reading execution B's token file — no longer
+   has a live process to do it with, but nothing here bounds a process A forked reading A's own
+   file, and the sweep is unverified under gVisor. See "As built (`4h6.55`)" and "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in
    section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
    unreadable by the child**, which is the process that needs it: the supervisor writes it
    and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the

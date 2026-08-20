@@ -915,7 +915,7 @@ Security-relevant fields, and what each one is for:
 | `runtimeClassName` / `nodeSelector` / toleration | `gvisor` / `workload: sandbox` / `sandbox.gke.io/runtime=gvisor:NoSchedule` | Pins the pod to the gVisor pool and nowhere else. `workload: sandbox` is the node label `terraform/gke.tf` sets; the taint is applied by GKE, not by terraform. |
 | `dnsPolicy` / `dnsConfig` | `None`, nameserver `127.0.0.1`, `ndots:1 timeout:1 attempts:1` | The egress policy permits no 53/UDP. Left at `ClusterFirst` a lookup that escapes `/etc/hosts` stalls through the whole resolver timeout budget against dropped packets — a hang inside the wall clock, unrepairable under `readOnlyRootFilesystem`. Against loopback it fails in microseconds instead. Depends on the image's `/etc/nsswitch.conf` listing `files` before `dns` (asserted at build time). |
 | `hostAliases` | db-api and results-api ClusterIPs, **all four name forms each** | Replaces DNS. glibc's `files` module does no search-domain expansion, so the bare name does not answer a lookup for the FQDN the rest of the suite uses. deploy.sh resolves both IPs from the live cluster and substitutes `${DB_API_CLUSTER_IP}` / `${RESULTS_API_CLUSTER_IP}`; deleting and recreating either Service requires re-rendering and rolling this Deployment. |
-| pod `securityContext` | `runAsNonRoot`, uid/gid 65532, `fsGroup: 65532` (`OnRootMismatch`), `RuntimeDefault` seccomp | 65532 is the distroless `nonroot` identity and deliberately none of the suite's other uids. The uid choice the design left open is **decided here as option (b), one shared uid** (`docs/code-execution-security.md` → "The uid choice"): option (a)'s distinct child uid needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` to `setuid` and to `chown` `/scratch/<id>` and the token file, and this container drops all capabilities with `allowPrivilegeEscalation: false`, so both calls return `EPERM`. The costs are real and the supervisor beads inherit them — `RLIMIT_NPROC` stops being a per-execution control (`4h6.41`: the supervisor must police the child's process group instead) and the token file sits within the child's same-uid reach, which read-once-and-unlink (`4h6.43`/`4h6.44`) does **not** bound — `4h6.55` measured a detached grandchild of an earlier execution reading a live token file from inside the read-once window, and recovered tokens from a completed execution by scanning `/proc/self/mem`. The **memory** half is closed by `4h6.55`'s fork server (option (b): the process that forks the child has never held a token); the **same-uid resident** half is not, and is `genetics-results-suite-4h6.83`, which is the bound that remains — and `4h6.39` must not assume it can drop privileges. `fsGroup` is therefore simply the pod's single gid, and is what makes the `emptyDir` writable by a non-root uid deterministically. |
+| pod `securityContext` | `runAsNonRoot`, uid/gid 65532, `fsGroup: 65532` (`OnRootMismatch`), `RuntimeDefault` seccomp | 65532 is the distroless `nonroot` identity and deliberately none of the suite's other uids. The uid choice the design left open is **decided here as option (b), one shared uid** (`docs/code-execution-security.md` → "The uid choice"): option (a)'s distinct child uid needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` to `setuid` and to `chown` `/scratch/<id>` and the token file, and this container drops all capabilities with `allowPrivilegeEscalation: false`, so both calls return `EPERM`. The costs are real and the supervisor beads inherit them — `RLIMIT_NPROC` stops being a per-execution control (`4h6.41`: the supervisor must police the child's process group instead) and the token file sits within the child's same-uid reach, which read-once-and-unlink (`4h6.43`/`4h6.44`) does **not** bound — `4h6.55` measured a detached grandchild of an earlier execution reading a live token file from inside the read-once window, and recovered tokens from a completed execution by scanning `/proc/self/mem`. The **memory** half is closed by `4h6.55`'s fork server (option (b): the process that forks the child has never held a token); the **same-uid resident** half (`genetics-results-suite-4h6.83`) is closed only for a resident of an *earlier* execution, which the fork server's `PR_SET_CHILD_SUBREAPER` sweep kills at the end of the execution that forked it — a resident of the *same* execution is unbounded, and the sweep is unverified under gVisor (`4h6.51`) — and `4h6.39` must not assume it can drop privileges. `fsGroup` is therefore simply the pod's single gid, and is what makes the `emptyDir` writable by a non-root uid deterministically. |
 | container `securityContext` | `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, non-root 65532, `RuntimeDefault` | Exceeds the suite baseline. Bytecode and the matplotlib font cache are baked at build time, so nothing needs to write outside `/scratch`. `procMount` is left at its default: `Unmasked` would weaken the container, and anything hiding `/proc/self/fd` would break `read_artifact`, which verifies the artifacts directory **by descriptor** through `/proc/self/fd/<dirfd>`. |
 | volumes | exactly one `emptyDir` at `/scratch`, `sizeLimit: 512Mi` | No PVC ever (`chat-data` holds every conversation), no ConfigMap, no Secret, no pod-level `/tmp`. `/scratch` is where the mount must be: `read_artifact` refuses any `SANDBOX_ARTIFACTS_DIR` whose resolved path is not under a hardcoded `/scratch/` prefix, and refuses a symlinked one. Exceeding `sizeLimit` **evicts the pod**, so the supervisor's sub-quotas must fire first. |
 | env | `GENETICS_API_URL`, `BIGQUERY_API_URL` only | **No credentials, and none may be added** — not `INTERNAL_API_SECRET`, not `SANDBOX_TOKEN_SIGNING_KEY`. Per-execution tokens arrive in the body of chat-backend's POST and live 300s; a pod-spec value would make them static pod-lifetime credentials. `SANDBOX_ARTIFACTS_DIR` is likewise **not** set here: it is per-execution (`/scratch/<execution-id>/artifacts`) and a fixed pod-wide value would be exactly the cross-execution shared directory that removing `/tmp` prevented. |
@@ -994,7 +994,9 @@ cannot import one definition. Do not restate it here; the essentials only:
   `jti` of both tokens, and the log join key. Any disagreement is a `400`, never a
   best-guess, and an id is spent once — a resubmission with the same one is refused.
 - **The response's artifact manifest names files and nothing else** — no paths and no
-  execution id — because `read_artifact` takes a bare name and refuses anything else.
+  execution id — because `read_artifact` takes a bare name and refuses anything else. The
+  supervisor keeps one thing back from that response: a sha256 per listed file, in memory, and
+  `GET /artifact` serves nothing that no longer matches it (`4h6.82`).
 - **The supervisor forwards the SDK audit stream to the pod's stdout** (`4h6.45`), the only
   stream the cluster's logging agent collects. It holds the read end of the child's audit fd,
   applies the rate, byte and per-line caps there rather than in the SDK, matches every line
@@ -1029,6 +1031,9 @@ start it, because the image still ships no `CMD` and the manifest still declares
   and reaper (`4h6.46`) landed together, sharing one poll loop and one kill path: a
   per-execution watchdog thread kills the process group (`_fire_limit` → `_kill_group`) and the
   reaper deletes completed executions on a 30 s tick (`reap_expired` → `_forget_retained`).
+  A **normal completion** kills the process group too (`_kill_survivors`,
+  `genetics-results-suite-4h6.66`) — it used to signal nothing at all, and a plain forked
+  grandchild was measured surviving a `status: ok` execution for the pod's lifetime.
   The audit stream (`4h6.45`) followed, on a third drain thread sharing the same reaped-child
   deadline. `docs/code-execution-security.md` → "As built (`4h6.41`, `4h6.42`, `4h6.43`,
   `4h6.45`, `4h6.46`)" tabulates what each one is worth and what it measurably does not do.
@@ -1053,11 +1058,33 @@ start it, because the image still ships no `CMD` and the manifest still declares
   session ids out of the inherited address space by four routes, one of them a raw
   `/proc/self/mem` scan that no amount of clearing references could have defeated. The child
   still gets its own credential from `4h6.43`'s read-once token file — a route from supervisor
-  to child that does not pass through the process in between. **This closes finding 1 only:**
-  cross-execution artifact read/overwrite on the flat `/scratch`
-  (`genetics-results-suite-4h6.82`) and the `setsid()` resident that reads the next execution's
-  token file (`genetics-results-suite-4h6.83`) are open, and `4h6.50`/`4h6.51` are blocked on
-  both. See `docs/code-execution-security.md` → "As built (`4h6.55`)".
+  to child that does not pass through the process in between. **The fork server closed finding
+  1 only**; the other two findings were split out and are now answered in part:
+  - **artifacts on the flat `/scratch` (`genetics-results-suite-4h6.82`)** — `build_manifest`
+    sha256s every file it lists, the map is kept in supervisor memory, and `read_artifact`
+    re-hashes before it serves, so an artifact that was **overwritten** is refused `409
+    ArtifactModified` and one that was **planted** is refused `404`. That is the integrity half.
+    The **reading** half is not closable under one uid and is `genetics-results-suite-4h6.88`,
+    **open**.
+  - **the `setsid()` resident (`genetics-results-suite-4h6.83`)** — the fork server sets
+    `PR_SET_CHILD_SUBREAPER`, so an escapee whose parent exits reparents to it rather than to
+    PID 1, and at the end of every execution it kills and reaps whatever has reparented (its
+    own live child is excluded by the pid set it tracks). **A process reparents only when its
+    own parent exits**, so a chain of `setsid()`'d processes surfaces one level per pass and the
+    sweep re-enumerates for up to `FS_SWEEP_MAX_ROUNDS` = 4 rounds (worst case is
+    `FS_SWEEP_BUDGET_S` = 10 s plus one round's grace, `2 * KILL_GRACE_S` = ~4 s, so ~14 s
+    against `FS_CONTROL_TIMEOUT_S` = 30 s — a 16 s margin, so it cannot outrun the
+    control-socket timeout and kill the fork server): a chain of
+    depth n needs n rounds, one execution clears four levels, a deeper chain loses four more per
+    subsequent execution, and the remainder is logged. MEASURED against the single-pass version
+    this replaced, a depth-2 chain left its grandchild **running** for the whole of the next
+    execution. So together with the completion-path group kill
+    (`genetics-results-suite-4h6.66`), what an execution leaves behind is cleared to that depth
+    before the next one runs, rather than surviving for the pod's lifetime as it did before.
+    This bounds the **inter-execution** exposure only: a resident is alive for all of its
+    own execution, and the mechanism is **unverified under gVisor** (`4h6.51`).
+
+  See `docs/code-execution-security.md` → "As built (`4h6.55`)".
 - **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
   pre-imported analysis modules the child (via the fork server) inherits copy-on-write; keeping
   that is why option (b) was chosen over exec-after-fork — and it therefore closes
@@ -1071,9 +1098,12 @@ start it, because the image still ships no `CMD` and the manifest still declares
   `setsid()`s away keeps the write ends open and EOF never arrives, which used to hold the
   only execution slot on a pipe read after the child was long gone. The drain gets 2 s past
   `waitpid` and is then abandoned with a log line, and `duration_ms` is taken at the reap.
-  Killing the escapee is `4h6.55`'s work and not the watchdog's — a `setsid()` descendant has
-  left the process group `_kill_group` signals, which is measured, so a PID namespace per
-  execution is what contains it; the slot is freed regardless.
+  Killing the escapee is not the watchdog's job — a `setsid()` descendant has left the process
+  group `_kill_group` signals, which is measured — it is the fork server's end-of-execution
+  sweep (`4h6.83`), which runs before the drain is joined and so usually delivers the EOF as a
+  side effect. The deadline stays anyway, because the sweep can fail and because the slot must
+  be freed regardless; an `abandoned` log line now means a control failed rather than the
+  expected outcome.
 - **Every writable path is per-execution.** `TMPDIR`, `HOME`, `MPLCONFIGDIR`,
   `XDG_CACHE_HOME`, `PYTHONPYCACHEPREFIX` and `SANDBOX_ARTIFACTS_DIR` are set in the child
   and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
@@ -1095,7 +1125,13 @@ start it, because the image still ships no `CMD` and the manifest still declares
   environment, which names reach the artifact manifest, the `429`'s `Retry-After` header that
   the client's retry policy reads, and the two forgeries the fork-without-exec model makes
   reachable — a status record written by the script, and a descendant holding the output pipe
-  open — are exercised rather than asserted about. Container mode drives the same wire checks
+  open — are exercised rather than asserted about. Two groups run the beads' own probes and
+  carry negative controls that are *run*, not described: `survivors` leaves a real process
+  behind a real `status: ok` execution (once inside the process group, once `setsid()`'d out
+  of it) and asserts it is gone and reaped, then disables the kill and the sweep and asserts
+  the same probes survive; `artifact integrity` overwrites a retained artifact with the same
+  number of bytes and plants another beside it, asserts both are refused, then asserts the
+  same reads with the digest binding disabled hand the attacker's bytes back. Container mode drives the same wire checks
   against the image and adds a group that has no in-process equivalent because it is about the
   image (read-only rootfs, no writable `/tmp`, pruned venv, the SDK and matplotlib importing,
   no credential in the child's environment). `--container-name NAME` is what lets the audit-stream
@@ -1132,8 +1168,11 @@ start it, because the image still ships no `CMD` and the manifest still declares
   without the flag, which only cross-checks the retention the harness reads off the container
   itself). Against a container with no `SANDBOX_RETENTION_S` the retention group skips and the
   run reports `NOT MEASURED (1)` with a `PARTIAL:` banner, still exiting 0. The
-  run also **reproduces `genetics-results-suite-4h6.55`**: a `setsid()` grandchild is still
-  resident after the execution is killed. Details in
+  run also **reproduced `genetics-results-suite-4h6.55`** on 2026-08-17: a `setsid()` grandchild
+  was still resident after the execution was killed. That measurement predates the
+  end-of-execution subreaper sweep (`4h6.83`) and has not been repeated under this harness; what
+  asserts the property now, with a negative control, is `scripts/test-supervisor.py`'s
+  `survivors` group. Details in
   [docs/code-execution-security.md](code-execution-security.md) §2, *As built (`4h6.49`)*.
 - **Three environment differences are what "not the image" looks like**, each warned about
   loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
