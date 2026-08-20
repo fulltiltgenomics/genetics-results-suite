@@ -124,14 +124,14 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
 | Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
 | Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
-| Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 15-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 15 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
+| Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 5-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 5 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
 | CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
 | pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.41` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.39`/`4h6.41` must implement in full if they take (a). **DECIDED: (b)** — `4h6.7` picked the shared uid, because (a) needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` that this pod drops; see "The uid choice" below for the reasoning and the two costs, and do not read "(a) is preferred" here as the state of the code. |
 | Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
 | Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
 | Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
-| Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. It removes *simultaneous* cross-user co-tenancy inside the pod: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. **It does NOT remove co-tenancy, and an earlier version of this row claimed it did — `4h6.55` falsified that by measurement.** Concurrency 1 bounds what runs at the same *instant*; the co-tenancy is in the **queue** (up to two other users' requests are held in the supervisor while one executes) and in the **15-minute retention window** (completed executions' directories, and the address space they left behind). See "As built (`4h6.55`)" below for which of the three demonstrated consequences is closed and which two are not. |
+| Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. It removes *simultaneous* cross-user co-tenancy inside the pod: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. **It does NOT remove co-tenancy, and an earlier version of this row claimed it did — `4h6.55` falsified that by measurement.** Concurrency 1 bounds what runs at the same *instant*; the co-tenancy is in the **queue** (up to two other users' requests are held in the supervisor while one executes) and in the **5-minute retention window** (completed executions' directories, and the address space they left behind). See "As built (`4h6.55`)" below for which of the three demonstrated consequences is closed and which two are not. |
 | Replicas | 1 | Peak 23 turns/hour, p95 8, mean 3. Do not build for concurrency that does not exist. |
 
 ### What the manifest adds beyond this table
@@ -225,7 +225,7 @@ rather than left to be derived.
 
 **What breaks.** With `/scratch/<id>` chown'd to the child uid, the artifacts the child
 writes are owned by the **child**, while the **supervisor** is the process that serves
-`read_artifact` and runs the 15-minute reaper — under any restrictive umask it cannot read
+`read_artifact` and runs the 5-minute reaper — under any restrictive umask it cannot read
 them. Symmetrically, the mode-0600 token file the supervisor writes (section 4, token
 delivery) is owned by the **supervisor** and is unreadable by the **child**, which is the
 process that needs it. Section 4 justifies the file against the shared-uid option and never
@@ -258,7 +258,7 @@ entire reason for choosing (a).
 Two decisions elsewhere in this document interact badly and the interaction has to be
 closed explicitly. Removing the pod-level `/tmp` made 512Mi the **combined** artifact-plus-
 temp budget, while `read_artifact` (section 6) retains **every** execution's `artifacts/`
-for 15 minutes after completion. Exceeding an `emptyDir` `sizeLimit` does not fail the
+for 5 minutes after completion. Exceeding an `emptyDir` `sizeLimit` does not fail the
 write — the **kubelet evicts the pod**. That kills the in-flight script *and* destroys every
 retained artifact from every earlier execution in the window. A script can trigger it
 deliberately with `open('/scratch/<id>/tmp/x','wb').write(b'\0'*512*1024*1024)`: a
@@ -1030,7 +1030,7 @@ has to complete in seconds, not tens of them.
 `strategy: Recreate` that is the cluster-wide bound. **It is not what removes cross-user
 co-tenancy inside the pod, and the sentence here used to say it was.** `4h6.55` measured the
 opposite: the queue described immediately below holds up to two *other* users' requests while
-one executes, and retention holds completed ones for fifteen minutes, so the pod is co-tenanted
+one executes, and retention holds completed ones for five minutes, so the pod is co-tenanted
 by construction — just not simultaneously. What the fork server (`4h6.55` option (b), "As built"
 below) removes is the memory route between those tenants. Of the other two: the `/scratch`
 route is closed for **integrity** and open for **reading**
@@ -1074,10 +1074,10 @@ without treating it as routine.
 
 **A repeated `execution_id` is refused: `409` with `error.type: "DuplicateExecutionId"`**,
 whenever `/scratch/<execution-id>` already exists — a live execution or a completed one still
-inside its 15-minute artifact retention. After retention expires the id is reusable, which is
+inside its 5-minute artifact retention. After retention expires the id is reusable, which is
 harmless because nothing then refers to it. This is a normal event, not a client bug, which
 is why it has a specified outcome rather than being left to the implementer: the `429` retry
-path, the 15-minute retention and `mint_execution_tokens`' optional `execution_id=` (section
+path, the 5-minute retention and `mint_execution_tokens`' optional `execution_id=` (section
 4, "As built") together make a resubmission with the same id easy to write by accident.
 Refusing is the only one of the three plausible behaviours that preserves the invariant
 everything downstream keys on — one `execution_id` names exactly one directory, one manifest
@@ -1118,7 +1118,7 @@ abandoned. `4h6.47` implemented `max queued wait + timeout_s + margin` (255s at
   to 120s of a credential nobody will use — while the client's retry queues behind it. The
   check is cheap and is made at dequeue, where the `exp` re-check already happens.
 - **A running child is *not* killed on disconnect. It runs to completion**, is reaped, its
-  manifest is written and its artifacts are retained for the usual 15 minutes; the response
+  manifest is written and its artifacts are retained for the usual 5 minutes; the response
   it can no longer deliver is discarded. Killing it would destroy artifacts the retention
   window promises and that a rerun may not reproduce, and peer-disconnect detection while
   the supervisor is not reading the socket is unreliable enough that a false positive would
@@ -1307,7 +1307,7 @@ which nothing in the design does — but the two numbers are produced by differe
 different times, so a client must not assert they are equal, and a mismatch is not a security
 event. It is noted here only so nobody adds that assertion later and gets a flaky failure.
 
-`/scratch/<execution-id>/artifacts` is retained 15 minutes after completion and everything
+`/scratch/<execution-id>/artifacts` is retained 5 minutes after completion and everything
 else under the directory goes immediately (section 6). The manifest is what chat-backend
 records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
 
@@ -1346,7 +1346,7 @@ for the half that is closed.
 
 **What the retention window serves: the bytes the manifest described, or nothing**
 (`genetics-results-suite-4h6.82`). The same measurement showed the peer artifact could be
-**overwritten** and a new file **planted** beside it, so for the fifteen minutes of retention
+**overwritten** and a new file **planted** beside it, so for the five minutes of retention
 this route would hand attacker-controlled content back under another user's execution id, with
 a legitimate `execution_id`, a legitimate inode inside that execution's `artifacts/`, and every
 descriptor check above satisfied. `build_manifest` therefore **hashes every file it lists**
@@ -1372,7 +1372,7 @@ and `read_artifact` re-hashes what it is about to return:
 `RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB) cannot evict them because it is charged `st_size`
 and **1024 zero-byte files measure 0**, so an authenticated caller submitting fast executions
 that each create 1024 long-named empty artifacts accumulated ~0.5 MB per execution for the full
-`RETENTION_S` = 900 s — against a 512 Mi pod, the OOM this document names as the worst outcome.
+`RETENTION_S` = 300 s — against a 512 Mi pod, the OOM this document names as the worst outcome.
 Retention is therefore charged a **memory** cost as well as a disk one — 512 B per retained row
 plus 320 B + the name length per digest — and `_enforce_retained_ceiling` evicts oldest-first
 when either `RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB of artifacts) or
@@ -1694,7 +1694,7 @@ base URL and does the same thing against both.
 | `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer-wipe sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
 | `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
 | `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal`, on the **dev-stack's** ports (results-api `:2000`, db-api `:8080`) and not the manifest's — locally `:4000` is chat-api (`4h6.49`) | the same two variables at cluster FQDNs pinned by `hostAliases` |
-| `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 900s |
+| `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 300s |
 | the supervisor as the `docker run` command | `args:` (`4h6.50`) |
 
 **What is not reproduced.** The script prints this list every time it brings the container
@@ -2437,7 +2437,7 @@ take**, and that the loss is counted rather than silent.
 | per-execution total (`/scratch/<id>`, artifacts + tmp + caches) | 192 MiB **and** 20 000 entries | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
 | aggregate `/scratch` during a run (retained + live) | 480 MiB | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
 | aggregate retained artifacts | 256 MiB | oldest-first eviction when a completion breaches it |
-| retention | 15 min from completion, deleted on the next reaper tick — so the observable window is **[15 min, 15 min + 30 s]** | reaper thread, every 30 s (`REAPER_POLL_S`) |
+| retention | 5 min from completion, deleted on the next reaper tick — so the observable window is **[5 min, 5 min + 30 s]** | reaper thread, every 30 s (`REAPER_POLL_S`) |
 | manifest entries in one response | 1024 | listed; the rest counted in `artifacts_omitted` |
 
 **The budget, stated once.** `sandbox/supervisor.py` states the same arithmetic in one comment
@@ -2520,7 +2520,7 @@ kubelet be the thing that notices.
   ceiling on the spot, since nothing else re-checks it until a next completion that may never
   come.
 - **Retained sizes are measured once and cached.** Re-walking every retained tree on every
-  completion made one 300 000-file execution a tax on all fifteen minutes of executions after
+  completion made one 300 000-file execution a tax on all five minutes of executions after
   it. Nothing the supervisor can reach writes to a retained directory — the child is reaped and
   the trim has already run — so the value cannot drift *for any process the kill path reaches*.
   It **can** drift for a `setsid()` escapee, which is not in the killed process group, keeps its
@@ -2543,7 +2543,7 @@ kubelet be the thing that notices.
   there was nothing older to evict. The trim is what protects the newest execution now, and
   protects it properly — every retained entry is ≤ 64 MiB against a 256 MiB ceiling.
 - **On completion everything under `/scratch/<id>` is deleted except `artifacts/`**, which is
-  retained 15 minutes so `read_artifact` has something to return and is then deleted
+  retained 5 minutes so `read_artifact` has something to return and is then deleted
   unconditionally, read or not.
 - **Eviction is observable on the wire without any host view of `/scratch`:** an evicted
   execution's id stops answering `409 DuplicateExecutionId` and becomes usable again, because
@@ -2561,7 +2561,7 @@ kubelet be the thing that notices.
 **refused at startup, not clamped**, because artifacts outliving what `read_artifact` was told
 is worse than a startup error, and a knob that is silently ignored is a knob that gets
 believed. It exists so the reaper can be watched deleting a directory inside a test run rather
-than fifteen minutes later; `scripts/test-supervisor.py --container URL --retention-s N`
+than five minutes later; `scripts/test-supervisor.py --container URL --retention-s N`
 asserts the caller started the container that way, and **skips the retention check by name**
 when it is absent rather than quietly proving less. Measured this way in the real image: the
 supervisor logged `retention reaper removed 1 execution directory` and the id became reusable.
@@ -2698,7 +2698,9 @@ What each check group is worth:
   the deadline is unmeasured, and it belongs to the reaper. The presence side is also sound
   only while nothing else is retaining concurrently, which is why the harness refuses to start
   against a busy sandbox. The **mechanism** is what is verified, at a shortened TTL; the
-  shipped 900s constant is read off `sandbox/supervisor.py`, not waited out.
+  shipped `RETENTION_S` = 300s is read off `sandbox/supervisor.py`, not waited out. (`RETENTION_S`
+  and the unrelated 300s token TTL — section 4 — are numerically equal as of this change; this
+  bullet is about retention only.)
 * **The process-group kill, on the path where the kill actually happens.** The assertion goes
   on an execution that spawns two grandchildren and then holds the wall clock open until it is
   killed: the grandchild that stayed **in** the group does not outlive that kill. The
@@ -4259,7 +4261,7 @@ payload to download — a miner needs both. CPU `limits: 1500m`. Wall clock 60s 
 budget far below it. Concurrency 1 with a queue, so a
 loop of submissions serializes rather than multiplying. Nothing executable persists:
 `/scratch/<id>` is deleted on completion except for the artifacts subdirectory, which is
-inert data on a 15-minute reaper (see the `read_artifact` subsection); the root filesystem
+inert data on a 5-minute reaper (see the `read_artifact` subsection); the root filesystem
 is read-only; there is no pod-level `/tmp`; and there is no cron, no PVC and no service
 account token, so a miner cannot survive the 120-second ceiling.
 
@@ -4433,10 +4435,10 @@ property that 6.1 and 6.4 assert. The rule:
 - On completion, the supervisor deletes everything under `/scratch/<id>` **except**
   `/scratch/<id>/artifacts` — the one subdirectory the SDK writes named outputs into.
   Working files, temp, `HOME`, caches and any inputs go immediately.
-- `/scratch/<id>/artifacts` is retained for **15 minutes** from completion, then deleted
-  unconditionally by the supervisor's reaper, whether or not it was ever read. Fifteen
+- `/scratch/<id>/artifacts` is retained for **5 minutes** from completion, then deleted
+  unconditionally by the supervisor's reaper, whether or not it was ever read. Five
   minutes is longer than any plausible same-turn retrieval and far shorter than a session.
-- **The 15 minutes is a floor, not an instant.** Deletion happens on a reaper tick and the
+- **The 5 minutes is a floor, not an instant.** Deletion happens on a reaper tick and the
   reaper polls every 30 s (`REAPER_POLL_S`), so a directory is present until the
   deadline and gone by **deadline + 30 s**; in between it may be either. Tightening the poll
   narrows the window without closing it, and polling is also what catches orphans the retention
@@ -4458,7 +4460,7 @@ property that 6.1 and 6.4 assert. The rule:
   a container, `reap_expired()` called directly in-process — and is the shape to copy.
 - Retention does not survive a pod restart, and the supervisor wipes unrecognised
   `/scratch` entries at startup (section 2, Writable paths).
-- So "nothing persists" is now precise: **nothing persists beyond 15 minutes, and nothing
+- So "nothing persists" is now precise: **nothing persists beyond 5 minutes, and nothing
   is ever readable by a different chat session** (next point). Sections 6.1 and 6.4 are
   worded against that.
 
@@ -4515,7 +4517,7 @@ to fix.
 same session can both write `manhattan.png`, and the resolution rule above ("executions
 belonging to this `sid`") is ambiguous without a tiebreak. The rule: `read_artifact`
 resolves a name to the artifact from the **most recently completed execution in that `sid`
-that produced it and is still within its 15-minute retention window**. Rationale — the model
+that produced it and is still within its 5-minute retention window**. Rationale — the model
 asks for an artifact it has just been told about, and the freshest is what it means; a
 stale-first rule would silently return a previous turn's plot for the same name, which is a
 wrong-answer failure rather than a loud one. Older same-name artifacts remain on disk until
@@ -4731,7 +4733,7 @@ The controls, all of which work regardless of what the model was persuaded to wr
    volume is ever re-added as the recorded degradation section 2 describes, the supervisor
    wipes it completely before every fork. There is nothing to wipe in the shipping design;
    the wipe is the obligation attached to the degradation, not a standing control. And
-   `/scratch/<id>/artifacts` survives completion only for 15 minutes and only for the
+   `/scratch/<id>/artifacts` survives completion only for 5 minutes and only for the
    originating chat session (see the `read_artifact` subsection). `GET /artifact` does not
    widen this: it is addressable only with the `execution_id` chat-backend minted, that id
    is never shown to the model or to a script, and only chat-backend's automatic image fetch
@@ -4878,7 +4880,7 @@ closed and **did** ship the SDK — nothing else. Where it was cited as the owne
 | `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
 | `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **that proxy hop and the
 sid-scoped resolution are `genetics-results-suite-4h6.52`'s, not this task's; `4h6.15` shipped
-the descriptor-based local read only**; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 15 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
+the descriptor-based local read only**; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
 
 **One finding outside this document's scope that other tasks need.** Five executor methods

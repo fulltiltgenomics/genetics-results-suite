@@ -249,7 +249,7 @@ RETAINED_ARTIFACTS_CEILING_BYTES = 256 * 1024 * 1024
 SCRATCH_SIZE_LIMIT_BYTES = 512 * 1024 * 1024   # the emptyDir sizeLimit; the cliff itself
 SCRATCH_SUPERVISOR_RESERVE_BYTES = 32 * 1024 * 1024
 SCRATCH_AGGREGATE_CEILING_BYTES = SCRATCH_SIZE_LIMIT_BYTES - SCRATCH_SUPERVISOR_RESERVE_BYTES
-RETENTION_S = 15 * 60
+RETENTION_S = 5 * 60
 REAPER_POLL_S = 30.0
 
 # THE TTL IS A FLOOR, NOT AN INSTANT. Deletion happens on a reaper tick, so a retained
@@ -263,7 +263,7 @@ REAPER_POLL_S = 30.0
 # registry has no row for — so the window is stated rather than engineered away. A test that
 # asserts "gone at RETENTION_S" is flaky by construction; assert presence at any t < RETENTION_S
 # and absence only at t >= RETENTION_S + REAPER_POLL_S (plus its own margin), against the
-# SANDBOX_RETENTION_S override rather than fifteen real minutes.
+# SANDBOX_RETENTION_S override rather than five real minutes.
 
 # ZERO-LENGTH FILES ARE NOT FREE, and charging only st_blocks says they are. MEASURED: 300,000
 # empty files under artifacts/ charged 8.6 MB against the 192 MiB quota, so no limit fired,
@@ -396,7 +396,7 @@ ENV_PREWARM = "GENETICS_PREWARM"            # /genetics/prewarm.py
 
 # NOT set by the image and NOT set by k8s/deployments/sandbox.yaml. It exists so that the
 # retention reaper can be OBSERVED firing in the real image inside a test run instead of
-# fifteen minutes later, and it can only ever SHORTEN retention — a value above RETENTION_S is
+# five minutes later, and it can only ever SHORTEN retention — a value above RETENTION_S is
 # refused rather than clamped silently, because the failure it would cause (artifacts outliving
 # what read_artifact was told) is worse than a startup error. Same standing as
 # SANDBOX_SCRATCH_ROOT: loud on every start, test-only, never deployment configuration.
@@ -2350,7 +2350,7 @@ class Supervisor:
         # sort key somebody has to remember to keep in step with the clock.
         #
         # THE SIZE IS CACHED, NOT RE-MEASURED. It was re-measured by walking every retained
-        # tree on every completion, which made a 300,000-file execution a tax on all fifteen
+        # tree on every completion, which made a 300,000-file execution a tax on all five
         # minutes of executions after it (MEASURED). Nothing the supervisor knows about writes
         # to a retained directory — the child is reaped and _retain has already trimmed it —
         # and _forget_retained is the only thing that removes bytes, so the cached value cannot
@@ -2550,7 +2550,7 @@ class Supervisor:
         # the success path only; a fork OSError, a manifest failure or any other exception
         # after ExecutionDirs.create() left the id in _retained_ids — so it answered 409 — with
         # NO row in _retention, so its bytes were counted against no ceiling and only the
-        # mtime sweep removed it, up to fifteen minutes later. Whatever created the directory,
+        # mtime sweep removed it, up to five minutes later. Whatever created the directory,
         # something must own deleting it.
         if retain:
             self._register_retention(job.req.execution_id, job.dirs)
@@ -2569,7 +2569,7 @@ class Supervisor:
         exception in _execute_inner — so nothing has deleted tmp/, home/, cache/ or pycache/
         and nothing has trimmed artifacts/. Charging only artifacts/ charged that as ZERO,
         up to a whole 192 MiB execution quota held against no ceiling until the mtime sweep
-        found it fifteen minutes later. The ceiling is re-checked here for the same reason:
+        found it five minutes later. The ceiling is re-checked here for the same reason:
         nothing else re-checks it until the next completion, which may never come.
         """
         with self._lock:
@@ -2773,7 +2773,7 @@ class Supervisor:
 
         TWO MECHANISMS, because they answer different failures. The registry covers
         executions that COMPLETED: their artifacts are deleted at the deadline whether or not
-        anything ever read them, which is what makes "nothing persists beyond 15 minutes"
+        anything ever read them, which is what makes "nothing persists beyond 5 minutes"
         true rather than aspirational. The filesystem sweep covers a directory that was
         created and whose job then died on a path that never reached _retain — an orphan the
         registry has no row for and that would otherwise sit there until the pod restarts.
@@ -2850,7 +2850,7 @@ class Supervisor:
         # unlink that matters is the one below, the moment the child is reaped; this one is
         # for the paths that never get there — a fork OSError, an exception while wiring the
         # pipes — which otherwise leave a mode-0600 token file on disk for the reaper to
-        # notice up to fifteen minutes later. _release registers the directory itself for the
+        # notice up to five minutes later. _release registers the directory itself for the
         # same reason (see _register_retention).
         try:
             return self._execute_inner(job)
@@ -4521,7 +4521,7 @@ def _retention_s():
     except ValueError:
         raise StartupAssertionError(f"{ENV_RETENTION_S}={raw!r} is not an integer")
     if value < 1 or value > RETENTION_S:
-        # Refused, not clamped. A value above the contract's 15 minutes would leave artifacts
+        # Refused, not clamped. A value above the contract's 5 minutes would leave artifacts
         # alive after chat-backend has been told they are gone, and silently accepting a
         # number the supervisor then ignores is how a knob ends up believed.
         raise StartupAssertionError(
