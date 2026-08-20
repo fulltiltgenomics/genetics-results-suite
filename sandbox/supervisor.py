@@ -56,8 +56,15 @@ STRUCTURAL CONSTRAINTS, each of which fails at runtime rather than at review:
 * The child is FORKED AND NOT EXEC'D. That is what makes prewarm() worth anything: the
   pre-imported numpy/scipy/polars/matplotlib pages are inherited copy-on-write. An exec
   would pay the cold-import cost on every execution.
+* THE PROCESS THAT FORKS IS NOT THIS ONE. genetics-results-suite-4h6.55 option (b): a FORK
+  SERVER is forked out of this process at startup, BEFORE the first request is parsed, and
+  every execution child is forked from THAT pristine address space. See the "fork server"
+  section below for what that buys and what it does not. The rule it exists to enforce is
+  one line long: nothing that ever holds a token, a request body or a user's source code
+  may call os.fork() to make an execution child.
 """
 
+import array
 import base64
 import errno
 import http.server
@@ -160,6 +167,11 @@ AUDIT_RATE_BURST = 200
 # than the pod needs. The consequence, stated because it is a real local/pod divergence and
 # not a rounding error: a script holding ~2.4 GiB while /scratch holds 400 MiB can be
 # cgroup-OOM-killed HERE and run fine in the pod.
+#
+# THE HEADROOM NOW COVERS TWO PROCESSES, NOT ONE: 4h6.55's fork server lives here too. It is
+# forked from the supervisor and does nothing but block on a socket, so its pages are shared
+# copy-on-write and its incremental RSS is a few MiB rather than a second interpreter's worth —
+# which is why this number is unchanged. If it ever starts allocating, this is what it spends.
 POD_MEMORY_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
 SUPERVISOR_MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
 CHILD_RLIMIT_AS_BYTES = POD_MEMORY_LIMIT_BYTES - SUPERVISOR_MEMORY_HEADROOM_BYTES  # 2560 MiB
@@ -390,6 +402,22 @@ CHILD_STATUS_FD = 3
 # kill: past it the reader keeps reading and discards, so a child cannot block on a full
 # status pipe. A record longer than this is a child misbehaving, not a limit worth reporting.
 _STATUS_READ_LIMIT_BYTES = 64 * 1024
+
+# 4h6.55 option (b). The fork server's control socket carries only these three ops, and none
+# of them carries a byte of user data — see _forkserver_main.
+FS_OP_FORK = "fork"     # + 4 descriptors; answers {"pid": n}
+FS_OP_WAIT = "wait"     # block until pid exits, WITHOUT consuming the zombie
+FS_OP_REAP = "reap"     # consume the zombie; answers {"status": n} or {"running": true}
+
+# Control messages are a fixed handful of ASCII bytes. The cap is a framing sanity bound, not
+# a budget: anything larger on this socket is a bug or an attempt, and both should fail loudly.
+FS_MSG_MAX_BYTES = 4096
+# How long a control round trip may take before the supervisor concludes the fork server is
+# wedged. FS_OP_WAIT is exempt — it blocks for the child's whole lifetime by design.
+FS_CONTROL_TIMEOUT_S = 30.0
+# The execution payload (code + env + cwd, as JSON) travels as an anonymous descriptor the
+# fork server never reads. MAX_CODE_BYTES bounds the code; the rest is env and JSON overhead.
+PAYLOAD_MAX_BYTES = MAX_CODE_BYTES + 64 * 1024
 
 LOG = logging.getLogger("sandbox.supervisor")
 
@@ -995,8 +1023,71 @@ def _relocate_above(fd, ceiling):
     return fd
 
 
-def _child_main(code, env, cwd, out_w, status_w, audit_w):
+def _read_payload(fd):
+    """(code, env, cwd) out of the anonymous descriptor the supervisor filled.
+
+    THE CHILD READS THIS, THE FORK SERVER NEVER DOES, and that split is the point of the whole
+    arrangement (4h6.55 option (b)). The bead's finding 1 named the victim's SOURCE CODE
+    alongside their tokens, and a /proc/self/mem scan recovered strings from executions that
+    had already completed — so passing the code through the forking process as a Python string
+    would leave it in arenas that copy-on-write hands to the NEXT user's child. Passing a
+    descriptor instead means the bytes are never in that address space at all.
+    """
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks = []
+    total = 0
+    while True:
+        block = os.read(fd, 65536)
+        if not block:
+            break
+        total += len(block)
+        if total > PAYLOAD_MAX_BYTES:
+            raise ValueError("execution payload is over its cap")
+        chunks.append(block)
+    payload = json.loads(b"".join(chunks).decode("utf-8"))
+    return payload["code"], payload["env"], payload["cwd"]
+
+
+def _payload_fd(payload, fallback_dir):
+    """An anonymous, seekable descriptor holding `payload` as JSON, positioned anywhere.
+
+    memfd_create is the wanted shape: no name, no filesystem, nothing for a resident process
+    from an earlier execution to open (finding 3's shape — see 4h6.83 — is not addressed here
+    but must not be WIDENED by adding a new named file under /scratch). The fallback creates
+    and immediately unlinks a 0600 file in the execution's own directory, which reaches the
+    same anonymous-inode end state through a name that exists for microseconds. It exists so
+    that a host without memfd_create degrades rather than fails; the image has it.
+    """
+    raw = json.dumps(payload).encode("utf-8")
+    fd = None
+    try:
+        fd = os.memfd_create("sandbox-execution", getattr(os, "MFD_CLOEXEC", 0))
+    except (AttributeError, OSError):
+        fd = None
+    if fd is None:
+        path = os.path.join(fallback_dir, ".payload-%s" % base64.urlsafe_b64encode(
+            os.urandom(9)).decode("ascii"))
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.unlink(path)
+        except OSError:
+            os.close(fd)
+            raise
+    try:
+        os.write(fd, raw)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _child_main(payload_fd, out_w, status_w, audit_w):
     """Runs in the forked child. Never returns.
+
+    IT TAKES A DESCRIPTOR, NOT THE CODE. The child is forked by the fork server, which is
+    forbidden to hold user data of any kind, so `code`, `env` and `cwd` arrive as JSON on an
+    anonymous descriptor that is passed through the fork server without being read. Changing
+    this back to arguments puts the source code in the forking process and re-opens 4h6.55.
 
     HOW THE CHILD REPORTS ITS EXCEPTION was left unsettled by the contract and is settled
     here: a DEDICATED STATUS PIPE carrying exactly one JSON object, not parsing the tail of
@@ -1035,6 +1126,10 @@ def _child_main(code, env, cwd, out_w, status_w, audit_w):
         fixed = max(CHILD_STATUS_FD, CHILD_AUDIT_FD)
         status_w = _relocate_above(status_w, fixed)
         audit_w = _relocate_above(audit_w, fixed)
+        # The payload descriptor is subject to the same collision as the pipes: the kernel may
+        # legitimately have numbered it 3 or 4, in which case the dup2 below would close the
+        # execution's own code out from under it.
+        payload_fd = _relocate_above(payload_fd, fixed)
         os.dup2(status_w, CHILD_STATUS_FD)
         # 4h6.45. A SECOND fixed number, for the SDK's audit records only. It must be in the
         # keep-set below or it is closed a few lines later and every record the SDK emits
@@ -1042,7 +1137,12 @@ def _child_main(code, env, cwd, out_w, status_w, audit_w):
         os.dup2(audit_w, CHILD_AUDIT_FD)
         os.set_inheritable(CHILD_STATUS_FD, True)
         os.set_inheritable(CHILD_AUDIT_FD, True)
-        _close_inherited_fds({CHILD_STATUS_FD, CHILD_AUDIT_FD})
+        _close_inherited_fds({CHILD_STATUS_FD, CHILD_AUDIT_FD, payload_fd})
+
+        # AFTER the status fd is wired, so that a malformed or over-cap payload is reported as
+        # a StartupFailure the caller can see rather than a silent exit 70.
+        code, env, cwd = _read_payload(payload_fd)
+        os.close(payload_fd)
 
         os.environ.update(env)
         os.umask(0o077)
@@ -1079,6 +1179,515 @@ def _child_main(code, env, cwd, out_w, status_w, audit_w):
         except Exception:
             pass
         os._exit(exit_code if isinstance(exit_code, int) and 0 <= exit_code < 256 else 1)
+
+
+# --------------------------------------------------------------------------------------
+# The fork server (genetics-results-suite-4h6.55, option (b))
+#
+# WHAT IT IS FOR, and it is one property, not a bundle: THE PROCESS THAT CALLS os.fork() TO
+# MAKE AN EXECUTION CHILD MUST NEVER HAVE HELD A TOKEN, A REQUEST BODY OR ANOTHER USER'S
+# SOURCE CODE. 4h6.55 demonstrated four routes by which a forked child read exactly those out
+# of the supervisor's inherited address space — a module global, a frame walk to
+# `job.req.tokens`, gc.get_objects(), and a raw scan of /proc/self/mem that recovered a token
+# from an execution ALREADY COMPLETED AND RELEASED. The fourth is why nothing reference-shaped
+# can fix this: Python strings are immutable and freed objects stay in arenas that
+# copy-on-write hands to the child, so `del`, __slots__ and overwriting all fail. The only
+# thing that works is never letting the bytes into the process that forks.
+#
+# So this process is forked out of the supervisor at startup, AFTER prewarm() and BEFORE the
+# first byte of the first request body is read — the second half of that is enforced by
+# _Handler._execute, which refuses on `not SUPERVISOR.accepting()` before _read_body, because
+# the HTTP server is already serving during bring_up(). Its address space is a snapshot of a
+# supervisor that has never seen a user. It receives, per execution, exactly one control message —
+# `{"op": "fork"}` — plus four descriptors, and it reads none of them. It does not learn the
+# execution id, the user, the session, the code or the directory paths. It forks, hands the
+# descriptors to _child_main, and reports the pid.
+#
+# WHY PREWARM SURVIVES, which is the entire reason (b) was chosen over (a) exec-after-fork:
+# the fork server inherits the prewarmed numpy/scipy/polars/matplotlib pages from the
+# supervisor and passes them to every child copy-on-write, exactly as before. The child still
+# never execs. The cost is one extra long-lived process whose pages are shared, not copied.
+#
+# WHAT IT DOES NOT DO. It does not touch finding 2 (cross-execution artifact read/overwrite on
+# the flat /scratch — genetics-results-suite-4h6.82) or finding 3 (a setsid() resident that
+# reads the next execution's token file and survives killpg —
+# genetics-results-suite-4h6.83). Both remain open and both still block a multi-user deploy.
+# --------------------------------------------------------------------------------------
+
+
+def _fs_send(sock, obj, fds=()):
+    raw = json.dumps(obj).encode("utf-8")
+    if len(raw) > FS_MSG_MAX_BYTES:
+        raise ValueError("fork server control message is over its cap")
+    if fds:
+        sock.sendmsg([raw], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", list(fds)))])
+    else:
+        sock.sendmsg([raw])
+
+
+def _fs_recv(sock, maxfds=0):
+    """(message, fds) or (None, []) at EOF.
+
+    SOCK_SEQPACKET, so one sendmsg is one recvmsg and there is no framing to get wrong. A
+    truncated control message (MSG_CTRUNC) closes whatever descriptors did arrive and raises:
+    a half-delivered fd set is not something to carry on from.
+    """
+    space = socket.CMSG_SPACE(maxfds * array.array("i").itemsize) if maxfds else 0
+    raw, ancdata, flags, _ = sock.recvmsg(FS_MSG_MAX_BYTES, space)
+    fds = []
+    for level, type_, data in ancdata:
+        if level == socket.SOL_SOCKET and type_ == socket.SCM_RIGHTS:
+            got = array.array("i")
+            got.frombytes(data[: len(data) - (len(data) % got.itemsize)])
+            fds.extend(got)
+    if flags & getattr(socket, "MSG_CTRUNC", 0):
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise ValueError("fork server control message was truncated")
+    if not raw:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return None, []
+    return json.loads(raw.decode("utf-8")), fds
+
+
+def _fs_close_all(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _forkserver_main(sock):
+    """Runs in the fork server. Never returns.
+
+    NOTHING IN THIS LOOP MAY START HOLDING USER DATA. The control message is a fixed op name;
+    the payload arrives as a descriptor and is passed straight to the child. If a future change
+    needs the fork server to know something about the execution, that is the moment the bead
+    this exists for re-opens — put it in the payload instead.
+
+    SIGTERM AND SIGINT ARE IGNORED HERE, deliberately. Kubernetes sends SIGTERM to PID 1, and
+    the supervisor's own handler drains rather than exiting: an in-flight child must be allowed
+    to finish inside terminationGracePeriodSeconds, and the fork server is the only process
+    that can reap it. So the fork server's lifetime is tied to the control socket, not to a
+    signal: EOF (the supervisor is gone) is what ends it.
+
+    SIGCHLD IS RESET TO SIG_DFL for the opposite reason. SIG_IGN makes the kernel auto-reap,
+    which would race the supervisor's own wait/reap split and lose exit statuses.
+
+    `pending` IS WHY THE CONTROL CHANNEL'S DEATH IS NOT A LEAK. The fork server is the only
+    process that knows the pid of a child whose `{"pid": n}` reply never reached the supervisor
+    — a fork round trip that times out leaves job.pid None, so neither _execute_inner's finally
+    nor the watchdog has anything to kill, and before 4h6.55 that could not happen because the
+    supervisor forked the child itself. Exiting on EOF then orphaned a process running user
+    code, at the same uid, with write access to /scratch, for the pod's lifetime. So every
+    forked pid is held here until a REAP consumes it, and whatever is left when the loop ends
+    is killed and reaped by _fs_kill_pending before this process exits.
+    """
+    pending = set()
+    try:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                signal.signal(sig, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
+        # The listening socket, every in-flight client connection and anything else the
+        # supervisor happened to hold. The fork server needs its control socket and the pod's
+        # stdout, and nothing else; a child that inherited the listener could read another
+        # user's HTTP conversation (the same reason _close_inherited_fds exists for the child).
+        _close_inherited_fds({sock.fileno()})
+        sock.settimeout(None)
+        while True:
+            try:
+                msg, fds = _fs_recv(sock, maxfds=4)
+            except (OSError, ValueError) as exc:
+                LOG.error("fork server: control channel failed: %s", exc)
+                break
+            if msg is None:
+                break  # EOF: the supervisor is gone
+            op = msg.get("op")
+            try:
+                if op == FS_OP_FORK:
+                    _fs_do_fork(sock, fds, pending)
+                    continue
+                _fs_close_all(fds)
+                if op == FS_OP_WAIT:
+                    # ECHILD IS NOT "waitid IS UNAVAILABLE" and reporting it as such sent the
+                    # supervisor into _reap's WNOHANG polling loop — under job.kill_lock —
+                    # whose first FS_OP_REAP then raised from inside that lock. "This pid is
+                    # not my child" is a fact the caller has to be told as itself.
+                    try:
+                        os.waitid(os.P_PID, msg["pid"], os.WEXITED | os.WNOWAIT)
+                    except AttributeError as exc:
+                        _fs_send(sock, {"unsupported": str(exc)})
+                    except OSError as exc:
+                        if exc.errno == errno.ECHILD:
+                            _fs_send(sock, {"nochild": str(exc)})
+                        else:
+                            _fs_send(sock, {"unsupported": str(exc)})
+                    else:
+                        _fs_send(sock, {"ok": True})
+                elif op == FS_OP_REAP:
+                    try:
+                        got, status = os.waitpid(
+                            msg["pid"], os.WNOHANG if msg.get("nohang") else 0)
+                    except OSError:
+                        # ECHILD and friends: this pid is not (or no longer) ours, so drop it
+                        # before the outer handler answers. Keeping it would have the cleanup
+                        # below signal a number that may since have been recycled.
+                        pending.discard(msg.get("pid"))
+                        raise
+                    if got:
+                        pending.discard(msg["pid"])
+                    _fs_send(sock, {"running": True} if got == 0 else {"status": status})
+                else:
+                    _fs_send(sock, {"error": f"unknown op {op!r}"})
+            except OSError as exc:
+                try:
+                    _fs_send(sock, {"error": f"{type(exc).__name__}: {exc}"})
+                except OSError:
+                    break
+    except BaseException as exc:  # pragma: no cover - the loop above is the whole function
+        try:
+            LOG.exception("fork server: aborting: %s", exc)
+        except Exception:
+            pass
+    try:
+        _fs_kill_pending(pending)
+    except BaseException as exc:  # never let cleanup turn an exit into a hang
+        try:
+            LOG.error("fork server: cleaning up unreaped children failed: %s", exc)
+        except Exception:
+            pass
+    os._exit(0)
+
+
+def _fs_do_fork(sock, fds, pending):
+    if len(fds) != 4:
+        _fs_close_all(fds)
+        _fs_send(sock, {"error": f"expected 4 descriptors, got {len(fds)}"})
+        return
+    payload_fd, out_w, status_w, audit_w = fds
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        pid = os.fork()
+    except OSError as exc:
+        _fs_close_all(fds)
+        _fs_send(sock, {"error": f"fork failed: {exc}"})
+        return
+    if pid == 0:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        _child_main(payload_fd, out_w, status_w, audit_w)
+        os._exit(70)  # unreachable; _child_main never returns
+    # BEFORE the reply, not after: the send is the step that can fail, and a child whose pid
+    # was never recorded here is a child nobody in the pod can name.
+    pending.add(pid)
+    _fs_close_all(fds)
+    _fs_send(sock, {"pid": pid})
+
+
+def _fs_kill_pending(pending):
+    """Kill and reap every child the supervisor can no longer ask about. Bounded.
+
+    ONLY EVER CALLED AFTER THE CONTROL LOOP HAS ENDED, which is what keeps it clear of the
+    supervisor's own reap path: once the socket is at EOF or broken no further FS_OP_REAP can
+    arrive, so nothing here can consume a zombie the supervisor is waiting for. Anything still
+    in `pending` at that point is, by construction, a child the supervisor either never learned
+    the pid of or can no longer reap.
+
+    The shape is _kill_group's — SIGTERM, then SIGKILL after KILL_GRACE_S — flattened over a
+    set: one grace for the whole batch rather than one each, because the pod is going away and
+    holding its exit open per child buys nothing. Delivery is os.killpg on the child's OWN
+    group for the same reason and with the same guard as _resolve_pgid; see _fs_signal_pending.
+    """
+    if not pending:
+        return
+    LOG.error("fork server: the control channel ended with %d unreaped child(ren) %s; "
+              "killing their process groups rather than orphaning them",
+              len(pending), sorted(pending))
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        _fs_signal_pending(pending, sig)
+        deadline = time.monotonic() + KILL_GRACE_S
+        while pending:
+            _fs_reap_pending(pending)
+            if not pending or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        if not pending:
+            return
+    LOG.error("fork server: %s survived SIGKILL; exiting anyway", sorted(pending))
+
+
+def _fs_signal_pending(pending, sig):
+    for pid in sorted(pending):
+        pgid = _own_pgid(pid)
+        try:
+            if pgid is None:
+                # No group of its own: either it has not reached _child_main's setsid() yet or
+                # it never will. killpg on the group it reports would signal the fork server
+                # and the supervisor with it, so signal the child alone — exactly _signal_group.
+                os.kill(pid, sig)
+            else:
+                os.killpg(pgid, sig)
+        except OSError:
+            pass  # already gone, or undeliverable; the reap below is the arbiter
+
+
+def _fs_reap_pending(pending):
+    for pid in sorted(pending):
+        try:
+            got, _ = os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            pending.discard(pid)  # ECHILD: not ours, so not ours to wait for
+        else:
+            if got:
+                pending.discard(pid)
+
+
+def _own_pgid(pid):
+    """`pid`'s process group, or None when that is the CALLER'S group.
+
+    The guard is the whole point and it holds in both processes that use it: neither the
+    supervisor nor the fork server (deliberately) calls setsid(), so a child that has not yet
+    reached its own reports the caller's group, and killpg on that value would signal the
+    caller. See _resolve_pgid, which is this plus job.pid's locking rules.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return None
+    return None if pgid == os.getpgrp() else pgid
+
+
+class ForkServerError(RuntimeError):
+    """The fork server refused or could not answer. Surfaces as a 500 to the caller."""
+
+
+class ForkServer:
+    """The supervisor's handle on the fork server. One per Supervisor, started by bring_up().
+
+    THE CHILD IS A GRANDCHILD OF THE SUPERVISOR, so the supervisor cannot waitpid() it. The
+    wait is split across the socket in exactly the two steps _reap already used for its own
+    children — a blocking waitid(WNOWAIT) that does not consume the zombie, then a waitpid
+    under job.kill_lock that does — because that split is what keeps a pid from being recycled
+    between the watchdog deciding to kill and the killpg landing. Collapsing it into one round
+    trip re-opens that race across a process boundary, where it is harder to see.
+
+    SIGNALLING IS UNCHANGED AND DOES NOT GO THROUGH HERE: supervisor and child share uid
+    65532, so os.killpg from the supervisor reaches the child's group directly.
+    """
+
+    def __init__(self, pid, sock):
+        self.pid = pid
+        self._sock = sock
+        # The control socket is a single stream shared by fork/wait/reap. Concurrency is 1, so
+        # this is uncontended in practice; it is here so that a future second caller blocks
+        # rather than interleaving two round trips on one socket.
+        self._lock = threading.Lock()
+        # Why a socket that has failed once is never used again: see _poison.
+        self._broken = None
+
+    @classmethod
+    def start(cls):
+        """Fork the fork server out of THIS process. Call before anything is accepted."""
+        parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                parent.close()
+            except Exception:
+                pass
+            _forkserver_main(child)
+            os._exit(70)  # unreachable
+        child.close()
+        parent.settimeout(FS_CONTROL_TIMEOUT_S)
+        LOG.info("fork server started as pid %d", pid)
+        return cls(pid, parent)
+
+    def _mark_broken(self, reason):
+        """Record, once, that this handle is finished. Safe from any thread: `_broken` is a
+        plain attribute so that alive() can read and set it WITHOUT self._lock, which
+        wait_nowait holds for the entire lifetime of an execution (timeout=None). Taking that
+        lock in alive() made every /health during an execution block until the child exited."""
+        if self._broken is None:
+            self._broken = reason
+            LOG.error("fork server control socket is unusable and will not be reused: %s", reason)
+
+    def _poison(self, reason):
+        """Caller holds the lock. Mark the control socket unusable and close it.
+
+        A ROUND TRIP THAT FAILED HALFWAY LEAVES THE PEER'S REPLY QUEUED, and there is no way to
+        tell later how many replies are outstanding. Reusing the socket then reads the PREVIOUS
+        request's answer: MEASURED — after an FS_OP_WAIT timed out at 0.5s, the next FS_OP_REAP
+        returned that WAIT's `{"ok": true}`. The dangerous ordering is a fork whose reply is
+        lost: the fork server DID fork the child and DID send its pid, so the next execution
+        reads that stale pid, applies its limits to, watchdogs, killpgs and reaps ANOTHER
+        USER'S CHILD, while its own child runs with no wall clock and no reaper. Message
+        alignment cannot be re-established, so it is never attempted: every later call fails
+        immediately, /health goes non-ok (see Supervisor.health) and Kubernetes replaces the
+        pod. Restarting the fork server here would be worse than doing nothing — it would be
+        forked from a supervisor that has served requests, which is finding 1 exactly.
+        """
+        self._mark_broken(reason)
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    def _round_trip(self, msg, fds=(), timeout=FS_CONTROL_TIMEOUT_S):
+        with self._lock:
+            if self._broken is not None:
+                raise ForkServerError(f"fork server is unusable: {self._broken}")
+            try:
+                self._sock.settimeout(timeout)
+                _fs_send(self._sock, msg, fds)
+                reply, extra = _fs_recv(self._sock)
+            except (OSError, ValueError) as exc:
+                self._poison(f"{type(exc).__name__}: {exc}")
+                raise ForkServerError(f"fork server control round trip failed: {exc}") from exc
+            if reply is None:
+                self._poison("the fork server exited")
+            else:
+                try:
+                    self._sock.settimeout(FS_CONTROL_TIMEOUT_S)
+                except OSError as exc:
+                    self._poison(f"{type(exc).__name__}: {exc}")
+        _fs_close_all(extra)
+        if reply is None:
+            raise ForkServerError("fork server exited")
+        # An `error` reply is IN BAND: the message was received and answered, so the socket is
+        # still aligned and is not poisoned. Only a failed round trip loses alignment.
+        if "error" in reply:
+            raise ForkServerError(str(reply["error"]))
+        return reply
+
+    def alive(self):
+        """False once the control socket is poisoned or the fork server process is gone.
+
+        /health asks this. A dead fork server used to be invisible: every /execute answered 500
+        forever while /health answered 200 ok, and k8s/deployments/sandbox.yaml has only a
+        readinessProbe, so nothing took the pod out of the Service endpoints or replaced it.
+        The fork server is a plausible cgroup-OOM victim — it shares the supervisor's pages, so
+        its RSS reads high, and it keeps the inherited oom_score_adj of 0 while only the child
+        is raised.
+
+        DELIBERATELY LOCK-FREE. self._lock is held for the whole of an execution by
+        wait_nowait's timeout=None round trip, so taking it here would make /health block until
+        the child exited — a readiness probe that stalls for the length of every execution is
+        worse than the failure it was added to detect. It touches only the flag and the pid,
+        never the socket, so it cannot close an fd another thread is blocked on.
+        """
+        pid = self.pid  # read ONCE: close() may set it to None between two reads
+        if self._broken is not None or pid is None:
+            return False
+        try:
+            got, _ = os.waitpid(pid, os.WNOHANG)
+        except OSError as exc:
+            # ECHILD: something else reaped it, so it is gone either way.
+            self._mark_broken(f"waitpid on the fork server failed: {exc}")
+            return False
+        if got:
+            self.pid = None  # reaped here, so close() must not wait for it again
+            self._mark_broken("the fork server exited")
+            return False
+        return True
+
+    def fork_child(self, payload_fd, out_w, status_w, audit_w):
+        """The pid of a fresh execution child. The four descriptors stay the caller's to close.
+
+        SCM_RIGHTS duplicates them into the fork server rather than moving them, and the reply
+        is only sent after the fork server has received them, so closing the originals once
+        this returns is safe and is the caller's job.
+        """
+        reply = self._round_trip({"op": FS_OP_FORK}, (payload_fd, out_w, status_w, audit_w))
+        pid = reply.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise ForkServerError(f"fork server returned {pid!r} instead of a pid")
+        return pid
+
+    def wait_nowait(self, pid):
+        """Block until `pid` exits WITHOUT consuming it. False if waitid is unavailable.
+
+        ECHILD raises instead of returning False: `pid` is not the fork server's child, so the
+        WNOHANG fallback _reap would take next cannot ever succeed either — it would spin under
+        job.kill_lock until its first reap raised from inside the lock. Raising here reaches
+        _execute_inner's finally, which kills the group.
+        """
+        reply = self._round_trip({"op": FS_OP_WAIT, "pid": pid}, timeout=None)
+        if "nochild" in reply:
+            raise ForkServerError(
+                f"the fork server does not own pid {pid}: {reply['nochild']}")
+        return "unsupported" not in reply
+
+    def reap(self, pid, nohang=False):
+        """The wait status, or None when `nohang` and the child is still running."""
+        reply = self._round_trip({"op": FS_OP_REAP, "pid": pid, "nohang": bool(nohang)})
+        if reply.get("running"):
+            return None
+        return reply["status"]
+
+    def close(self, grace=2.0):
+        """Close the control socket and reap the fork server. Idempotent."""
+        with self._lock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            pid, self.pid = self.pid, None
+        if pid is None:
+            return
+        deadline = time.monotonic() + grace
+        while True:
+            try:
+                got, _ = os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                return
+            if got:
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        # It was blocked in FS_OP_WAIT on a child that outlived the supervisor, or wedged.
+        # Either way the pod is going away; do not hold the shutdown open for it.
+        try:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+
+
+class _SelfWaiter:
+    """The waiter for a child of THIS process. Not used in production — see _reap."""
+
+    @staticmethod
+    def wait_nowait(pid):
+        try:
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        except (AttributeError, OSError):
+            return False
+        return True
+
+    @staticmethod
+    def reap(pid, nohang=False):
+        got, status = os.waitpid(pid, os.WNOHANG if nohang else 0)
+        return None if got == 0 else status
+
+
+SELF_WAITER = _SelfWaiter()
 
 
 def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None, sink=None):
@@ -1390,6 +1999,10 @@ class Supervisor:
         self._retention = {}
         self.retention_s = RETENTION_S if retention_s is None else retention_s
         self._stop_reaper = threading.Event()
+        # Set by bring_up(), which forks it before the supervisor is ready and therefore before
+        # any request has been parsed. None here means "nothing can be executed yet", which is
+        # what a Supervisor built directly by a unit test is.
+        self.forkserver = None
         self.ready = ready
         self.draining = False
 
@@ -1403,6 +2016,16 @@ class Supervisor:
             status = "draining"
         elif not self.ready:
             status = "starting"
+        elif self.forkserver is None or not self.forkserver.alive():
+            # THE ONE UNRECOVERABLE STATE, and it used to be invisible: with the fork server
+            # dead or its control socket poisoned, every /execute answers 500 forever while
+            # this answered 200 ok. k8s/deployments/sandbox.yaml has a readinessProbe and
+            # deliberately no livenessProbe, so a pod in that state stayed in the Service
+            # endpoints and was never replaced. Answering non-ok takes it out of endpoints,
+            # which is the only recovery available: the fork server is NOT restarted in
+            # process, because one re-forked from a supervisor that has served requests is
+            # 4h6.55 finding 1 again (see ForkServer._poison).
+            status = "forkserver-down"
         else:
             status = "ok"
         # A busy supervisor is healthy: 503 here would drop the pod out of the Service
@@ -1410,6 +2033,35 @@ class Supervisor:
         # endpoint at all.
         code = 200 if status == "ok" else 503
         return code, {"status": status, "busy": busy, "queued": queued}
+
+    def accepting(self):
+        """False while starting or draining. Checked BEFORE the request body is read.
+
+        WHY IT IS NOT ENOUGH FOR _admit TO CHECK. _admit runs after parse_execute_request, so a
+        POST /execute arriving while bring_up() is still in prewarm() had already materialised
+        both JWTs and the user's source as Python strings in this process — and ForkServer.start()
+        then snapshots that address space. MEASURED: a request refused with 503 during startup
+        was still recovered from the child by the /proc/self/mem route, while a needle minted
+        after bring_up() was not, so the finding was specific. main() binds and serves before
+        bring_up() on purpose (so `status: "starting"` is observable rather than a connection
+        refusal), which makes this the enforcement point for the fork server's whole property.
+        _admit re-checks under the lock, where the queue decision is actually made.
+
+        WHAT IT DOES NOT CLOSE. The property this enforces is "no Python object holding a token,
+        a request body or anybody's source code is constructed before the fork" — _read_body and
+        parse_execute_request never run, so the module-global, frame-walk and gc routes stay
+        clean. It is NOT "those bytes are never in this address space": _Handler inherits
+        rbufsize = -1, so BaseHTTPRequestHandler's request-line/header parse does an 8 KiB
+        buffered recv before _execute is entered, and a body sharing that TCP segment with its
+        headers (anything under ~8 KiB from a normal client; http.client concatenates them) is
+        already raw in this heap. MEASURED: one segment -> token, source and session id recovered
+        from a child forked promptly after the 503; separate segments -> nothing. A realistic
+        startup window (prewarm ~3.06s, request at +10ms) recovered nothing, but that is arena
+        reuse, not exclusion, and nothing enforces it. genetics-results-suite-4h6.87 owns closing
+        it: rbufsize = 0 on the handler (closes it at the source, costs unbuffered header reads
+        on the hot path and wants measuring), or restating the bar to the enforced property.
+        """
+        return self.ready and not self.draining
 
     def read_artifact(self, execution_id, name):
         """(bytes, content_type) for an artifact of a RETAINED execution, or raise.
@@ -1756,6 +2408,12 @@ class Supervisor:
                 pass
 
     def _execute_inner(self, job):
+        if self.forkserver is None:
+            # bring_up() starts it before `ready`, and /execute answers 503 NotReady until
+            # then, so this is unreachable through the wire contract. It is here so that a
+            # Supervisor built directly (unit tests) fails saying what is missing rather than
+            # with an AttributeError three frames down.
+            raise RequestError(503, "NotReady", "the fork server is not running")
         dirs = job.dirs
         seed_mplconfig(dirs.mplconfig)
         _deliver_tokens(job)
@@ -1765,24 +2423,39 @@ class Supervisor:
         # 4h6.45. Created BEFORE the fork because that is the only way a descriptor reaches a
         # forked child, and read by this process alone.
         audit_r, audit_w = os.pipe()
-        claims = job.req.claims[TOKEN_AUDIENCES[0]]
-        env = dirs.child_env(claims)
-        # THE STAMP COMES FROM THE CLAIMS, NOT FROM THE BODY AND NOT FROM THE CHILD.
-        # parse_execute_request has already refused the request unless both tokens agree on
-        # jti/sub/sid and those match execution_id/user/session_id, so either audience's claims
-        # will do; taking them from the token is what makes this evidence rather than an echo.
-        audit = _AuditForwarder(
-            str(claims.get("sub", "")), str(claims.get("sid", "")), str(claims.get("jti", ""))
-        )
-        code = job.req.code
-
-        sys.stdout.flush()
-        sys.stderr.flush()
-        started = time.monotonic()
-        pid = os.fork()
-        if pid == 0:
-            _child_main(code, env, dirs.tmp, out_w, st_w, audit_w)
-            os._exit(70)  # unreachable; _child_main never returns
+        # EVERYTHING FROM HERE TO THE FORK IS INSIDE THE try, and the try used to start five
+        # lines lower. _payload_fd raises OSError for real reasons — memfd_create ENOMEM, or
+        # os.open/os.write ENOSPC/EDQUOT on the fallback against the 512Mi emptyDir — and
+        # dirs.child_env can raise too; either one leaked all six pipe descriptors, which is
+        # the leak this change set out to remove, moved five lines up.
+        payload_fd = None
+        try:
+            claims = job.req.claims[TOKEN_AUDIENCES[0]]
+            env = dirs.child_env(claims)
+            # THE STAMP COMES FROM THE CLAIMS, NOT FROM THE BODY AND NOT FROM THE CHILD.
+            # parse_execute_request has already refused the request unless both tokens agree on
+            # jti/sub/sid and those match execution_id/user/session_id, so either audience's
+            # claims will do; taking them from the token is what makes this evidence rather
+            # than an echo.
+            audit = _AuditForwarder(
+                str(claims.get("sub", "")), str(claims.get("sid", "")), str(claims.get("jti", ""))
+            )
+            # 4h6.55 option (b). THE CODE AND THE ENVIRONMENT GO OUT AS A DESCRIPTOR, not as
+            # arguments, and this process does not fork. The fork server receives four numbers
+            # and the word "fork"; it never learns the user, the session, the execution id or
+            # the code, and it has never held a token. See the fork-server section.
+            payload_fd = _payload_fd(
+                {"code": job.req.code, "env": env, "cwd": dirs.tmp}, dirs.base)
+            started = time.monotonic()
+            pid = self.forkserver.fork_child(payload_fd, out_w, st_w, audit_w)
+        except BaseException:
+            # The fork server owns nothing yet, so every descriptor is still this process's to
+            # close. Leaking the write ends here would leave all three drains blocked on a pipe
+            # that never reaches EOF.
+            _fs_close_all([fd for fd in (payload_fd, out_w, st_w, audit_w, out_r, st_r, audit_r)
+                           if fd is not None])
+            raise
+        os.close(payload_fd)
         os.close(out_w)
         os.close(st_w)
         os.close(audit_w)
@@ -1827,11 +2500,27 @@ class Supervisor:
         t_st.start()
         t_audit.start()
         try:
-            wait_status = _reap(job)
+            wait_status = _reap(job, self.forkserver)
             # The child's own lifetime, measured before the drain. Timing the drain instead
             # reports a number no process spent running whenever a descendant escapes.
             duration_ms = int((time.monotonic() - started) * 1000)
         finally:
+            # A JOB THAT WAS FORKED BUT NOT REAPED HAS A CHILD NOBODY WILL EVER KILL, and
+            # setting job.done first is what made that permanent: _watchdog's first statement is
+            # `if job.done.wait(...): return`, so it exits without firing a limit and without
+            # killing the group, and neither _execute nor run kills on its error path. _reap
+            # raises ForkServerError (a RuntimeError) whenever the fork server dies or its
+            # control socket is poisoned mid-execution — so the fork server dying at t+1s of a
+            # 120s execution left the user's code running for the pod's lifetime, holding CPU,
+            # memory and same-uid write access to /scratch while later users executed.
+            # _kill_group goes through os.killpg/os.kill directly, never the control socket, so
+            # it still works with a dead fork server.
+            with job.kill_lock:
+                stranded = job.pid is not None and not job.reaped
+            if stranded:
+                LOG.error("execution %s: the reap did not complete; killing the child's group",
+                          job.req.execution_id)
+                _kill_group(job)
             job.done.set()
             reaped.set()
             t_out.join(DRAIN_GRACE_S + 5.0)
@@ -2092,19 +2781,19 @@ def _resolve_pgid(job):
     not reached setsid() (or never will), and killpg on that value would signal the SUPERVISOR
     — measured, not hypothesised: reading the pgid immediately after the fork returned the
     supervisor's group routinely, because the parent wins the race against the child's first
-    statement. Callers treat None as "no group to signal or count", never as "the group is
+    statement.
+
+    THE FORK SERVER DELIBERATELY DOES NOT setsid(), and this guard is why. It stays in the
+    supervisor's process group, so a child that has not yet reached its own setsid() reports
+    the supervisor's pgid and is caught here exactly as before. A fork server in a group of its
+    own would report a pgid this test does not recognise, and the first killpg would take out
+    the fork server and with it every future execution. Callers treat None as "no group to signal or count", never as "the group is
     empty". The caller holds job.kill_lock, so job.pid cannot be reaped and recycled while
     this reads it.
     """
     if job.pid is None:
         return None
-    try:
-        pgid = os.getpgid(job.pid)
-    except OSError:
-        return None
-    if pgid == os.getpgrp():
-        return None
-    return pgid
+    return _own_pgid(job.pid)
 
 
 # _signal_group's three answers. "gone" and "failed" were one value (False) and had to be
@@ -2140,8 +2829,14 @@ def _signal_group(job, sig):
         return _SIGNAL_DELIVERED
 
 
-def _reap(job):
+def _reap(job, waiter=None):
     """Block until the child exits, then reap it under job.kill_lock. Returns wait status.
+
+    `waiter` IS THE PROCESS THAT OWNS THE CHILD. In production that is the ForkServer, because
+    4h6.55 moved the fork out of this process and the child is now a GRANDchild here — waitpid
+    from the supervisor would raise ECHILD. The default reaps a child of this process and is
+    used only by tests that fork their own; the two-step structure below is identical either
+    way, which is the point of routing it through an object rather than branching.
 
     `waitid(..., WNOWAIT)` blocks without consuming the zombie, so the wait costs nothing and
     the pid stays un-recyclable; the actual `waitpid` and the `reaped` flag are then set
@@ -2157,18 +2852,17 @@ def _reap(job):
     lock is held only for the syscall that reaps and the flag it sets, and the sleep between
     polls happens outside it.
     """
-    try:
-        os.waitid(os.P_PID, job.pid, os.WEXITED | os.WNOWAIT)
-    except (AttributeError, OSError):
+    waiter = SELF_WAITER if waiter is None else waiter
+    if not waiter.wait_nowait(job.pid):
         while True:
             with job.kill_lock:
-                pid, wait_status = os.waitpid(job.pid, os.WNOHANG)
-                if pid != 0:
+                wait_status = waiter.reap(job.pid, nohang=True)
+                if wait_status is not None:
                     job.reaped = True
                     return wait_status
             time.sleep(0.02)
     with job.kill_lock:
-        _, wait_status = os.waitpid(job.pid, 0)
+        wait_status = waiter.reap(job.pid)
         job.reaped = True
     return wait_status
 
@@ -2536,18 +3230,28 @@ def _deliver_tokens(job):
     and picks the token by destination (`aud: db-api` for BIGQUERY_API_URL, `aud: results-api`
     for GENETICS_API_URL — they are audience-bound and a cross-audience token is a hard 401).
 
-    THIS IS NOT AN EXPOSURE BOUND, and every earlier version of this design read as if it
-    were. Three things were MEASURED against this exact shape (4h6.55):
-      * the child is forked WITHOUT exec from a supervisor holding tokens in its address
-        space, and a raw /proc/self/mem scan in the child recovered them — including from an
-        execution that had already completed and been released;
-      * a detached setsid() grandchild of an EARLIER execution read THIS execution's
-        mode-0600 file from inside the read-once window;
-      * so did every reference route (module globals, a frame walk, gc.get_objects()).
-    The file is still the right thing to build: the child needs some route to the credential
-    and this one is no worse than the alternatives, it keeps the token out of
-    /proc/<pid>/environ, and it gives the SDK something to unlink. What bounds the exposure is
-    4h6.55's resolution and nothing in this function.
+    WHAT THIS FILE IS AND IS NOT AN EXPOSURE BOUND AGAINST, restated after 4h6.55 option (b)
+    landed, because the earlier wording is now half wrong in a way that would be read
+    generously. Three routes were MEASURED against the ORIGINAL shape, in which the process
+    holding tokens was also the process that forked:
+      * a raw /proc/self/mem scan in the child recovered tokens out of the inherited address
+        space — including from an execution that had already completed and been released;
+      * so did every reference route (module globals, a frame walk to job.req.tokens,
+        gc.get_objects());
+      * and a detached setsid() grandchild of an EARLIER execution read THIS execution's
+        mode-0600 file from inside the read-once window.
+    THE FIRST TWO ARE CLOSED, and by the fork server rather than by anything here: the child is
+    forked from a process that has never held a token, a request body or a line of anyone's
+    source code, so there is nothing of another user's in the address space it inherits. THE
+    THIRD IS NOT CLOSED — it does not depend on the fork at all, only on one shared uid and a
+    file with a name — and it is genetics-results-suite-4h6.83. So this function's mode 0600
+    still bounds nothing against a same-uid resident, and the read-once unlink still narrows
+    only the window, not the reachable set.
+
+    IT IS ALSO THE ROUTE THAT MAKES OPTION (b) POSSIBLE, which is the one thing the earlier
+    wording missed. The child needs its credential and the fork server must not carry it; a
+    file the SUPERVISOR writes and the CHILD opens is a route from one to the other that does
+    not pass through the process in between. That is now this file's load-bearing property.
 
     NO CHOWN AND NOT MODE 0400. That is section 2's permission contract for option (a), which
     is NOT IN EFFECT: the pod holds no CAP_CHOWN or CAP_SETUID and both were measured to
@@ -3116,6 +3820,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         started = time.monotonic()
         execution_id = None
         try:
+            if not SUPERVISOR.accepting():
+                # BEFORE _read_body, and that order is the fork server's property, not a
+                # micro-optimisation: reading the body during bring_up() puts a token and a
+                # user's source into the arenas ForkServer.start() is about to snapshot, and no
+                # later 503 takes them back out. See Supervisor.accepting.
+                #
+                # The connection is closed rather than kept alive because the body has NOT been
+                # read: leaving those bytes in the socket makes them the next request line.
+                self.close_connection = True
+                raise RequestError(503, "NotReady", "supervisor is not accepting executions")
             raw = self._read_body(started)
             req = parse_execute_request(raw)
             execution_id = req.execution_id
@@ -3219,9 +3933,15 @@ def create(scratch_root=None, retention_s=None):
 def bring_up(supervisor, run_assertions=True):
     """Assertions, scratch wipe, prewarm; then mark the supervisor ready.
 
-    Order matters and is contractual: the assertions and prewarm() happen BEFORE the first
-    fork and before anything is accepted, and prewarm needs a writable MPLCONFIGDIR to exist
+    Order matters and is contractual: the assertions and prewarm() happen BEFORE the first fork
+    and before any execution is admitted, and prewarm needs a writable MPLCONFIGDIR to exist
     first because on matplotlib 3.10 an unwritable one raises rather than falling back.
+
+    "BEFORE ANYTHING IS ACCEPTED" IS ENFORCED, NOT ASSUMED. main() is already serving while
+    this runs — deliberately, so `status: "starting"` is observable — so requests DO arrive
+    here. What holds is that _Handler._execute refuses on `not supervisor.accepting()` before
+    it reads a byte of the body, which is the check that keeps a token or a user's source out
+    of the pages ForkServer.start() snapshots below.
     """
     root = supervisor.scratch_root
 
@@ -3255,6 +3975,30 @@ def bring_up(supervisor, run_assertions=True):
         # fails every plotting script is worse than one that crash-loops visibly.
         module.prewarm()
         LOG.info("prewarm complete")
+
+    # 4h6.55 option (b). THE ORDER OF THESE THREE LINES IS THE WHOLE CONTROL.
+    #   * AFTER prewarm(), so the fork server inherits the pre-imported analysis modules and
+    #     every child still gets them copy-on-write. Forking it earlier would cost exactly what
+    #     option (a) costs and buy nothing extra.
+    #   * BEFORE `ready`. That is what keeps any Python object holding a token, a request body
+    #     or anybody's source code out of the address space this snapshots — but only because
+    #     _Handler._execute checks Supervisor.accepting() BEFORE _read_body. main() is already
+    #     serving by now, so a POST /execute can and does arrive during this function; when the
+    #     readiness check sat after _read_body and parse_execute_request, an early request's
+    #     token and source were MEASURED still recoverable from a later child by the
+    #     /proc/self/mem route, 503 and all. It does NOT keep the raw bytes out: _Handler
+    #     inherits rbufsize = -1, so a body sharing a TCP segment with its headers is in the
+    #     socket read buffer before _execute runs, and was MEASURED recoverable from a child
+    #     forked promptly after the refusal when the two shared a segment (not when they were
+    #     separate). See Supervisor.accepting(); genetics-results-suite-4h6.87 owns that residual.
+    #   * BEFORE the reaper thread starts. fork() copies only the calling thread; forking while
+    #     another thread runs is how a lock ends up held forever in the child. serve_forever is
+    #     ALREADY running on its own thread here (main() binds first, on purpose), so this is
+    #     "before any thread that the fork server's own loop depends on", not "single-threaded":
+    #     _forkserver_main touches no Supervisor object and no lock a serving thread can hold,
+    #     and the one inherited thing that would matter to a child — the listening socket — is
+    #     closed by _close_inherited_fds.
+    supervisor.forkserver = ForkServer.start()
 
     # The retention reaper (4h6.46). Started after the wipe so its first pass cannot race the
     # startup clean, and before `ready` so no execution can complete without one running.
@@ -3305,10 +4049,15 @@ def main(argv=None):
         LOG.exception("startup failed; refusing to serve")
         httpd.shutdown()
         httpd.server_close()
+        if supervisor.forkserver is not None:
+            supervisor.forkserver.close()
         return 1
     LOG.info("ready")
     serving.join()
     httpd.server_close()
+    # After serve_forever returns, so the drain has already let the in-flight child finish and
+    # be reaped — the fork server is the only process that can reap it.
+    supervisor.forkserver.close()
     return 0
 
 
