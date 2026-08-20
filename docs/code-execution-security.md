@@ -171,7 +171,7 @@ and is not duplicated here.
   **preflight that runs before the first apply of the deploy**, not in the manifest loop where
   `sandbox.yaml` sorts second-to-last and an `exit 1` would leave every other manifest applied
   and every rollout unrolled.
-- **`SANDBOX_ENABLED` on db-api and results-api** stays `"false"` until the separate,
+- **`SANDBOX_ENABLED` on db-api, results-api and chat-backend** stays `"false"` until the separate,
   deliberate enablement step, and `scripts/test-network-policies.py` reports that pairing as a
   note instead of a failure **only when it has confirmed against the cluster that no sandbox
   Deployment is live**. `ENABLE_SANDBOX` alone does not license the relaxation: it means "this
