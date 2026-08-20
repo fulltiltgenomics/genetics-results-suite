@@ -42,6 +42,22 @@ probe, by all four demonstrated routes — module global, frame walk, gc, and a 
 carries two and fails loudly if the primary one goes quiet. A test that the fork server starts
 would prove none of this and is not what is here.
 
+THE SAME PROBE, ONE LAYER LOWER (4h6.87), is `test_pre_ready_body_bytes`: a POST /execute whose
+head and body share one TCP segment, refused 503 while the supervisor is still starting, with
+ForkServer.start() gated to run milliseconds later — because under a realistic multi-second
+prewarm the same probe recovers nothing and that is arena REUSE, not exclusion. Two details are
+what make it a measurement rather than a ritual. The sender is a SUBPROCESS: the harness process
+is the supervisor process, so a body built here with make_body() is in the fork snapshot however
+the socket behaves, and the first version of this test failed for that reason with a correct fix
+in place. And the three needles are asserted absent INDEPENDENTLY and UNCONDITIONALLY, with the
+pre-fix rfile restorable by SUPERVISOR_TEST_BUFFERED_RFILE=1 as a negative control that is run,
+not described. test_header_reader_units is the mechanics half and makes NO leak claim, so it may
+build heads in-process; it carries two controls of its own. SUPERVISOR_TEST_DROP_LF_CRLF=1 drops
+b"\n\r\n" from the terminator set and turns the \n\r\n case red. SUPERVISOR_TEST_STATIC_SEAM=1
+restores the per-round seam window, which turns the one-byte-drip case red and takes the
+terminator/chunk matrix from 28/28 to 26/28 — the same fail-open hang reached through peek size
+rather than terminator shape.
+
 WHAT AN EXECUTION LEAVES BEHIND (4h6.66, 4h6.83) AND WHAT A RETENTION WINDOW SERVES (4h6.82)
 are both tested as the failure, not as the plumbing, and both carry negative controls that are
 run rather than described. `test_survivors` leaves a real process behind a real
@@ -93,6 +109,8 @@ import re
 import shutil
 import signal
 import socket
+import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
@@ -3304,6 +3322,476 @@ def test_pre_ready_execute(tmp):
         sup.SUPERVISOR = saved
 
 
+ENV_BUFFERED_RFILE = "SUPERVISOR_TEST_BUFFERED_RFILE"
+
+# THE SENDER HAS TO BE ANOTHER PROCESS, and this is not fastidiousness — it was measured. The
+# harness process IS the supervisor process here, so a body built with make_body() is in the
+# heap that ForkServer.start() snapshots no matter what the socket read buffer does: the first
+# version of test_pre_ready_body_bytes recovered all three needles WITH the fix in place, for
+# that reason alone. The needles are therefore minted here, written to a file the parent reads
+# only AFTER the fork, and never exist in the parent before it.
+_EARLY_SENDER = r'''
+import base64, json, os, socket, sys, uuid
+
+port, auds, out = int(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+
+def b64(obj):
+    return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode("ascii").rstrip("=")
+
+v = os.urandom(12).hex().upper()
+eid, user, sid = str(uuid.uuid4()), "early-%s@b.c" % v[:8], "sess-%s" % v
+tokens = {aud: "%s.%s.signature" % (b64({"alg": "HS256"}),
+                                    b64({"aud": aud, "jti": eid, "sub": user, "sid": sid}))
+          for aud in auds}
+body = {"code": "x = 'EARLYCODE%s'\nprint('early')\n" % v, "execution_id": eid,
+        "tokens": tokens, "user": user, "session_id": sid}
+payload = json.dumps(body).encode()
+with open(out, "w") as fh:
+    json.dump({"early-token": tokens[auds[0]].split(".")[1],
+               "early-code": "EARLYCODE" + v, "early-session": sid}, fh)
+head = (b"POST /execute HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n")
+sock = socket.create_connection(("127.0.0.1", port), timeout=30)
+sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+sock.sendall(head + payload)   # ONE sendall: the head and the body share a segment
+answer = sock.recv(4096)
+sock.close()
+sys.exit(0 if b" 503 " in answer else 3)
+'''
+
+
+def _buffered_setup(self):
+    """_Handler.setup as it was BEFORE 4h6.87: an 8 KiB BufferedReader as rfile.
+
+    This is the negative control for test_pre_ready_body_bytes, and it is a whole restoration
+    of the defect rather than a flag the fixed code reads: with it installed the header parse
+    recv()s 8 KiB and the body rides in with the headers again.
+
+    IT ASSERTS AT LEAST ONE NEEDLE RECOVERS, ARENA-DEPENDENT WHICH: measured 2 of 3, with
+    `early-code` the one that comes back only sometimes. A future run seeing 2 red and 1 green
+    is the control working, not a flake.
+    """
+    socketserver.StreamRequestHandler.setup(self)
+    self.rfile = self.connection.makefile("rb", -1)
+
+
+def test_pre_ready_body_bytes(tmp):
+    """A body that shares a TCP segment with its headers must not be in the supervisor when the
+    fork server is forked (genetics-results-suite-4h6.87).
+
+    THE ORDERING FIX IS NOT ENOUGH ON ITS OWN, which is why this is a second test and not an
+    assertion inside test_pre_ready_execute. _execute refuses before _read_body, so no Python
+    string is built — but socketserver's default rfile is an 8 KiB BufferedReader, so
+    BaseHTTPRequestHandler's request-line and header parse had ALREADY recv()d the body
+    underneath the handler. MEASURED before the fix, with the fork gated to land milliseconds
+    after the 503: one segment -> the token, the source and the session id all recovered from
+    the child; two segments -> nothing. Run this with %s=1 to put that buffer back and watch
+    the three checks below go red.
+
+    THE FORK IS GATED DELIBERATELY. ForkServer.start() runs on the next line after the refusal.
+    Under a realistic multi-second prewarm the same probe recovers nothing, but that is arena
+    REUSE and nothing enforces it; a null result there would prove nothing about the property.
+    """ % ENV_BUFFERED_RFILE
+    root = os.path.join(tmp, "pre-ready-bytes")
+    os.makedirs(root)
+    saved_env = os.environ.get(sup.ENV_SCRATCH_ROOT)
+    os.environ[sup.ENV_SCRATCH_ROOT] = root
+    saved = sup.SUPERVISOR
+    real_setup = sup._Handler.setup
+    if os.environ.get(ENV_BUFFERED_RFILE) == "1":
+        print(f"  !! {ENV_BUFFERED_RFILE}=1: the negative control is installed, "
+              f"the checks below MUST fail")
+        sup._Handler.setup = _buffered_setup
+
+    # The same positive control test_isolation uses, planted before the fork server exists: if
+    # this one is not recovered the search is dead and the absences below mean nothing.
+    control = "FORKSRVCTL" + os.urandom(16).hex().upper()
+    sup.ISOLATION_TEST_CONTROL = control
+
+    supervisor = sup.create(scratch_root=root, retention_s=60)  # bound, NOT ready, NOT forked
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    try:
+        needle_file = os.path.join(root, "needles.json")
+        sent = subprocess.run(
+            [sys.executable, "-c", _EARLY_SENDER, str(port),
+             json.dumps(list(sup.TOKEN_AUDIENCES)), needle_file], timeout=120)
+        check("pre-ready bytes: a one-segment POST /execute during bring_up is refused 503",
+              sent.returncode == 0, f"sender exited {sent.returncode}")
+
+        # MILLISECONDS after the refusal, which is what makes the leak observable at all.
+        supervisor.forkserver = sup.ForkServer.start()
+        supervisor.ready = True
+
+        # AFTER the fork, deliberately: see _EARLY_SENDER. Anything read before this line is in
+        # the snapshot the probe searches, and would make every arm of the A/B look identical.
+        with open(needle_file, encoding="utf-8") as fh:
+            early = json.load(fh)
+        pairs = [["control-prefork", *_pair(control)]]
+        pairs += [[label, *_pair(early[label])] for label in
+                  ("early-token", "early-code", "early-session")]
+        probe_code = (_ISOLATION_PROBE
+                      .replace("__PAIRS__", json.dumps(pairs))
+                      .replace("__SLEEP_S__", "0.0"))
+        probe = make_body(code=probe_code, user="probe@b.c", session_id="sess-probe")
+        probe["timeout_s"] = 120
+        raw = json.dumps(probe).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        conn.request("POST", "/execute", body=raw,
+                     headers={"Content-Type": "application/json",
+                              "Content-Length": str(len(raw))})
+        resp = conn.getresponse()
+        answered = json.loads(resp.read().decode())
+        conn.close()
+
+        line = ""
+        for candidate in (answered.get("output") or "").splitlines():
+            if candidate.startswith("PROBERESULT "):
+                line = candidate[len("PROBERESULT "):]
+        try:
+            result = json.loads(line)["released"]
+        except Exception:
+            result = None
+        check("pre-ready bytes: the probe executed and reported",
+              isinstance(result, dict), f"got {str(answered)[:300]}")
+        if not isinstance(result, dict):
+            return
+        found = set(result["found"])
+        check("pre-ready bytes: the positive control IS recovered, so the search works",
+              "control-prefork" in found and result["mem"] == "ok",
+              f"mem said {result['mem']}, found {sorted(found)}")
+        # THREE INDEPENDENT, UNCONDITIONAL CHECKS. Not one check over a union and not an `or`:
+        # this group has already shipped a test that passed because one assertion carried
+        # another (see the isolation group's note on `found`).
+        for label, what in (("early-token", "token"), ("early-code", "source code"),
+                            ("early-session", "session id")):
+            check(f"pre-ready bytes: the refused request's {what} is NOT in the child, so the "
+                  f"socket read buffer no longer carries it into the fork",
+                  label not in found, f"RECOVERED {label}; found {sorted(found)}")
+    finally:
+        sup._Handler.setup = real_setup
+        httpd.shutdown()
+        httpd.server_close()
+        if supervisor.forkserver is not None:
+            supervisor.forkserver.close()
+        sup.SUPERVISOR = saved
+        if saved_env is None:
+            os.environ.pop(sup.ENV_SCRATCH_ROOT, None)
+        else:
+            os.environ[sup.ENV_SCRATCH_ROOT] = saved_env
+
+
+ENV_DROP_LF_CRLF = "SUPERVISOR_TEST_DROP_LF_CRLF"
+ENV_STATIC_SEAM = "SUPERVISOR_TEST_STATIC_SEAM"
+
+
+def _static_seam(self, tail_len, take):
+    """_read_head's seam update as it was BEFORE the rolling window: recomputed from THIS
+    round only.
+
+    The negative control for the drip checks below, and a whole restoration of the defect
+    rather than a flag the fixed code reads. With it installed a peek that returns fewer than
+    _HEADER_TAIL_BYTES bytes discards what earlier rounds saw, so a blank line straddling it is
+    never found: the read consumes the WHOLE body off the kernel queue and blocks in recv_into
+    forever. MEASURED, 4 terminator shapes x 7 chunk sizes: 26/28 with this installed, 28/28
+    without, and the two failures are exactly the take == 1 cells whose blank line is \\r\\n.
+    """
+    tail = min(take, sup._HEADER_TAIL_BYTES)
+    self._edge[:tail] = self._view[take - tail:take]
+    return tail
+
+
+def _drip(sock, blob, chunk, delay):
+    """Feed `blob` `chunk` bytes at a time on a thread, returned so the caller can join it.
+
+    THE JOIN MATTERS: reader.read() is a single recv by design, so a leftover assertion made
+    while the feeder is still writing sees a short read and passes or fails for the wrong
+    reason. Drain to the expected length after the feeder is done.
+    """
+    def go():
+        try:
+            for i in range(0, len(blob), chunk):
+                sock.sendall(blob[i:i + chunk])
+                time.sleep(delay)
+        except OSError:
+            pass  # the reader hung (the control is installed) and the socket was closed
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t
+
+
+def _drain(reader, n):
+    out = b""
+    while len(out) < n:
+        block = reader.read(n - len(out))
+        if not block:
+            break
+        out += block
+    return out
+
+
+def _read_head_watched(reader, timeout):
+    """(result, heap_bytes_seen, still_running) for one _read_head call on its own thread.
+
+    THIS IS A MECHANICS TEST AND MAKES NO LEAK CLAIM — a leak claim has to send from another
+    process (see _EARLY_SENDER), because this process is the supervisor. What it does assert is
+    narrower and checkable here: which objects _read_head puts a byte into. `heap_bytes_seen`
+    is every `bytes` value that appeared as a local of the _read_head frame, so a body byte
+    showing up in one means a heap copy was built where a fixed, wiped buffer was required.
+    """
+    seen, box = [], []
+
+    def tracer(frame, event, arg):
+        if frame.f_code.co_name != "_read_head":
+            return None
+        for value in frame.f_locals.values():
+            if type(value) is bytes:                                     # noqa: E721
+                seen.append(value)
+            elif type(value) is list:                                    # noqa: E721
+                seen.extend(item for item in value if type(item) is bytes)  # noqa: E721
+        return tracer
+
+    def go():
+        sys.settrace(tracer)
+        try:
+            box.append(reader._read_head())
+        except BaseException as exc:                                     # noqa: BLE001
+            box.append(exc)
+        finally:
+            sys.settrace(None)
+
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    t.join(timeout)
+    return (box[0] if box else None), seen, t.is_alive()
+
+
+def test_header_reader_units():
+    """_HeaderBoundedReader's edges, which the wire tests cannot reach on purpose: a head split
+    across segments, a head dripped ONE BYTE AT A TIME, a head that never terminates, a head
+    whose blank line is "\\n\\r\\n", and both fixed buffers left clean."""
+    pair = socket.socketpair
+    saved_terminators = sup._HEADER_TERMINATORS
+    saved_roll = sup._HeaderBoundedReader._roll_tail
+    if os.environ.get(ENV_DROP_LF_CRLF) == "1":
+        print(f"  !! {ENV_DROP_LF_CRLF}=1: the negative control is installed, "
+              f"the \\n\\r\\n checks below MUST fail")
+        sup._HEADER_TERMINATORS = tuple(t for t in sup._HEADER_TERMINATORS if t != b"\n\r\n")
+    if os.environ.get(ENV_STATIC_SEAM) == "1":
+        print(f"  !! {ENV_STATIC_SEAM}=1: the negative control is installed, "
+              f"the drip checks below MUST fail")
+        sup._HeaderBoundedReader._roll_tail = _static_seam
+    try:
+        _header_reader_cases(pair)
+    finally:
+        sup._HEADER_TERMINATORS = saved_terminators
+        sup._HeaderBoundedReader._roll_tail = saved_roll
+
+
+def _header_reader_cases(pair):
+
+    # 1. head and body in one write: the head comes back exactly, the body stays in the kernel.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    a.sendall(b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nBODY!")
+    line = reader.readline(65537)
+    check("header reader: the request line is returned",
+          line == b"POST /x HTTP/1.1\r\n", f"got {line!r}")
+    rest = b"".join(iter(lambda: reader.readline(65537), b"\r\n"))
+    check("header reader: the headers are returned and stop at the blank line",
+          rest == b"Host: h\r\nContent-Length: 5\r\n", f"got {rest!r}")
+    check("header reader: the body is still readable afterwards",
+          reader.read(5) == b"BODY!")
+    check("header reader: the peek scratch is zeroed, so no body byte is left in it",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES))
+    a.close(); b.close()
+
+    # 2. a head split across three segments, with the terminator itself bisected — and a body
+    # riding in the last segment, so the seam search sees body bytes and must not copy them.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    whole = b"GET /y HTTP/1.1\r\nA: " + b"z" * 900 + b"\r\n\r\n"
+    def _feed():
+        a.sendall(whole[:10]); time.sleep(0.05)
+        a.sendall(whole[10:len(whole) - 2]); time.sleep(0.05)
+        a.sendall(whole[len(whole) - 2:] + b"\x01\x02BODYBODY")
+    threading.Thread(target=_feed, daemon=True).start()
+    head, heap, alive = _read_head_watched(reader, 10)
+    check("header reader: a head split across segments, terminator bisected, is reassembled",
+          not alive and head == whole, f"got {head!r} (still running: {alive})")
+    # The seam window straddles the boundary, so its trailing bytes ARE body bytes. Building it
+    # as `tail + bytes(view[:n])` put them in a heap `bytes` that is freed into an arena the
+    # fork server would snapshot; it is a second fixed bytearray for exactly this reason.
+    # THE NEEDLE IS ONE BYTE ON PURPOSE — the pre-fix copy carried only 1 or 2 body bytes here,
+    # so a word-sized needle would have made this assertion pass against the defect it exists
+    # to catch. \x01 and \x02 cannot occur in the head, and the terminators do not contain them.
+    escaped = [chunk for chunk in heap if b"\x01" in chunk or b"\x02" in chunk]
+    check("header reader: the bisected-terminator path copied NO body byte onto the heap",
+          not escaped, f"heap bytes carrying body: {escaped!r}")
+    check("header reader: both fixed buffers are zeroed after the seam read",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+    a.close(); b.close()
+
+    # 2b. THE BLANK LINE IS "\n\r\n" — the fourth shape http.client.parse_headers stops on, and
+    # the one a three-member terminator set misses. Not reachable from the deployed path, but
+    # with it missing this was MEASURED to copy the WHOLE body into `parts` on the heap, leave
+    # it in the un-wiped scratch (the finally never runs), and block in recv_into forever
+    # instead of refusing. Run with SUPERVISOR_TEST_DROP_LF_CRLF=1 to drop it from the set and
+    # watch these go red.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    lf_head = b"POST /execute HTTP/1.1\r\nHost: h\nContent-Length: 15\n\r\n"
+    a.sendall(lf_head + b"SECRETBODYNEEDLE"[:15])
+    head, heap, alive = _read_head_watched(reader, 5)
+    check("header reader: a head whose blank line is \\n\\r\\n terminates and is consumed exactly",
+          not alive and head == lf_head, f"got {head!r} (still blocked in recv_into: {alive})")
+    check("header reader: that head's body is not copied onto the heap",
+          not [chunk for chunk in heap if b"SECRETBODY" in chunk],
+          f"heap bytes carrying body: {[c for c in heap if b'SECRETBODY' in c]!r}")
+    check("header reader: that head's body is not left in the scratch buffer",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES),
+          f"scratch: {bytes(reader._scratch)[:80]!r}")
+    if not alive:
+        check("header reader: that head's body is still in the kernel queue afterwards",
+              reader.read(15) == b"SECRETBODYNEEDL")
+    a.close(); b.close()
+
+    # 2c. THE SAME FAILURE REACHED THROUGH PEEK SIZE RATHER THAN TERMINATOR SHAPE: an ordinary,
+    # entirely valid \r\n\r\n head delivered a byte at a time. The seam window used to be
+    # recomputed from the current round, so a 1-byte peek shrank it to 1 byte and the blank line
+    # straddling it was never found — take became the whole peek every round, THE WHOLE BODY was
+    # consumed off the kernel queue into `parts`, the finally never ran, and the read blocked in
+    # recv_into forever instead of refusing. total never approaches MAX_HEADER_BYTES on that
+    # path, so _HeaderTooLarge never fires either: fail-OPEN and pre-auth. Run with
+    # SUPERVISOR_TEST_STATIC_SEAM=1 to put the per-round window back and watch these go red.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    drip_head = b"POST /execute HTTP/1.1\r\nHost: h\r\nContent-Length: 20\r\n\r\n"
+    # THE BODY OPENS WITH TWO ONE-BYTE NEEDLES, and that is what makes the heap check bite
+    # here: at a byte a drip `parts` fills with 1-byte `bytes`, so a word-sized needle like
+    # SECRETBODY can never appear in one and the check would pass against the defect it exists
+    # to catch. \x01 and \x02 cannot occur in a head and are in no terminator.
+    drip_body = b"\x01\x02SECRETBODYNEEDL" + b"AA"
+    feeder = _drip(a, drip_head + drip_body, 1, 0.004)
+    head, heap, alive = _read_head_watched(reader, 20)
+    feeder.join(20)
+    check("header reader: a head dripped one byte at a time terminates and is consumed exactly",
+          not alive and head == drip_head,
+          f"got {head!r} (still blocked in recv_into: {alive})")
+    leaked = [c for c in heap if b"\x01" in c or b"\x02" in c or b"SECRETBODY" in c]
+    check("header reader: the dripped head's body is not copied onto the heap",
+          not leaked, f"{len(leaked)} heap bytes carrying body, e.g. {leaked[:6]!r}")
+    check("header reader: the dripped head's body is still in the kernel queue afterwards",
+          not alive and _drain(reader, len(drip_body)) == drip_body)
+    check("header reader: both fixed buffers are zeroed after the dripped read",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+    a.close(); b.close()
+
+    # 2d. AND THE WHOLE MATRIX, so the take == 1 class is asserted rather than spot-checked:
+    # every blank-line shape http.client.parse_headers stops on (the last header line ends
+    # \r\n or \n, the blank line is \r\n or \n) crossed with chunk sizes that make a peek land
+    # inside the terminator. MEASURED: 28/28 here, 26/28 with SUPERVISOR_TEST_STATIC_SEAM=1,
+    # and the two that fail there are exactly the take == 1 cells whose blank line is \r\n —
+    # take == 2 is rescued by the b"\n\r\n" member and \n\n survives on a 2-byte window, which
+    # is why one-write clients never saw this and any peer that can connect can trigger it.
+    for prev in (b"\r\n", b"\n"):
+        for blank in (b"\r\n", b"\n"):
+            bad = []
+            for chunk in (1, 2, 3, 4, 5, 7, 512):
+                m_head = (b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 20"
+                          + prev + blank)
+                m_body = b"M" * 20
+                a, b = pair()
+                reader = sup._HeaderBoundedReader(b, None)
+                feeder = _drip(a, m_head + m_body, chunk, 0.004 if chunk <= 2 else 0.002)
+                head, _, alive = _read_head_watched(reader, 20)
+                feeder.join(20)
+                left = b"" if alive else _drain(reader, len(m_body))
+                if not (not alive and head == m_head and left == m_body
+                        and reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+                        and reader._edge == bytearray(sup._HEADER_EDGE_BYTES)):
+                    bad.append(f"chunk={chunk} hung={alive} head={head!r} left={left!r}")
+                a.close(); b.close()
+            check(f"header reader: a head ending {prev + blank!r} is consumed exactly and "
+                  f"leaves its body in the kernel at every chunk size", not bad,
+                  "; ".join(bad))
+
+    # 3. a head that never terminates fails CLOSED at MAX_HEADER_BYTES.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    box = []
+    def _over():
+        try:
+            reader.readline(65537)
+        except sup._HeaderTooLarge:
+            box.append("refused")
+        except Exception as exc:                       # noqa: BLE001
+            box.append(repr(exc))
+    t = threading.Thread(target=_over, daemon=True)
+    t.start()
+    try:
+        sent = 0
+        while sent <= sup.MAX_HEADER_BYTES + sup.HEADER_PEEK_BYTES and t.is_alive():
+            a.sendall(b"X: " + b"q" * 1021 + b"\r\n")
+            sent += 1024
+        t.join(10)
+    finally:
+        a.close(); b.close()
+    check("header reader: a head that never terminates is refused, not buffered forever",
+          box == ["refused"], f"got {box!r}")
+    # The wipe is in a `finally`, so it has to survive the raise as well as the return — the
+    # refusal path is the one where a caller has most reason to assume nothing was kept.
+    check("header reader: both fixed buffers are zeroed on the _HeaderTooLarge path too",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+
+    # 4. and over the wire that refusal has to be a real answer, not a traceback in the log:
+    # _HeaderTooLarge escapes handle_one_request, which is a path socketserver would otherwise
+    # turn into a dropped connection with no response.
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    try:
+        wire = socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=20)
+        wire.sendall(b"GET /health HTTP/1.1\r\nHost: h\r\n")
+        sent = 0
+        try:
+            while sent < sup.MAX_HEADER_BYTES + 4096:
+                wire.sendall(b"X: " + b"q" * 1021 + b"\r\n")
+                sent += 1024
+        except OSError:
+            pass  # the supervisor answered and closed while we were still writing
+        wire.settimeout(20)
+        answer = b""
+        try:
+            while True:
+                block = wire.recv(4096)
+                if not block:
+                    break
+                answer += block
+        except OSError:
+            pass
+        wire.close()
+        check("header reader: an over-long head is answered 431 in the uniform JSON shape and "
+              "the connection is closed",
+              answer.startswith(b"HTTP/1.1 431 ") and b'"PayloadTooLarge"' in answer,
+              f"got {answer[:160]!r}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # --------------------------------------------------------------------------------------
 
 
@@ -3325,8 +3813,11 @@ def run_in_process():
         test_startup_wipe(tmp)
         print("fork server units")
         test_forkserver_units(tmp)
+        print("bounded header reads (4h6.87)")
+        test_header_reader_units()
         print("fork server failure paths")
         test_pre_ready_execute(tmp)
+        test_pre_ready_body_bytes(tmp)
         test_forkserver_lost_fork_reply(tmp)
         test_forkserver_death_mid_execution(tmp)
         print("cross-execution memory isolation (4h6.55 option (b))")
@@ -3444,10 +3935,13 @@ def run_container(base_url, retention_s=None, container_name=None):
         "hardening units (test_hardening_units) — calls _trim_artifacts/_cap_response/_reap directly",
         "audit stream units (test_audit_units) — calls _AuditForwarder and _drain directly",
         "fork server units (test_forkserver_units) — drives ForkServer and _payload_fd directly",
-        "fork server failure paths (test_pre_ready_execute, test_forkserver_lost_fork_reply, "
-        "test_forkserver_death_mid_execution) — needs to bind its own pre-ready supervisor, to "
+        "fork server failure paths (test_pre_ready_execute, test_pre_ready_body_bytes, "
+        "test_forkserver_lost_fork_reply, test_forkserver_death_mid_execution) — needs to bind "
+        "its own pre-ready supervisor and gate ForkServer.start() around a refused request, to "
         "drop a fork reply inside the control protocol and to SIGKILL the fork server, none of "
         "which is reachable over the wire",
+        "bounded header reads (test_header_reader_units) — drives _HeaderBoundedReader over a "
+        "socketpair, which needs the module",
         "cross-execution memory isolation (test_isolation) — plants its positive control in "
         "the supervisor module before the fork server is forked, which needs the module",
     ])
