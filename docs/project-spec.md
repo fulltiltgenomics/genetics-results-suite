@@ -1049,11 +1049,19 @@ start it, because the image still ships no `CMD` and the manifest still declares
   never held a **Python object** carrying a token, a request body or anyone's source code —
   enforced by refusing `POST /execute` with `503 NotReady` *before* the body is read while the
   supervisor is not ready, since the HTTP server is already serving during `bring_up()`. The
-  raw bytes are a **measured residual**, not excluded: `_Handler` inherits `rbufsize = -1`, so a
-  startup-window body sharing a TCP segment with its headers is in the socket read buffer before
-  the readiness gate runs, and was recovered from a child forked promptly after the refusal
-  (separate segments recovered nothing) — `genetics-results-suite-4h6.87` owns closing it, by
-  `rbufsize = 0` on the handler or by restating the bar to the enforced property. The ordering
+  **raw bytes are excluded too, since `4h6.87`**: `_Handler.rbufsize` is `0` and `setup()`
+  installs `_HeaderBoundedReader`, which `MSG_PEEK`s the socket, consumes **exactly** the request
+  head and leaves the body in the *kernel* receive queue until `_read_body` asks for it. Before
+  that, an 8 KiB buffered header `recv` swallowed any body sharing the segment, and it was
+  recovered from a child forked promptly after the refusal (separate segments recovered nothing).
+  Stated with its bound rather than rounded to "closed": the request line and headers *are*
+  parsed into the heap, and up to 511 body bytes — plus at most 2 in a 6-byte seam window that
+  ROLLS across peek rounds, so a terminator straddling them is found however few bytes a peek
+  returns — sit transiently in two fixed buffers that are zeroed in place before the head read
+  returns. Cost, measured on a header-read A/B harness (not a
+  production latency): +4% on `GET /health` and +7% on a 679-byte `POST`, against +100% for the
+  `rbufsize = 0`-only candidate this replaced.
+  The ordering
   is still the only thing that closes `4h6.55`'s finding 1: a child was measured reading other users' tokens, code and
   session ids out of the inherited address space by four routes, one of them a raw
   `/proc/self/mem` scan that no amount of clearing references could have defeated. The child

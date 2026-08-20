@@ -958,6 +958,15 @@ as it likes — the size cap never fires because the bytes never arrive. 10s is 
 honest 1 MiB pod-to-pod POST and far below the wall clock, so it can only fire on a stalled
 or hostile peer.
 
+**The request line and headers are bounded as one block at 64 KiB (`MAX_HEADER_BYTES`), then
+`431` with the connection closed** — a consequence of `4h6.87`'s `_HeaderBoundedReader`, which
+has to know where the head ends before it can leave the body in the kernel. What it replaced
+was `http.client`'s **per-line** 64 KiB (`_MAXLINE`), with an over-long request line answered
+`414`. The **100-header cap is not replaced and still fires**: `parse_headers` enforces
+`http.client._MAXHEADERS` on the head this reader hands it, and 150 headers were measured
+answered `431` both before and after this change. Nothing in the contract sends more than a few
+hundred bytes of head, and none of these limits was ever reachable by a well-formed caller.
+
 | field | type | required | absent or malformed |
 |---|---|---|---|
 | `code` | string, UTF-8 Python source, ≤ 256 KiB | yes | absent, not a string, empty or whitespace-only → `400`. Over 256 KiB → `413`. **Measured on the UTF-8 encoding of the decoded string** (`len(code.encode("utf-8"))`), not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program, and the two ends must not disagree about which one the limit is. The 1 MiB body cap is the one measured on the wire. |
@@ -1501,14 +1510,15 @@ exception, and there are no others.
 | status | when | `error.type` |
 |---|---|---|
 | `400` | unparseable JSON, unknown field, missing or malformed field, token inconsistency, `timeout_s` out of range | `InvalidRequest` and a specific subtype |
-| `404` | any path other than the two | `NotFound` |
-| `405` | wrong method on `/health` or `/execute` | `MethodNotAllowed` |
+| `404` | any path other than `/health`, `/execute` and `/artifact` | `NotFound` |
+| `405` | wrong method on `/health`, `/execute` or `/artifact` | `MethodNotAllowed` |
 | `408` | request body not fully received within 10s | `RequestTimeout` |
 | `409` | tokens expired while queued | `TokenExpired` |
 | `409` | `execution_id` names a live or still-retained execution | `DuplicateExecutionId` |
 | `413` | body over 1 MiB, or `code` over 256 KiB | `PayloadTooLarge` |
 | `415` | request `Content-Type` is not `application/json` | `UnsupportedMediaType` |
 | `429` | queue full or maximum queued wait exceeded; carries `Retry-After` | `Busy` |
+| `431` | request line + headers exceed 64 KiB as one block (`MAX_HEADER_BYTES`), or more than 100 headers; connection closed | `PayloadTooLarge` |
 | `500` | supervisor bug | `InternalError` |
 | `503` | `POST /execute` before startup assertions pass, or while draining after `SIGTERM` | `NotReady` |
 
@@ -1909,34 +1919,100 @@ The fix is the ordering, in `_Handler._execute`: **not-ready and draining are re
 `NotReady`, connection closed) before a byte of the body is read**, via `Supervisor.accepting()`.
 `_admit` still re-checks under the queue lock, where the admission decision is actually made.
 
-**That ordering does not fully meet the bar as stated, and the gap was measured.** `_Handler`
-inherits `rbufsize = -1`, so `BaseHTTPRequestHandler`'s request-line/header parse performs an
-8 KiB **buffered** `recv` before `_execute` is entered at all. A body that shares that TCP
-segment with its headers — any body under ~8 KiB from a normal client, and `http.client`
-concatenates them — is already raw in the supervisor's heap when the readiness check runs. The
-A/B that isolates it: **headers+body in one segment → early code, header, session id and token
-all recovered** from a child forked promptly after the refusal; **headers and body in separate
-segments → nothing recovered**. Under a realistic startup window (prewarm ~3.06 s, request at
-+10 ms) nothing was recovered either — but that is arena reuse, not exclusion, and nothing
-enforces it. Reachability is unchanged from above: an in-place container restart keeps the pod
-in the Service endpoints for `failureThreshold × periodSeconds` (~30 s) while the new supervisor
-is already accepting.
+**The ordering alone did not meet the bar as stated, and the gap was measured.** `_Handler`
+used to inherit `rbufsize = -1`, so `BaseHTTPRequestHandler`'s request-line/header parse
+performed an 8 KiB **buffered** `recv` before `_execute` was entered at all. A body that shares
+that TCP segment with its headers — any body under ~8 KiB from a normal client, and
+`http.client` concatenates them — was already raw in the supervisor's heap when the readiness
+check ran. The A/B that isolates it: **headers+body in one segment → early code, header, session
+id and token all recovered** from a child forked promptly after the refusal; **headers and body
+in separate segments → nothing recovered**. Under a realistic startup window (prewarm ~3.06 s,
+request at +10 ms) nothing was recovered either — but that is arena reuse, not exclusion, and
+nothing enforces it. Reachability is unchanged from above: an in-place container restart keeps
+the pod in the Service endpoints for `failureThreshold × periodSeconds` (~30 s) while the new
+supervisor is already accepting.
 
-So the sentence that holds is the narrower one: *no Python object holding a token, a request
-body or another user's source code is constructed in the forking process before the fork* —
-`_read_body` and `parse_execute_request` never run during startup, so the module-global,
-frame-walk and `gc` routes genuinely stay clean — *but the socket read buffer can hold those
-raw bytes first, and `/proc/self/mem` reads raw bytes.* `genetics-results-suite-4h6.87` owns
-closing the gap; its two candidates are `rbufsize = 0` on the handler (closes it at the source,
-costs unbuffered header reads on the hot path and wants measuring) or formally restating the
-bar to the weaker property that is actually enforced.
+**What closes it (`4h6.87`): `_HeaderBoundedReader`.** `_Handler.rbufsize` is now `0` and
+`setup()` replaces `rfile` with a reader that finds the end of the request head by **peeking**
+the socket (`MSG_PEEK` leaves the receive queue intact) and then consumes **exactly** the head.
+The body stays in the *kernel* receive queue until `_read_body` asks for it, so a request
+refused by the readiness gate leaves nothing in this address space to snapshot. The same probe
+that recovered the token, source and session id from a one-segment request now recovers only
+the positive control; `test_pre_ready_body_bytes` in `scripts/test-supervisor.py` is that probe,
+with the fork gated to land milliseconds after the 503 and with the pre-fix `rfile` restorable
+via `SUPERVISOR_TEST_BUFFERED_RFILE=1` as its negative control.
+
+**The enforced property, and its bound — this is not "zero bytes", and the difference is
+deliberate:**
+
+* **No byte of a request BODY is in the supervisor's heap when the readiness gate refuses** —
+  the head read's `finally` wipes its buffers before `rfile` returns a line, and the gate runs
+  after that. That is what the probe measures and what the test asserts.
+* The peek copies at most `HEADER_PEEK_BYTES` (512) at a time into **one fixed `bytearray`**,
+  and the seam search for a terminator split across two peeks runs in a **second fixed 6-byte
+  `bytearray`** (`2 × (len("\r\n\r\n") - 1)`). Both are zeroed **in place** in the same
+  `finally` before the head read returns, and reused rather than reallocated — so nothing is
+  left in a freed arena. Up to 511 body bytes are in the first *transiently*, and up to 2 more
+  in the second when a head ends 1 or 2 bytes into a new peek round; only a fork landing inside
+  that window — between the peek and the wipe in the same call — could see them. That is a
+  microsecond window inside one function, against the previous "for the whole life of the
+  request, and afterwards in the arena". Neither buffer may be replaced by a `bytes`: an
+  earlier draft built the seam window as `tail + bytes(view[:n])` and that copy — measured
+  `b'\r\n\r\nNE'`, two body bytes — was freed into an arena, the exact route this design
+  exists to close.
+* **That window ROLLS across peek rounds; it is not recomputed from the current one.** A draft
+  set it to the last `min(take, 3)` bytes of the round just consumed, which is correct only
+  while every peek returns at least 3 bytes. A peer dripping the head **one byte at a time** —
+  which any peer that can open a TCP connection may do — shrank the window to that one byte, so
+  an ordinary, entirely valid `\r\n\r\n` blank line straddling it was never found, and the
+  failure was the previous bullet's, reached through peek size instead of terminator shape:
+  `take` became the whole peek every round, the **whole body** was consumed off the kernel queue
+  onto the heap, the `finally` never ran, and the request blocked in `recv_into` forever instead
+  of being refused. `total` never approaches `MAX_HEADER_BYTES` there, so `_HeaderTooLarge` does
+  not fire either — fail-**open**, pre-auth, and permanent, since the connection carries no
+  timeout outside `_read_body` and `_Server`'s handler threads are daemons. MEASURED over the
+  4 blank-line shapes × 7 chunk sizes: 28/28 with the rolling window, 26/28 without, failing
+  exactly the 1-byte cells whose blank line is `\r\n` (2-byte peeks are rescued by the `\n\r\n`
+  member, and `\n\n` fits a 2-byte window). `SUPERVISOR_TEST_STATIC_SEAM=1` restores the
+  per-round window and turns those checks red.
+* **The terminator set is all four shapes `http.client.parse_headers` stops on**, `\r\n\r\n`,
+  `\n\r\n` and `\n\n` (`\r\n\n` contains `\n\n`). This is load-bearing rather than pedantic:
+  with `\n\r\n` missing, a head using it was measured never to terminate here — the whole body
+  copied onto the heap, left in the scratch because the `finally` never ran, and the request
+  blocked in `recv_into` instead of being refused. Not reachable from the deployed path (the
+  API pod's client library emits CRLF and the network policy admits nothing else), but the
+  properties above are absolutes and it made all of them false.
+* **The request line and headers are still materialised**, necessarily: nothing can route a
+  request it has not parsed. The contract carries tokens and code in the body, so this excludes
+  what the threat model is about — but a caller that puts a secret in a *header* gets no
+  protection from it.
+* Cost, measured (n=5000/arm, keep-alive, `TCP_NODELAY` and `disable_nagle_algorithm` in every
+  arm — without both, a 40 ms delayed-ACK stall swamps the signal). **These are A/B figures for
+  the header read, not production latencies**: the shipped `_Handler` does *not* set
+  `disable_nagle_algorithm`, and `_send_json`'s two `sendall`s therefore do pay that
+  delayed-ACK stall on the write path (~41 ms on a real `GET /health`) — pre-existing, arm
+  independent, and tracked separately. Under that harness: `GET /health` 784.7 µs
+  buffered → 816.2 µs peeking (+4%, 2 `recv` syscalls vs 1); `POST` with a 679-byte body
+  936.1 µs → 997.8 µs (+7%, 3 vs 1.28). The candidate this replaced, plain `rbufsize = 0`, cost
+  **+100%** on `/health` (1567 µs, 74 syscalls) because `socket.makefile` then returns a raw
+  `SocketIO` whose `readline()` degrades to near byte-at-a-time — a 60%+ regression on every
+  kubelet probe, where there is no body to protect.
+
+The whole head is now bounded to `MAX_HEADER_BYTES` (64 KiB) and a head that does not terminate
+inside it is refused **431** with the connection closed, before anything is routed and before
+any body is read — a head with no terminator has no body by construction, and `_read_head`
+raises out of the peek loop without ever consuming past what it has already treated as head.
+Previously the equivalent bound was per line (`http.client._MAXLINE`, 64 KiB) and an over-long
+request line answered 414. The 100-header cap (`http.client._MAXHEADERS`) is *unchanged* —
+`parse_headers` still enforces it on the head this reader hands over, answering 431 exactly as
+it did before.
 
 #### Which process holds token bytes, and how the child gets its credential
 
 | process | ever holds a token / request body / another user's code? |
 |---|---|
 | supervisor (HTTP front door) | **Yes** — it parses the request and writes the token file. It no longer forks execution children. |
-| fork server | **No Python object holding one**, ever: its address space is a snapshot of a supervisor taken before `_read_body` or `parse_execute_request` ran for any request (the readiness gate enforces that), and nothing user-shaped is ever sent to it afterwards. **Raw bytes are a measured residual** — a startup-window body that shared a TCP segment with its headers sits in the socket read buffer before the gate is consulted; see above and `genetics-results-suite-4h6.87`. |
+| fork server | **No Python object holding one**, ever: its address space is a snapshot of a supervisor taken before `_read_body` or `parse_execute_request` ran for any request (the readiness gate enforces that), and nothing user-shaped is ever sent to it afterwards. **No raw body bytes either, since `4h6.87`**: `_HeaderBoundedReader` consumes exactly the request head and leaves the body in the kernel queue. Residual, stated above and not rounded away: the request line and headers *are* parsed into the heap, and up to 511 body bytes (plus at most 2 in the 6-byte seam window) sit in two fixed, in-place-zeroed buffers for the microseconds between the peek and the wipe of the same call. |
 | execution child | Its **own** token only, and only once the SDK reads the file. |
 
 The credential route is `4h6.43`'s read-once token file, and `4h6.55`'s judgement that the

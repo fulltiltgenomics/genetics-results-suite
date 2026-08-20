@@ -82,6 +82,7 @@ import ctypes
 import errno
 import hashlib
 import http.server
+import io
 import json
 import logging
 import mimetypes
@@ -108,6 +109,8 @@ LISTEN_PORT = 8080
 
 MAX_BODY_BYTES = 1024 * 1024          # raw bytes on the wire -> 413
 MAX_CODE_BYTES = 256 * 1024           # len(code.encode("utf-8")) -> 413
+MAX_HEADER_BYTES = 64 * 1024          # request line + headers, whole block -> 431
+HEADER_PEEK_BYTES = 512               # see _HeaderBoundedReader: the over-read bound
 BODY_READ_TIMEOUT_S = 10.0            # request line to last byte -> 408
 DEFAULT_TIMEOUT_S = 60
 MAX_TIMEOUT_S = 120                   # rejected, never clamped
@@ -1361,10 +1364,12 @@ def _child_main(payload_fd, out_w, status_w, audit_w):
 # thing that works is never letting the bytes into the process that forks.
 #
 # So this process is forked out of the supervisor at startup, AFTER prewarm() and BEFORE the
-# first byte of the first request body is read — the second half of that is enforced by
-# _Handler._execute, which refuses on `not SUPERVISOR.accepting()` before _read_body, because
-# the HTTP server is already serving during bring_up(). Its address space is a snapshot of a
-# supervisor that has never seen a user. It receives, per execution, exactly one control message —
+# first byte of the first request body is read — the second half of that takes TWO mechanisms,
+# because the HTTP server is already serving during bring_up() and requests do arrive:
+# _Handler._execute refuses on `not SUPERVISOR.accepting()` before _read_body (no Python object
+# is built), and _HeaderBoundedReader consumes only the request head so the body never leaves
+# the kernel receive queue (no raw bytes either — 4h6.87, where the ordering alone was measured
+# insufficient). Its address space is a snapshot of a supervisor that has never seen a user. It receives, per execution, exactly one control message —
 # `{"op": "fork"}` — plus four descriptors, and it reads none of them. It does not learn the
 # execution id, the user, the session, the code or the directory paths. It forks, hands the
 # descriptors to _child_main, and reports the pid.
@@ -2423,19 +2428,23 @@ class Supervisor:
         refusal), which makes this the enforcement point for the fork server's whole property.
         _admit re-checks under the lock, where the queue decision is actually made.
 
-        WHAT IT DOES NOT CLOSE. The property this enforces is "no Python object holding a token,
-        a request body or anybody's source code is constructed before the fork" — _read_body and
-        parse_execute_request never run, so the module-global, frame-walk and gc routes stay
-        clean. It is NOT "those bytes are never in this address space": _Handler inherits
-        rbufsize = -1, so BaseHTTPRequestHandler's request-line/header parse does an 8 KiB
-        buffered recv before _execute is entered, and a body sharing that TCP segment with its
-        headers (anything under ~8 KiB from a normal client; http.client concatenates them) is
-        already raw in this heap. MEASURED: one segment -> token, source and session id recovered
-        from a child forked promptly after the 503; separate segments -> nothing. A realistic
-        startup window (prewarm ~3.06s, request at +10ms) recovered nothing, but that is arena
-        reuse, not exclusion, and nothing enforces it. genetics-results-suite-4h6.87 owns closing
-        it: rbufsize = 0 on the handler (closes it at the source, costs unbuffered header reads
-        on the hot path and wants measuring), or restating the bar to the enforced property.
+        WHAT IT TAKES ON ITS OWN, AND WHAT IT DOES NOT. This check enforces "no Python object
+        holding a token, a request body or anybody's source code is constructed before the fork":
+        _read_body and parse_execute_request never run, so the module-global, frame-walk and gc
+        routes stay clean. It was NEVER enough for "those bytes are never in this address space".
+        _Handler used to inherit rbufsize = -1, so BaseHTTPRequestHandler's request-line/header
+        parse did an 8 KiB buffered recv before _execute was entered at all, and a body sharing
+        that TCP segment with its headers (anything under ~8 KiB from a normal client;
+        http.client concatenates them) was already raw in this heap. MEASURED: one segment ->
+        token, source and session id recovered from a child forked promptly after the 503;
+        separate segments -> nothing.
+
+        THAT HALF IS NOW _HeaderBoundedReader's, not this check's (4h6.87). rbufsize = 0 and rfile
+        peeks the socket and consumes exactly the request head, so the body waits in the kernel
+        receive queue and a request refused here leaves nothing behind. Read that class for the
+        bound, which is not zero: the head itself is parsed, and up to HEADER_PEEK_BYTES - 1 body
+        bytes are in two fixed, in-place-zeroed buffers for the microseconds inside a single read. test_pre_ready_body_bytes is the probe, with the pre-fix rfile restorable as
+        its negative control.
         """
         return self.ready and not self.draining
 
@@ -4252,10 +4261,222 @@ class _AuditForwarder:
 # --------------------------------------------------------------------------------------
 
 
+class _HeaderTooLarge(Exception):
+    """The request line and headers did not terminate within MAX_HEADER_BYTES -> 431."""
+
+
+# ALL FOUR of the shapes http.client.parse_headers stops on, not three. It ends the head at a
+# blank line that is "\r\n" or "\n", following a line that ended "\r\n" or "\n" — and "\r\n\n"
+# contains "\n\n", so the set below covers the fourth by containment while "\n\r\n" is its own
+# member. Dropping it is not cosmetic: the terminator is then never found, `take` becomes the
+# whole peek, the body is copied onto the heap AND left in the scratch (the finally never runs
+# because the read never returns), and the request hangs in recv_into instead of being refused.
+# Adding it cannot change well-formed behaviour: "\r\n\r\n" contains "\n\r\n" at offset +1 and
+# both yield the same end, and the loop below takes the SMALLEST end anyway.
+_HEADER_TERMINATORS = (b"\r\n\r\n", b"\n\r\n", b"\n\n")
+_HEADER_PEEK_ZEROS = bytes(HEADER_PEEK_BYTES)
+# A terminator split across two peeks has at most len - 1 bytes on either side of the seam, so
+# the boundary window is twice that and is derived from the set rather than written down again.
+_HEADER_TAIL_BYTES = max(len(term) for term in _HEADER_TERMINATORS) - 1
+_HEADER_EDGE_BYTES = 2 * _HEADER_TAIL_BYTES
+_HEADER_EDGE_ZEROS = bytes(_HEADER_EDGE_BYTES)
+
+
+class _HeaderBoundedReader:
+    """`rfile` for _Handler: reads the request head WITHOUT pulling the body into this process.
+
+    THIS IS WHAT KEEPS A REFUSED REQUEST'S BODY OUT OF THE ADDRESS SPACE THE FORK SERVER
+    SNAPSHOTS (genetics-results-suite-4h6.87). socketserver's default rfile is an 8 KiB
+    BufferedReader, so BaseHTTPRequestHandler's request-line and header parse recv()s 8 KiB —
+    which swallows any body sharing the segment with its headers, i.e. every normal client's
+    body under ~8 KiB, since http.client concatenates them. Those raw bytes were MEASURED
+    recoverable from a child forked promptly after _execute's 503, with _read_body and
+    parse_execute_request never having run. Refusing earlier cannot help: the bytes arrive
+    underneath the handler, before do_POST is entered.
+
+    HOW. Peek the socket (MSG_PEEK leaves the queue intact), find the blank line, then consume
+    EXACTLY the head. The body stays in the KERNEL receive queue until _read_body asks for it,
+    and a request refused before that point leaves nothing here to snapshot.
+
+    THE BOUND, STATED HONESTLY — this does not make the number zero:
+      * The peek copies up to HEADER_PEEK_BYTES at a time into ONE fixed bytearray, so up to
+        HEADER_PEEK_BYTES - 1 body bytes can be in it transiently, plus up to
+        _HEADER_TAIL_BYTES - 1 more in the fixed seam buffer when a head ends just inside a new
+        peek round. Both are zeroed IN PLACE in a finally before the read returns, and reused
+        rather than reallocated, so nothing is left in a freed arena. Only a fork landing inside
+        that microsecond window — between the peek and the wipe of the same call — could still
+        see them.
+      * The request line and headers ARE materialised, necessarily: nothing can route a request
+        it has not parsed. The contract carries tokens and code in the BODY, so what this
+        excludes is what the threat model is about, but a caller that puts a secret in a header
+        gets no protection from this.
+    """
+
+    def __init__(self, sock, raw):
+        self._sock = sock
+        self._raw = raw          # socketserver's makefile object; kept only so close() works
+        self._scratch = bytearray(HEADER_PEEK_BYTES)
+        self._view = memoryview(self._scratch)
+        # The seam window for a terminator split across two peeks. Fixed and zeroed for the
+        # same reason as _scratch: its trailing bytes can be body bytes (see _read_head), and a
+        # `bytes` built there would be freed into an arena the fork snapshots.
+        self._edge = bytearray(_HEADER_EDGE_BYTES)
+        self._head = None        # BytesIO over head bytes ONLY; never holds a body byte
+
+    def _roll_tail(self, tail_len, take):
+        """Extend the seam window by the `take` bytes just consumed, keeping the LAST
+        _HEADER_TAIL_BYTES of the whole consumed stream. Returns the new window length.
+
+        ROLLING ACROSS ROUNDS, NOT RECOMPUTED FROM ONE. `tail_len = min(take, N)` /
+        `edge[:tail_len] = view[take - tail_len:take]` was MEASURED wrong: a peek that returns
+        fewer than N bytes — a peer dripping the head a byte at a time, which any peer that can
+        open a TCP connection may do — discarded everything the earlier rounds had seen, so the
+        window shrank to `take` and a terminator straddling it was never found. `take` then
+        stayed the whole peek every round, so THE WHOLE BODY was consumed off the kernel queue
+        into `parts`, the finally never ran, and the read blocked in recv_into forever instead
+        of refusing. `total` never approaches MAX_HEADER_BYTES on that path, so _HeaderTooLarge
+        never fires either: fail-OPEN, pre-auth, and permanent (the connection has no timeout
+        outside _read_body, and _Server's threads are daemons).
+        """
+        edge, view = self._edge, self._view
+        if take >= _HEADER_TAIL_BYTES:
+            edge[:_HEADER_TAIL_BYTES] = view[take - _HEADER_TAIL_BYTES:take]
+            return _HEADER_TAIL_BYTES
+        keep = min(tail_len, _HEADER_TAIL_BYTES - take)
+        drop = tail_len - keep
+        for i in range(keep):
+            # A byte at a time rather than `edge[:keep] = edge[drop:tail_len]`, whose right
+            # side would allocate: nothing on this path may put these bytes anywhere but the
+            # two fixed buffers that the finally in _read_head wipes. At most 2 iterations.
+            edge[i] = edge[drop + i]
+        edge[keep:keep + take] = view[:take]
+        return keep + take
+
+    def _read_head(self):
+        """The request line and headers, consumed exactly. b"" if the peer closed first."""
+        parts = []
+        total = 0
+        tail_len = 0
+        view = self._view
+        edge = self._edge
+        try:
+            while True:
+                # Blocks until at least one byte is queued, exactly as a buffered readline does.
+                peeked = self._sock.recv_into(view, HEADER_PEEK_BYTES, socket.MSG_PEEK)
+                if peeked == 0:
+                    return b""  # clean EOF, or a half-open peer: the caller closes
+                # SEARCHED IN PLACE, on the bytearray. `bytes(view[:peeked])` would be correct
+                # and would defeat the entire point: it copies the over-read onto the heap,
+                # where it outlives the wipe below in a freed arena. MEASURED — with that copy
+                # present the probe recovered the token and the source code from the child even
+                # though the scratch itself was being zeroed.
+                end = -1
+                for term in _HEADER_TERMINATORS:
+                    found = self._scratch.find(term, 0, peeked)
+                    if found != -1 and (end == -1 or found + len(term) < end):
+                        end = found + len(term)
+                if tail_len:
+                    # A terminator split across two peeks, searched in the SECOND fixed buffer
+                    # for the same reason the main search is done in place. The leading bytes
+                    # are head by construction — the previous round consumed everything before
+                    # them precisely because no terminator was found there — but the TRAILING
+                    # ones are the front of the new peek, and when the head ends 1 or 2 bytes
+                    # into it those are BODY bytes. `tail + bytes(view[:n])` put them on the
+                    # heap; this leaves them in a buffer wiped by the same finally as _scratch.
+                    lead = min(_HEADER_TAIL_BYTES, peeked)
+                    edge[tail_len:tail_len + lead] = view[:lead]
+                    span = tail_len + lead
+                    for term in _HEADER_TERMINATORS:
+                        found = edge.find(term, 0, span)
+                        if found != -1:
+                            stop = found + len(term) - tail_len
+                            if stop > 0 and (end == -1 or stop < end):
+                                end = stop
+                # Nothing before the terminator can be a body byte, so when it has not shown up
+                # yet the whole peek is consumable head; the next peek then blocks on new data.
+                take = peeked if end < 0 else end
+                got = 0
+                while got < take:
+                    read = self._sock.recv_into(view[got:take], take - got)
+                    if read == 0:
+                        return b""  # truncated head: refuse by closing, never guess
+                    got += read
+                parts.append(bytes(view[:take]))
+                total += take
+                if end >= 0:
+                    return b"".join(parts)
+                tail_len = self._roll_tail(tail_len, take)
+                if total + HEADER_PEEK_BYTES > MAX_HEADER_BYTES:
+                    raise _HeaderTooLarge()
+        finally:
+            # In place, on both fixed buffers, on every path including the raise. What the peek
+            # over-read past the head dies here rather than in an arena.
+            self._scratch[:] = _HEADER_PEEK_ZEROS
+            self._edge[:] = _HEADER_EDGE_ZEROS
+
+    # -- the file-like surface BaseHTTPRequestHandler and _read_body use --------------------
+
+    def readline(self, limit=-1):
+        # Only ever called for the request line and the header lines: the head buffer runs out
+        # exactly at the blank line, so the next call is the next request on a kept-alive
+        # connection and starts a new head read.
+        if self._head is not None:
+            line = self._head.readline(limit)
+            if line:
+                return line
+        self._head = io.BytesIO(self._read_head())
+        return self._head.readline(limit)
+
+    def read(self, size=-1):
+        if self._head is not None:
+            data = self._head.read(size)
+            if data:
+                return data  # unreachable for a well-formed request; correctness, not a path
+        if size is None or size < 0:
+            chunks = []
+            while True:
+                block = self._sock.recv(65536)
+                if not block:
+                    return b"".join(chunks)
+                chunks.append(block)
+        # Short reads are legal here and _read_body loops on them; a BufferedReader would have
+        # blocked for the full `size` instead.
+        return self._sock.recv(size)
+
+    def readable(self):
+        return True
+
+    def close(self):
+        if self._raw is not None:
+            self._raw.close()
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "genetics-sandbox-supervisor"
     sys_version = ""  # do not disclose the interpreter version to a caller
+    rbufsize = 0      # no BufferedReader: setup() installs _HeaderBoundedReader as rfile
+
+    def setup(self):
+        super().setup()
+        # rbufsize = 0 above means super() made a raw SocketIO, which is never read from — it
+        # is handed over only so close() still does socketserver's bookkeeping.
+        self.rfile = _HeaderBoundedReader(self.connection, self.rfile)
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except _HeaderTooLarge:
+            # FAIL CLOSED: the head never terminated, so nothing was routed and no body was
+            # read. Answer and close rather than fall through to a read of anything.
+            self.close_connection = True
+            self.requestline = ""
+            self.request_version = ""
+            self.command = ""
+            try:
+                self.send_error(431, "request headers too large")
+            except OSError:
+                pass
 
     # -- plumbing ----------------------------------------------------------------------
 
@@ -4599,11 +4820,12 @@ def bring_up(supervisor, run_assertions=True):
     #     serving by now, so a POST /execute can and does arrive during this function; when the
     #     readiness check sat after _read_body and parse_execute_request, an early request's
     #     token and source were MEASURED still recoverable from a later child by the
-    #     /proc/self/mem route, 503 and all. It does NOT keep the raw bytes out: _Handler
-    #     inherits rbufsize = -1, so a body sharing a TCP segment with its headers is in the
-    #     socket read buffer before _execute runs, and was MEASURED recoverable from a child
-    #     forked promptly after the refusal when the two shared a segment (not when they were
-    #     separate). See Supervisor.accepting(); genetics-results-suite-4h6.87 owns that residual.
+    #     /proc/self/mem route, 503 and all. The RAW bytes are kept out by a second mechanism,
+    #     not by this ordering: _HeaderBoundedReader consumes only the request head, so a body
+    #     sharing a TCP segment with its headers stays in the kernel receive queue instead of
+    #     landing in an 8 KiB rfile buffer, where it was MEASURED recoverable from a child forked
+    #     promptly after the refusal (4h6.87). See Supervisor.accepting() for the residual that
+    #     remains — the head is still parsed, and the peek's over-read is bounded and wiped.
     #   * BEFORE the reaper thread starts. fork() copies only the calling thread; forking while
     #     another thread runs is how a lock ends up held forever in the child. serve_forever is
     #     ALREADY running on its own thread here (main() binds first, on purpose), so this is
