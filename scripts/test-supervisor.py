@@ -42,6 +42,17 @@ probe, by all four demonstrated routes — module global, frame walk, gc, and a 
 carries two and fails loudly if the primary one goes quiet. A test that the fork server starts
 would prove none of this and is not what is here.
 
+WHAT AN EXECUTION LEAVES BEHIND (4h6.66, 4h6.83) AND WHAT A RETENTION WINDOW SERVES (4h6.82)
+are both tested as the failure, not as the plumbing, and both carry negative controls that are
+run rather than described. `test_survivors` leaves a real process behind a real
+normally-completing execution — once inside the process group and once setsid()'d out of it —
+and asserts it is gone AND REAPED afterwards; then it disables the group kill and the sweep and
+asserts the same probes DO survive, which is the state both beads measured.
+`test_artifact_integrity` overwrites a retained artifact with the same number of bytes and
+plants a second one beside it, asserts both are refused, and then asserts that the same reads
+with the digest binding disabled hand the attacker's content back. Neither group runs in
+container mode and both say so by name.
+
 Two checks are about the fork-without-exec model rather than the wire, because both were
 reachable from a script: a forged status record on fd 3 must not turn exit 0 into
 status "error", and a descendant that setsid()s away with the output pipe must not hold the
@@ -73,6 +84,7 @@ one that writes far above the rate and byte caps.
 import ast
 import base64
 import gc
+import hashlib
 import http.client
 import io
 import json
@@ -428,7 +440,7 @@ def test_manifest(tmp):
     os.symlink("/etc/passwd", os.path.join(d, "link.txt"))
     os.link(os.path.join(d, "table.csv"), os.path.join(d, "hardlink.csv"))
 
-    entries, omitted = sup.build_manifest(d)
+    entries, omitted, digests = sup.build_manifest(d)
     names = [e["name"] for e in entries]
     check("manifest: lists plain regular files", names == ["plot.png"], f"got {names}")
     check("manifest: content_type from the name",
@@ -441,7 +453,7 @@ def test_manifest(tmp):
     # Every name build_manifest withheld must also be unreadable, and for the same reason:
     # the two run the same checks so the manifest never advertises what the read refuses,
     # and the read never serves what the manifest hid.
-    data, ctype = sup.read_artifact_bytes(d, "plot.png")
+    data, ctype = sup.read_artifact_bytes(d, "plot.png", expected_digests=None)
     check("artifact read: returns the bytes and the name's content type",
           data == b"\x89PNG" * 4 and ctype == "image/png", f"got {len(data)} {ctype}")
     for name, status in (
@@ -455,14 +467,128 @@ def test_manifest(tmp):
         ("", 400),
     ):
         expect_request_error(f"artifact read: refuses {name!r}",
-                             lambda n=name: sup.read_artifact_bytes(d, n),
+                             lambda n=name: sup.read_artifact_bytes(d, n, expected_digests=None),
                              status, "NotFound" if status == 404 else "InvalidRequest")
+
+    check("manifest: only the listed name is hashed, and it is hashed",
+          set(digests) == {"plot.png"} and digests["plot.png"] ==
+          hashlib.sha256(b"\x89PNG" * 4).hexdigest(), f"got {digests}")
 
     with open(os.path.join(d, "big.bin"), "wb") as fh:
         fh.write(b"x" * 100)
     expect_request_error("artifact read: an oversize artifact is 413, not a truncated body",
-                         lambda: sup.read_artifact_bytes(d, "big.bin", max_bytes=99),
+                         lambda: sup.read_artifact_bytes(d, "big.bin", max_bytes=99,
+                                                        expected_digests=None),
                          413, "ArtifactTooLarge")
+    # Over the REAL read cap, not a test-local one: build_manifest hashes with the default, so
+    # a 100-byte file with max_bytes=99 would not exercise the branch.
+    with open(os.path.join(d, "huge.bin"), "wb") as fh:
+        fh.write(b"x" * (sup.ARTIFACT_READ_MAX_BYTES + 1))
+    over = sup.build_manifest(d, max_entries=10)[2]
+    check("manifest: a file over the read cap is listed but has no digest, because it can "
+          "never be served and a truncation must not make it servable",
+          "huge.bin" in over and over["huge.bin"] is None, f"got {over.get('huge.bin')!r}")
+    expect_request_error(
+        "artifact read: a listed-but-unhashable file is refused, not served",
+        lambda: sup.read_artifact_bytes(d, "big.bin", expected_digests={"big.bin": None}),
+        409, "ArtifactModified")
+
+    # The fail-open case must not be reachable by FORGETTING the argument: a future caller that
+    # omits it would otherwise serve unverified bytes with no log line to show for it.
+    try:
+        sup.read_artifact_bytes(d, "plot.png")
+    except TypeError:
+        omitted_raises = True
+    except Exception as exc:
+        omitted_raises = f"raised {type(exc).__name__}"
+    else:
+        omitted_raises = "served the bytes"
+    check("artifact read: omitting expected_digests raises rather than disabling the integrity "
+          "binding — None disables it and has to be written",
+          omitted_raises is True, f"got {omitted_raises}")
+
+
+def test_artifact_integrity(tmp):
+    """genetics-results-suite-4h6.82: the retention window must not serve bytes that moved.
+
+    THE TAMPERING IS DONE BY THE HARNESS, AT THE HARNESS'S OWN UID, AND THAT IS THE THREAT
+    MODEL RATHER THAN A SHORTCUT. The finding is that /scratch is writable by ANY process at
+    the shared uid 65532 — measured from inside a second execution's child, which listed
+    /scratch, read a previous execution's artifacts/private.csv, overwrote it and planted a new
+    file beside it. Nothing about the primitive depends on the writer being a forked child, and
+    routing the write through one would test the fork rather than the control. What is under
+    test is what the SUPERVISOR does with a directory that has been altered behind it.
+
+    Every assertion here carries its negative control in the same breath: the same read with
+    the binding disabled must SERVE the attacker's bytes. Without that, an accidentally-empty
+    artifacts directory would make the whole group pass.
+    """
+    root = os.path.join(tmp, "integrity")
+    os.makedirs(root)
+    eid = "22222222-2222-4222-8222-222222222222"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    victim = b"SECRET-VICTIM-DATA"
+    with open(os.path.join(dirs.artifacts, "private.csv"), "wb") as fh:
+        fh.write(victim)
+
+    s = sup.Supervisor(root, ready=True)
+    entries, _, digests = sup.build_manifest(dirs.artifacts)
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, digests)
+    s._retained_ids.add(eid)
+
+    data, ctype = s.read_artifact(eid, "private.csv")
+    check("artifact integrity: an untouched artifact is still served",
+          data == victim and ctype == "text/csv", f"got {data!r} {ctype}")
+
+    # SAME LENGTH, so that nothing can pass by comparing sizes: st_size is unchanged and the
+    # manifest chat-backend already holds still says 18 bytes.
+    forged = b"ATTACKER-OWNED-YOU"
+    check("artifact integrity: the probe's overwrite keeps the size identical",
+          len(forged) == len(victim))
+    with open(os.path.join(dirs.artifacts, "private.csv"), "wb") as fh:
+        fh.write(forged)
+    expect_request_error("artifact integrity: an OVERWRITTEN artifact is refused, not served",
+                         lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+    served, _ = sup.read_artifact_bytes(dirs.artifacts, "private.csv", expected_digests=None)
+    check("artifact integrity: NEGATIVE CONTROL — with the binding disabled the same read "
+          "hands back the attacker's bytes",
+          served == forged, f"got {served!r}")
+
+    with open(os.path.join(dirs.artifacts, "planted.csv"), "wb") as fh:
+        fh.write(b"PLANTED")
+    entries_now, _, _ = sup.build_manifest(dirs.artifacts)
+    check("artifact integrity: the planted file really is on disk and would be listed by a "
+          "manifest built now",
+          "planted.csv" in {e["name"] for e in entries_now})
+    expect_request_error("artifact integrity: a PLANTED artifact — one no manifest ever "
+                         "listed — is refused",
+                         lambda: s.read_artifact(eid, "planted.csv"), 404, "NotFound")
+    served, _ = sup.read_artifact_bytes(dirs.artifacts, "planted.csv", expected_digests=None)
+    check("artifact integrity: NEGATIVE CONTROL — with the binding disabled the planted file "
+          "is served",
+          served == b"PLANTED", f"got {served!r}")
+
+    # An execution retained by _register_retention rather than by _retain — an exception before
+    # build_manifest ever ran — advertised nothing, so it serves nothing.
+    other = "33333333-3333-4333-8333-333333333333"
+    odirs = sup.ExecutionDirs(root, other)
+    odirs.create()
+    with open(os.path.join(odirs.artifacts, "orphan.csv"), "wb") as fh:
+        fh.write(b"x")
+    s._register_retention(other, odirs)
+    s._retained_ids.add(other)
+    expect_request_error("artifact integrity: an execution retained without a manifest serves "
+                         "nothing at all",
+                         lambda: s.read_artifact(other, "orphan.csv"), 404, "NotFound")
+    expect_request_error("artifact integrity: and it still answers the name rules first, so "
+                         "the digest map cannot mask a 400",
+                         lambda: s.read_artifact(other, "../orphan.csv"), 400, "InvalidRequest")
+
+    s._forget_retained(eid)
+    check("artifact integrity: forgetting a retained execution drops its digest map too",
+          eid not in s._artifact_digests, f"{sorted(s._artifact_digests)}")
 
 
 def test_artifact_scoping(tmp):
@@ -476,6 +602,11 @@ def test_artifact_scoping(tmp):
         fh.write(b"\x89PNG")
 
     s = sup.Supervisor(root, ready=True)
+    # What a completed execution leaves behind: a retention row and the digest map its manifest
+    # was built from. Both are what _retain and _execute_inner write; see test_artifact_integrity
+    # for what the map is FOR.
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, sup.build_manifest(dirs.artifacts)[2])
     expect_request_error("artifact scoping: a directory that exists but is not retained is 404",
                          lambda: s.read_artifact(eid, "plot.png"), 404, "NotFound")
     expect_request_error("artifact scoping: a malformed execution id is 400",
@@ -685,6 +816,41 @@ def test_http(server):
               status == 400 and body["error"]["type"] == "InvalidRequest", f"got {status} {body}")
         status, _, body = server.request("POST", "/artifact", body={})
         check("http: POST /artifact -> 405", status == 405, f"got {status}")
+
+        # 4h6.82 over the wire, against an artifact a REAL execution wrote and a REAL manifest
+        # listed: the tamper is a plain write at the shared uid, which is the whole primitive.
+        # Container mode has no host view of /scratch, so it cannot do the write.
+        if server.host_scratch is None:
+            skip("http: /artifact refuses a tampered artifact",
+                 "no host view of /scratch in container mode")
+        else:
+            out_csv = os.path.join(server.host_scratch, payload["execution_id"],
+                                   "artifacts", "out.csv")
+            with open(out_csv, "wb") as fh:
+                fh.write(b"x,y\n")     # same four bytes' worth of shape, different content
+            status, _, body = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
+            check("http: /artifact refuses an artifact that was overwritten after its manifest "
+                  "was built",
+                  status == 409 and body["error"]["type"] == "ArtifactModified",
+                  f"got {status} {body}")
+            planted = os.path.join(server.host_scratch, payload["execution_id"],
+                                   "artifacts", "planted.csv")
+            with open(planted, "wb") as fh:
+                fh.write(b"p\n")
+            status, _, body = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=planted.csv")
+            check("http: /artifact refuses a file planted into a retained execution",
+                  status == 404 and body["error"]["type"] == "NotFound", f"got {status} {body}")
+            os.unlink(planted)
+            with open(out_csv, "wb") as fh:
+                fh.write(b"a,b\n")     # restore, so later checks see the execution's own bytes
+            status, _, art = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
+            check("http: NEGATIVE CONTROL — restoring the original bytes makes /artifact serve "
+                  "it again, so the refusal is the digest and not the write",
+                  status == 200 and base64.b64decode(art["content_base64"]) == b"a,b\n",
+                  f"got {status} {art}")
 
         # an uncaught exception
         status, _, body = server.request("POST", "/execute", body=make_body(
@@ -1233,6 +1399,26 @@ def test_retention_expiry(server):
 # --------------------------------------------------------------------------------------
 
 
+def _all_retained_with_ceiling(tmp, ids, digests, ceiling=1 << 40):
+    """Retain the same ids and maps with the memory ceiling raised, and count what survives.
+
+    The negative control for the memory ceiling: without it, "everything was evicted" and "the
+    supervisor evicts on some unrelated ground" look identical.
+    """
+    real = sup.RETAINED_STATE_CEILING_BYTES
+    sup.RETAINED_STATE_CEILING_BYTES = ceiling
+    try:
+        sv = sup.Supervisor(tmp)
+        for eid in ids:
+            with sv._lock:
+                sv._retention[eid] = [time.monotonic() + 900, 0]
+            sv._retained_ids.add(eid)
+            sv._record_digests(eid, dict(digests))
+        return len(sv._retention)
+    finally:
+        sup.RETAINED_STATE_CEILING_BYTES = real
+
+
 def test_cap_units(tmp):
     head, tail = sup.RETURN_HEAD_BYTES, sup.RETURN_TAIL_BYTES
 
@@ -1399,11 +1585,14 @@ def test_hardening_units(tmp):
     os.makedirs(many)
     for i in range(sup.ARTIFACT_ENTRY_BUDGET + 200):
         open(os.path.join(many, "m%05d.txt" % i), "w").close()
-    entries, omitted = sup.build_manifest(many)
+    entries, omitted, digests = sup.build_manifest(many)
     check("manifest: the entry count is capped",
           len(entries) == sup.ARTIFACT_ENTRY_BUDGET, f"got {len(entries)}")
     check("manifest: what it did not list is reported in artifacts_omitted",
           omitted == 200, f"got {omitted}")
+    check("manifest: the digest map covers exactly what was listed, so the cap cannot leave "
+          "a listed name unverifiable",
+          set(digests) == {e["name"] for e in entries}, f"{len(digests)} vs {len(entries)}")
     check("manifest: the scan limit bounds the walk itself",
           sup.build_manifest(many, max_entries=10, scan_limit=50)[0].__len__() == 10)
 
@@ -1510,6 +1699,36 @@ def test_hardening_units(tmp):
     evicted = sv._enforce_retained_ceiling()
     check("ceiling: a single over-ceiling execution is evicted, not left sitting above it",
           evicted == ["only-one"] and not sv._retention, f"got {evicted} {list(sv._retention)}")
+
+    # -- ZERO BYTES ON DISK IS NOT ZERO COST. 1024 empty artifacts with long names measure 0
+    # against the disk ceiling and cost ~0.5 MB of digest map each, and the number of retained
+    # executions has no count cap — so before RETAINED_STATE_CEILING_BYTES this accumulated for
+    # the whole retention window with nothing able to evict it (pod OOM at 512 Mi).
+    sv = sup.Supervisor(tmp)
+    fat = {("a" * 200) + str(i): "0" * 64 for i in range(sup.ARTIFACT_ENTRY_BUDGET)}
+    ids = []
+    for i in range(24):
+        eid = f"{i:08d}-0000-4000-8000-000000000000"
+        ids.append(eid)
+        with sv._lock:
+            sv._retention[eid] = [time.monotonic() + 900, 0]   # zero BYTES on disk
+        sv._retained_ids.add(eid)
+        sv._record_digests(eid, dict(fat))
+    held = sum(sv._retained_memory_costs().values())
+    check("ceiling: the digest maps of executions that are free on disk are still bounded, "
+          "oldest-first, by the memory ceiling",
+          held <= sup.RETAINED_STATE_CEILING_BYTES and len(sv._retention) < len(ids),
+          f"{held} bytes over {len(sv._retention)} retained rows")
+    check("ceiling: NEGATIVE CONTROL — the same maps with the memory ceiling raised out of "
+          "the way are all retained, so the bound above is the thing doing the work",
+          _all_retained_with_ceiling(tmp, ids, fat) == len(ids),
+          "eviction happened for some other reason")
+    check("ceiling: eviction FAILS CLOSED — an evicted id is gone from the digest map and "
+          "from _retained_ids, so it cannot serve unverified bytes",
+          all((eid in sv._artifact_digests) == (eid in sv._retention)
+              and (eid in sv._retained_ids) == (eid in sv._retention) for eid in ids),
+          f"retained={len(sv._retention)} digests={len(sv._artifact_digests)} "
+          f"ids={len(sv._retained_ids)}")
 
     # -- a directory that was created must be registered for reaping whether or not the
     # execution reached _retain: _retained_ids alone made the id answer 409 with nothing
@@ -2755,6 +2974,263 @@ def test_forkserver_death_mid_execution(tmp):
         server.close()
 
 
+def _proc_state(pid):
+    """The state letter for `pid`, or None when the pid is gone.
+
+    A ZOMBIE IS NOT A SURVIVOR, and os.kill(pid, 0) cannot tell the two apart — it succeeds
+    for both. That is the entire reason this reads /proc instead: "we contained it" and "it is
+    still running the attacker's code" must not be the same observation.
+    """
+    fields = sup._proc_stat_fields(pid)
+    if not fields:
+        return None
+    return fields[0].decode("ascii", "replace")
+
+
+_SURVIVOR_SLEEP_S = 30
+
+
+def _survivor_code(detach):
+    """A script that leaves ONE process behind and prints its pid, then exits normally.
+
+    IT HOLDS NONE OF THE SUPERVISOR'S DESCRIPTORS, deliberately. 0/1/2 go to /dev/null and the
+    status and audit pipes are closed, so all three drains reach EOF when the direct child
+    exits. Without that, an execution's response would be held for DRAIN_GRACE_S and the test
+    would be measuring the drain deadline (4h6.39) rather than containment. It is the shape
+    4h6.55's finding-3 probe used, for the same reason.
+
+    `detach` is the only difference between the two cases the beads name: with setsid() the
+    survivor leaves the process group and no killpg can reach it (4h6.83); without it, it
+    stays in the group and a normally-completing execution simply never signalled that group
+    (4h6.66). Both were MEASURED surviving.
+    """
+    return (
+        "import os, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        + ("    os.setsid()\n" if detach else "")
+        + "    for fd in (3, 4):\n"
+        "        try:\n"
+        "            os.close(fd)\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    null = os.open('/dev/null', os.O_RDWR)\n"
+        "    for fd in (0, 1, 2):\n"
+        "        os.dup2(null, fd)\n"
+        f"    time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "    os._exit(0)\n"
+        "print('SURVIVOR', pid, flush=True)\n"
+    )
+
+
+def _run_survivor_probe(server, detach):
+    """(pid of the process left behind, response body). pid is None if the probe misfired."""
+    status, _, body = server.request(
+        "POST", "/execute", body=make_body(code=_survivor_code(detach)))
+    body = body or {}
+    if status != 200:
+        return None, body
+    for line in (body.get("output") or "").splitlines():
+        if line.startswith("SURVIVOR "):
+            return int(line.split()[1]), body
+    return None, body
+
+
+def test_survivors(server):
+    """A depth-1 survivor does not outlive its own execution: 4h6.66 and 4h6.83, watched.
+
+    MEASURED BEFORE THIS LANDED, after a status-ok execution — both of these were still
+    running, and would have been for the pod's lifetime:
+        1197089 1197084 PRB-INGRP    <- plain fork, stayed in the process group
+        1197090 1197090 PRB-DETACH   <- setsid() escapee
+    The first is 4h6.66: _kill_group has two call sites and a normal completion has
+    reaped=True, so it reached neither. The second is 4h6.83 and is not reachable by any
+    process-group kill at all; what reaches it is PARENTAGE — the fork server is a
+    PR_SET_CHILD_SUBREAPER, so an escapee whose parent exits reparents to it and FS_OP_SWEEP
+    kills and reaps it.
+
+    THE NEGATIVE CONTROL IS THE SECOND HALF OF THIS TEST AND IT IS NOT DECORATION. A probe
+    whose fork silently failed, or whose survivor exited on its own, would make the positive
+    assertions pass over nothing. So the same two probes are run again with _kill_survivors and
+    _sweep_strays disabled, and the survivors must then BE THERE — restoring the exact
+    behaviour the beads measured — before an explicit sweep clears them.
+
+    WHAT IT DOES NOT PROVE: that the survivor was harmless while its OWN execution ran (it was
+    alive for all of it, by construction), and anything at all about gVisor, which implements
+    prctl and /proc in the sentry and is 4h6.51's to measure.
+    """
+    if server.container or server.supervisor is None:
+        skip("survivors: a depth-1 survivor does not outlive its own execution",
+             "the probe reads /proc for a pid in the supervisor's own namespace")
+        return
+    try:
+        for detach, label in ((True, "a setsid() escapee"), (False, "an in-group grandchild")):
+            pid, body = _run_survivor_probe(server, detach)
+            check(f"survivors: the {label} probe ran and named the process it left behind",
+                  pid is not None, f"got {body}")
+            if pid is None:
+                continue
+            check(f"survivors: the execution that left {label} still answers ok",
+                  body.get("status") == "ok", f"got {body.get('status')} {body.get('error')}")
+            state = _proc_state(pid)
+            check(f"survivors: {label} does not survive a normally-completing execution",
+                  state is None, f"pid {pid} is still there in state {state!r}")
+
+        leftovers = []
+        real_kill = sup._kill_survivors
+        real_sweep = sup.Supervisor._sweep_strays
+        sup._kill_survivors = lambda job: False
+        sup.Supervisor._sweep_strays = lambda self, job: None
+        try:
+            for detach, label in ((True, "a setsid() escapee"), (False, "an in-group grandchild")):
+                pid, body = _run_survivor_probe(server, detach)
+                state = _proc_state(pid) if pid is not None else None
+                check(f"survivors: NEGATIVE CONTROL — with the group kill and the sweep "
+                      f"disabled, {label} IS still running after the execution completes",
+                      state is not None and state != "Z",
+                      f"pid {pid} state {state!r} (the probe proves nothing if this passes "
+                      f"only because the fix ran)")
+                if state is not None:
+                    leftovers.append(pid)
+        finally:
+            sup._kill_survivors = real_kill
+            sup.Supervisor._sweep_strays = real_sweep
+
+        # (killed, reaped-as-zombies): a zombie is not a survivor and the two are reported
+        # separately, so this assertion must read the killed half.
+        swept, _reaped = server.supervisor.forkserver.sweep()
+        check("survivors: an explicit sweep kills and reaps exactly what the negative control "
+              "left behind, so the sweep is what does the work",
+              leftovers and set(leftovers) <= set(swept)
+              and all(_proc_state(p) is None for p in leftovers),
+              f"left {leftovers}, swept {swept}")
+    finally:
+        server.close()
+
+
+def _chain_code():
+    """A script that leaves a DEPTH-2 chain of setsid()'d processes behind, and names both.
+
+    THE MIDDLE PROCESS MUST STAY ALIVE UNTIL THE SWEEP RUNS, which is the entire difference
+    from `_survivor_code` and the reason a single-pass sweep missed this shape: B reparents to
+    the fork server only when A exits, so while A is alive B is not the fork server's child and
+    no enumeration can see it. A is killed by the sweep's first round; B appears afterwards.
+    Both call setsid(), so B is not in A's process group either and the collateral killpg that
+    catches shallower probes does not reach it.
+    """
+    return (
+        "import os, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    b = os.fork()\n"
+        "    if b == 0:\n"
+        "        os.setsid()\n"
+        "        for fd in (3, 4):\n"
+        "            try:\n"
+        "                os.close(fd)\n"
+        "            except OSError:\n"
+        "                pass\n"
+        "        null = os.open('/dev/null', os.O_RDWR)\n"
+        "        for fd in (0, 1, 2):\n"
+        "            os.dup2(null, fd)\n"
+        f"        time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "        os._exit(0)\n"
+        "    print('CHAIN', pid, b, flush=True)\n"
+        "    for fd in (3, 4):\n"
+        "        try:\n"
+        "            os.close(fd)\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    null = os.open('/dev/null', os.O_RDWR)\n"
+        "    for fd in (0, 1, 2):\n"
+        "        os.dup2(null, fd)\n"
+        f"    time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "    os._exit(0)\n"
+        # The direct child exits here, which is what starts A's reparenting. The pause only
+        # keeps the print ahead of the exit so the harness reads the pids from a live pipe.
+        "time.sleep(0.3)\n"
+    )
+
+
+def _run_chain_probe(server):
+    """((pid of A, pid of B), body). The pids are None if the probe misfired.
+
+    A prints the pair, not the direct child: the pid the parent gets from fork() is A's, and B's
+    is only knowable inside A.
+    """
+    status, _, body = server.request(
+        "POST", "/execute", body=make_body(code=_chain_code()))
+    body = body or {}
+    if status != 200:
+        return (None, None), body
+    for line in (body.get("output") or "").splitlines():
+        if line.startswith("CHAIN "):
+            _, a, b = line.split()
+            return (int(a), int(b)), body
+    return (None, None), body
+
+
+def test_survivor_chain(root):
+    """A DEPTH-2 setsid() chain does not survive its own execution either (4h6.83).
+
+    MEASURED against the single-pass sweep this replaced — B was in state S, running, for the
+    whole of the NEXT execution:
+        PROBE4 double-setsid status=ok pids={'A': 1213980, 'B': 1213981} A=None B='S'
+        PROBE4 after ONE more execution: B=None
+    `test_survivors` cannot catch it: both of its probes are depth 1, which is exactly the shape
+    a single enumeration sees. The mechanism is that a process reparents to the subreaper only
+    when ITS OWN parent exits, so B is invisible while A lives, becomes the fork server's child
+    after the sweep has killed A, and then needs a SECOND enumeration.
+
+    THE NEGATIVE CONTROL IS A SECOND SUPERVISOR WITH FS_SWEEP_MAX_ROUNDS AT 1, and it has to be
+    a second supervisor because the fork server is forked at bring_up(): patching the constant
+    afterwards would change the harness's copy and not the one the sweep actually reads. With
+    one round B must BE there afterwards — restoring the measurement above — or the positive
+    assertion is passing over a probe that never worked.
+    """
+    servers = []
+    try:
+        real_rounds = sup.FS_SWEEP_MAX_ROUNDS
+        sup.FS_SWEEP_MAX_ROUNDS = 1
+        try:
+            neg = Server(os.path.join(root, "one-round"))
+        finally:
+            sup.FS_SWEEP_MAX_ROUNDS = real_rounds
+        servers.append(neg)
+        if neg.supervisor is None:
+            skip("survivor chain: a depth-2 setsid() chain does not outlive its execution",
+                 "the probe reads /proc for a pid in the supervisor's own namespace")
+            return
+        (a, b), body = _run_chain_probe(neg)
+        check("survivor chain: the depth-2 probe ran and named both processes it left behind",
+              a is not None and b is not None, f"got {body}")
+        state_b = _proc_state(b) if b is not None else None
+        check("survivor chain: NEGATIVE CONTROL — with the sweep's re-enumeration disabled "
+              "(one round) the grandchild of the chain IS still running afterwards",
+              state_b is not None and state_b != "Z",
+              f"A={_proc_state(a)!r} B={state_b!r} (the positive assertion below proves "
+              f"nothing if this passes only because the fix ran)")
+        swept, _reaped = neg.supervisor.forkserver.sweep()
+        check("survivor chain: and one more sweep round, now that it has reparented, clears it",
+              b is None or _proc_state(b) is None, f"swept {swept}, B={_proc_state(b)!r}")
+
+        pos = Server(os.path.join(root, "all-rounds"))
+        servers.append(pos)
+        (a, b), body = _run_chain_probe(pos)
+        check("survivor chain: the depth-2 probe ran under the real sweep too",
+              a is not None and b is not None, f"got {body}")
+        check("survivor chain: the execution that left the chain still answers ok",
+              body.get("status") == "ok", f"got {body.get('status')} {body.get('error')}")
+        states = (_proc_state(a) if a else None, _proc_state(b) if b else None)
+        check("survivor chain: NEITHER process of a depth-2 setsid() chain survives a "
+              "normally-completing execution",
+              states == (None, None), f"A={states[0]!r} B={states[1]!r}")
+    finally:
+        for server in servers:
+            server.close()
+
+
 def test_pre_ready_execute(tmp):
     """A POST /execute arriving before the supervisor is ready must be refused BEFORE its body
     is read.
@@ -2844,6 +3320,7 @@ def run_in_process():
         print("artifact manifest and retrieval")
         test_manifest(tmp)
         test_artifact_scoping(tmp)
+        test_artifact_integrity(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
         print("fork server units")
@@ -2858,6 +3335,13 @@ def run_in_process():
         root = os.path.join(tmp, "scratch")
         os.makedirs(root)
         test_http(Server(root))
+        print("what an execution leaves behind (4h6.66, 4h6.83)")
+        root = os.path.join(tmp, "survivors")
+        os.makedirs(root)
+        test_survivors(Server(root))
+        root = os.path.join(tmp, "chain")
+        os.makedirs(root)
+        test_survivor_chain(root)
         print("backpressure over HTTP")
         root = os.path.join(tmp, "backpressure")
         os.makedirs(root)
@@ -2950,6 +3434,11 @@ def run_container(base_url, retention_s=None, container_name=None):
         "request parsing and token consistency (test_parsing) — calls the parser directly",
         "queue (test_queue, test_peer_gone) — inspects the supervisor's queue objects",
         "artifact manifest (test_manifest) — needs the harness's own view of /scratch",
+        "artifact integrity (test_artifact_integrity) — tampers with a retained artifact "
+        "directly, which needs the harness's own view of /scratch",
+        "what an execution leaves behind (test_survivors) — reads /proc for a pid in the "
+        "supervisor's pid namespace, and disables the kill and the sweep in the module to get "
+        "its negative control",
         "startup wipe (test_startup_wipe) — calls wipe_unrecognised_scratch() directly",
         "capping and accounting units (test_cap_units) — calls _cap_output/_dir_usage directly",
         "hardening units (test_hardening_units) — calls _trim_artifacts/_cap_response/_reap directly",

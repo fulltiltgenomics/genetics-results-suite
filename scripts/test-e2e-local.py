@@ -848,13 +848,15 @@ def main():
     # ----------------------------------------------------------------------------------
     print("process-group kill, and what a setsid() grandchild does about it")
     # ----------------------------------------------------------------------------------
-    # TWO RUNS, BECAUSE THE PROPERTY ONLY EXISTS ON ONE OF THEM. sandbox/supervisor.py has
-    # exactly one call site of _kill_group and it is inside _fire_limit: THE PROCESS GROUP IS
-    # SIGNALLED ONLY WHEN A LIMIT FIRES. A normally-completing execution never signals its
-    # group at all, so "a grandchild does not outlive the execution" is simply false there and
-    # asserting it would be asserting a wish. The bead's requirement is the process-group pid
-    # KILL, so the assertion goes on the path where the kill runs; the completing path is
-    # RECORDED as an observation and asserts nothing.
+    # TWO RUNS. The assertion below is on the LIMIT path, which is where this bead's
+    # process-group kill runs. The completing path is RECORDED rather than asserted here, and
+    # the reason has changed: it used to be that a normal completion signalled nothing at all
+    # (there were two _kill_group call sites and a reaped job reached neither), so asserting a
+    # grandchild was gone would have been asserting a wish. Since 4h6.66 and 4h6.83 it DOES
+    # signal — _kill_survivors on the group, then the fork server's subreaper sweep for
+    # whatever setsid()'d out of it — and scripts/test-supervisor.py's `survivors` group
+    # asserts exactly that, with a negative control. What is not established is the behaviour
+    # under this harness's runtime, so the note stays a note until somebody runs it here.
     limit_tag = uuid.uuid4().hex[:4]
     done_tag = uuid.uuid4().hex[:4]
     killed = run(code=grandchild_code(limit_tag, spin=True), timeout_s=5)
@@ -894,13 +896,15 @@ def main():
     # call site, not a defect this harness gets to decide about.
     print(f"  note  NOT AN ASSERTION — after the LIMIT kill the setsid() grandchild is "
           f"{'RESIDENT' if 'D' in killed_alive else 'gone'}: alive={sorted(killed_alive)} "
-          f"zombie={sorted(killed_dead)}. genetics-results-suite-4h6.55 owns this, and a "
-          "RESIDENT here CONFIRMS its finding under runc rather than contradicting it.")
-    print(f"  note  NOT AN ASSERTION — the NORMALLY-COMPLETING execution's group is never "
-          f"signalled (supervisor.py calls _kill_group only from _fire_limit), and both of "
-          f"its grandchildren are alive={sorted(done_alive)} zombie={sorted(done_dead)}; "
-          f"status={completed['status']}. Whether that path should signal its group is a "
-          "question about the supervisor, filed separately, not a check here.")
+          f"zombie={sorted(killed_dead)}. A killpg cannot reach it by construction; what is "
+          "supposed to reach it now is the fork server's subreaper sweep at the END of the "
+          "execution (genetics-results-suite-4h6.83), so RESIDENT here means the sweep did "
+          "not run or did not take under this runtime — worth chasing, not a pass/fail.")
+    print(f"  note  NOT AN ASSERTION — the NORMALLY-COMPLETING execution left "
+          f"alive={sorted(done_alive)} zombie={sorted(done_dead)}; status={completed['status']}. "
+          "Since 4h6.66 and 4h6.83 both grandchildren are supposed to be GONE here, which is "
+          "asserted with a negative control in scripts/test-supervisor.py's `survivors` group; "
+          "this stays a note only because that behaviour is unverified under this runtime.")
 
     # ----------------------------------------------------------------------------------
     print("the signing key: unset must fail the execution, wrong must be refused")

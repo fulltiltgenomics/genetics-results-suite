@@ -36,14 +36,26 @@ of what happened under an assumption of compromise; db-api's and results-api's o
 `endpoint_access` lines, written outside this pod, are what hold there.
 
 WHAT THE CONTROLS IN THIS FILE DO NOT CONTAIN, stated because the opposite reading is the
-dangerous one. Every kill path signals the child's PROCESS GROUP. A descendant that calls
-`setsid()` LEAVES that group and no signal here reaches it: it was MEASURED surviving both
-`killpg(SIGTERM)` and `killpg(SIGKILL)`, which returned ESRCH while it kept running. The
-group kill handles the ordinary case — a script's `subprocess` children — and nothing more.
-Containing an escapee is genetics-results-suite-4h6.55's (a PID namespace per execution), and
-until it lands an escaped process shares the pod with the next user. The drain deadline
-(4h6.39, DRAIN_GRACE_S) is what keeps such a process from also holding the execution slot;
-do not remove it, and do not read "the child was reaped" as "the execution is over".
+dangerous one. Every SIGNAL path signals the child's PROCESS GROUP, and a descendant that
+calls `setsid()` LEAVES that group: it was MEASURED surviving both `killpg(SIGTERM)` and
+`killpg(SIGKILL)`, which returned ESRCH while it kept running. What now reaches it is
+PARENTAGE rather than group membership — `setsid()` does not change parentage, the fork
+server is a PR_SET_CHILD_SUBREAPER, and at the end of every execution it kills and reaps
+whatever has reparented to it (genetics-results-suite-4h6.83, `_fs_become_subreaper` and
+`_fs_sweep`). A process reparents only when its OWN parent exits, so the sweep re-enumerates
+and FS_SWEEP_MAX_ROUNDS is the chain depth one execution clears; a deeper chain loses that many
+levels per execution and the remainder is logged. The completion path also kills the child's group, which it did not do at all
+before genetics-results-suite-4h6.66.
+
+THE BOUND THAT BUYS IS ON HOW LONG A SURVIVOR OUTLIVES ITS OWN EXECUTION, and it is the
+INTER-execution exposure — a resident in front of the NEXT user — that it closes. It does NOT
+bound the INTRA-execution window: a process forked by execution A is alive for the whole of A
+by construction, and reparents only when A's child exits. It is also UNVERIFIED UNDER gVISOR,
+which implements prctl and /proc in the sentry; a subreaper that does not take degrades to
+exactly the old behaviour and says so in the log (4h6.51 owns measuring it). The drain
+deadline (4h6.39, DRAIN_GRACE_S) is what keeps a survivor from holding the execution slot in
+the meantime; do not remove it, and do not read "the child was reaped" as "the execution is
+over".
 
 STRUCTURAL CONSTRAINTS, each of which fails at runtime rather than at review:
 
@@ -66,7 +78,9 @@ STRUCTURAL CONSTRAINTS, each of which fails at runtime rather than at review:
 
 import array
 import base64
+import ctypes
 import errno
+import hashlib
 import http.server
 import json
 import logging
@@ -262,6 +276,22 @@ REAPER_POLL_S = 30.0
 DIRENT_COST_BYTES = 512
 ARTIFACT_ENTRY_BUDGET = 1024          # entries directly under artifacts/ AND the manifest cap
 
+# WHAT RETENTION COSTS IN RAM, which RETAINED_ARTIFACTS_CEILING_BYTES does not bound because it
+# is charged st_size and 1024 zero-byte files measure 0. Per execution the digest map (4h6.82)
+# is bounded — ARTIFACT_ENTRY_BUDGET entries, each a name of up to NAME_MAX 255 bytes plus a
+# 64-char hex digest — but the NUMBER of retained executions had no count cap at all, so an
+# authenticated caller submitting fast executions that each create 1024 long-named EMPTY
+# artifacts accumulated ~0.5 MB per execution for the whole of RETENTION_S with nothing able to
+# evict it. Before the digest map a retention row was ~200 B and that did not matter; the map
+# is a ~2500x amplification of the same unbounded count, and the consequence is the pod OOM
+# this document's own threat model names as the worst outcome. So retention is charged a MEMORY
+# cost as well as a disk one, and _enforce_retained_ceiling evicts oldest-first on whichever
+# binds. The per-entry figure is deliberately generous — a 64-char str is ~113 B, a dict slot
+# ~100 B — because over-charging evicts earlier and under-charging is the failure being fixed.
+RETAINED_DIGEST_ENTRY_COST_BYTES = 320
+RETAINED_ROW_COST_BYTES = 512         # the row, the id string and the per-execution dict slots
+RETAINED_STATE_CEILING_BYTES = 4 * 1024 * 1024
+
 # The largest artifact GET /artifact will hand back, chosen against MAX_RESPONSE_BYTES rather
 # than against what a plot needs: the body is base64 (+33%) inside a JSON envelope, so 512 KiB
 # of file is ~700 KiB of body and stays clear of the 1 MiB cap. Reaching that cap instead would
@@ -403,11 +433,17 @@ CHILD_STATUS_FD = 3
 # status pipe. A record longer than this is a child misbehaving, not a limit worth reporting.
 _STATUS_READ_LIMIT_BYTES = 64 * 1024
 
-# 4h6.55 option (b). The fork server's control socket carries only these three ops, and none
+# 4h6.55 option (b). The fork server's control socket carries only these four ops, and none
 # of them carries a byte of user data — see _forkserver_main.
 FS_OP_FORK = "fork"     # + 4 descriptors; answers {"pid": n}
 FS_OP_WAIT = "wait"     # block until pid exits, WITHOUT consuming the zombie
 FS_OP_REAP = "reap"     # consume the zombie; answers {"status": n} or {"running": true}
+FS_OP_SWEEP = "sweep"   # kill+reap everything reparented here; answers
+                        # {"swept": [live pids killed], "reaped": [zombie pids]}
+
+# prctl(2). Marking the fork server a child subreaper is what gives the pod a handle on a
+# descendant that called setsid() — see _fs_become_subreaper (genetics-results-suite-4h6.83).
+PR_SET_CHILD_SUBREAPER = 36
 
 # Control messages are a fixed handful of ASCII bytes. The cap is a framing sanity bound, not
 # a budget: anything larger on this socket is a bug or an attempt, and both should fail loudly.
@@ -415,6 +451,19 @@ FS_MSG_MAX_BYTES = 4096
 # How long a control round trip may take before the supervisor concludes the fork server is
 # wedged. FS_OP_WAIT is exempt — it blocks for the child's whole lifetime by design.
 FS_CONTROL_TIMEOUT_S = 30.0
+# THE SWEEP RE-ENUMERATES, AND THESE TWO BOUND HOW OFTEN. A stray only reparents to the fork
+# server when its own parent exits, so a chain of depth n needs n passes to clear: MEASURED, a
+# grandchild that setsid()'d under a parent that also setsid()'d survived a single-pass sweep
+# entirely, because at enumeration time its parent was still alive. FS_SWEEP_MAX_ROUNDS is
+# therefore the CHAIN DEPTH cleared in one execution, and it is bounded rather than "loop until
+# clean" because a stray that forks a fresh decoy every time it is reparented would otherwise
+# spin the sweep for as long as it liked. FS_SWEEP_BUDGET_S is the second bound and it is the
+# load-bearing one: the sweep runs inside an FS_OP_SWEEP round trip, so exceeding
+# FS_CONTROL_TIMEOUT_S would poison the control socket and take the fork server — and with it
+# the pod's ability to execute anything — down. Worst case here is the budget plus one round's
+# 2 * KILL_GRACE_S, which must stay well under FS_CONTROL_TIMEOUT_S.
+FS_SWEEP_MAX_ROUNDS = 4
+FS_SWEEP_BUDGET_S = 10.0
 # The execution payload (code + env + cwd, as JSON) travels as an anonymous descriptor the
 # fork server never reads. MAX_CODE_BYTES bounds the code; the rest is env and JSON overhead.
 PAYLOAD_MAX_BYTES = MAX_CODE_BYTES + 64 * 1024
@@ -808,9 +857,62 @@ def _name_is_retrievable(name):
     return True
 
 
+def _artifact_digest(dfd, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
+    """sha256 of `name` under `dfd`, or None when it can never be served verified.
+
+    None has ONE meaning at every call site: "this file cannot be bound to what the manifest
+    advertised", and read_artifact_bytes refuses on it. Two things produce it — an open or
+    read that failed, and a file LARGER than the read cap. The second is deliberate rather
+    than an omission: read_artifact_bytes answers 413 for such a file, so hashing it would
+    cost a 512 KiB read per manifest entry to protect a byte stream nobody can fetch; and if
+    a same-uid process later TRUNCATES it under the cap, "unverifiable" is exactly the right
+    answer to give rather than serving whatever it now contains.
+
+    Opened relative to `dfd` with O_NOFOLLOW for build_manifest's reasons, not for tidiness:
+    a path-based open here would re-admit the symlink route the directory fd exists to close.
+    """
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+    except OSError:
+        return None
+    try:
+        digest = hashlib.sha256()
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 1 << 20))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if remaining <= 0:
+            return None  # over the read cap: 413 territory, never servable
+        return digest.hexdigest()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
                    scan_limit=EXECUTION_ENTRY_BUDGET):
-    """(entries, omitted). Lists a file only if it would survive read_artifact's checks.
+    """(entries, omitted, digests). Lists a file only if it would survive read_artifact's checks.
+
+    `digests` IS A SECURITY CONTROL AND NOT A CACHE (genetics-results-suite-4h6.82). It maps
+    each listed name to the sha256 of the bytes that were there when the manifest was built,
+    and it is kept in the SUPERVISOR'S MEMORY — never on the filesystem, because the whole
+    failure it answers is that /scratch is writable by the process being defended against.
+    MEASURED from inside a second execution's child: `/scratch` is fully enumerable at the
+    shared uid, and a previous execution's `artifacts/private.csv` could be read, OVERWRITTEN
+    and joined by a PLANTED file. read_artifact re-hashes on the way out and refuses when the
+    bytes moved, so the retention window can no longer serve attacker-controlled content under
+    another user's execution id. It does NOT stop the reading — that is
+    genetics-results-suite-4h6.88 and no filesystem mechanism bounds it under one uid.
+
+    THE HASHING IS BOUNDED BY THE QUOTA, NOT BY THE CHILD. _retain trims artifacts/ back to
+    ARTIFACT_QUOTA_BYTES before this runs, `max_entries` bounds how many files are hashed at
+    all, and _artifact_digest reads at most ARTIFACT_READ_MAX_BYTES + 1 from each — so the
+    work is bounded above by the same numbers the manifest itself is, on a path that already
+    holds the execution slot.
 
     BOTH BOUNDS ARE LOAD-BEARING and they are different. `max_entries` bounds the RESPONSE:
     300,000 zero-length files produced a 19.8 MB JSON body for chat-backend to parse, from a
@@ -826,10 +928,11 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
     """
     entries = []
     omitted = 0
+    digests = {}
     try:
         dfd = os.open(artifacts_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
-        return [], 0
+        return [], 0, {}
     try:
         seen = 0
         # The DIRECTORY FD, not the path: os.listdir(dfd) was symlink-safe and a path-based
@@ -855,16 +958,28 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
                 continue
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
             entries.append({"name": name, "size": st.st_size, "content_type": ctype})
+            digests[name] = _artifact_digest(dfd, name)
     finally:
         os.close(dfd)
     if seen >= scan_limit:
         LOG.error("artifacts/ holds at least %d entries; the manifest stopped enumerating and "
                   "artifacts_omitted is a floor, not a count", seen)
     entries.sort(key=lambda e: e["name"])
-    return entries, omitted
+    return entries, omitted, digests
 
 
-def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
+class _DigestsUnset:
+    """The default for read_artifact_bytes' `expected_digests`, and it is not a value.
+
+    A DEFAULT THAT DISABLES A SECURITY CHECK POINTS THE WRONG WAY. `None` still means "no
+    binding" — unit tests drive the name and descriptor checks on a bare directory with it —
+    but it now has to be WRITTEN, so a future caller that simply forgets the argument gets a
+    TypeError instead of silently serving unverified bytes with no log line to show for it.
+    """
+
+
+def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
+                        expected_digests=_DigestsUnset):
     """(bytes, content_type) for one artifact, or raise RequestError.
 
     THE CHECKS RUN HERE, INSIDE THE SANDBOX, against the directory the child actually wrote
@@ -882,15 +997,49 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
     Not-found is deliberately indistinguishable across "no such name", "not a regular file"
     and "the open failed": the caller learns only whether the artifact it was told about is
     there, which is all it needs and all a probe should get.
+
+    `expected_digests` IS THE INTEGRITY BINDING (genetics-results-suite-4h6.82) and it adds a
+    fourth check to the three above: the name must be one build_manifest actually listed, and
+    the bytes must still hash to what they hashed to then. A PLANTED file — one a same-uid
+    process created in another execution's artifacts/ after that execution finished — is not
+    in the map at all and is refused as not-found, before it is opened. A file whose CONTENT
+    was replaced is refused as 409 ArtifactModified, which is a different answer on purpose:
+    a caller holding a legitimate execution id and a manifest that named the file is entitled
+    to know that the answer is "this is no longer what you were told about" rather than a 404
+    it would read as "the retention window expired".
+
+    None DISABLES THE BINDING and is not a production setting: Supervisor.read_artifact is the
+    only caller on the wire and always passes a map (an empty one for an execution whose
+    manifest was never built, which refuses everything). It has to be passed EXPLICITLY — there
+    is no default — so that unit tests can drive the name and descriptor checks on a bare
+    directory without the fail-open case being reachable by omission (see _DigestsUnset).
     """
+    if expected_digests is _DigestsUnset:
+        raise TypeError("read_artifact_bytes: pass expected_digests explicitly; None disables "
+                        "the integrity binding and must be chosen, not defaulted into")
     if not _name_is_retrievable(name):
         raise RequestError(400, "InvalidRequest", "not a retrievable artifact name")
+    if expected_digests is not None and name not in expected_digests:
+        # Not merely "unknown": a name that is on disk and not in the manifest was put there
+        # by something that is not this execution's child, because the child was reaped before
+        # the manifest was built.
+        raise RequestError(404, "NotFound", "no such artifact")
     try:
         dfd = os.open(artifacts_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
         raise RequestError(404, "NotFound", "no such artifact")
     try:
         try:
+            # HAZARD, PRE-EXISTING AND NOT FIXED HERE: this open BLOCKS FOREVER on a FIFO with
+            # no writer, because O_RDONLY on a fifo waits for one and the fstat that rejects
+            # non-regular files runs after it. The docstring's "no FIFO to block the read on"
+            # is therefore a claim about what is SERVED, not about what is opened. The
+            # expected_digests check above narrows it — a planted fifo is not in the manifest
+            # and is refused before this line, and build_manifest lists regular files only —
+            # but a same-uid process that REPLACES a listed name with a fifo during the
+            # retention window still reaches it, and _artifact_digest's own open has the same
+            # shape between the stat and the read. The fix is O_NONBLOCK plus a re-open, and it
+            # belongs with whoever owns the read path rather than with the integrity binding.
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
         except OSError:
             raise RequestError(404, "NotFound", "no such artifact")
@@ -924,6 +1073,18 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
         raise RequestError(
             413, "ArtifactTooLarge", f"artifact exceeds the {max_bytes} byte limit"
         )
+    if expected_digests is not None:
+        # Over the bytes that would be RETURNED, not over the file: the two are the same
+        # object only when nothing has grown it, and it is the returned bytes that a caller
+        # would otherwise trust.
+        want = expected_digests.get(name)
+        if want is None or hashlib.sha256(data).hexdigest() != want:
+            LOG.error("artifact %r no longer matches the manifest it was listed in; refusing "
+                      "to serve it (genetics-results-suite-4h6.82)", name)
+            raise RequestError(
+                409, "ArtifactModified",
+                "artifact no longer matches the manifest and will not be served",
+            )
     return data, mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
@@ -1208,10 +1369,18 @@ def _child_main(payload_fd, out_w, status_w, audit_w):
 # supervisor and passes them to every child copy-on-write, exactly as before. The child still
 # never execs. The cost is one extra long-lived process whose pages are shared, not copied.
 #
-# WHAT IT DOES NOT DO. It does not touch finding 2 (cross-execution artifact read/overwrite on
-# the flat /scratch — genetics-results-suite-4h6.82) or finding 3 (a setsid() resident that
-# reads the next execution's token file and survives killpg —
-# genetics-results-suite-4h6.83). Both remain open and both still block a multi-user deploy.
+# WHAT IT DOES NOT DO ON ITS OWN. Option (b) closed finding 1 and nothing else. Findings 2 and
+# 3 were split out and are answered here only in part:
+#   * finding 2 (cross-execution artifact access on the flat /scratch): the INTEGRITY half is
+#     closed — build_manifest hashes and read_artifact re-verifies, so a modified or planted
+#     file is refused rather than served (genetics-results-suite-4h6.82). The READING half is
+#     NOT closed and is not closable under one uid: genetics-results-suite-4h6.88, open.
+#   * finding 3 (a setsid() resident that outlives its execution): the fork server is now a
+#     child subreaper and sweeps what reparents to it, so the resident no longer survives into
+#     the NEXT execution (genetics-results-suite-4h6.83). It is still alive DURING its own
+#     execution, and the sweep is unverified under gVisor.
+# Neither half of the reading problem, and no part of the intra-execution window, is contained
+# by anything in this file.
 # --------------------------------------------------------------------------------------
 
 
@@ -1282,6 +1451,10 @@ def _forkserver_main(sock):
     SIGCHLD IS RESET TO SIG_DFL for the opposite reason. SIG_IGN makes the kernel auto-reap,
     which would race the supervisor's own wait/reap split and lose exit statuses.
 
+    IT IS THE POD'S CHILD SUBREAPER (genetics-results-suite-4h6.83), and that is what makes
+    FS_OP_SWEEP possible at all. See _fs_become_subreaper for why setsid() cannot escape it and
+    a process-group kill cannot reach it.
+
     `pending` IS WHY THE CONTROL CHANNEL'S DEATH IS NOT A LEAK. The fork server is the only
     process that knows the pid of a child whose `{"pid": n}` reply never reached the supervisor
     — a fork round trip that times out leaves job.pid None, so neither _execute_inner's finally
@@ -1299,6 +1472,7 @@ def _forkserver_main(sock):
                 signal.signal(sig, signal.SIG_IGN)
             except (OSError, ValueError):
                 pass
+        _fs_become_subreaper()
         # The listening socket, every in-flight client connection and anything else the
         # supervisor happened to hold. The fork server needs its control socket and the pod's
         # stdout, and nothing else; a child that inherited the listener could read another
@@ -1348,6 +1522,9 @@ def _forkserver_main(sock):
                     if got:
                         pending.discard(msg["pid"])
                     _fs_send(sock, {"running": True} if got == 0 else {"status": status})
+                elif op == FS_OP_SWEEP:
+                    killed, reaped = _fs_sweep(pending)
+                    _fs_send(sock, {"swept": killed, "reaped": reaped})
                 else:
                     _fs_send(sock, {"error": f"unknown op {op!r}"})
             except OSError as exc:
@@ -1398,6 +1575,164 @@ def _fs_do_fork(sock, fds, pending):
     _fs_send(sock, {"pid": pid})
 
 
+def _fs_become_subreaper():
+    """Mark the fork server a child subreaper. True if it took.
+
+    THIS IS THE ONLY HANDLE THE POD HAS ON A setsid() ESCAPEE, and it works because setsid()
+    changes the SESSION and the PROCESS GROUP AND NOT THE PARENTAGE. MEASURED after a
+    NORMALLY-COMPLETING execution before this existed: a plain fork that stayed in the group
+    (`PRB-INGRP`) and a setsid() escapee (`PRB-DETACH`) both survived for the pod's lifetime,
+    because the only /proc scan in the supervisor is _group_members — the pid-budget counter,
+    which matches the job's pgid and so structurally cannot see the second one, and which is
+    not a sweep in any case. With PR_SET_CHILD_SUBREAPER set here, an escapee whose parent
+    exits reparents to the FORK SERVER rather than to PID 1, so FS_OP_SWEEP can enumerate it
+    by parentage — a relation no descendant can leave — and kill and reap it. REPARENTING IS
+    NOT INSTANT, and that is the shape of what remains: it happens only when the escapee's own
+    parent exits, so a chain of setsid()'d processes surfaces one level per sweep round and
+    FS_SWEEP_MAX_ROUNDS bounds how many levels one execution clears (see _fs_sweep).
+
+    WHAT IT DOES NOT BOUND, stated here rather than left to be rediscovered: the INTRA-execution
+    window. A resident forked by execution A is alive for the whole of A, and reparents only
+    when A's child exits; anything it does to A's own directory, it does before the sweep runs.
+    The sweep bounds how long it lives PAST its own execution, which is what puts it in front
+    of the NEXT user, and that is the failure the bead is about. It also does not bound a
+    process that has already escaped the pod's pid namespace, which nothing here can do.
+
+    UNVERIFIED UNDER gVISOR. runsc implements prctl in the sentry, and no runsc is installed on
+    the dev machine (measured 2026-08-20), so whether PR_SET_CHILD_SUBREAPER is honoured there
+    is genetics-results-suite-4h6.51's to establish. A refusal degrades rather than breaks: the
+    call is logged and the escapee reparents to PID 1 as before, i.e. exactly today's
+    behaviour. That is why the failure is a WARNING and not a refusal to start.
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        rc = libc.prctl(PR_SET_CHILD_SUBREAPER, ctypes.c_ulong(1),
+                        ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
+    except Exception as exc:  # no libc, no prctl symbol, a platform without it
+        LOG.warning("fork server: PR_SET_CHILD_SUBREAPER is unavailable (%s); a descendant "
+                    "that calls setsid() will survive its execution", exc)
+        return False
+    if rc != 0:
+        LOG.warning("fork server: PR_SET_CHILD_SUBREAPER failed (errno %d); a descendant that "
+                    "calls setsid() will survive its execution", ctypes.get_errno())
+        return False
+    return True
+
+
+def _fs_sweep(pending):
+    """Kill and reap what has REPARENTED to the fork server, for up to FS_SWEEP_MAX_ROUNDS
+    passes. Returns the pids it consumed.
+
+    THE `pending` SET IS WHAT KEEPS THIS OFF THE VALIDATED REAP PATH. The fork server's own
+    LIVE execution child is its child by parentage exactly as a stray is, and killing it here
+    would break the one path 4h6.41 got right. Every pid the fork server forked and has not
+    been asked to reap is in `pending`, so "my children minus pending" is the set of processes
+    that had reparented here AT THE INSTANT OF THE SCAN. It cannot steal a zombie the
+    supervisor is about to reap for the same reason: the supervisor only ever names pids that
+    are in `pending`.
+
+    ONE SCAN IS NOT THE WHOLE SET, and reading it as complete is what made the first version of
+    this function single-pass. A process reparents to the subreaper only when ITS OWN PARENT
+    EXITS, so a depth-2 chain is invisible to the first scan: MEASURED, execution A forked a
+    setsid()'d child A' which forked a setsid()'d B; at scan time B's parent A' was still alive,
+    so B was not a child of the fork server; A' was then killed and reaped, B reparented HERE
+    afterwards, and with nothing re-enumerating it survived running (state S) for the whole of
+    the next execution. B is also outside A''s process group, so the collateral killpg does not
+    reach it either. Re-enumeration is therefore the fix, and FS_SWEEP_MAX_ROUNDS IS THE CHAIN
+    DEPTH CLEARED IN ONE EXECUTION — a deeper chain, or one that forks a fresh decoy each time
+    it is reparented, leaves a remainder that the NEXT execution's sweep takes another
+    FS_SWEEP_MAX_ROUNDS off. That remainder is logged, so the bound is observable rather than
+    silent. FS_SWEEP_BUDGET_S caps the wall clock for the same reason the round count is
+    capped; see the constants.
+
+    RE-ENUMERATION IS ALSO WHAT REAPS THE COLLATERAL. Delivery is killpg on each stray's own
+    group, so a group member that was not itself in the scanned set is killed by it and becomes
+    a zombie here — MEASURED sitting in state Z until the NEXT execution's sweep consumed it,
+    holding a pid against the pod's budget in the meantime. A round before the last one
+    enumerates it and waits for it; collateral from the LAST round has no further round left
+    in this call and is left a zombie until the next execution's sweep — MEASURED: a depth-4
+    chain whose deepest level forks an in-group child left ('COLLAT', 'Z') after the
+    execution, cleared only by the following sweep.
+
+    A ZOMBIE STRAY IS NOT AN ESCAPEE AND IS NOT LOGGED AS ONE. An ordinary subprocess.Popen a
+    script never waits on is a zombie child of the execution child and reparents here like any
+    orphan; it never left a process group and it is not running anybody's code. Reporting that
+    at ERROR would make a routine pattern a standing false alarm in the one log line operators
+    are told to read as "a control failed", so live strays and reparented zombies are counted
+    and reported separately.
+
+    Called at the END of an execution, after the supervisor has reaped its child, so the
+    escapees of THAT execution have already reparented (reparenting happens in the kernel when
+    the parent exits, before its zombie is consumed). An in-group survivor reparents here too
+    and is caught even when _kill_survivors' killpg did not reach it.
+
+    /proc IS THE ONLY WAY TO ENUMERATE LIVE CHILDREN — waitpid finds only the ones that have
+    already exited, and it is the live ones that matter. Its behaviour under gVisor is
+    unverified and shares 4h6.51 with _group_members; an unreadable /proc degrades to "no
+    strays found", which is today's behaviour.
+    """
+    killed = set()
+    reaped = set()
+    deadline = time.monotonic() + FS_SWEEP_BUDGET_S
+    for round_no in range(1, FS_SWEEP_MAX_ROUNDS + 1):
+        kids = _child_pids(os.getpid())
+        if kids is None:
+            LOG.error("fork server: /proc is unreadable, so reparented strays cannot be swept")
+            break
+        strays = {pid for pid in kids if pid not in pending}
+        if not strays:
+            break
+        # A pid that has already exited is grouped with the zombies: there is nothing to kill,
+        # and waitpid is the only thing left that can be owed to it.
+        zombies = {pid for pid in strays if not _pid_is_live(pid)}
+        live = strays - zombies
+        if zombies:
+            unreaped = set(zombies)
+            _fs_reap_pending(unreaped)
+            LOG.info("fork server: reaped %d reparented zombie(s) in sweep round %d: %s",
+                     len(zombies) - len(unreaped), round_no, sorted(zombies - unreaped))
+            reaped |= zombies - unreaped
+        if live:
+            LOG.error("fork server: %d process(es) escaped an execution's process group and "
+                      "reparented here (sweep round %d): %s; killing and reaping them",
+                      len(live), round_no, sorted(live))
+            survivors = set(live)
+            if not _fs_kill_set(survivors):
+                LOG.error("fork server: %s survived SIGKILL and are still running",
+                          sorted(survivors))
+            killed |= live - survivors
+        if time.monotonic() >= deadline:
+            LOG.error("fork server: the sweep hit its %.0fs budget after %d round(s); anything "
+                      "that reparents from here waits for the next execution's sweep",
+                      FS_SWEEP_BUDGET_S, round_no)
+            break
+    else:
+        LOG.error("fork server: the sweep used all %d rounds without a pass that found "
+                  "nothing, so it cannot claim the pod is clear; a chain deeper than that is "
+                  "cleared one execution at a time", FS_SWEEP_MAX_ROUNDS)
+    return sorted(killed), sorted(reaped)
+
+
+def _fs_kill_set(pids):
+    """SIGTERM, then SIGKILL after KILL_GRACE_S, over a whole SET, reaping as it goes.
+
+    True when nothing is left. `pids` is consumed: what remains on a False is what survived.
+    One grace for the batch rather than one each — a per-child grace turns n stragglers into
+    n * KILL_GRACE_S on a path that is either a pod shutdown or a user's response.
+    """
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        _fs_signal_pending(pids, sig)
+        deadline = time.monotonic() + KILL_GRACE_S
+        while pids:
+            _fs_reap_pending(pids)
+            if not pids or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        if not pids:
+            return True
+    return False
+
+
 def _fs_kill_pending(pending):
     """Kill and reap every child the supervisor can no longer ask about. Bounded.
 
@@ -1408,26 +1743,24 @@ def _fs_kill_pending(pending):
     the pid of or can no longer reap.
 
     The shape is _kill_group's — SIGTERM, then SIGKILL after KILL_GRACE_S — flattened over a
-    set: one grace for the whole batch rather than one each, because the pod is going away and
-    holding its exit open per child buys nothing. Delivery is os.killpg on the child's OWN
-    group for the same reason and with the same guard as _resolve_pgid; see _fs_signal_pending.
+    set by _fs_kill_set, because the pod is going away and holding its exit open per child
+    buys nothing. Delivery is os.killpg on the child's OWN group for the same reason and with
+    the same guard as _resolve_pgid; see _fs_signal_pending.
+
+    THE STRAYS GO TOO, and only here: on the way out there is no live child to protect, so
+    _fs_sweep's `pending` distinction has nothing left to make. A stray reaped by FS_OP_SWEEP
+    during the pod's life is already gone from both sets.
     """
+    kids = _child_pids(os.getpid())
+    if kids:
+        pending = set(pending) | set(kids)
     if not pending:
         return
     LOG.error("fork server: the control channel ended with %d unreaped child(ren) %s; "
               "killing their process groups rather than orphaning them",
               len(pending), sorted(pending))
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        _fs_signal_pending(pending, sig)
-        deadline = time.monotonic() + KILL_GRACE_S
-        while pending:
-            _fs_reap_pending(pending)
-            if not pending or time.monotonic() >= deadline:
-                break
-            time.sleep(0.02)
-        if not pending:
-            return
-    LOG.error("fork server: %s survived SIGKILL; exiting anyway", sorted(pending))
+    if not _fs_kill_set(pending):
+        LOG.error("fork server: %s survived SIGKILL; exiting anyway", sorted(pending))
 
 
 def _fs_signal_pending(pending, sig):
@@ -1639,6 +1972,28 @@ class ForkServer:
         if reply.get("running"):
             return None
         return reply["status"]
+
+    def sweep(self):
+        """Kill and reap everything that has reparented to the fork server. Returns those pids.
+
+        CALL IT AFTER THE REAP AND NOT BEFORE. During an execution the fork server's own child
+        is indistinguishable from a stray by parentage and is kept out of the sweep only by
+        the `pending` set that FS_OP_REAP clears; the ordering is what makes that guard belt
+        as well as braces rather than the only thing standing between a sweep and the live
+        child. Concurrency is 1 and the execution slot is still held when the supervisor calls
+        this, so there is no other fork in flight either.
+
+        It re-enumerates, so its cost is per ROUND: 2 * KILL_GRACE_S for a round whose strays
+        ignore SIGTERM, and nothing measurable when there is no stray — which is every ordinary
+        execution. FS_SWEEP_BUDGET_S plus one round's grace is the whole-call bound, and it is
+        sized to stay under FS_CONTROL_TIMEOUT_S because overrunning that poisons this socket
+        and kills the fork server.
+        """
+        reply = self._round_trip({"op": FS_OP_SWEEP})
+        swept = reply.get("swept")
+        reaped = reply.get("reaped")
+        return (swept if isinstance(swept, list) else [],
+                reaped if isinstance(reaped, list) else [])
 
     def close(self, grace=2.0):
         """Close the control socket and reap the fork server. Idempotent."""
@@ -1917,10 +2272,15 @@ def _cap_response(payload):
 
 
 class Job:
-    # NO pgid SLOT. The design point is that no pgid is ever cached (see _resolve_pgid); a
-    # slot for one is an invitation to start.
+    # NO pgid SLOT FOR SIGNALLING A LIVE CHILD. The design point is that no pgid is ever
+    # cached for that (see _resolve_pgid); a slot for one is an invitation to start.
+    # `reaped_pgid` IS NOT THAT SLOT and the distinction is the whole of why it is safe: it is
+    # written at exactly one moment — inside _reap, under kill_lock, while the zombie is still
+    # held by waitid(WNOWAIT) — and read at exactly one moment, by _kill_survivors, on the
+    # completion path immediately afterwards. Nothing signals a LIVE child from it. See
+    # _kill_survivors for why the value cannot have gone stale in between.
     __slots__ = ("req", "conn", "enqueued_at", "pid", "deadline", "dirs", "owner",
-                 "kill_lock", "reaped", "limit", "done")
+                 "kill_lock", "reaped", "reaped_pgid", "limit", "done")
 
     def __init__(self, req, conn, owner=None):
         self.req = req
@@ -1940,6 +2300,9 @@ class Job:
         # `reaped`, and re-reads the pgid with os.getpgid() before signalling.
         self.kill_lock = threading.Lock()
         self.reaped = False
+        # The child's OWN process group, read in _reap while its zombie was still held. None
+        # when it never had one. Read only by _kill_survivors, only after the reap.
+        self.reaped_pgid = None
         self.limit = None      # the first supervisor limit that fired: a reserved error type
         self.done = threading.Event()   # set once the child is reaped; stops the watchdog
 
@@ -1997,6 +2360,14 @@ class Supervisor:
         # continues after any measurement); what fixes it is the containment boundary 4h6.55
         # owns. The claim this comment is allowed to make is the conditional one.
         self._retention = {}
+        # execution_id -> {artifact name: sha256 hex or None}, as build_manifest found them.
+        # genetics-results-suite-4h6.82. IN MEMORY ON PURPOSE: the thing this defends against
+        # is a same-uid process writing to /scratch, so a manifest written to /scratch would
+        # be forged in the same breath as the file it describes. An id with no row here serves
+        # no artifact at all; see read_artifact. IN MEMORY IS NOT UNBOUNDED: the aggregate is
+        # charged against RETAINED_STATE_CEILING_BYTES and evicted with the execution it
+        # belongs to — see _retained_memory_costs and _enforce_retained_ceiling.
+        self._artifact_digests = {}
         self.retention_s = RETENTION_S if retention_s is None else retention_s
         self._stop_reaper = threading.Event()
         # Set by bring_up(), which forks it before the supervisor is ready and therefore before
@@ -2072,24 +2443,38 @@ class Supervisor:
         back a file mid-write, and would do it for the only execution whose bytes are still
         moving — a half-written PNG is worse than a 404.
 
-        The id is the authorisation. It is a uuid4 minted per execution by chat-backend and
-        never shown to the model (`parse_execute_request` requires it to equal the tokens'
-        jti), so it cannot be guessed and cannot be walked; combined with the NetworkPolicy
-        that decides who reaches this port at all, that is the same standing /execute has.
+        The id is the authorisation ON THIS HTTP SURFACE, and the qualifier is the whole
+        accuracy of the sentence. It is a uuid4 minted per execution by chat-backend and never
+        shown to the model (`parse_execute_request` requires it to equal the tokens' jti), so
+        over the wire it cannot be guessed and cannot be walked — there is no route here that
+        lists execution ids — and combined with the NetworkPolicy that decides who reaches this
+        port at all, that is the same standing /execute has. IT IS NOT A FILESYSTEM PROPERTY
+        AND MUST NOT BE READ AS ONE: /scratch is fully enumerable by any process at the shared
+        uid 65532, MEASURED from inside an execution's child, which is
+        genetics-results-suite-4h6.88 and is open. What the id bounds is who can ask this
+        process for bytes; what the digest map below bounds is which bytes it will hand over.
         There is no per-session check here — the sid-scoped resolution
         genetics-results-suite-4h6.52 specifies belongs in chat-backend, which is the only
         side that knows which session owns which execution.
+
+        THE DIGEST MAP IS PART OF THE ANSWER, not an optimisation. An execution that was
+        retained without a manifest ever being built — an exception between ExecutionDirs
+        .create() and build_manifest, which _register_retention covers — has an EMPTY map, and
+        so serves nothing: nothing was ever advertised for it, so there is nothing a caller
+        can legitimately be asking for, and whatever is on disk got there on a path that was
+        never described to anybody.
         """
         if not isinstance(execution_id, str) or not EXECUTION_ID_RE.fullmatch(execution_id):
             raise RequestError(400, "InvalidRequest", "execution_id must be a lowercase uuid4")
         with self._lock:
             retained = execution_id in self._retained_ids
+            digests = self._artifact_digests.get(execution_id) or {}
         if not retained:
             # One shape for "never existed", "still running" and "reaped": which of the three
             # it is would tell a caller holding a guessed id something about the pod's state.
             raise RequestError(404, "NotFound", "no such execution")
         dirs = ExecutionDirs(self.scratch_root, execution_id)
-        return read_artifact_bytes(dirs.artifacts, name)
+        return read_artifact_bytes(dirs.artifacts, name, expected_digests=digests)
 
     def begin_drain(self):
         self.draining = True
@@ -2246,6 +2631,29 @@ class Supervisor:
         self._enforce_retained_ceiling()
         return trimmed
 
+    def _record_digests(self, execution_id, digests):
+        """Bind a retained execution to the bytes its manifest described (4h6.82).
+
+        GUARDED ON _retention RATHER THAN _retained_ids, and the difference is not cosmetic:
+        _release adds the id to _retained_ids only after _execute returns, so at this point
+        the row _retain wrote is the only evidence the directory is still alive — and
+        _enforce_retained_ceiling may already have evicted this very execution between _retain
+        and here, in which case recording a map for it would leak a dict per eviction for the
+        life of the pod.
+
+        THE CEILING IS RE-ENFORCED HERE, not only in _retain, because this is where the memory
+        the map costs actually appears: _retain runs BEFORE the manifest is bound to the id, so
+        enforcing only there would let each execution overshoot RETAINED_STATE_CEILING_BYTES by
+        its own map until the next completion noticed. Outside the lock, because eviction takes
+        both this lock and the condition variable.
+        """
+        with self._lock:
+            recorded = execution_id in self._retention
+            if recorded:
+                self._artifact_digests[execution_id] = digests
+        if recorded:
+            self._enforce_retained_ceiling()
+
     def _retained_sizes(self):
         """[(execution_id, bytes)] in completion order — which is oldest-first.
 
@@ -2270,6 +2678,21 @@ class Supervisor:
         with self._lock:
             return sum(row[1] for row in self._retention.values())
 
+    def _retained_memory_costs(self):
+        """{execution_id: bytes of supervisor MEMORY the retention of that id holds}.
+
+        Derived rather than stored, so it cannot drift out of step with the two dicts it
+        measures. Bounded by the same numbers it enforces: at the ceiling there are at most
+        RETAINED_STATE_CEILING_BYTES / RETAINED_ROW_COST_BYTES rows to walk.
+        """
+        with self._lock:
+            costs = {eid: RETAINED_ROW_COST_BYTES for eid in self._retention}
+            for eid, digests in self._artifact_digests.items():
+                if eid in costs:
+                    costs[eid] += sum(len(name) + RETAINED_DIGEST_ENTRY_COST_BYTES
+                                      for name in digests)
+        return costs
+
     def _enforce_retained_ceiling(self):
         """Oldest-first eviction until the retained artifact set is under its ceiling.
 
@@ -2290,20 +2713,44 @@ class Supervisor:
         bound is the 192 MiB execution quota instead; still under the ceiling. Both are bounds
         on a POLLED quota, so both describe the steady state and not a hostile burst's
         transient peak. A guard that cannot fire beats a guard that fires wrongly.
+
+        TWO CEILINGS, NOT ONE, AND THE SECOND IS THE ONE THAT BOUNDS RAM. Disk is charged
+        st_size, so 1024 zero-byte artifacts with 255-byte names measure 0 against
+        RETAINED_ARTIFACTS_CEILING_BYTES while costing ~0.5 MB of digest map — and the number
+        of retained executions has no count cap, so that accumulated for the whole retention
+        window with nothing able to evict it. RETAINED_STATE_CEILING_BYTES charges retention
+        what it costs in MEMORY instead (see _retained_memory_costs) and evicts on whichever
+        ceiling binds first. IT FAILS CLOSED BY CONSTRUCTION: eviction is _forget_retained,
+        which drops the directory, the id and the digest map together, so there is no state in
+        which an execution is still readable but no longer verifiable. The cost is that a
+        caller flooding retention evicts older executions sooner — the same denial
+        RETAINED_ARTIFACTS_CEILING_BYTES already accepts, and strictly better than the pod OOM
+        it replaces.
         """
         sizes = self._retained_sizes()
+        mem = self._retained_memory_costs()
         total = sum(size for _, size in sizes)
+        mem_total = sum(mem.values())
         evicted = []
-        while total > RETAINED_ARTIFACTS_CEILING_BYTES and sizes:
+        reasons = set()
+        while sizes and (total > RETAINED_ARTIFACTS_CEILING_BYTES
+                         or mem_total > RETAINED_STATE_CEILING_BYTES):
+            # WHICH ceiling bound, not just that one did: "256 MiB of artifacts on disk" and
+            # "4 MiB of digest maps for artifacts that cost nothing on disk" are different
+            # operational facts and want different responses.
+            reasons.add("%d MiB of retained artifacts on disk"
+                        % (RETAINED_ARTIFACTS_CEILING_BYTES // (1024 * 1024))
+                        if total > RETAINED_ARTIFACTS_CEILING_BYTES
+                        else "%d MiB of manifest digests in memory"
+                        % (RETAINED_STATE_CEILING_BYTES // (1024 * 1024)))
             eid, size = sizes.pop(0)
             self._forget_retained(eid)
             evicted.append(eid)
             total -= size
+            mem_total -= mem.get(eid, 0)
         if evicted:
-            LOG.warning(
-                "retained artifacts exceeded %d MiB; evicted %d oldest execution(s): %s",
-                RETAINED_ARTIFACTS_CEILING_BYTES // (1024 * 1024), len(evicted),
-                ", ".join(evicted))
+            LOG.warning("retention exceeded %s; evicted %d oldest execution(s): %s",
+                        " and ".join(sorted(reasons)), len(evicted), ", ".join(evicted))
         return evicted
 
     def _forget_retained(self, execution_id):
@@ -2312,6 +2759,7 @@ class Supervisor:
         with self._cv:
             self._retention.pop(execution_id, None)
             self._retained_ids.discard(execution_id)
+            self._artifact_digests.pop(execution_id, None)
             self._cv.notify_all()
 
     def reap_expired(self):
@@ -2406,6 +2854,38 @@ class Supervisor:
                 os.unlink(job.dirs.tokens)
             except OSError:
                 pass
+
+    def _sweep_strays(self, job):
+        """Ask the fork server to kill and reap whatever reparented to it (4h6.83).
+
+        NEVER RAISES. It runs inside _execute_inner's finally, where an exception would
+        replace the one being propagated — and the fork server being dead is precisely one of
+        the cases that gets here (the stranded path). A sweep that could not run leaves the
+        strays alive, which is the behaviour this whole change replaced; it is logged and the
+        response is still correct.
+
+        THE TWO LISTS ARE NOT THE SAME EVENT. A live stray outlived its execution and this line
+        is evidence a control failed, which is how the security doc tells operators to read it.
+        A reparented ZOMBIE is an ordinary orphan — a forked child the script never waited on —
+        that left no running process behind at all; reporting it at the same level would make a
+        routine pattern a standing false alarm and erode the signal.
+        """
+        fs = self.forkserver
+        if fs is None:
+            return
+        try:
+            swept, reaped = fs.sweep()
+        except Exception as exc:
+            LOG.error("execution %s: could not sweep reparented strays: %s",
+                      job.req.execution_id, exc)
+            return
+        if swept:
+            LOG.warning("execution %s: killed %d process(es) that had escaped the child's "
+                        "process group and outlived it: %s",
+                        job.req.execution_id, len(swept), swept)
+        if reaped:
+            LOG.info("execution %s: reaped %d orphaned zombie(s) the script never waited on: "
+                     "%s", job.req.execution_id, len(reaped), reaped)
 
     def _execute_inner(self, job):
         if self.forkserver is None:
@@ -2521,6 +3001,14 @@ class Supervisor:
                 LOG.error("execution %s: the reap did not complete; killing the child's group",
                           job.req.execution_id)
                 _kill_group(job)
+            else:
+                # 4h6.66: the ordinary completion, which used to signal NOTHING.
+                _kill_survivors(job)
+            # 4h6.83: and then whatever left the process group entirely. BEFORE the drain
+            # joins, so an escapee holding the output pipe's write end stops being the reason
+            # _drain waits out its grace, and BEFORE _retain and build_manifest, so the
+            # manifest is hashed over a directory nothing is still writing to.
+            self._sweep_strays(job)
             job.done.set()
             reaped.set()
             t_out.join(DRAIN_GRACE_S + 5.0)
@@ -2545,10 +3033,12 @@ class Supervisor:
             audit.close()
         if out_box.get("abandoned") or st_box.get("abandoned") or audit_box.get("abandoned"):
             # Not an error for this response: the child is reaped and its answer is complete.
-            # It does mean something escaped the child's process group and still holds the
-            # write end — and having escaped the group, it is a process no signal here
-            # reaches (see _kill_group). Freeing the slot is what this path achieves, and by
-            # this point it is free; containing the escapee is 4h6.55's.
+            # It means something held the write end past the grace DESPITE the kill and the
+            # sweep above — so either the sweep could not run (a dead fork server), or
+            # PR_SET_CHILD_SUBREAPER did not take on this kernel, or the process is outside
+            # this pod's reach entirely. Freeing the slot is what this path achieves and by
+            # this point it is free; the warning is now evidence that a control failed rather
+            # than the expected outcome it used to be.
             LOG.warning(
                 "execution %s: a descendant outlived the child and still holds the output "
                 "pipe; drain abandoned after %.1fs", job.req.execution_id, DRAIN_GRACE_S)
@@ -2568,7 +3058,8 @@ class Supervisor:
         # THE ORDER IS TRIM, THEN LIST. _retain brings artifacts/ back inside its quota; a
         # manifest built before that would name files the trim deletes a moment later.
         trimmed = self._retain(job)
-        artifacts, omitted = build_manifest(dirs.artifacts)
+        artifacts, omitted, digests = build_manifest(dirs.artifacts)
+        self._record_digests(job.req.execution_id, digests)
 
         return self._response(
             job,
@@ -2745,9 +3236,9 @@ def _kill_group(job):
 
     WHAT THIS REACHES, precisely: the child and every descendant that stayed in its process
     group. A descendant that calls setsid() is NOT in the group and is not signalled — that
-    was measured, with killpg returning ESRCH while the escapee kept running. This is the best
-    available mechanism and it handles the ordinary case; it is not a containment boundary,
-    and 4h6.55 owns the one that would be.
+    was measured, with killpg returning ESRCH while the escapee kept running. Reaching THAT
+    one is the fork server's FS_OP_SWEEP, by parentage rather than by group (4h6.83); this
+    function stays exactly what it was, the prompt kill for the ordinary case.
 
     EVERY SIGNAL RE-READS THE PGID UNDER job.kill_lock, and neither half of that is optional.
     A pgid cached at fork time goes stale the instant waitpid reaps the child, and the pid is
@@ -2772,6 +3263,83 @@ def _kill_group(job):
                 return
         time.sleep(0.05)
     _signal_group(job, signal.SIGKILL)
+
+
+def _kill_survivors(job):
+    """After the reap: SIGTERM the child's process group, SIGKILL after KILL_GRACE_S. Bounded.
+
+    genetics-results-suite-4h6.66. THE SUCCESS PATH SIGNALLED NOTHING AT ALL before this
+    existed. There are two _kill_group call sites — _fire_limit and the stranded path — and a
+    NORMAL completion has reaped=True, so it hits neither: MEASURED after a status-ok
+    execution, a plain forked grandchild that stayed in the pgid (`PRB-INGRP`) was still
+    running afterwards, and would have been for the pod's lifetime.
+
+    IT CANNOT ROUTE THROUGH _signal_group, and that is not a shortcut around the guard — it is
+    the guard being read correctly. _signal_group answers _SIGNAL_GONE for a reaped job on
+    purpose: after waitpid the pid is free for the kernel to reuse, so a LIVE-child signal
+    resolved from job.pid could land on the next execution's child. This function signals a
+    reaped child's GROUP, which is a different object with different lifetime rules, and it
+    takes three guards instead:
+
+      * THE VALUE WAS READ WHILE THE ZOMBIE WAS HELD. _reap resolves it under kill_lock
+        between waitid(WNOWAIT) and waitpid, so at the moment it was read it named THIS
+        child's group and nothing else — the pid was not recyclable.
+      * A PROCESS GROUP WITH LIVE MEMBERS CANNOT BE RECYCLED. The kernel keeps the pid number
+        allocated while anything still has it as its pgrp, so if this kill has anything at all
+        to reach, the number still means what it meant. If the group is empty the number could
+        in principle be reused — but the supervisor holds the execution slot from the reap to
+        this call and forks nothing in between, and killpg on an empty group is ESRCH, which
+        is the ordinary answer here and returns immediately.
+      * THE OWN-GROUP GUARD IS RE-APPLIED. _resolve_pgid already refused to return the
+        supervisor's own group (a child that never reached setsid()), and it is checked again
+        against the live value here, because signalling that group would kill the supervisor,
+        the fork server and every future execution.
+
+    WHAT IT REACHES: the child's descendants that stayed in its process group. NOT a setsid()
+    escapee, which is in no group this can name — that is the fork server's FS_OP_SWEEP, and
+    the two run one after the other for that reason. An escapee is therefore killed one step
+    later rather than not at all.
+    """
+    pgid = job.reaped_pgid
+    if pgid is None or pgid == os.getpgrp():
+        return False
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False  # nothing stayed behind: the ordinary completion
+    except OSError as exc:
+        LOG.error("execution %s: signalling the completed child's group %s failed: %s",
+                  job.req.execution_id, pgid, exc)
+        return False
+    LOG.warning("execution %s: the execution completed but its process group %d still has "
+                "members; killing them", job.req.execution_id, pgid)
+    deadline = time.monotonic() + KILL_GRACE_S
+    while time.monotonic() < deadline:
+        members = _group_members(pgid)
+        if members is not None and not any(_pid_is_live(pid) for pid in members):
+            return True
+        time.sleep(0.05)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        pass
+    # WHETHER THE SIGKILL WORKED IS NOT ASSUMED. Every other kill path in this file checks and
+    # logs (see _fs_kill_set's caller and _fs_kill_pending); this one used to return True
+    # whatever happened, so a group that outlived escalation was indistinguishable from one
+    # that died. Delivery is asynchronous, so give it a short bounded look rather than reading
+    # the instant after the signal.
+    settle = time.monotonic() + 0.25
+    while True:
+        members = _group_members(pgid)
+        alive = None if members is None else [p for p in members if _pid_is_live(p)]
+        if not alive or time.monotonic() >= settle:
+            break
+        time.sleep(0.02)
+    if alive:
+        LOG.error("execution %s: process group %d still has live members after SIGKILL: %s; "
+                  "the fork server's sweep is the only thing left that can reach them",
+                  job.req.execution_id, pgid, sorted(alive))
+    return True
 
 
 def _resolve_pgid(job):
@@ -2856,52 +3424,92 @@ def _reap(job, waiter=None):
     if not waiter.wait_nowait(job.pid):
         while True:
             with job.kill_lock:
+                # 4h6.66. The LAST value read before the reap that succeeds is the one
+                # _kill_survivors uses; taking it here rather than after is the whole reason
+                # it is sound. Nothing else about this path changes.
+                job.reaped_pgid = _resolve_pgid(job)
                 wait_status = waiter.reap(job.pid, nohang=True)
                 if wait_status is not None:
                     job.reaped = True
                     return wait_status
             time.sleep(0.02)
     with job.kill_lock:
+        job.reaped_pgid = _resolve_pgid(job)
         wait_status = waiter.reap(job.pid)
         job.reaped = True
     return wait_status
 
 
-def _group_members(pgid):
-    """The pids in `pgid`, or None if /proc could not be read.
+def _proc_stat_fields(pid):
+    """/proc/<pid>/stat as [state, ppid, pgrp, ...], or None if it could not be read.
 
-    None is not zero and callers must not treat it as one: an unreadable /proc means the pid
-    budget is unenforceable, which is a degradation to report, not a group of size nought.
-    Whether /proc process-group inspection behaves the same under gVisor is unverified and is
-    the deploy-window bead's to establish (4h6.51).
+    comm is parenthesised and may itself contain spaces and parens, so the split is after the
+    LAST ')' — everything before it is pid and comm, everything after is fixed-position.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None  # exited between the listdir and the open
+    cut = raw.rfind(b")")
+    if cut < 0:
+        return None
+    return raw[cut + 2:].split()
+
+
+def _proc_scan(field, value):
+    """The pids whose stat `field` equals `value`, or None if /proc could not be read.
+
+    None is not an empty list and callers must not treat it as one: an unreadable /proc means
+    the question is UNANSWERABLE, which is a degradation to report, not a negative answer.
+    Whether /proc process inspection behaves the same under gVisor is unverified and is the
+    deploy-window bead's to establish (4h6.51).
     """
     try:
         names = os.listdir("/proc")
     except OSError:
         return None
-    members = []
+    found = []
     for name in names:
         if not name.isdigit():
             continue
-        try:
-            with open(f"/proc/{name}/stat", "rb") as fh:
-                raw = fh.read()
-        except OSError:
-            continue  # exited between listdir and open
-        # comm is parenthesised and may itself contain spaces and parens, so split after the
-        # LAST ')': the fields that follow are state, ppid, pgrp, ...
-        cut = raw.rfind(b")")
-        if cut < 0:
-            continue
-        fields = raw[cut + 2:].split()
-        if len(fields) < 3:
+        fields = _proc_stat_fields(name)
+        if fields is None or len(fields) <= field:
             continue
         try:
-            if int(fields[2]) == pgid:
-                members.append(int(name))
+            if int(fields[field]) == value:
+                found.append(int(name))
         except ValueError:
             continue
-    return members
+    return found
+
+
+def _group_members(pgid):
+    """The pids in `pgid`, or None if /proc could not be read. The pid budget's counter."""
+    return _proc_scan(2, pgid)
+
+
+def _pid_is_live(pid):
+    """False when `pid` is gone or is a ZOMBIE.
+
+    A zombie keeps its entry and its pgrp until somebody reaps it, so a group kill that waits
+    for the group to EMPTY waits out its whole grace on processes that are already dead and
+    then escalates to SIGKILL against nothing. The pid budget deliberately does NOT use this:
+    a zombie still occupies a pid against the pod's limit, which is what that budget counts.
+    """
+    fields = _proc_stat_fields(pid)
+    return bool(fields) and fields[0] not in (b"Z", b"X", b"x")
+
+
+def _child_pids(ppid):
+    """The pids whose PARENT is `ppid`, or None if /proc could not be read.
+
+    Parentage rather than process group, because that is the relation a descendant cannot
+    leave: setsid() moves a process out of every group the supervisor can name, and moves it
+    out of nothing here. See _fs_sweep, which is the only caller and runs inside the fork
+    server — the subreaper the escapees end up under.
+    """
+    return _proc_scan(1, ppid)
 
 
 def _dir_usage(path, entry_limit, sub=None):
