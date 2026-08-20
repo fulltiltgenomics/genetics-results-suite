@@ -21,13 +21,19 @@ NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# resolve the target deployment (DEPLOY_ENV) and load its .env, so the secrets written here
+# come from the same file the matching deploy.sh run will use
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
+
 # the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
-# derive from terraform.tfvars (like build.sh does for app_name); override with ENABLE_KEYCLOAK.
-TFVARS="${SCRIPT_DIR}/../terraform/terraform.tfvars"
-PROFILE="$(grep -E '^\s*config_profile\s*=' "${TFVARS}" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')"
+# derive from the resolved tfvars; override with ENABLE_KEYCLOAK.
+PROFILE="$(tfvar config_profile)"
 ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${PROFILE}" = "daly" ] && echo true || echo false)}"
 
-echo "Creating genetics-secrets in namespace ${NAMESPACE}..."
+echo "Creating genetics-secrets in namespace ${NAMESPACE} (env: ${DEPLOY_ENV:-default})..."
+echo "Target cluster: $(kubectl config current-context 2>/dev/null || echo 'NONE — run deploy.sh or gcloud container clusters get-credentials first')"
 
 # required
 : "${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}"

@@ -125,6 +125,9 @@ class LogAlerter:
     def __init__(self):
         self.project = os.environ["GCP_PROJECT"]
         self.namespace = os.environ.get("K8S_NAMESPACE", "genetics")
+        # a GCP project can host more than one cluster running this suite (prod + staging), and
+        # both use the `genetics` namespace — without this each would alert on the other's logs
+        self.cluster = os.environ.get("K8S_CLUSTER", "")
         # default matches the CronJob's daily schedule, so a deployment that omits the env var
         # still covers the whole interval rather than silently skipping 16h of logs
         self.lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "24"))
@@ -170,9 +173,13 @@ class LogAlerter:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
         timestamp_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        cluster_clause = (
+            f' AND resource.labels.cluster_name="{self.cluster}"' if self.cluster else ""
+        )
         log_filter = (
             f'resource.type="k8s_container"'
             f' AND resource.labels.namespace_name="{self.namespace}"'
+            f'{cluster_clause}'
             f' AND severity >= "WARNING"'
             f' AND timestamp >= "{timestamp_str}"'
         )

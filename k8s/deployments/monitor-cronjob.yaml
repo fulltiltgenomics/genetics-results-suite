@@ -35,6 +35,10 @@ spec:
               value: "${BQ_DATASET}"
             - name: K8S_NAMESPACE
               value: "genetics"
+            # scopes the Cloud Logging alert query to this cluster. Both deployments in a shared
+            # project use the `genetics` namespace, so without it each reports the other's errors
+            - name: K8S_CLUSTER
+              value: "${CLUSTER_NAME}"
             - name: INTERNAL_API_SECRET
               valueFrom:
                 secretKeyRef:

@@ -2,36 +2,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${SCRIPT_DIR}/.."
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
-# load deploy-time config that must stay out of version control (.env is gitignored)
-if [ -f "${ROOT_DIR}/.env" ]; then
-  set -a; . "${ROOT_DIR}/.env"; set +a
-fi
+# resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
 
-echo "Deploying genetics-results-suite (tag: ${TAG})"
+echo "Deploying genetics-results-suite (env: ${DEPLOY_ENV:-default}, tag: ${TAG})"
 
-# determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
-if [ -n "${CONFIG_PROFILE:-}" ]; then
-  PROFILE="${CONFIG_PROFILE}"
-elif [ -f terraform.tfvars ]; then
-  PROFILE="$(grep -E '^\s*config_profile\s*=' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')"
-else
-  echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
-  exit 1
-fi
-BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
-if [ ! -f "${BACKEND_FILE}" ]; then
-  echo "ERROR: Backend config not found: ${BACKEND_FILE}"
-  echo "Expected one of: daly.tfbackend, finngen.tfbackend"
-  exit 1
-fi
-echo "Using backend config: ${PROFILE}.tfbackend"
+echo "Using tfvars:  ${TFVARS##*/}"
+echo "Using backend: ${BACKEND_FILE##*/}"
 
 # apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
@@ -40,12 +26,13 @@ if [ "${SKIP_TERRAFORM}" = "true" ]; then
 else
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
-  terraform apply -auto-approve
+  terraform apply -auto-approve "${TF_VAR_FILE_ARGS[@]}"
 fi
 
 # configure kubectl
 echo "=== Configuring kubectl ==="
 CLUSTER_NAME=$(terraform output -raw cluster_name)
+export CLUSTER_NAME
 eval "$(terraform output -raw kubectl_command)"
 
 # derive variables from terraform (all overridable via env vars)
@@ -59,7 +46,8 @@ export GCP_REGION="${GCP_REGION:-${TF_REGION}}"
 export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
 DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
-export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
+TF_REGISTRY=$(terraform output -raw registry)
+resolve_registry "${TF_REGISTRY}"
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
 export BQ_DATASET="${BQ_DATASET:-genetics_results}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
@@ -336,7 +324,7 @@ for f in deployments/*.yaml; do
     echo "Skipping ${base} (ENABLE_KEYCLOAK=${ENABLE_KEYCLOAK})"
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

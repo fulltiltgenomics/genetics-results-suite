@@ -6,19 +6,26 @@ set -euo pipefail
 
 SERVICE="${1:?Usage: build.sh <service-name>}"
 
-if [ -z "${REGISTRY:-}" ]; then
-  echo "ERROR: REGISTRY must be set (e.g. \$GCP_REGION-docker.pkg.dev/\$GCP_PROJECT/genetics-results)"
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# resolve the target deployment (DEPLOY_ENV) and load its .env — that is where per-deployment
+# branch overrides (e.g. FRONTEND_BRANCH=staging) live
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
+
+# registry: derived from the resolved tfvars. A REGISTRY inherited from the shell must agree
+# with DEPLOY_ENV, or the run stops — see resolve_registry in lib/env.sh.
+resolve_registry
 
 GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
 RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
-APP_NAME="${APP_NAME:-$(grep -E '^\s*app_name\s*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/')}"
+# product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
+APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
+
+echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
 # service → image name
 declare -A IMAGE_MAP=(
