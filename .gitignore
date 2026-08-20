@@ -14,8 +14,14 @@ terraform.tfvars.*
 *.pem
 
 # environment
-.env
-.env.local
+.env*
+!.env.example
+
+# editor and backup copies — these shadow whatever file they were made from,
+# so a backup of .env or terraform.tfvars would otherwise be committable
+*~
+*.bak
+*.orig
 
 # OS
 .DS_Store

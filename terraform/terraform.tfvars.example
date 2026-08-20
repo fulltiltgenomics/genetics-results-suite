@@ -35,3 +35,22 @@ max_node_count = 3
 sandbox_pool_enabled = false
 sandbox_machine_type = "e2-standard-2"
 # sandbox_node_service_account = "finngenie-sandbox-node@your-gcp-project-id.iam.gserviceaccount.com"
+
+enable_log_sinks = false
+
+# Only needed when this deployment shares a GCP PROJECT with another one (as daly-staging does
+# with daly). Suffixes the project-scoped resource names that would otherwise collide: the
+# Artifact Registry repo, the Workload Identity service account, the chat-data snapshot policy,
+# the Keycloak backup bucket, and the log sinks with their BigQuery datasets. Leave empty for
+# the first/only deployment in a project — changing it later renames (recreates) those
+# resources. Cluster-scoped names already derive from cluster_name.
+# resource_suffix = "-staging"
+
+# Node label only. Cosmetic.
+# environment = "staging"
+
+# VPC ranges. Defaults shown; two deployments in one project get separate VPCs, so these may
+# overlap safely — set them apart anyway if the networks might ever be peered.
+# subnet_cidr   = "10.0.0.0/20"
+# pods_cidr     = "10.16.0.0/14"
+# services_cidr = "10.20.0.0/20"

@@ -1,36 +1,42 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ -z "${REGISTRY:-}" ]; then
-  echo "ERROR: REGISTRY must be set (e.g. \$GCP_REGION-docker.pkg.dev/\$GCP_PROJECT/genetics-results)"
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# resolve the target deployment (DEPLOY_ENV) and load its .env — that is where per-deployment
+# branch overrides (e.g. FRONTEND_BRANCH=staging) live
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
+
+# registry: derived from the resolved tfvars. A REGISTRY inherited from the shell must agree
+# with DEPLOY_ENV, or the run stops — see resolve_registry in lib/env.sh.
+resolve_registry
 GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
 RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
-# branch overrides
+# branch overrides (set per deployment in .env.<DEPLOY_ENV>, e.g. staging)
 FRONTEND_BRANCH="${FRONTEND_BRANCH:-master}"
 RESULTS_API_BRANCH="${RESULTS_API_BRANCH:-master}"
 MCP_SERVER_BRANCH="${MCP_SERVER_BRANCH:-master}"
 DB_API_BRANCH="${DB_API_BRANCH:-master}"
 RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # see deploy.sh: core.hooksPath is not tracked, so warn if this checkout is unwired
 "${SCRIPT_DIR}/install-git-hooks.sh" --check || true
 
-# APP_NAME below is read from terraform.tfvars, which exists only in the main checkout
+# APP_NAME below is read from the deployment's tfvars, which exists only in the main checkout
 # — warn before the fallback to FinnGenie happens silently
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
-# product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
-# see build.sh: `|| true` keeps a missing tfvars from killing the build under pipefail,
+# product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
+# see build.sh: tfvar() swallows a missing tfvars rather than killing the build under pipefail,
 # which is what the check-worktree-paths warning above already claims happens
 # (genetics-results-suite-1xp)
-# POSIX [[:space:]], not GNU-only \s — see build.sh (genetics-results-suite-8wh)
-APP_NAME="${APP_NAME:-$(grep -E '^[[:space:]]*app_name[[:space:]]*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)}"
+APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
+
+echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
 SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
 

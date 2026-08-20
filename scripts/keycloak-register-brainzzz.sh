@@ -32,8 +32,8 @@ kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@
 echo "Authenticating kcadm against ${POD}..."
 kc config credentials --server http://localhost:8080 --realm master --user "${AU}" --password "${AP}" >/dev/null
 
-# client representation. mappers are reconciled separately below because a client update does not
-# manage the protocol-mappers subresource.
+# client representation. mappers and client scopes are reconciled separately below because a
+# client update manages neither subresource.
 CLIENT_JSON="$(cat <<EOF
 {
   "clientId": "${CLIENT_ID}",
@@ -95,5 +95,25 @@ MID="$(kc get "clients/${CID}/protocol-mappers/models" -r "${REALM}" 2>/dev/null
 echo "Setting mcp-audience mapper (aud=${OAUTH_RESOURCE_URL})..."
 kc create "clients/${CID}/protocol-mappers/models" -r "${REALM}" -b "${MAPPER_JSON}"
 
+# assign offline_access as an OPTIONAL client scope. Without it Keycloak silently drops the scope
+# from the authorize request and issues an ordinary refresh token, which cannot outlive the SSO
+# session (realm default: 10h) — so brainzzz has to bounce the user through a browser login twice
+# a day. As an optional scope the client still decides per request whether to ask for it.
+SCOPE_ID="$(kc get client-scopes -r "${REALM}" \
+  | python3 -c 'import json,sys; a=json.load(sys.stdin); print(next((c["id"] for c in a if c.get("name")=="offline_access"), ""))')"
+if [ -z "${SCOPE_ID}" ]; then
+  echo "WARNING: no 'offline_access' client scope on realm '${REALM}' — skipping" >&2
+else
+  ASSIGNED="$(kc get "clients/${CID}/optional-client-scopes" -r "${REALM}" 2>/dev/null \
+    | python3 -c 'import json,sys; a=json.load(sys.stdin); print(next((c["id"] for c in a if c.get("name")=="offline_access"), ""))')"
+  if [ -n "${ASSIGNED}" ]; then
+    echo "offline_access already an optional client scope."
+  else
+    echo "Assigning offline_access as an optional client scope..."
+    # the endpoint takes no body, but kcadm refuses to send a PUT without one
+    kc update "clients/${CID}/optional-client-scopes/${SCOPE_ID}" -r "${REALM}" -b '{}'
+  fi
+fi
+
 echo "Done. clientId=${CLIENT_ID}, audience=${OAUTH_RESOURCE_URL}"
-echo "Give the brainzzz developer: client_id=${CLIENT_ID}, client_secret=<BRAINZZZ_CLIENT_SECRET>, issuer=https://genegenie.broadinstitute.org/auth/realms/genetics, mcp_url=https://genegenie.broadinstitute.org/mcp"
+echo "Give the brainzzz developer: client_id=${CLIENT_ID}, client_secret=<BRAINZZZ_CLIENT_SECRET>, issuer=https://genegenie.broadinstitute.org/auth/realms/genetics, mcp_url=https://genegenie.broadinstitute.org/mcp, scopes=openid email profile offline_access"

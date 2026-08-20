@@ -30,32 +30,22 @@ NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
-# derive from terraform.tfvars (like build.sh does for app_name); override with ENABLE_KEYCLOAK.
-# refuse rather than default when the profile is unknowable: this script writes cluster
-# secrets, and a guessed profile writes the wrong ones. Same guard and exit code deploy.sh
-# uses (genetics-results-suite-82s) so an operator sees one message from either entry point.
-# The old form grepped the file unconditionally under `set -euo pipefail`, so a missing
-# tfvars killed the script with exit 2 and no output at all (genetics-results-suite-1xp).
-TFVARS="${SCRIPT_DIR}/../terraform/terraform.tfvars"
-if [ -n "${CONFIG_PROFILE:-}" ]; then
-  PROFILE="${CONFIG_PROFILE}"
-elif [ -f "${TFVARS}" ]; then
-  # POSIX [[:space:]], not GNU-only \s — see deploy.sh (genetics-results-suite-8wh)
-  PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' "${TFVARS}" | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
-else
-  echo "ERROR: terraform/terraform.tfvars not found — refusing to write cluster secrets."
-  echo "It is gitignored and lives only in the main checkout; from a git worktree the config"
-  echo "profile cannot be derived, and guessing it writes the wrong per-profile secrets."
-  echo "Run from the main checkout, or set CONFIG_PROFILE (daly|finngen)."
-  echo "Looked for: ${TFVARS}"
-  exit 1
-fi
+# resolve the target deployment (DEPLOY_ENV) and load its .env, so the secrets written here
+# come from the same file the matching deploy.sh run will use
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
 
-# enforce the "(daly|finngen)" the message above advertises. Anything else — a typo, a case
-# slip, or a tfvars with no config_profile line (the `|| true` above yields empty rather than
-# aborting) — would otherwise fall straight through to ENABLE_KEYCLOAK=false and skip
-# keycloak-secrets silently, leaving a daly deploy with a keycloak pod that cannot start.
+# the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
+# derive from the tfvars resolve_deploy_env picked (it has already refused if that file is
+# missing, so the "profile is unknowable" case cannot reach here); override with
+# ENABLE_KEYCLOAK, or CONFIG_PROFILE to name the profile outright.
+PROFILE="${CONFIG_PROFILE:-$(tfvar config_profile)}"
+
+# enforce the "(daly|finngen)" the message below advertises. Anything else — a typo, a case
+# slip, or a tfvars with no config_profile line (tfvar yields empty rather than aborting) —
+# would otherwise fall straight through to ENABLE_KEYCLOAK=false and skip keycloak-secrets
+# silently, leaving a daly deploy with a keycloak pod that cannot start.
 # Same allowed set terraform/variables.tf validates.
 case "${PROFILE}" in
   daly|finngen) ;;
@@ -70,7 +60,8 @@ case "${PROFILE}" in
 esac
 ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${PROFILE}" = "daly" ] && echo true || echo false)}"
 
-echo "Creating genetics-secrets in namespace ${NAMESPACE}..."
+echo "Creating genetics-secrets in namespace ${NAMESPACE} (env: ${DEPLOY_ENV:-default})..."
+echo "Target cluster: $(kubectl config current-context 2>/dev/null || echo 'NONE — run deploy.sh or gcloud container clusters get-credentials first')"
 
 # read one key out of a secret. The old form (`kubectl ... 2>/dev/null | base64 -d || true`)
 # collapsed three different outcomes into "empty", so a wrong kubeconfig context, an RBAC
