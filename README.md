@@ -12,7 +12,9 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 identity broker is enabled (see docs/keycloak-apple-signin.md)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
-                     │                 (FastAPI, port 4000) directly
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
+                     │                 the BFF proxies it out to the external LD API (LD_API_URL),
+                     │                 because the frontend CSP forbids off-origin fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
@@ -36,6 +38,26 @@ export GCP_PROJECT="your-gcp-project-id"
 export GCP_REGION="europe-west1"
 export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 ```
+
+`REGISTRY` is optional once terraform is configured — the scripts derive it from the selected
+deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
+stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
+
+## Deployment environments
+
+This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
+`DEPLOY_ENV`, which selects `terraform/terraform.tfvars.<env>`, `terraform/<env>.tfbackend` and
+`.env.<env>`:
+
+```bash
+DEPLOY_ENV=daly-staging ./scripts/build-all.sh
+DEPLOY_ENV=daly-staging ./scripts/deploy.sh
+```
+
+`daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
+resource names carry `resource_suffix`. The setup below describes a single deployment; see
+[docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
+against deploying across environments, and the staging bring-up runbook.
 
 ## Setup
 
@@ -95,24 +117,27 @@ gcloud auth application-default login --impersonate-service-account=terraform@$G
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars  # set project_id and other values
-terraform init
-terraform apply                               # review the plan before confirming
+cp terraform.tfvars.example terraform.tfvars.<env>  # set project_id and other values
+terraform init -backend-config=<env>.tfbackend
+terraform apply -var-file=terraform.tfvars.<env>    # review the plan before confirming
 ```
 
-> `terraform.tfvars` is gitignored and lives only in your main checkout. Terraform refuses to plan
-> or apply without it (`require_tfvars`, default `true`) — otherwise a run from a git worktree or a
-> fresh clone would use variable defaults and destroy the log sinks and replace the node pool.
-> `apply -target=...` bypasses the guard entirely, and `destroy` does too (deliberately). If
-> you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`. `deploy.sh` enforces
-> the same before applying; `SKIP_TERRAFORM=true` (k8s manifests only) is unaffected.
+(`deploy.sh` does all of this for you from `DEPLOY_ENV` — see `docs/environments.md`. For a
+single-deployment instance you may instead keep a bare `terraform.tfvars` and leave `DEPLOY_ENV`
+unset.)
 
-> **Switching profiles**: the main checkout keeps `terraform.tfvars.daly` and `terraform.tfvars.finngen`
-> beside the active `terraform.tfvars`. `CONFIG_PROFILE` picks the *state backend*, not the values, so
-> switching profiles means copying the file too — `cp terraform.tfvars.daly terraform.tfvars`. Get it
-> wrong and one profile's project, region and domains would be applied into the other's state; both
-> `deploy.sh` (before `terraform init`) and a terraform `precondition` (against the initialized state
-> bucket) now refuse. Leaving `CONFIG_PROFILE` unset makes `deploy.sh` follow the file in place.
+> The tfvars files are gitignored and live only in your main checkout. Terraform refuses to plan
+> or apply when none of them is present (`require_tfvars`, default `true`) — otherwise a run from
+> a git worktree or a fresh clone would use variable defaults and destroy the log sinks and
+> replace the node pool. `apply -target=...` bypasses the guard entirely, and `destroy` does too
+> (deliberately). If you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`.
+
+> **Which state a run writes to** is fixed by `terraform init -backend-config=<env>.tfbackend`,
+> independently of the values in place. Apply one environment's project, region and domains into
+> another's state and the plan will not look wrong. `scripts/lib/env.sh` derives both from the
+> same `DEPLOY_ENV` so they cannot disagree, and a terraform `precondition` compares the
+> initialized state bucket against the one `${config_profile}.tfbackend` names as a backstop for
+> a bare `terraform apply`.
 
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
@@ -239,9 +264,10 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 ```
 
 > **Run it from the main checkout.** It derives the config profile (which decides whether
-> `keycloak-secrets` is written) from `terraform/terraform.tfvars`, which is gitignored and lives
-> only there. From a git worktree it refuses with exit 1 rather than guessing — export
-> `CONFIG_PROFILE=daly` or `CONFIG_PROFILE=finngen` if you really need to run it from one.
+> `keycloak-secrets` is written) from the tfvars `DEPLOY_ENV` selects, and those are gitignored
+> and live only there. From a git worktree `resolve_deploy_env` refuses with exit 1 rather than
+> guessing, and `CONFIG_PROFILE` does **not** rescue it — that variable overrides the profile
+> *read from* the file, it does not stand in for a missing one.
 
 ### 4. Build and push Docker images
 
@@ -319,7 +345,7 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 There is no checked-in `ingress.yaml` or `managed-certs.yaml` — `deploy.sh` generates both from the
 terraform `domains` list, emitting one `ManagedCertificate` (`managed-cert`) covering every domain as
 a SAN and one Ingress host rule per domain, all pointing at `auth-gateway`. So serving several
-hostnames only means listing them in `terraform.tfvars` and redeploying:
+hostnames only means listing them in the deployment's tfvars and redeploying:
 
 ```hcl
 domains = ["primary.example.com", "secondary.example.com"]
@@ -466,7 +492,7 @@ on any chromosome smoke-tests, `APOE` included. Nothing in this script touches t
 | Service | Source Repo | Image | Port | Notes |
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, passes other `/api/*` calls through |
+| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx:1.27-alpine | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google + Apple), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
@@ -477,7 +503,7 @@ on any chromosome smoke-tests, `APOE` included. Nothing in this script touches t
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (every 8h): health checks, BQ coverage, log alerts → Slack |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
@@ -571,7 +597,7 @@ via `envFrom`:
 - `oauth_allowed_emails` — comma-separated individual addresses allowed in addition to those domains
   (e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
 
-Set them in `terraform.tfvars` and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
+Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
 [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)).

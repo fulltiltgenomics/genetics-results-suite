@@ -55,8 +55,11 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/(deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths)\.sh$' "$DOCS_SPEC" \
-    'deploy/rollout/build/preflight scripts -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths)\.sh|lib/)' "$DOCS_SPEC" \
+    'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+
+check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
+    'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
@@ -86,8 +89,8 @@ check "$SANDBOX_PATHS" \
 # script would go, and those change how the login page *behaves* — they stay covered.
 KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
-check '^(keycloak/|scripts/keycloak-)' '^docs/keycloak-apple-signin\.md$' \
-    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths)' \
+check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
+    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (onboarding commands, IdP list)' \
     "$KEYCLOAK_BRANDING"
 
 if [ "$found" -eq 1 ]; then

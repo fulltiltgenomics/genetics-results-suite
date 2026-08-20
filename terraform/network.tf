@@ -7,16 +7,16 @@ resource "google_compute_subnetwork" "gke" {
   name          = "${var.cluster_name}-subnet"
   network       = google_compute_network.gke.id
   region        = var.region
-  ip_cidr_range = "10.0.0.0/20"
+  ip_cidr_range = var.subnet_cidr
 
   secondary_ip_range {
     range_name    = "pods"
-    ip_cidr_range = "10.16.0.0/14"
+    ip_cidr_range = var.pods_cidr
   }
 
   secondary_ip_range {
     range_name    = "services"
-    ip_cidr_range = "10.20.0.0/20"
+    ip_cidr_range = var.services_cidr
   }
 }
 

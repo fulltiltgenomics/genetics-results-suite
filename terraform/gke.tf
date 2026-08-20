@@ -77,7 +77,7 @@ resource "google_container_node_pool" "primary_nodes" {
     ]
 
     labels = {
-      env = "production"
+      env = var.environment
     }
   }
 }

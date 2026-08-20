@@ -2,38 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${SCRIPT_DIR}/.."
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
-# load deploy-time config that must stay out of version control (.env is gitignored)
-if [ -f "${ROOT_DIR}/.env" ]; then
-  set -a; . "${ROOT_DIR}/.env"; set +a
-fi
+# resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
 
 # the hook FILES are tracked (.beads/hooks/*) but core.hooksPath is local config a
 # clone does not carry, so an unwired checkout commits with no doc-drift warning and
 # no beads export, silently. warn here; never block a deploy over it.
 "${SCRIPT_DIR}/install-git-hooks.sh" --check || true
 
-# same class, one level up: several paths this script depends on (terraform.tfvars,
+# same class, one level up: several paths this script depends on (the tfvars file,
 # the sibling repos sync-datasets.sh copies into, the beads export) resolve into the
 # MAIN checkout when this runs from a worktree, and degrade without erroring.
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
-echo "Deploying genetics-results-suite (tag: ${TAG})"
+echo "Deploying genetics-results-suite (env: ${DEPLOY_ENV:-default}, tag: ${TAG})"
 
-# determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
-TFVARS_PROFILE=""
-if [ -f terraform.tfvars ]; then
-  # POSIX [[:space:]], not GNU-only \s: BSD/macOS sed does not know \s, so the substitution
-  # would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
-  TFVARS_PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' terraform.tfvars | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
-fi
-
 # The code-execution sandbox is gated on the node pool that hosts it, DERIVED rather than a
 # separate switch: k8s/deployments/sandbox.yaml tolerates a taint only the gVisor pool carries,
 # and that pool exists only when sandbox_pool_enabled = true (terraform/gke.tf, default false).
@@ -44,7 +36,7 @@ fi
 # where this file cannot see the state terraform holds; the live gVisor-node check in the sandbox
 # preflight (right after kubectl is configured) is what catches an override that is simply wrong.
 TFVARS_SANDBOX_POOL="false"
-if [ -f terraform.tfvars ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' terraform.tfvars; then
+if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
   TFVARS_SANDBOX_POOL="true"
 fi
 ENABLE_SANDBOX="${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}"
@@ -52,65 +44,32 @@ ENABLE_SANDBOX="${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}"
 # sandbox, so db-api's and results-api's SANDBOX_ENABLED may legitimately still be "false" and
 # that harness must not abort the deploy over it. NOT APPLYING IS NOT THE SAME AS NOT RUNNING —
 # this script skips sandbox.yaml when the gate is off, it never deletes it, so a later deploy
-# from a worktree or with terraform.tfvars unreadable runs gate-off against a sandbox that is
+# from a worktree or with the tfvars file unreadable runs gate-off against a sandbox that is
 # still serving. The harness therefore probes the CLUSTER as well as reading this variable, and
 # refuses when the two disagree; see its "SANDBOX_ENABLED is true..." check.
 export ENABLE_SANDBOX
-if [ -n "${CONFIG_PROFILE:-}" ]; then
-  PROFILE="${CONFIG_PROFILE}"
-elif [ -f terraform.tfvars ]; then
-  PROFILE="${TFVARS_PROFILE}"
-else
-  echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
-  exit 1
-fi
-BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
-if [ ! -f "${BACKEND_FILE}" ]; then
-  echo "ERROR: Backend config not found: ${BACKEND_FILE}"
-  echo "Expected one of: daly.tfbackend, finngen.tfbackend"
-  exit 1
-fi
-echo "Using backend config: ${PROFILE}.tfbackend"
+
+echo "Using tfvars:  ${TFVARS##*/}"
+echo "Using backend: ${BACKEND_FILE##*/}"
 
 # apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
   terraform init -input=false -backend-config="${BACKEND_FILE}" -reconfigure > /dev/null
 else
-  # CONFIG_PROFILE alone is not enough to apply: without terraform.tfvars every other variable
-  # falls back to its default (log sinks off, manage_iam on, daly profile), which destroys and
-  # replaces live infrastructure. terraform itself also refuses (require_tfvars), this is the
-  # earlier and clearer failure.
-  if [ ! -f terraform.tfvars ]; then
-    echo "ERROR: terraform/terraform.tfvars not found — refusing to 'terraform apply'."
-    echo "It is gitignored and lives only in the main checkout; from a git worktree terraform"
-    echo "would use variable defaults and destroy live resources."
-    echo "Deploy from the main checkout, or set SKIP_TERRAFORM=true to deploy k8s manifests only."
-    exit 1
-  fi
-  # existence is not enough: the main checkout keeps terraform.tfvars.daly and .finngen next to the
-  # active terraform.tfvars, and CONFIG_PROFILE picks the BACKEND (so the state, project, cluster and
-  # domains) independently of which one is actually in place. Compare the two identities. When
-  # CONFIG_PROFILE is unset PROFILE was derived from this same file and the check is a no-op by
-  # construction — the mismatch only exists when something outside the file chose the backend.
-  if [ "${TFVARS_PROFILE}" != "${PROFILE}" ]; then
-    echo "ERROR: config profile mismatch — refusing to 'terraform apply'."
-    echo "  backend/state: ${PROFILE}.tfbackend (from CONFIG_PROFILE=${CONFIG_PROFILE:-<unset>})"
-    echo "  terraform/terraform.tfvars: config_profile = \"${TFVARS_PROFILE:-<unset>}\""
-    echo "Applying would write ${TFVARS_PROFILE:-unknown}-profile values (project_id, region, domains,"
-    echo "IAM, static IP) into the ${PROFILE} state — a different GCP project and cluster."
-    echo "Fix: cp terraform.tfvars.${PROFILE} terraform.tfvars, or unset CONFIG_PROFILE to follow the"
-    echo "tfvars file that is in place."
-    exit 1
-  fi
+  # the file-exists and tfvars/backend-agreement guards this branch used to carry now live in
+  # scripts/lib/env.sh: resolve_deploy_env() refuses when the resolved tfvars is missing, and
+  # derives TFVARS and BACKEND_FILE from the same DEPLOY_ENV (or, in legacy mode, the backend
+  # from the tfvars' own config_profile), so the two identities cannot disagree by construction.
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
-  terraform apply -auto-approve
+  terraform apply -auto-approve "${TF_VAR_FILE_ARGS[@]}"
 fi
 
 # configure kubectl
 echo "=== Configuring kubectl ==="
 CLUSTER_NAME=$(terraform output -raw cluster_name)
+export CLUSTER_NAME
 eval "$(terraform output -raw kubectl_command)"
 
 # SANDBOX PREFLIGHT — before anything is applied, deliberately.
@@ -129,7 +88,7 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   if [ -z "$(kubectl get nodes -l workload=sandbox -o name 2>/dev/null)" ]; then
     echo "ERROR: ENABLE_SANDBOX=true but no node carries workload=sandbox."
     echo "       Either the gVisor pool is not up — set sandbox_pool_enabled = true (and"
-    echo "       sandbox_node_service_account) in terraform/terraform.tfvars, which lives in the"
+    echo "       sandbox_node_service_account) in ${TFVARS}, which lives in the"
     echo "       MAIN checkout and is gitignored, and apply terraform before this deploy — or the"
     echo "       pool was just created and its node has not finished registering the label yet, in"
     echo "       which case 'kubectl get nodes -l workload=sandbox' answers within a few minutes"
@@ -164,7 +123,8 @@ export GCP_REGION="${GCP_REGION:-${TF_REGION}}"
 export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
 DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
-export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
+TF_REGISTRY=$(terraform output -raw registry)
+resolve_registry "${TF_REGISTRY}"
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
 export BQ_DATASET="${BQ_DATASET:-genetics_results}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
@@ -504,7 +464,7 @@ for f in deployments/*.yaml; do
   fi
   if [ "${base}" = "sandbox.yaml" ]; then
     if [ "${ENABLE_SANDBOX}" != "true" ]; then
-      echo "Skipping sandbox (ENABLE_SANDBOX=${ENABLE_SANDBOX}; set sandbox_pool_enabled = true in terraform.tfvars)"
+      echo "Skipping sandbox (ENABLE_SANDBOX=${ENABLE_SANDBOX}; set sandbox_pool_enabled = true in ${TFVARS##*/})"
       continue
     fi
     # the gVisor-node and supervisor preconditions were judged in the sandbox preflight near the
@@ -527,7 +487,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

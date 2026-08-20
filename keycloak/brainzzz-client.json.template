@@ -25,6 +25,7 @@
     "post.logout.redirect.uris": "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-staging.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-prod.dsp-eng-tools.broadinstitute.org/*"
   },
   "defaultClientScopes": ["openid", "email", "profile"],
+  "optionalClientScopes": ["offline_access"],
   "protocolMappers": [
     {
       "name": "mcp-audience",
