@@ -33,7 +33,7 @@ set -euo pipefail
 #                    and a local :4000 is chat-api. The manifest's values are cluster FQDNs
 #                    pinned by hostAliases and resolve to nothing here.
 #   SANDBOX_RETENTION_S  shorten the artifact retention deadline so a test can watch it
-#                    expire. Unset in a normal run, which leaves the supervisor's 900s.
+#                    expire. Unset in a normal run, which leaves the supervisor's 300s.
 #   SANDBOX_IMAGE    image tag to build/run (default genetics-sandbox:local). Deliberately
 #                    not $REGISTRY/sandbox:latest — nothing here pushes, and a local build
 #                    must not be mistakable for the image the cluster pulls.
@@ -52,7 +52,7 @@ HOST_PORT="${HOST_PORT:-8081}"
 # looks like an auth or a data problem (measured 2026-08-17, genetics-results-suite-4h6.49).
 GENETICS_API_URL="${GENETICS_API_URL:-http://host.docker.internal:2000/api}"
 BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://host.docker.internal:8080}"
-# Empty by default, i.e. the supervisor's own 900s. Set only to make the retention deadline
+# Empty by default, i.e. the supervisor's own 300s. Set only to make the retention deadline
 # observable in a test run; scripts/test-e2e-local.py --retention-s must be given the same
 # number, because nothing on the wire exposes it.
 SANDBOX_RETENTION_S="${SANDBOX_RETENTION_S:-}"
