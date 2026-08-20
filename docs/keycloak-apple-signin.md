@@ -3,8 +3,8 @@
 > **Per-profile**: the broker is enabled by `ENABLE_KEYCLOAK` in `deploy.sh` (default: on for
 > `config_profile=daly`, off for `finngen`). Where it's off, oauth2-proxy talks to Google
 > directly and none of the Keycloak/Postgres resources are deployed. Each deployment keeps its
-> own gitignored tfvars (`terraform/terraform.tfvars.daly`, `terraform/terraform.tfvars.finngen`);
-> copy the right one to `terraform/terraform.tfvars` before deploying.
+> own gitignored tfvars (`terraform/terraform.tfvars.daly`, `terraform/terraform.tfvars.daly-staging`,
+> `terraform/terraform.tfvars.finngen`); select one with `DEPLOY_ENV` (see `docs/environments.md`).
 
 This suite authenticates browser users through **oauth2-proxy → Keycloak → {Google, Apple}**.
 Keycloak is the identity broker: it presents the provider chooser, federates Google and

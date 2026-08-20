@@ -41,8 +41,11 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/(deploy|rollout|build|build-all|sync-datasets)\.sh$' "$DOCS_SPEC" \
-    'deploy/rollout/build scripts -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+check '^scripts/((deploy|rollout|build|build-all|sync-datasets)\.sh|lib/)' "$DOCS_SPEC" \
+    'deploy/rollout/build scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+
+check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
+    'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'

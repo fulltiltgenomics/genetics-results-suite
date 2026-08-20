@@ -162,6 +162,8 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── keycloak-register-brainzzz.sh  # the brainzzz client specifically
 │   ├── keycloak-bind-allowlist.sh     # bind the email allow-list authenticator + realm attrs
 │   ├── keycloak-get-token.sh          # browser auth-code+PKCE flow, prints an access token
+│   ├── lib/env.sh            # resolves DEPLOY_ENV -> tfvars/tfbackend/.env; sourced by
+│   │                         #   deploy.sh, create-secrets.sh, build*.sh and rollout.sh
 │   └── monitor/              # monitoring CronJob (Python)
 │       ├── Dockerfile
 │       ├── requirements.txt
@@ -182,12 +184,14 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── kubernetes.tf         # namespace, k8s service account
 │   ├── variables.tf          # input variables
 │   ├── outputs.tf            # output values
-│   ├── {daly,finngen}.tfbackend       # per-profile GCS state backends
+│   ├── {daly,daly-staging,finngen}.tfbackend  # per-environment GCS state backends
 │   ├── terraform.tfvars.example
-│   ├── terraform.tfvars.{daly,finngen}  # per-deployment values (not committed)
-│   └── terraform.tfvars      # active variable values (not committed)
+│   └── terraform.tfvars.{daly,daly-staging,finngen}  # per-environment values (not committed);
+│                             #   selected by DEPLOY_ENV. A bare terraform.tfvars is the legacy
+│                             #   single-deployment form and must not coexist with these.
 └── docs/
     ├── adding-datasets.md    # how to add a new dataset across repos/profiles
+    ├── environments.md       # the three deployments, DEPLOY_ENV, and the staging runbook
     ├── datasets-yaml-schema.md  # schema reference for shared datasets.yaml config
     ├── keycloak-apple-signin.md # Keycloak broker setup, MCP OAuth clients, backup/restore
     ├── mcp-oauth-onboarding.md  # runbook for onboarding an external customer app to /mcp
@@ -352,20 +356,21 @@ explicitly: pin the build, or match on something build-independent.
 
 ## Infrastructure
 
-- **GCP Project**: Configured via `project_id` in `terraform/terraform.tfvars`
-- **Region**: Configured via `region` in `terraform/terraform.tfvars`
+- **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
+- **Region**: Configured via `region` in the deployment's tfvars
 - **GKE Cluster**: Single cluster with Workload Identity for GCP API access
 - **Node pool**: pinned at `min_node_count == max_node_count == 2` on `e2-standard-4` (see "Node pool sizing" below) — the autoscaler is deliberately given no room to move
 - **Networking**: VPC with private subnet, static IP for ingress
-- **SSL**: Google-managed certificates for the domain configured in `terraform/terraform.tfvars`
+- **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
-- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`)
+- **Log sinks**: `terraform/logging.tf` optionally creates two Cloud Logging → BigQuery sinks (results-api `endpoint_access` records → `genetics_api_logs`, chat-backend container logs at severity ≥ INFO → `genetics_chat_logs`), gated by `enable_log_sinks` (default `false`). Both filters are scoped to `resource.labels.cluster_name` — a project can host more than one deployment of the suite, and a namespace/container-only filter would route both clusters into the same dataset
 - **Backups**: Daily GCE disk snapshots of the chat-data PVC (14-day retention, configurable via `snapshot_retention_days`)
-- **Terraform state**: Per-profile GCS backends (`daly.tfbackend` → `genetics-results-terraform-daly`, `finngen.tfbackend` → `genetics-results-terraform`); `deploy.sh` auto-selects based on `config_profile`
+- **Terraform state**: Per-environment GCS backends selected by `DEPLOY_ENV` — `daly.tfbackend` and `daly-staging.tfbackend` → `genetics-results-terraform-daly` (prefixes `genetics-results-suite` and `genetics-results-suite-staging`), `finngen.tfbackend` → `genetics-results-terraform`. With `DEPLOY_ENV` unset the legacy path applies: bare `terraform.tfvars`, backend derived from its `config_profile`
+- **Deployment environments**: `daly` (production), `daly-staging` and `finngen`. `daly` and `daly-staging` are separate clusters **inside the same GCP project**, so every project-scoped resource name carries `resource_suffix` (empty vs `-staging`): the Artifact Registry repo, the Workload Identity GSA, the chat-data snapshot policy, the Keycloak backup bucket, and the log sinks with their BigQuery datasets. Cluster-scoped names (VPC, subnet, firewall, node pool) already derive from `cluster_name`. See `docs/environments.md`
 
 ### Node pool sizing
 
-`min_node_count` and `max_node_count` in `terraform.tfvars` are **pinned equal** (both `2`).
+`min_node_count` and `max_node_count` in each deployment's tfvars are **pinned equal** (both `2`).
 This is not a cost-tuning choice — an autoscaler with room to move breaks chat.
 
 A full `deploy.sh` rolls every deployment at once. All of them except chat-backend, postgres
@@ -417,7 +422,7 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule
 
 - **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
 - **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`, `mpra_v`) for row counts and distinct resources. For credible_sets/exome/gene_based/asm_qtl/mpra views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
-- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts.
+- **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace **of its own cluster** over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts. The cluster clause matters because Cloud Logging is project-wide and two deployments in one project (daly + daly-staging) both use the `genetics` namespace — without `K8S_CLUSTER` each would alert on the other's errors.
 
 **Severity reclassification:** GKE's logging agent tags *everything a container writes to stderr* as `severity=ERROR` regardless of content, so the Cloud Logging severity is meaningless for the many services that log normally to stderr (uvicorn, postgres, batch scripts). The alerter therefore recovers the level the application itself reported by matching the message text against `_LEVEL_PATTERNS` (python/uvicorn `INFO:`, nginx `[error]`, postgres `[27] LOG:`), ranks it via `_LEVEL_RANK`, and drops anything below WARNING. Messages carrying no recognizable level fall back to the Cloud Logging severity (fail open, so unknown formats still alert). The count of dropped entries is logged to the CronJob's stdout so the suppression is never silent. Services that log progress to stderr must prefix it with a level (see `analyze_conversations.py`) or it will be reported as an error. Third-party tools whose output cannot be prefixed must be silenced at the source instead of added to the ignore list, so that their *real* errors still alert: `keycloak-postgres-backup` sets `DEBIAN_FRONTEND=noninteractive` (else debconf warns about the missing TTY on every run), buffers apt output to a temp file and replays it to stderr only when the install fails, and passes `gsutil -q` to drop the upload progress meter. Before that, one nightly backup in two surfaced ~10 phantom `[ERROR]` lines in Slack — intermittently, because the 02:00 UTC job is only inside the lookback window of the 08:00 monitor run and the 24h dedup TTL expires at almost exactly the backup's own 24h cadence.
 
@@ -439,6 +444,7 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule
 | `INTERNAL_API_SECRET` | `genetics-secrets` | — | Bearer token for results-api |
 | `SLACK_WEBHOOK_URL` | `genetics-secrets` | — | Slack incoming webhook URL |
 | `K8S_NAMESPACE` | CronJob manifest | `genetics` | Namespace for log queries |
+| `K8S_CLUSTER` | CronJob manifest (envsubst); exported by `deploy.sh` from the terraform `cluster_name` output | — (unset = no cluster clause) | Restricts log queries to this cluster. Required when a GCP project hosts more than one deployment |
 | `MONITOR_DB_PATH` | CronJob manifest | `/data/monitor.db` | SQLite dedup database path (on PVC) |
 | `RESULTS_API_URL` | — | `http://results-api....:4000` | Override results-api URL |
 | `ALERT_LOOKBACK_HOURS` | CronJob manifest | `24` | How far back to query logs. Must equal the schedule interval: shorter leaves a blind spot between runs, longer re-reports what the previous run covered |
@@ -458,6 +464,8 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule
 
 ## Operational procedures
 
+**Choosing the deployment:** every entry-point script (`deploy.sh`, `create-secrets.sh`, `build.sh`, `build-all.sh`, `rollout.sh`) resolves its target through `scripts/lib/env.sh`. `DEPLOY_ENV=<name>` selects `terraform/terraform.tfvars.<name>` (passed with `-var-file`), `terraform/<name>.tfbackend` and `.env.<name>`; `REGISTRY` defaults to that environment's own Artifact Registry repo. Known names: `daly`, `daly-staging`, `finngen`. Three guardrails exist because a mis-selection deploys across environments: `.env.<name>` **never** falls back to a bare `.env` (that would push one deployment's secrets into another's cluster), a bare `terraform/terraform.tfvars` is **refused** while `DEPLOY_ENV` is set (terraform auto-loads it *in addition to* `-var-file`, so variables the per-environment file omits would silently come from it); and an inherited `REGISTRY` that disagrees with the selected environment is **refused** (`unset REGISTRY`, or `REGISTRY_FORCE=1`) rather than allowed to push one deployment's images over another's `:latest` tags. With `DEPLOY_ENV` unset the original single-deployment behaviour applies. See `docs/environments.md`.
+
 **Important:** `deploy.sh` does NOT build images. To ship new service code you must build first, then deploy. The typical workflow is:
 
 1. `./scripts/build-all.sh` (or `./scripts/build.sh <service>` for one service) — builds and pushes new `:latest` images to Artifact Registry
@@ -465,11 +473,11 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule
 
 If you only run `deploy.sh` without building, the rollout restart will re-pull whatever `:latest` currently points to in the registry (i.e. the last build), so no code changes from upstream service repos will be picked up.
 
-- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from terraform `project_id` (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
-- **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (grepping `terraform.tfvars` directly, like `deploy.sh` does for `config_profile`) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
-- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (requires `REGISTRY` env var; `tag` defaults to `latest`). Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
-- **Build all images**: `./scripts/build-all.sh` — clones the service repos (branch overridable per service, all default `master` except rag-service) and builds/pushes all Docker images to Artifact Registry, including the local `monitor` and `keycloak` build contexts (requires `REGISTRY` env var)
-- **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (requires `REGISTRY` env var; branch overridable via same env vars as build-all.sh)
+- **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from the terraform `registry` output (overridable via `REGISTRY` env var) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
+- **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (via `tfvar app_name` from `scripts/lib/env.sh`, reading the tfvars `DEPLOY_ENV` selected) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
+- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (`REGISTRY` defaults to the selected environment's repo; `tag` defaults to `latest`). It only sets the image reference — the cluster acted on is whatever kubectl's current context points at, which the script echoes. Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
+- **Build all images**: `./scripts/build-all.sh` — clones the service repos and builds/pushes all Docker images to Artifact Registry, including the local `monitor` and `keycloak` build contexts (those two have no branch: they build from this repo's working tree). Per-service branches come from `FRONTEND_BRANCH`, `RESULTS_API_BRANCH`, `MCP_SERVER_BRANCH`, `DB_API_BRANCH`, `RAG_SERVICE_BRANCH` — all default `master` except rag-service (`deploy_jk`), and they are set per deployment in `.env.<DEPLOY_ENV>` (daly-staging sets them all to `staging`). `REGISTRY` defaults to the selected environment's repo
+- **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (same `DEPLOY_ENV`, `REGISTRY` and branch env vars as build-all.sh)
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor)
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst

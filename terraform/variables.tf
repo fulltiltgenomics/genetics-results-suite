@@ -126,3 +126,44 @@ variable "enable_log_sinks" {
   type        = bool
   default     = false
 }
+
+variable "resource_suffix" {
+  description = <<-EOT
+    Suffix appended to PROJECT-scoped resource names (Artifact Registry repo, workload-identity
+    service account, snapshot policy, Keycloak backup bucket, log sinks and their BigQuery
+    datasets). Empty for the original deployment in a project; set it (e.g. "-staging") for any
+    additional deployment sharing the same GCP project, whose names would otherwise collide.
+    Cluster-scoped names (network, subnet, firewall, node pool) already derive from cluster_name.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.resource_suffix == "" || can(regex("^-[a-z0-9-]+$", var.resource_suffix))
+    error_message = "resource_suffix must be empty or start with '-' and contain only lowercase letters, digits and hyphens."
+  }
+}
+
+variable "environment" {
+  description = "Environment label applied to GKE nodes (production, staging, …). Cosmetic; does not gate any behaviour."
+  type        = string
+  default     = "production"
+}
+
+variable "subnet_cidr" {
+  description = "Primary IPv4 range of the GKE subnet. Must not overlap another deployment's if the VPCs are ever peered."
+  type        = string
+  default     = "10.0.0.0/20"
+}
+
+variable "pods_cidr" {
+  description = "Secondary range for GKE pods"
+  type        = string
+  default     = "10.16.0.0/14"
+}
+
+variable "services_cidr" {
+  description = "Secondary range for GKE services"
+  type        = string
+  default     = "10.20.0.0/20"
+}

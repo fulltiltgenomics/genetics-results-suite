@@ -39,6 +39,26 @@ export GCP_REGION="europe-west1"
 export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 ```
 
+`REGISTRY` is optional once terraform is configured — the scripts derive it from the selected
+deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
+stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
+
+## Deployment environments
+
+This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
+`DEPLOY_ENV`, which selects `terraform/terraform.tfvars.<env>`, `terraform/<env>.tfbackend` and
+`.env.<env>`:
+
+```bash
+DEPLOY_ENV=daly-staging ./scripts/build-all.sh
+DEPLOY_ENV=daly-staging ./scripts/deploy.sh
+```
+
+`daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
+resource names carry `resource_suffix`. The setup below describes a single deployment; see
+[docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
+against deploying across environments, and the staging bring-up runbook.
+
 ## Setup
 
 ### 0. Create a bucket for terraform and a terraform service account
@@ -97,10 +117,13 @@ gcloud auth application-default login --impersonate-service-account=terraform@$G
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars  # set project_id and other values
-terraform init
-terraform apply                               # review the plan before confirming
+cp terraform.tfvars.example terraform.tfvars.<env>  # set project_id and other values
+terraform init -backend-config=<env>.tfbackend
+terraform apply -var-file=terraform.tfvars.<env>    # review the plan before confirming
 ```
+
+(`deploy.sh` does all of this for you from `DEPLOY_ENV`. For a single-deployment instance you
+may instead keep a bare `terraform.tfvars` and leave `DEPLOY_ENV` unset.)
 
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
@@ -206,7 +229,7 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 There is no checked-in `ingress.yaml` or `managed-certs.yaml` — `deploy.sh` generates both from the
 terraform `domains` list, emitting one `ManagedCertificate` (`managed-cert`) covering every domain as
 a SAN and one Ingress host rule per domain, all pointing at `auth-gateway`. So serving several
-hostnames only means listing them in `terraform.tfvars` and redeploying:
+hostnames only means listing them in the deployment's tfvars and redeploying:
 
 ```hcl
 domains = ["primary.example.com", "secondary.example.com"]
@@ -318,7 +341,7 @@ and into the `bearer-auth-allowed` ConfigMap that results-api and mcp-server con
 - `oauth_allowed_emails` — comma-separated individual addresses allowed in addition to those domains
   (e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
 
-Set them in `terraform.tfvars` and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
+Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
 [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)).

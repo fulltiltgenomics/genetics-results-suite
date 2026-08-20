@@ -13,13 +13,20 @@ terraform {
   }
 
   # backend config is selected per profile via -backend-config flag
-  # see daly.tfbackend and finngen.tfbackend
+  # see daly.tfbackend, daly-staging.tfbackend and finngen.tfbackend
   backend "gcs" {}
 }
 
 provider "google" {
   project = var.project_id
   region  = var.region
+}
+
+locals {
+  # PROJECT-scoped resource names carry this suffix so two deployments can share one GCP
+  # project. `id_suffix` is the same value in a form BigQuery dataset ids accept (no hyphens).
+  name_suffix = var.resource_suffix
+  id_suffix   = replace(var.resource_suffix, "-", "_")
 }
 
 data "google_client_config" "default" {}

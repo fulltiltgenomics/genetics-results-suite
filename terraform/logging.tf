@@ -1,6 +1,9 @@
+# Sink filters are scoped to THIS cluster: a project can host more than one deployment of the
+# suite (e.g. prod + staging), and a namespace/container-only filter would route both into the
+# same dataset, silently mixing staging traffic into the production log tables.
 resource "google_bigquery_dataset" "api_logs" {
   count       = var.enable_log_sinks ? 1 : 0
-  dataset_id  = "genetics_api_logs"
+  dataset_id  = "genetics_api_logs${local.id_suffix}"
   project     = var.project_id
   location    = var.region
   description = "Sink destination for genetics results API endpoint access logs"
@@ -8,11 +11,11 @@ resource "google_bigquery_dataset" "api_logs" {
 
 resource "google_logging_project_sink" "endpoint_access" {
   count                  = var.enable_log_sinks ? 1 : 0
-  name                   = "endpoint-access-to-bigquery"
+  name                   = "endpoint-access-to-bigquery${local.name_suffix}"
   project                = var.project_id
   description            = "Genetics results API endpoint access logs to BigQuery"
   destination            = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.api_logs[0].dataset_id}"
-  filter                 = "jsonPayload.log_type=\"endpoint_access\""
+  filter                 = "resource.type=\"k8s_container\" AND resource.labels.cluster_name=\"${google_container_cluster.primary.name}\" AND jsonPayload.log_type=\"endpoint_access\""
   unique_writer_identity = true
 
   bigquery_options {
@@ -30,7 +33,7 @@ resource "google_bigquery_dataset_iam_member" "endpoint_access_sink_writer" {
 
 resource "google_bigquery_dataset" "chat_logs" {
   count       = var.enable_log_sinks ? 1 : 0
-  dataset_id  = "genetics_chat_logs"
+  dataset_id  = "genetics_chat_logs${local.id_suffix}"
   project     = var.project_id
   location    = var.region
   description = "Sink destination for chat-backend container logs (severity >= INFO)"
@@ -38,10 +41,10 @@ resource "google_bigquery_dataset" "chat_logs" {
 
 resource "google_logging_project_sink" "chat_backend" {
   count                  = var.enable_log_sinks ? 1 : 0
-  name                   = "chat-backend-to-bigquery"
+  name                   = "chat-backend-to-bigquery${local.name_suffix}"
   project                = var.project_id
   destination            = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.chat_logs[0].dataset_id}"
-  filter                 = "resource.type=\"k8s_container\" AND resource.labels.container_name=\"chat-backend\" AND severity >= \"INFO\""
+  filter                 = "resource.type=\"k8s_container\" AND resource.labels.cluster_name=\"${google_container_cluster.primary.name}\" AND resource.labels.container_name=\"chat-backend\" AND severity >= \"INFO\""
   unique_writer_identity = true
 
   bigquery_options {
