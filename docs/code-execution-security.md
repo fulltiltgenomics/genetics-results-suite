@@ -505,9 +505,10 @@ wins, that is the fallback; nothing else in this document changes.
   file distributed by DaemonSet and referenced via `localhostProfile`, and the syscall set
   CPython + numpy + polars + matplotlib actually touch is large and changes with wheel
   versions. The realistic outcome is latent breakage that gets "fixed" by loosening the
-  profile until it is `RuntimeDefault` again. `RuntimeDefault` already blocks the
-  escape-relevant set (`add_key`, `keyctl`, `bpf`, `mount`, `ptrace` beyond self, namespace
-  `clone` flags), and gVisor supersedes the marginal gain.
+  profile until it is `RuntimeDefault` again. The profile does block most of the
+  escape-relevant set, and gVisor supersedes the marginal gain — but **not `ptrace`**, and
+  that exception carries a shipped integrity property. See the re-derivation immediately
+  below rather than citing this list from memory.
 - **In-interpreter sandboxing** (`RestrictedPython`, `sys.addaudithook`, import hooks).
   Not a security boundary and will not be presented as one. CPython has no supported
   in-process confinement; every published bypass chain (`__subclasses__`, `ctypes`, frame
@@ -515,6 +516,66 @@ wins, that is the fallback; nothing else in this document changes.
 - ~~**`hostAliases` instead of DNS.**~~ **Not rejected — adopted as the v1 default.** See
   section 3, "On DNS". An earlier draft kept kube-dns egress and booked DNS tunnelling as
   a low-bandwidth residual; that arithmetic was wrong and the decision is reversed.
+
+#### What the default profile blocks, re-derived — and the one entry that was false
+
+`genetics-results-suite-4h6.90`: this list previously named `ptrace` beyond self among the
+calls the profile blocks. It does not. The rest of the list holds, and each entry below was
+**MEASURED 2026-08-20** in the shipped image (`genetics-sandbox:local`) under `docker run
+--cap-drop=ALL --user 65532`, run twice with **only** `seccomp=unconfined` varied — the same
+control experiment as the `4h6.55` namespace measurement further down, and for the same
+reason: a seccomp `ERRNO` denial returns `EPERM`, which is indistinguishable from a
+capability denial unless you vary the profile.
+
+| call | default profile | `seccomp=unconfined` | reading |
+|---|---|---|---|
+| `add_key` | `EPERM` | `EFAULT` | blocked by the profile |
+| `keyctl` | `EPERM` | `EINVAL` | blocked by the profile |
+| `bpf` | `EPERM` | `EINVAL` | blocked by the profile |
+| `mount` | `EPERM` | `EFAULT` | blocked by the profile |
+| `unshare(CLONE_NEWUSER)` | `EPERM` | **succeeds** | namespace flags blocked by the profile |
+| `ptrace(PTRACE_ATTACH)` on own descendant | **`rc=0`** | `rc=0` | **NOT blocked**, either way |
+
+The errno *changing* when the profile is relaxed is what makes the first five conclusive: the
+syscall reaches the kernel and fails on its arguments, so the `EPERM` under the profile came
+from seccomp. `ptrace` never returns `EPERM` at all — the attach succeeds, and
+`/proc/<child>/mem` opens.
+
+This is **MEASURED against docker's default profile, which is the closest local analogue of
+containerd's `RuntimeDefault`, not the same file** (the same caveat the `4h6.55` measurement
+carries). No copy of moby/containerd's `default.json` exists on this machine to read, so
+"docker's default ≈ `RuntimeDefault`" is INFERENCE, not a read of the cluster's profile.
+Nothing here is claimed for gVisor: `runsc` filters syscalls in the sentry and the host
+profile applies to the sentry's own calls, not the application's (`4h6.51`).
+
+**What actually stops a child attaching to the supervisor is Yama, alone.** MEASURED in the
+same image, uid 65532, a child forked from a parent holding a canary:
+`yama/ptrace_scope=1`; `ptrace_attach rc=-1 errno=1 (EPERM)`; `/proc/<supervisor>/mem` →
+`PermissionError(13)`; `process_vm_readv` → `EPERM`. Scope 1 refuses `PTRACE_MODE_ATTACH`
+because the supervisor is the child's **ancestor**, not its descendant; sibling-to-sibling (a
+resident of execution A against execution B's child) fails for the same reason. The direction
+the profile leaves open — attaching to one's *own* descendant — is the one Yama also permits,
+which is why the two together look like a block and are not one.
+
+**`PTRACE_MODE_READ` is a different gate and is NOT restricted by Yama.** The child can still
+read the supervisor's `/proc/<pid>/environ`, exactly as recorded in section 4 and in the
+`4h6.43` token-delivery reasoning — that claim is correct and is not weakened here. Nothing
+in this section says the child cannot read the supervisor's `/proc`; it says the child cannot
+`ATTACH` to it or read its `/proc/<pid>/mem`.
+
+**Why this is load-bearing rather than a wording fix.** `genetics-results-suite-4h6.82`'s
+artifact-integrity property is built on it: `build_manifest` (`sandbox/supervisor.py`, ~line
+900) keeps the sha256 map "in the SUPERVISOR'S MEMORY — never on the filesystem, because the
+whole failure it answers is that /scratch is writable by the process being defended against".
+A child that could `PTRACE_ATTACH` to the supervisor would forge that map and `4h6.82` would
+evaporate. So the map's protection rests on **Yama's `ptrace_scope=1`**, not on the seccomp
+profile — **MEASURED under `runc`, UNVERIFIED under gVisor**, which implements `ptrace` and
+`/proc` in the sentry and which `4h6.51` owns measuring (no `runsc` on this machine, measured
+2026-08-20). Read it as one unmeasured gVisor fact, not as a property of the profile list
+above. INFERENCE, not measured: the value is the **node's** — a pod with
+`readOnlyRootFilesystem` and no `CAP_SYS_ADMIN` cannot write `/proc/sys/kernel/yama/*` — so a
+node booted with `ptrace_scope=0` removes this protection entirely, and nothing in
+`k8s/deployments/sandbox.yaml` asserts or checks the value.
 
 ### Where the image lives
 

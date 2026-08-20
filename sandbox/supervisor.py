@@ -901,6 +901,11 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
     each listed name to the sha256 of the bytes that were there when the manifest was built,
     and it is kept in the SUPERVISOR'S MEMORY — never on the filesystem, because the whole
     failure it answers is that /scratch is writable by the process being defended against.
+    WHAT KEEPS IT OUT OF THE CHILD'S REACH IS YAMA (kernel.yama.ptrace_scope=1), NOT THE
+    SECCOMP PROFILE: RuntimeDefault ALLOWS ptrace (MEASURED, genetics-results-suite-4h6.90),
+    and Yama refuses PTRACE_MODE_ATTACH only because the supervisor is the child's ANCESTOR.
+    MEASURED under runc, UNVERIFIED under gVisor (4h6.51); a node with ptrace_scope=0 voids
+    the property and nothing here checks it.
     MEASURED from inside a second execution's child: `/scratch` is fully enumerable at the
     shared uid, and a previous execution's `artifacts/private.csv` could be read, OVERWRITTEN
     and joined by a PLANTED file. read_artifact re-hashes on the way out and refuses when the
