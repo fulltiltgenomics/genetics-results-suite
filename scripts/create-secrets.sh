@@ -142,6 +142,15 @@ INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(openssl rand -base64 32)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(secret_key genetics-secrets sandbox-token-signing-key)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(openssl rand -base64 32)}"
 
+# auth-gateway's provenance secret (genetics-results-suite-4h6.84). A THIRD distinct secret,
+# and the distinctness is the security property: auth-gateway sends it on the two locations
+# that proxy to chat-backend, chat-backend gates sandbox dispatch on it, and mcp-server and
+# results-api — which hold internal-api-secret by design and can reach chat-backend:8000 —
+# hold this one not at all. Never derive it from INTERNAL_API_SECRET. Same reuse-or-generate
+# rule; rotating it costs at most a gateway+backend restart.
+GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(secret_key genetics-secrets gateway-identity-secret)}"
+GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(openssl rand -base64 32)}"
+
 kubectl create secret generic genetics-secrets \
   --namespace="${NAMESPACE}" \
   --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}" \
@@ -154,6 +163,7 @@ kubectl create secret generic genetics-secrets \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
   --from-literal=sandbox-token-signing-key="${SANDBOX_TOKEN_SIGNING_KEY}" \
+  --from-literal=gateway-identity-secret="${GATEWAY_IDENTITY_SECRET}" \
   --from-literal=slack-webhook-url="${SLACK_WEBHOOK_URL:-}" \
   --dry-run=client -o yaml | kubectl apply -f -
 

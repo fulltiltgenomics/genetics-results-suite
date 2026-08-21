@@ -12,9 +12,12 @@ data:
   #      deploy.sh envsubst's the WHOLE document, not just the nginx.conf value, and both
   #      fragments are multi-line — an expansion inside a `#` line breaks out of the comment
   #      and the render stops being valid YAML (genetics-results-suite-i5v).
-  #   2. the render-config initContainer below, which reads INTERNAL_API_SECRET from the
-  #      genetics-secrets Secret and envsubst's only that one name into an emptyDir. nginx
-  #      cannot read environment variables from config directives, hence the render step.
+  #   2. the render-config initContainer below, which reads INTERNAL_API_SECRET and
+  #      GATEWAY_IDENTITY_SECRET from the genetics-secrets Secret and envsubst's only those
+  #      two names into an emptyDir. nginx cannot read environment variables from config
+  #      directives, hence the render step. Neither name is in deploy.sh's whitelist, so both
+  #      placeholders survive pass 1 verbatim — and for the same reason the ${...} spellings
+  #      in these comments are safe where a whitelisted name would not be.
   nginx.conf: |
     worker_processes 1;
     error_log /dev/stderr error;
@@ -180,6 +183,17 @@ data:
           # single `mcp-tool` service identity while the gateway leads the backend in a rollout.
           # proxy_set_header redefines, so a caller-supplied X-Internal-Auth cannot survive.
           proxy_set_header X-Internal-Auth "${INTERNAL_API_SECRET}";
+          # PROVENANCE, not membership (genetics-results-suite-4h6.84). The marker above says
+          # only "some in-cluster service sent this": mcp-server and results-api hold
+          # INTERNAL_API_SECRET by design and the NetworkPolicy admits both to chat-backend:8000,
+          # so either could send the marker under ANY header name it chooses alongside an
+          # identity header of its choosing. The header NAME is therefore not a secret and never
+          # was. GATEWAY_IDENTITY_SECRET is a DISTINCT key mounted only into auth-gateway and
+          # chat-backend, so its presence proves the request passed through the proxy that had
+          # just verified an oauth2-proxy session — which is what chat-backend gates sandbox
+          # dispatch on. proxy_set_header redefines here too, so a caller-supplied
+          # X-Gateway-Auth cannot survive the hop.
+          proxy_set_header X-Gateway-Auth "${GATEWAY_IDENTITY_SECRET}";
           error_page 401 = @oauth2_login;
 
           proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
@@ -195,8 +209,9 @@ data:
           auth_request_set $email $upstream_http_x_auth_request_email;
           proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
           proxy_set_header X-Internal-MCP-Call "";
-          # see the note on location = /status
+          # see the notes on location = /status
           proxy_set_header X-Internal-Auth "${INTERNAL_API_SECRET}";
+          proxy_set_header X-Gateway-Auth "${GATEWAY_IDENTITY_SECRET}";
           error_page 401 = @oauth2_login;
 
           proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
@@ -289,9 +304,13 @@ spec:
         runAsGroup: 101
         fsGroup: 101
       initContainers:
-      # substitute ONLY ${INTERNAL_API_SECRET} — the single-name shell-format argument is what
+      # substitute ONLY ${INTERNAL_API_SECRET} and ${GATEWAY_IDENTITY_SECRET} — the explicit
+      # shell-format argument (a space-separated list of exactly the names to expand) is what
       # keeps envsubst away from nginx's own $host/$email/$request_uri variables, and it is
-      # single-quoted so the shell does not expand it before envsubst sees it.
+      # single-quoted so the shell does not expand it before envsubst sees it. Adding a name
+      # here means adding it to BOTH envsubst calls below (the real one and the placeholder
+      # re-test) — a name left out of the placeholder render turns the "which half is broken"
+      # diagnostic into a lie, because the two runs would no longer render the same template.
       - name: render-config
         # TAG, NOT A DIGEST, deliberately — but the tested digest is recorded because a moving tag
         # is now load-bearing in a way it was not before readOnlyRootFilesystem. The image's
@@ -315,24 +334,31 @@ spec:
         args:
         - |
           set -e
-          # whitelist, not blacklist: the secret lands inside an nginx string literal, where
+          # whitelist, not blacklist: each secret lands inside an nginx string literal, where
           # nginx unescapes \t \r \n \" \' \\ and expands $variables, so a rendered config can be
           # perfectly valid while delivering a marker that does not match what chat-backend holds
           # - which reads as every chat request being unauthenticated. nginx -t below catches only
           # some of it (see docs/project-spec.md). The set below is a superset of what
           # create-secrets.sh's `openssl rand -base64 32` can produce, so this only constrains an
           # operator-supplied value; the empty pattern also rejects an unset/blank secret, which
-          # would otherwise render a header nginx drops entirely.
-          case "$INTERNAL_API_SECRET" in
-            ''|*[!A-Za-z0-9+/=_.-]*)
-              echo "FATAL: the internal-api-secret key of the genetics-secrets Secret is empty or" >&2
-              echo "holds a character nginx would reinterpret inside the header value. Allowed:" >&2
-              echo "A-Z a-z 0-9 and + / = _ . - only, at least one character. Rotate it, e.g." >&2
-              echo "\`openssl rand -base64 32\`. Value withheld from this log." >&2
-              exit 1
-              ;;
-          esac
-          envsubst '${INTERNAL_API_SECRET}' < /etc/nginx/template/nginx.conf > /etc/nginx/rendered/nginx.conf
+          # would otherwise render a header nginx drops entirely. Both secrets are checked: an
+          # empty GATEWAY_IDENTITY_SECRET would render an X-Gateway-Auth nginx drops, and chat
+          # would keep working with code execution silently refused at every dispatch.
+          check_secret() {
+            eval "value=\$$1"
+            case "$value" in
+              ''|*[!A-Za-z0-9+/=_.-]*)
+                echo "FATAL: the $2 key of the genetics-secrets Secret is empty or" >&2
+                echo "holds a character nginx would reinterpret inside the header value. Allowed:" >&2
+                echo "A-Z a-z 0-9 and + / = _ . - only, at least one character. Rotate it, e.g." >&2
+                echo "\`openssl rand -base64 32\`. Value withheld from this log." >&2
+                exit 1
+                ;;
+            esac
+          }
+          check_secret INTERNAL_API_SECRET internal-api-secret
+          check_secret GATEWAY_IDENTITY_SECRET gateway-identity-secret
+          envsubst '${INTERNAL_API_SECRET} ${GATEWAY_IDENTITY_SECRET}' < /etc/nginx/template/nginx.conf > /etc/nginx/rendered/nginx.conf
           # the whitelist above is what guards the secret; this validates the TEMPLATE. Catch a
           # broken config here: a failing initContainer stalls the rollout, whereas the crash-looping nginx
           # it would otherwise become slips past deploy.sh's `kubectl rollout status ... || true`
@@ -344,13 +370,14 @@ spec:
           # token, which would put a fragment of the secret into Cloud Logging. Re-test with a
           # placeholder instead to say WHICH half is broken, and print output only from the run
           # that never saw the secret.
-          INTERNAL_API_SECRET=placeholder envsubst '${INTERNAL_API_SECRET}' \
+          INTERNAL_API_SECRET=placeholder GATEWAY_IDENTITY_SECRET=placeholder \
+            envsubst '${INTERNAL_API_SECRET} ${GATEWAY_IDENTITY_SECRET}' \
             < /etc/nginx/template/nginx.conf > /tmp/nginx-placeholder.conf
           if nginx -t -c /tmp/nginx-placeholder.conf >/dev/null 2>&1; then
-            echo "FATAL: nginx rejected the rendered config, but accepts the same template with a" >&2
-            echo "placeholder secret. The internal-api-secret key of the genetics-secrets Secret" >&2
-            echo "contains a character nginx reads as syntax. Rotate it to a value of A-Z a-z 0-9" >&2
-            echo "and + / = _ . - only. Value withheld from this log." >&2
+            echo "FATAL: nginx rejected the rendered config, but accepts the same template with" >&2
+            echo "placeholder secrets. The internal-api-secret or gateway-identity-secret key of" >&2
+            echo "the genetics-secrets Secret contains a character nginx reads as syntax. Rotate" >&2
+            echo "it to a value of A-Z a-z 0-9 and + / = _ . - only. Value withheld from this log." >&2
           else
             echo "FATAL: nginx rejected the config template itself, independently of the secret:" >&2
             nginx -t -c /tmp/nginx-placeholder.conf >&2 || true
@@ -362,6 +389,15 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
+        # auth-gateway's provenance secret (genetics-results-suite-4h6.84). Mounted here and in
+        # chat-backend ONLY — deliberately not in mcp-server or results-api, because the whole
+        # point is that those two cannot produce it. NOT optional: an absent key must stop the
+        # gateway at CreateContainerConfigError rather than render a blank header.
+        - name: GATEWAY_IDENTITY_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: gateway-identity-secret
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/template
@@ -457,8 +493,8 @@ spec:
       - name: config
         configMap:
           name: auth-gateway-config
-      # the rendered config carries INTERNAL_API_SECRET, so it stays in the pod's memory-backed
-      # scratch space and is never written to a ConfigMap or to disk
+      # the rendered config carries INTERNAL_API_SECRET and GATEWAY_IDENTITY_SECRET, so it stays
+      # in the pod's memory-backed scratch space and is never written to a ConfigMap or to disk
       - name: rendered-config
         emptyDir:
           medium: Memory
