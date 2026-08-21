@@ -57,6 +57,22 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
+        # auth-gateway's provenance secret (genetics-results-suite-4h6.84). chat-backend gates
+        # sandbox dispatch on this value arriving in X-Gateway-Auth, so only a request relayed
+        # by auth-gateway after it verified an oauth2-proxy session can execute code. Mounted
+        # into auth-gateway and this pod ONLY: mcp-server and results-api hold
+        # internal-api-secret by design and the NetworkPolicy admits both to port 8000, so
+        # anything derived from that secret — including which header it travels in — is not a
+        # boundary they cannot cross. NOT optional, matching sandbox-token-signing-key: an
+        # absent key holds the pod at CreateContainerConfigError instead of starting it with
+        # code execution silently refused, and deploy.sh refuses to apply before that happens.
+        # An EMPTY value still satisfies the kubelet and reaches the process; there it fails
+        # closed at dispatch (auth.core._expected_gateway_marker) and logs at startup.
+        - name: GATEWAY_IDENTITY_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: gateway-identity-secret
         # signs the per-execution sandbox tokens. chat-backend is the only minter: it is the
         # sole caller of the sandbox and the only component that knows the end user and the
         # chat session. The sandbox holds neither this nor internal-api-secret; the tokens

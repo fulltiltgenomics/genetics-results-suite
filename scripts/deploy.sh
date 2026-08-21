@@ -240,7 +240,10 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
 # ANTHROPIC_API_KEY — that key alone is never read back from the cluster, and without it the
 # script aborts before writing anything. The targeted patch below stays as the alternative for
 # operators who do not have that key to hand.
-for key in internal-api-secret sandbox-token-signing-key; do
+# gateway-identity-secret is checked the same way and for a sharper reason: auth-gateway's
+# render-config initContainer refuses to start without it, and chat-backend gates code
+# execution on it, so an older genetics-secrets would take the gateway down at rollout.
+for key in internal-api-secret sandbox-token-signing-key gateway-identity-secret; do
   if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
        -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
     cat >&2 <<EOF
@@ -253,7 +256,9 @@ Add ONLY that key, leaving every other key in the secret untouched:
 
 (Substitute your own value for \$(openssl rand -base64 32) if the key already exists elsewhere
 and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
-results-api, and internal-api-secret on every internal caller.)
+results-api, internal-api-secret on every internal caller, and gateway-identity-secret on
+auth-gateway and chat-backend — those two ONLY, since it is what tells chat-backend a request
+came through the gateway rather than from another holder of internal-api-secret.)
 
 Re-running create-secrets.sh also fixes this and is safe for the optional keys: it reuses every
 value already in the cluster instead of blanking the ones you have not exported. It does still
