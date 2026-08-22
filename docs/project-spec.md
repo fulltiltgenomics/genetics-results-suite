@@ -1118,6 +1118,26 @@ start it, because the image still ships no `CMD` and the manifest still declares
   side effect. The deadline stays anyway, because the sweep can fail and because the slot must
   be freed regardless; an `abandoned` log line now means a control failed rather than the
   expected outcome.
+- **`SIGTERM` drains, reaps, answers and only then exits.** The shutdown thread waits on
+  `Supervisor.quiescent()` — the execution slot free **and** no handler still owing a response
+  — not on `idle()`, which goes true in `run()`'s `finally` before the `200` is written. The
+  server runs `daemon_threads = True`, so nothing in `server_close()` joins a handler thread
+  and this count is the only thing that can wait for an answer; a `SIGTERM` in that window used
+  to exit with the response truncated, which the client reads as a retryable failure of an
+  execution that had already completed (`4h6.57`). `/health` and `/artifact` are not counted —
+  both are idempotent `GET`s whose artifacts die with the pod's `emptyDir` anyway, so a reset
+  on one costs a `404` and not a duplicate execution, and a readiness probe cannot hold the
+  drain open. **The wait is bounded**: `_send_json`'s `sendall` has no deadline, so one peer
+  that stops reading could otherwise hold the gate past the grace and turn a truncated response
+  into a `SIGKILL` that also loses `forkserver.close()` and the child reap. `DRAIN_DEADLINE_S`
+  (125s) is the ceiling — above `MAX_TIMEOUT_S` + `KILL_GRACE_S` (122s), so a full-length
+  execution is never cut short, and 5s below the manifest's 130s, so the exit path still runs —
+  and firing it logs at `ERROR` with the number of answers abandoned. There is no shutdown-time
+  scratch wipe to lose: `wipe_unrecognised_scratch` runs only in `bring_up()`, at startup.
+  Descriptors have the same story one step earlier: every fd an execution creates,
+  the three pipe pairs included, is made inside the `try` that closes all of them on any
+  failure, because `os.pipe()` only ever fails when the pod is already out of descriptors
+  (`4h6.63`).
 - **Every writable path is per-execution.** `TMPDIR`, `HOME`, `MPLCONFIGDIR`,
   `XDG_CACHE_HOME`, `PYTHONPYCACHEPREFIX` and `SANDBOX_ARTIFACTS_DIR` are set in the child
   and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
