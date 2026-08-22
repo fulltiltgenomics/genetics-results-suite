@@ -111,7 +111,9 @@ MAX_BODY_BYTES = 1024 * 1024          # raw bytes on the wire -> 413
 MAX_CODE_BYTES = 256 * 1024           # len(code.encode("utf-8")) -> 413
 MAX_HEADER_BYTES = 64 * 1024          # request line + headers, whole block -> 431
 HEADER_PEEK_BYTES = 512               # see _HeaderBoundedReader: the over-read bound
-BODY_READ_TIMEOUT_S = 10.0            # request line to last byte -> 408
+HEAD_READ_TIMEOUT_S = 10.0            # first byte of the head to the blank line -> 408
+IDLE_READ_TIMEOUT_S = 65.0            # connection open, no head started -> closed, no response
+BODY_READ_TIMEOUT_S = 10.0            # end of head to last body byte -> 408
 DEFAULT_TIMEOUT_S = 60
 MAX_TIMEOUT_S = 120                   # rejected, never clamped
 QUEUE_DEPTH = 2                       # WAITING requests, not counting the one executing
@@ -4265,12 +4267,23 @@ class _HeaderTooLarge(Exception):
     """The request line and headers did not terminate within MAX_HEADER_BYTES -> 431."""
 
 
+class _HeadReadTimeout(Exception):
+    """The head began arriving but did not terminate within HEAD_READ_TIMEOUT_S -> 408.
+
+    DELIBERATELY NOT a TimeoutError subclass. BaseHTTPRequestHandler.handle_one_request catches
+    socket.timeout itself and returns having sent NOTHING, so a timeout that reached it would
+    drop the connection silently instead of answering in the uniform JSON shape.
+    """
+
+
 # ALL FOUR of the shapes http.client.parse_headers stops on, not three. It ends the head at a
 # blank line that is "\r\n" or "\n", following a line that ended "\r\n" or "\n" — and "\r\n\n"
 # contains "\n\n", so the set below covers the fourth by containment while "\n\r\n" is its own
 # member. Dropping it is not cosmetic: the terminator is then never found, `take` becomes the
-# whole peek, the body is copied onto the heap AND left in the scratch (the finally never runs
-# because the read never returns), and the request hangs in recv_into instead of being refused.
+# whole peek, and the body is copied onto the heap in `parts`, where the finally's wipe of the
+# two fixed buffers cannot reach it. Since 4h6.58 the read does return — the head's absolute
+# deadline expires and the request is refused 408 — so this is bounded rather than a permanent
+# hang, but the copy has already happened by the time it is.
 # Adding it cannot change well-formed behaviour: "\r\n\r\n" contains "\n\r\n" at offset +1 and
 # both yield the same end, and the loop below takes the SMALLEST end anyway.
 _HEADER_TERMINATORS = (b"\r\n\r\n", b"\n\r\n", b"\n\n")
@@ -4333,10 +4346,11 @@ class _HeaderBoundedReader:
         open a TCP connection may do — discarded everything the earlier rounds had seen, so the
         window shrank to `take` and a terminator straddling it was never found. `take` then
         stayed the whole peek every round, so THE WHOLE BODY was consumed off the kernel queue
-        into `parts`, the finally never ran, and the read blocked in recv_into forever instead
-        of refusing. `total` never approaches MAX_HEADER_BYTES on that path, so _HeaderTooLarge
-        never fires either: fail-OPEN, pre-auth, and permanent (the connection has no timeout
-        outside _read_body, and _Server's threads are daemons).
+        into `parts`, and `total` never approaches MAX_HEADER_BYTES on that path, so
+        _HeaderTooLarge never fires either: fail-OPEN and pre-auth. It was also PERMANENT until
+        4h6.58 — the connection had no timeout outside _read_body and _Server's threads are
+        daemons — and is now bounded at HEAD_READ_TIMEOUT_S by the deadline _arm holds, which
+        caps how long the copy is held without stopping it from being made.
         """
         edge, view = self._edge, self._view
         if take >= _HEADER_TAIL_BYTES:
@@ -4352,19 +4366,59 @@ class _HeaderBoundedReader:
         edge[keep:keep + take] = view[:take]
         return keep + take
 
+    def _arm(self, deadline):
+        """Bound the next head recv, ONE deadline for the whole head rather than a per-recv
+        timer: a peer dripping a byte at a time would reset a per-recv timer forever, which is
+        the shape genetics-results-suite-4h6.58 measured (a single b"P", still open at 35s).
+
+        `deadline` is None until the first byte of a head arrives, and that distinction is the
+        point: a kept-alive connection waiting for its next request has sent nothing and gets
+        the long idle bound, while a head that has started gets HEAD_READ_TIMEOUT_S.
+        """
+        if deadline is None:
+            self._sock.settimeout(IDLE_READ_TIMEOUT_S)
+            return
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            # settimeout(0) is non-blocking mode, not "expired", so never arm it.
+            raise _HeadReadTimeout()
+        self._sock.settimeout(budget)
+
     def _read_head(self):
-        """The request line and headers, consumed exactly. b"" if the peer closed first."""
+        """The request line and headers, consumed exactly. b"" if the peer closed first.
+
+        ARM/DISARM DISCIPLINE (genetics-results-suite-4h6.58): the socket timeout is armed and
+        disarmed ENTIRELY INSIDE THIS FUNCTION, on every path including both raises. It is not
+        armed in _Handler.setup(), because _read_body's finally does settimeout(None) and a head
+        timeout armed once per connection would then be gone for every later request on a
+        kept-alive connection — a fix that works once and silently stops working. Every head
+        read re-arms from scratch, so what _read_body does to the socket cannot outlive it.
+        """
         parts = []
         total = 0
         tail_len = 0
         view = self._view
         edge = self._edge
+        deadline = None
         try:
             while True:
                 # Blocks until at least one byte is queued, exactly as a buffered readline does.
-                peeked = self._sock.recv_into(view, HEADER_PEEK_BYTES, socket.MSG_PEEK)
+                self._arm(deadline)
+                try:
+                    peeked = self._sock.recv_into(view, HEADER_PEEK_BYTES, socket.MSG_PEEK)
+                except (socket.timeout, TimeoutError):
+                    if deadline is None:
+                        # Idle keep-alive: nothing of a request has arrived, so there is nothing
+                        # to answer. Report EOF and let the caller close, exactly as a peer that
+                        # went away does — a 408 written into a connection the client believes
+                        # is idle is the response most likely to be read as the answer to its
+                        # NEXT request.
+                        return b""
+                    raise _HeadReadTimeout()
                 if peeked == 0:
                     return b""  # clean EOF, or a half-open peer: the caller closes
+                if deadline is None:
+                    deadline = time.monotonic() + HEAD_READ_TIMEOUT_S
                 # SEARCHED IN PLACE, on the bytearray. `bytes(view[:peeked])` would be correct
                 # and would defeat the entire point: it copies the over-read onto the heap,
                 # where it outlives the wipe below in a freed arena. MEASURED — with that copy
@@ -4397,7 +4451,11 @@ class _HeaderBoundedReader:
                 take = peeked if end < 0 else end
                 got = 0
                 while got < take:
-                    read = self._sock.recv_into(view[got:take], take - got)
+                    self._arm(deadline)
+                    try:
+                        read = self._sock.recv_into(view[got:take], take - got)
+                    except (socket.timeout, TimeoutError):
+                        raise _HeadReadTimeout()
                     if read == 0:
                         return b""  # truncated head: refuse by closing, never guess
                     got += read
@@ -4413,6 +4471,12 @@ class _HeaderBoundedReader:
             # over-read past the head dies here rather than in an arena.
             self._scratch[:] = _HEADER_PEEK_ZEROS
             self._edge[:] = _HEADER_EDGE_ZEROS
+            # Back to blocking: the response write and _read_body's own arming both assume it,
+            # and this is the other half of the discipline described above.
+            try:
+                self._sock.settimeout(None)
+            except OSError:
+                pass  # the connection is already gone; the caller is about to close it anyway
 
     # -- the file-like surface BaseHTTPRequestHandler and _read_body use --------------------
 
@@ -4451,6 +4515,21 @@ class _HeaderBoundedReader:
             self._raw.close()
 
 
+# BaseHTTPRequestHandler._control_char_table is private, so nothing promises it stays. It is
+# NOT actually missing anywhere this ships — MEASURED present in 3.10, so the image's distroless
+# 3.11 and this checkout's 3.12 both take the stdlib's and the branch below is dead code there.
+# It is kept as defensiveness against an interpreter that drops it, not because any interpreter
+# in play lacks it: taking the stdlib's when it is there makes the log escape exactly what the
+# stdlib escapes, and rebuilding the same table (verified dict-equal) when it is not beats
+# letting the log path raise an AttributeError.
+_CONTROL_CHAR_TABLE = getattr(http.server.BaseHTTPRequestHandler, "_control_char_table", None)
+if _CONTROL_CHAR_TABLE is None:
+    _CONTROL_CHAR_TABLE = str.maketrans(
+        {c: "\\x{:02x}".format(c) for c in list(range(0x20)) + list(range(0x7f, 0xa0))}
+    )
+    _CONTROL_CHAR_TABLE[ord("\\")] = "\\\\"
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "genetics-sandbox-supervisor"
@@ -4469,19 +4548,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except _HeaderTooLarge:
             # FAIL CLOSED: the head never terminated, so nothing was routed and no body was
             # read. Answer and close rather than fall through to a read of anything.
-            self.close_connection = True
-            self.requestline = ""
-            self.request_version = ""
-            self.command = ""
-            try:
-                self.send_error(431, "request headers too large")
-            except OSError:
-                pass
+            self._refuse_head(431, "request headers too large")
+        except _HeadReadTimeout:
+            # Same standing as the 431 above and for the same reason: the head stalled, so
+            # nothing was routed and no body was read.
+            self._refuse_head(408, "request head not received in time")
+
+    def _refuse_head(self, code, message):
+        self.close_connection = True
+        # The request line is not trustworthy on either path — it may be absent, or half of it
+        # may still be in the socket — so it is cleared before send_response logs it.
+        self.requestline = ""
+        self.request_version = ""
+        self.command = ""
+        try:
+            self.send_error(code, message)
+        except OSError:
+            pass
 
     # -- plumbing ----------------------------------------------------------------------
 
     def log_message(self, fmt, *args):
-        LOG.info("%s %s", self.address_string(), fmt % args)
+        # translate() is the stdlib's, and dropping it was genetics-results-suite-4h6.64: the
+        # request line reaches this call raw, and since 4h6.45 THIS STREAM IS THE AUDIT CHANNEL
+        # — the one an operator reads to answer "who ran what". Without the translation a
+        # malformed request line puts ANSI escapes and bare CRs into it.
+        LOG.info("%s %s", self.address_string(), (fmt % args).translate(_CONTROL_CHAR_TABLE))
 
     def send_error(self, code, message=None, explain=None):
         # BaseHTTPRequestHandler's default is an HTML page; every non-2xx here is the

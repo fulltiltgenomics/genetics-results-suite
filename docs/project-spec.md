@@ -1123,6 +1123,31 @@ start it, because the image still ships no `CMD` and the manifest still declares
   and point inside `/scratch/<execution-id>`. The Dockerfile leaves all of them unset on
   purpose: a fixed pod-wide value recreates the cross-execution shared directory that
   removing the pod-level `/tmp` was meant to prevent.
+- **Every read off the socket has a deadline — the response write has none — and the head's is
+  armed per head** (`4h6.58`).
+  `HEAD_READ_TIMEOUT_S` bounds the request line and headers as **one** deadline for the whole
+  head, `BODY_READ_TIMEOUT_S` bounds the body, and `IDLE_READ_TIMEOUT_S` bounds a connection that
+  has sent nothing of a request — the last one *silently*, because every kept-alive client is idle
+  between requests, the kubelet's readiness probe included, and a `408` written into a connection
+  the client believes is idle is the response most likely to be misread as the answer to its next
+  request. Until `4h6.58` only the body was bounded while the constant's comment claimed the head
+  was too: a connection that sent one byte and then nothing was measured **still open at 35s**,
+  holding a daemon handler thread nothing would free. The arm and the disarm both live inside
+  `_read_head`, not in `setup()`, because `_read_body`'s `finally` clears the socket timeout — a
+  once-per-connection arm would be gone by the second request on a kept-alive connection, a fix
+  that works once and then silently stops working. What all three bound is DURATION, not COUNT:
+  nothing caps concurrent connections or handler threads (`_Server` is a `ThreadingHTTPServer`
+  with `daemon_threads = True`, one thread per connection, and `request_queue_size` is the listen
+  backlog), and `wfile.write` has no deadline at all — so ~16 silent connections per second still
+  pin the pod at its `pod_pids_limit` of 1024 until `fork()` fails and `/execute` cannot run. The
+  values, the status codes, that residual and the negative controls live in
+  `docs/code-execution-security.md` → "`POST /execute` — request".
+- **The HTTP access line is control-character-escaped before it reaches stdout** (`4h6.64`), which
+  since `4h6.45` is the audit channel the cluster's logging agent collects. The stdlib's
+  `_control_char_table` translation had been dropped from `log_message`, so a caller's raw request
+  line could put ANSI escapes and bare CRs into what an operator reads to answer "who ran what".
+  It could never forge an SDK audit record — `SDK_CALL_RE` is anchored and the access line appends
+  the status and size *after* the request line — so attribution was never at risk.
 - **No `setuid` and no `chown` anywhere.** Supervisor and child share uid 65532 — forced,
   because the pod drops `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN`. The image's advertised
   `SANDBOX_CHILD_UID` names a uid nothing in this pod can switch to.

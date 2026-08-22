@@ -104,6 +104,7 @@ import hashlib
 import http.client
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -3792,6 +3793,316 @@ def _header_reader_cases(pair):
         httpd.server_close()
 
 
+ENV_ARM_ONCE = "SUPERVISOR_TEST_ARM_ONCE"
+
+
+def _arm_once(self, deadline):
+    """_read_head's timeout as it would be if it were armed ONCE PER CONNECTION — in setup(),
+    say — instead of once per head.
+
+    The negative control for the keep-alive check below, and a restoration of the defect rather
+    than a flag the fixed code reads. The second head on a kept-alive connection then reads with
+    whatever _read_body's `finally` left on the socket, which is settimeout(None): no deadline at
+    all. With this installed the keep-alive check hangs until its own socket timeout and goes red;
+    the first-request check still passes, which is exactly what makes the defect shape "works
+    once, then silently stops working".
+    """
+    if getattr(self, "_armed_once", False):
+        return
+    self._armed_once = True
+    _real_arm(self, deadline)
+
+
+_real_arm = sup._HeaderBoundedReader._arm
+
+ENV_IDLE_FOREVER = "SUPERVISOR_TEST_IDLE_FOREVER"
+ENV_PER_RECV = "SUPERVISOR_TEST_PER_RECV_TIMEOUT"
+
+
+def _arm_no_idle(self, deadline):
+    """_arm as it would be if only a STARTED head were bounded and silence were not.
+
+    The negative control for the idle-close check. settimeout(None) on the idle branch is the
+    pre-4h6.58 state for a connection that sends zero bytes: the handler thread parks in
+    recv_into forever and the suite stays silent, because a connection that is never answered
+    and a connection that is legitimately quiet look identical to any check that only asserts
+    "nothing was written". Only observing the CLOSE tells them apart.
+    """
+    if deadline is None:
+        self._sock.settimeout(None)
+        return
+    _real_arm(self, deadline)
+
+
+def _arm_per_recv(self, deadline):
+    """_arm as it would be if the head bound were a PER-RECV timer instead of one deadline.
+
+    The negative control for the total-exceeds-budget drip below. Every round gets a fresh
+    HEAD_READ_TIMEOUT_S, so a peer that sends one byte just inside the timer resets it forever
+    and the head is bounded only by MAX_HEADER_BYTES — 64 KiB at whatever rate the peer likes.
+    Every existing head check still passes with this installed, which is precisely why one that
+    fails is needed.
+    """
+    if deadline is None:
+        self._sock.settimeout(sup.IDLE_READ_TIMEOUT_S)
+        return
+    self._sock.settimeout(sup.HEAD_READ_TIMEOUT_S)
+
+
+def _await_eof(wire, timeout):
+    """(bytes read, whether the PEER closed, seconds waited).
+
+    _slurp returns b"" both when the server closed without writing and when the harness's own
+    socket timeout expired, and for the idle bound that distinction IS the property: an idle
+    connection that is held forever is also silent.
+    """
+    wire.settimeout(timeout)
+    began = time.monotonic()
+    out = b""
+    closed = False
+    try:
+        while True:
+            block = wire.recv(4096)
+            if not block:
+                closed = True
+                break
+            out += block
+    except OSError:
+        pass
+    return out, closed, time.monotonic() - began
+
+
+def _raw_wire(server, timeout=40):
+    return socket.create_connection((server.host, server.port), timeout=timeout)
+
+
+def _slurp(wire, timeout=40):
+    """Everything the supervisor writes until it closes, or b"" if it never answers."""
+    wire.settimeout(timeout)
+    out = b""
+    try:
+        while True:
+            block = wire.recv(4096)
+            if not block:
+                break
+            out += block
+    except OSError:
+        pass
+    return out
+
+
+def _one_response(wire, timeout):
+    """One complete response off a KEPT-ALIVE connection, which cannot be read to EOF."""
+    wire.settimeout(timeout)
+    out = b""
+    try:
+        while b"\r\n\r\n" not in out:
+            block = wire.recv(4096)
+            if not block:
+                break
+            out += block
+        head, _, body = out.partition(b"\r\n\r\n")
+        match = re.search(rb"Content-Length: (\d+)", head)
+        want = int(match.group(1)) if match else 0
+        while len(body) < want:
+            block = wire.recv(4096)
+            if not block:
+                break
+            body += block
+    except OSError:
+        pass
+    return out
+
+
+def test_head_timeout(server):
+    """genetics-results-suite-4h6.58: the deadline BODY_READ_TIMEOUT_S's comment used to claim.
+
+    The measured defect was a connection that sent a single b"P" and was still open at 35s: the
+    head is read before _execute takes `started`, so nothing bounded it. These checks are on the
+    wire on purpose — the claim is about what a peer holding a socket can do, not about a
+    function's arguments.
+    """
+    # 1. THE MEASURED CASE. A head that starts and stops is answered, not held.
+    wire = _raw_wire(server)
+    wire.sendall(b"P")
+    began = time.monotonic()
+    answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+    elapsed = time.monotonic() - began
+    wire.close()
+    check("head timeout: a head that starts and stalls is answered 408 in the uniform JSON "
+          "shape and the connection is closed",
+          answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer
+          and b'"execution_id": null' in answer,
+          f"got {answer[:160]!r} after {elapsed:.1f}s")
+    check("head timeout: it waits for the deadline rather than refusing a slow client outright",
+          sup.HEAD_READ_TIMEOUT_S * 0.5 <= elapsed <= sup.HEAD_READ_TIMEOUT_S + 15,
+          f"answered after {elapsed:.1f}s, deadline is {sup.HEAD_READ_TIMEOUT_S}s")
+
+    # 2. A CONNECTION THAT SENDS NOTHING AT ALL is a different case and must not be answered
+    # 408 after HEAD_READ_TIMEOUT_S: that is every kept-alive client between requests, the
+    # kubelet's readiness probe included. It is bounded by IDLE_READ_TIMEOUT_S instead.
+    check("head timeout: the idle bound is far longer than the head bound, so a kept-alive "
+          "client is not the thing being timed",
+          sup.IDLE_READ_TIMEOUT_S >= 4 * sup.HEAD_READ_TIMEOUT_S,
+          f"idle {sup.IDLE_READ_TIMEOUT_S}s vs head {sup.HEAD_READ_TIMEOUT_S}s")
+    wire = _raw_wire(server)
+    quiet = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 3)
+    wire.close()
+    check("head timeout: a connection that has sent NOTHING is not answered 408 at the head "
+          "deadline", quiet == b"", f"got {quiet[:120]!r}")
+
+    # ...and it is nonetheless CLOSED, which the two checks above cannot see: one asserts only
+    # that nothing was written, which a connection held forever also satisfies, and the other
+    # reads the CONSTANTS rather than the wire. Neutering the idle branch to settimeout(None)
+    # was MEASURED to leave both green while a zero-byte connection pinned a daemon handler
+    # thread indefinitely — the pre-4h6.58 slowloris, reached by sending nothing at all. The
+    # module constant is dropped to 3s for the same reason the head checks do not wait out
+    # 65s: the property is that the close happens on the idle bound, not what the bound is.
+    idle_installed = os.environ.get(ENV_IDLE_FOREVER) == "1"
+    if idle_installed:
+        sup._HeaderBoundedReader._arm = _arm_no_idle
+    real_idle = sup.IDLE_READ_TIMEOUT_S
+    sup.IDLE_READ_TIMEOUT_S = 3.0
+    try:
+        wire = _raw_wire(server)
+        held, closed, waited = _await_eof(wire, 3.0 * 4)
+        wire.close()
+    finally:
+        sup.IDLE_READ_TIMEOUT_S = real_idle
+        sup._HeaderBoundedReader._arm = _real_arm
+    check("head timeout: a connection that sends NOTHING is CLOSED at roughly "
+          "IDLE_READ_TIMEOUT_S — silence is the response, not the outcome",
+          closed and held == b"" and 3.0 * 0.5 <= waited <= 3.0 + 6.0,
+          f"closed={closed} after {waited:.1f}s with {held[:80]!r}, bound was 3.0s"
+          + (" (SUPERVISOR_TEST_IDLE_FOREVER=1 is installed: this is the control)"
+             if idle_installed else ""))
+
+    # 3. A SLOW BUT HEALTHY CLIENT — /health dripped a byte at a time, well inside the budget —
+    # still gets its 200. The readiness probe must not be able to fail on a slow write.
+    wire = _raw_wire(server)
+    head = b"GET /health HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"
+    feeder = _drip(wire, head, 1, 0.005)
+    answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+    feeder.join(20)
+    wire.close()
+    check("head timeout: a /health head dripped a byte at a time still answers 200",
+          answer.startswith(b"HTTP/1.1 200 "), f"got {answer[:120]!r}")
+
+    # ...and a drip whose PER-BYTE gap is comfortably inside the budget but whose TOTAL is not
+    # is refused. This is the check that tells ONE ABSOLUTE DEADLINE from a per-recv timer, and
+    # the drip above cannot: 47 bytes at 5ms is ~2% of the budget, so it completes under either
+    # design. At 0.4s per byte against a 2s head bound, the deadline answers 408 six bytes in,
+    # while a timer re-armed every round would never expire and would answer 200 after ~19s —
+    # i.e. the head unbounded again, up to MAX_HEADER_BYTES, at a rate the peer picks.
+    recv_installed = os.environ.get(ENV_PER_RECV) == "1"
+    if recv_installed:
+        sup._HeaderBoundedReader._arm = _arm_per_recv
+    real_head = sup.HEAD_READ_TIMEOUT_S
+    sup.HEAD_READ_TIMEOUT_S = 2.0
+    try:
+        wire = _raw_wire(server)
+        feeder = _drip(wire, head, 1, 0.4)
+        began = time.monotonic()
+        answer = _slurp(wire, 2.0 + 30)
+        elapsed = time.monotonic() - began
+        wire.close()
+        feeder.join(30)
+    finally:
+        sup.HEAD_READ_TIMEOUT_S = real_head
+        sup._HeaderBoundedReader._arm = _real_arm
+    check("head timeout: a drip inside the per-byte budget but over the TOTAL is answered 408 "
+          "— the head has ONE deadline, not a timer each recv resets",
+          answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
+          f"got {answer[:120]!r} after {elapsed:.1f}s against a 2.0s head bound"
+          + (" (SUPERVISOR_TEST_PER_RECV_TIMEOUT=1 is installed: this is the control)"
+             if recv_installed else ""))
+
+    # 4. THE KEEP-ALIVE CASE, which is the whole reason this is not a one-liner. _read_body's
+    # `finally` does settimeout(None), so a deadline armed once per CONNECTION is gone by the
+    # second request. The first request below reaches _read_body (its body is read in full and
+    # only then refused 400 by the parser, which leaves the connection alive), so the disarm has
+    # definitely run before the second head starts.
+    installed = os.environ.get(ENV_ARM_ONCE) == "1"
+    if installed:
+        sup._HeaderBoundedReader._arm = _arm_once
+    try:
+        wire = _raw_wire(server)
+        body = b'{"code": 1}'
+        wire.sendall(b"POST /execute HTTP/1.1\r\nHost: h\r\n"
+                     b"Content-Type: application/json\r\n"
+                     b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        first = _one_response(wire, 40)
+        check("head timeout: the first request on the connection is read to the end of its body "
+              "and kept alive", first.startswith(b"HTTP/1.1 400 ") and b"Connection: close" not in first,
+              f"got {first[:160]!r}")
+        wire.sendall(b"G")
+        began = time.monotonic()
+        answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+        elapsed = time.monotonic() - began
+        wire.close()
+        check("head timeout: the SECOND head on a kept-alive connection is bounded too — the "
+              "deadline is armed per head, not per connection",
+              answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
+              f"got {answer[:160]!r} after {elapsed:.1f}s"
+              + (" (SUPERVISOR_TEST_ARM_ONCE=1 is installed: this is the control)"
+                 if installed else ""))
+    finally:
+        sup._HeaderBoundedReader._arm = _real_arm
+
+    # 5. genetics-results-suite-4h6.64: the request line reaches LOG.info raw, and since 4h6.45
+    # that stream IS the audit channel. An ESC in the path must not reach it as an ESC.
+    with _LogCapture() as capture:
+        wire = _raw_wire(server)
+        wire.sendall(b"GET /\x1b[31mnope HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+        answer = _slurp(wire, 30)
+        wire.close()
+    logged = [line for line in capture.lines if "nope" in line]
+    check("log sanitising: a request line with an ESC is still routed normally (404)",
+          answer.startswith(b"HTTP/1.1 404 "), f"got {answer[:120]!r}")
+    check("log sanitising: and the ESC reaches the audit stream escaped, not raw",
+          logged and all("\x1b" not in line for line in logged)
+          and any("\\x1b" in line for line in logged),
+          f"logged {logged!r}")
+
+    # Directly, because the wire cannot deliver every control character in a routable request
+    # line: a bare CR or LF would end the request line itself. These are the characters that
+    # make a `kubectl logs` session lie about how many records there are.
+    handler = sup._Handler.__new__(sup._Handler)
+    handler.client_address = ("127.0.0.1", 4321)
+    with _LogCapture() as capture:
+        handler.log_message('"%s" %s %s', "GET /a\r\nfake HTTP/1.1", "200", "-")
+    check("log sanitising: CR and LF in a logged request line are escaped, so one request "
+          "cannot become two log lines",
+          len(capture.lines) == 1 and not any(ord(c) < 0x20 for c in capture.lines[0])
+          and "\\x0d\\x0a" in capture.lines[0],
+          f"logged {capture.lines!r}")
+
+
+class _LogCapture(logging.Handler):
+    """The supervisor's own LOG, which is the audit stream: main() points logging at stdout."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+    def __enter__(self):
+        # The harness never calls basicConfig, so this logger sits at the root's WARNING and
+        # LOG.info() returns before any handler sees it. In the image main() puts it at INFO on
+        # stdout, which is the stream this test is about.
+        self._level = sup.LOG.level
+        sup.LOG.setLevel(logging.INFO)
+        sup.LOG.addHandler(self)
+        return self
+
+    def __exit__(self, *exc):
+        sup.LOG.removeHandler(self)
+        sup.LOG.setLevel(self._level)
+        return False
+
+
 # --------------------------------------------------------------------------------------
 
 
@@ -3826,6 +4137,14 @@ def run_in_process():
         root = os.path.join(tmp, "scratch")
         os.makedirs(root)
         test_http(Server(root))
+        print("head-read deadline and log sanitising (4h6.58, 4h6.64)")
+        root = os.path.join(tmp, "headtimeout")
+        os.makedirs(root)
+        server = Server(root)
+        try:
+            test_head_timeout(server)
+        finally:
+            server.close()
         print("what an execution leaves behind (4h6.66, 4h6.83)")
         root = os.path.join(tmp, "survivors")
         os.makedirs(root)
@@ -3942,6 +4261,9 @@ def run_container(base_url, retention_s=None, container_name=None):
         "which is reachable over the wire",
         "bounded header reads (test_header_reader_units) — drives _HeaderBoundedReader over a "
         "socketpair, which needs the module",
+        "head-read deadline and log sanitising (test_head_timeout) — times a stalled head "
+        "against HEAD_READ_TIMEOUT_S and reads the supervisor's own LOG, so it needs the "
+        "module and a socket whose latency is the harness's own",
         "cross-execution memory isolation (test_isolation) — plants its positive control in "
         "the supervisor module before the fork server is forked, which needs the module",
     ])
