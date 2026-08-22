@@ -273,10 +273,20 @@ reach `credible_sets_v` and `hla_associations_v` through SQL. Section headings a
 ungated wherever their body is: `## Data Sources and Resource Names` is its own block, since
 a gated heading over an ungated body reparents the body under the preceding section.
 
-`chat_api.py` builds the prompt from `service.resolve_local_tool_names(request.tool_profile,
-request.enable_tools)` (`llm_service.py`), which is the same profile + feature-flag +
-subagent-liveness resolution that produces the tool list itself. So on the **Anthropic**
-path the prompt is a function of the tool list and the two cannot drift apart. This does
+`chat_api.py` resolves the tool set **once**, with `service.resolve_local_tools(
+request.tool_profile, request.enable_tools)` (`llm_service.py`), builds the prompt from that
+object's `.names`, and hands the SAME object to `stream_chat` and on to `_stream_anthropic`
+as the model's tool list. `ResolvedLocalTools` is a frozen dataclass holding `definitions`,
+and `names` is a **computed property** over them rather than a stored copy — so the names the
+prompt was gated on are projected off the very definitions the model receives. On the
+**Anthropic** path the no-drift property is therefore structural: there is one derivation,
+not two that agree by convention (`genetics-results-suite-4h6.77`; before it the prompt and
+the tool list were resolved independently and matched only because both calls happened to
+pass the same profile and flags). `resolve_local_tool_names` still exists as a one-line
+delegate to `resolve_local_tools(...).names`, and is still what `/chat/v1/tool-names` calls
+— the prompt just no longer comes through it. Freezing the dataclass is not what carries the
+invariant: `definitions` is a plain list whose contents can still be mutated in place, and
+`tests/test_tool_resolution_single_source.py` mutates it to prove `names` follows. This does
 NOT hold for `provider="openai"`: `_stream_openai` takes neither `enable_tools` nor
 `tool_profile` and never sets `tools`, so that provider gets zero tools while receiving the
 prompt assembled for the full local set. Pre-existing behaviour, unchanged here — the OpenAI
@@ -292,19 +302,41 @@ Phenotype Reports.
 
 What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
-`default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these:
+`default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
+everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
+unfiltered text is 35,420 chars. Measured 2026-08-22:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default) | 65 | ~29,100 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
-| `api` | 63 | ~29,000 | the above, plus the `query_database` wording variants; gains the SDK schema route |
-| `bigquery` | 23 | ~25,500 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
-| `rag` | 18 | ~19,600 | the above, plus HLA, the credible-set grounding rules, the database section and Choosing How to Get Data entirely |
-| `nocode` | 62 | ~28,400 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-19: 29,063 → 28,368 chars) |
-| `code` | 7 | ~21,100 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
+| `None` (default) | 65 | 29,112 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
+| `api` | 63 | 29,109 | the above, plus the `query_database` wording variants; gains the SDK schema route |
+| `bigquery` | 23 | 26,098 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
+| `rag` | 18 | 19,515 | the above, plus HLA, the credible-set grounding rules, the database section and Choosing How to Get Data entirely |
+| `nocode` | 62 | 28,417 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-22: 29,112 → 28,417 chars) |
+| `code` | 7 | 21,715 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
 
-`tests/test_system_prompt.py` pins three properties across those profiles with
-`ENABLE_SUBAGENTS` both true and false:
+`bigquery` has two shapes and the row above is the sandbox-on one. With
+`SANDBOX_ENABLED=false` it is 22 tools and 25,253 chars, and the text differs by more than
+the missing `run_analysis` guidance: `query_database` keeps the annotation prohibition
+alive while the flag has taken `run_analysis` and with it the SDK route, so
+`genetics-results-suite-4h6.76` gives it a wording of its own — the prohibition followed by
+`get_variant_protein_effect`, which this surface still has and which returns the amino-acid
+change with curated ClinVar clinical significance, population frequency and rsID for a
+coding SNV. The model is told to USE that tool, and to fall back on "not available here"
+only for what the tool does not cover (non-coding variants, pathogenicity scores,
+multi-population frequencies). The blanket "there is no variant-annotation tool on this
+surface" wording — which an earlier revision of this section placed on exactly this
+surface, where it was false — matches **no shipped profile**: it survives only for a
+database-only shape with `get_variant_protein_effect` removed, which is synthesised in the
+test rather than resolved from a profile (see the route-completeness bullet below). The
+other profiles change with the flag too (`None` 64 tools / 28,417 chars, `api` 62 / 24,745,
+`code` 6 / 14,741; `rag` and `nocode` are unaffected).
+
+`tests/test_system_prompt.py` pins five properties over its own `PROFILES` list —
+`[None, "api", "bigquery", "rag", "code"]`, which does **not** include `nocode` — and every
+one of them reads the RENDERED prompt rather than `_Block` metadata, so an assertion cannot
+pass by restating the constant it guards. Only **absence** and **structure** are run with
+`ENABLE_SUBAGENTS` both true and false; the rest run with subagents off:
 
 - **absence** — every tool name appearing in the emitted prompt is in the resolved tool
   list. It tokenises the prompt itself rather than reusing the gate's own matcher, so the
@@ -314,8 +346,47 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
   text going missing, which is how the over-subtraction above survived review.
 - **structure** — no body line may land under a different heading than it has in the
   unfiltered text, and no heading may be emitted with no body under it.
+- **capability gating of guidance keyed on a parameter or an output field**
+  (`genetics-results-suite-4h6.75`) — the gate matches tool NAMES, so a rule resting on a
+  `summarize` argument or a `products` field names no tool and was emitted unconditionally.
+  Pinned per profile: the `summarize=true` remedy appears exactly on the surfaces carrying a
+  tool with that parameter and the generic "Narrow the request" fallback exactly on those
+  that do not; the count remedy names the database iff `query_database` is available, names
+  the SDK (`genetics.sql(...)`) iff `run_analysis` is available without it, and names
+  neither on `rag`, which has neither; the `products` imperative follows `list_datasets`
+  **or** `run_analysis`, because two routes read the field and not one — the SDK's
+  `genetics.datasets(resource=..., include_stats=True)` reaches the same executor method
+  `list_datasets` calls (chain verified: this repo's `sandbox/stubs/genetics.pyi:397` →
+  mcp-server `sdk/client.py:897-903` → `tools/executor.py:2491-2503` → results-api
+  `/v1/datasets`, whose per-dataset payload carries `products`), so gating on
+  `list_datasets` alone was dropping actionable guidance from the sandboxed arm. A surface
+  that reaches the catalog only through the SDK is additionally told which call that is.
+  The products-vs-`data_type` knowledge stays on every surface. `_SUMMARIZE_PARAM_TOOLS`
+  is itself asserted against the live tool schemas rather than trusted as a constant.
+- **route completeness of the annotation prohibition** (`genetics-results-suite-4h6.76`) —
+  two directions, both parametrised over every profile x `SANDBOX_ENABLED`. **Forward**
+  (`test_no_surface_gets_the_prohibition_without_a_route`): wherever the "you must NEVER
+  query the database for them" prohibition is emitted, exactly one route accompanies it,
+  and where it is not emitted, no route is either. There are **four** shipped arms, each
+  additionally pinned by its own test: the annotation tools (`None`, `api`); the SDK
+  together with `get_variant_protein_effect` — "Fetch consequence, allele frequency and
+  gene in a script instead", on `bigquery` with the sandbox on, which carries both; the SDK
+  alone — "Fetch them in a script instead: `genetics.variant_annotation(`" — on `code`,
+  whose seven tools include no annotation tool of any kind, so its "not in the database
+  either" clause is true as written there; and the database-only wording, "The database is
+  not an alternative route to them. For a coding SNV …", on `bigquery` with
+  `SANDBOX_ENABLED=false`. A fifth string exists — the blanket "there is no
+  variant-annotation tool on this surface" — but it is not a fifth surface: no shipped
+  profile has that shape, so its test synthesises one, subtracting
+  `get_variant_protein_effect` from the resolved `bigquery`-no-sandbox set and rendering
+  `default_system_prompt` over the result rather than naming a profile. **Reverse**
+  (`test_no_prompt_refuses_what_the_same_prompt_explains_how_to_get`): no rendered prompt
+  may carry a refusal sentence alongside the tool whose presence makes it false. That is
+  the defect the first fix shipped — the no-route wording landed on `bigquery`, which has
+  `get_variant_protein_effect` and whose own prompt describes what it returns — and nothing
+  had pinned it.
 
-A fourth property, **routing**, is deliberately not parametrised over the profiles: every
+A sixth property, **routing**, is deliberately not parametrised over the profiles: every
 surface that can reach data emits exactly one arm-routing sentence, checked over ~80 tool sets
 synthesised from the full list by removing single tools and flag-shaped tool families (see
 "Choosing How to Get Data" below). Profile-parametrised checks could not see the defect it
@@ -338,10 +409,29 @@ The passages that steer tool choice — the load-bearing ones — quoted verbati
 - **get_gene_based_results returns only genebass p < 1e-4 rows, so a gene missing from it is not a gene without a burden result.** To say a gene was tested and came out null in a given trait, use get_gene_based_results_by_phenotype (unfiltered, one trait) or query gene_burden_results_v in the database (unfiltered, every gene x annotation x trait)
 ```
 
+The truncation rule is no longer one sentence: `genetics-results-suite-4h6.75` split its
+remedy into four gated clauses, so the rendered bullet DIFFERS PER PROFILE. Quoting the
+default surface (`tool_profile=None`, sandbox on), where the first and third rows of the
+table below are the clauses that fire:
+
 ```text
-- **A tool result marked `[TRUNCATED: ...]` is a PREFIX of an ordered result, not a sample of it.** Whatever sorts last — the weakest signals, the later chromosomes, entire data types or resources — is what got cut, and you cannot see what is missing. Never answer a counting question ("how many X"), an inventory question ("which cell types / datasets / traits"), or an absence question ("is there any caQTL data for this gene") from a truncated result, and never state that something is not in the data because it was not in the visible part. Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete, or query the database for the count directly. If you report anything at all from a truncated result, say explicitly that it is partial
+- **A tool result marked `[TRUNCATED: ...]` is a PREFIX of an ordered result, not a sample of it.** Whatever sorts last — the weakest signals, the later chromosomes, entire data types or resources — is what got cut, and you cannot see what is missing. Never answer a counting question ("how many X"), an inventory question ("which cell types / datasets / traits"), or an absence question ("is there any caQTL data for this gene") from a truncated result, and never state that something is not in the data because it was not in the visible part. Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete. Query the database for the count directly rather than inferring it from the prefix. If you report anything at all from a truncated result, say explicitly that it is partial
 - **Never present output you have not received yet.** Do not write a table, count, or effect estimate with empty cells or placeholders such as `[from query]` or `[to confirm]`, and do not end a turn by announcing a query you have not run. Announcing a call is not making one: if answering needs data, call the tool in the same turn and write the table only from the result that came back. If you cannot get the data, say what is missing instead of laying out the shape of an answer you do not have
 ```
+
+The prohibition itself (first sentences) and the "say explicitly that it is partial" tail are
+ungated and identical everywhere; the two middle clauses swap:
+
+| clause as rendered | gate | profiles that get it (sandbox on) |
+|---|---|---|
+| `` Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete. `` | `requires_any=_SUMMARIZE_PARAM_TOOLS` (the five `get_credible_sets_*` tools) | `None`, `api`, `nocode` |
+| ` Narrow the request until the result is complete.` | `excludes=_SUMMARIZE_PARAM_TOOLS` | `bigquery`, `rag`, `code` |
+| ` Query the database for the count directly rather than inferring it from the prefix.` | `requires_any=query_database` | `None`, `bigquery`, `nocode` |
+| `` Count the rows in a script with `genetics.sql(...)` rather than inferring the count from the prefix. `` | `requires_any=run_analysis`, `excludes=query_database` | `api`, `code` |
+
+`rag` gets neither count clause — it has no database and no sandbox, so it is told to narrow
+and stop there rather than pointed at a route it does not have.
+
 
 The routing arbitration (section "Choosing How to Get Data"), **one variant per surface**.
 Emitted when the api tools and `query_database` are both present — i.e. profile `None`:
