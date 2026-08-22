@@ -951,12 +951,51 @@ being silently dropped — which is the exact failure this whole subsection exis
 The request body is capped at **1 MiB** total (`413` above it), measured on the **raw bytes
 on the wire**, and the supervisor stops reading at the cap rather than buffering past it.
 
-**The body also has a time bound: 10s from the request line to the last byte, then `408`
-with `error.type: "RequestTimeout"`.** A size cap alone does not bound a slow client, and
-with concurrency 1 a request dribbling its body holds the supervisor's only slot for as long
-as it likes — the size cap never fires because the bytes never arrive. 10s is far above any
-honest 1 MiB pod-to-pod POST and far below the wall clock, so it can only fire on a stalled
-or hostile peer.
+**The request also has time bounds, and there are three of them because a stalled head, a
+stalled body and an idle connection are different reads.** A size cap alone does not bound a slow client, and with
+concurrency 1 a request dribbling its bytes holds the supervisor's only slot for as long as it
+likes — the size cap never fires because the bytes never arrive.
+
+| bound | constant | covers | on expiry |
+|---|---|---|---|
+| head | `HEAD_READ_TIMEOUT_S` = 10s | **first byte of the request line to the blank line**, as one deadline for the whole head | `408`, `error.type: "RequestTimeout"`, connection closed, nothing routed and no body read |
+| body | `BODY_READ_TIMEOUT_S` = 10s | **end of the head to the last body byte** | `408`, `error.type: "RequestTimeout"`, connection closed |
+| idle | `IDLE_READ_TIMEOUT_S` = 65s | a connection that is open and has sent **nothing** of a request — a kept-alive client between requests | connection closed, **no response written** |
+
+10s is far above any honest pod-to-pod head or 1 MiB body and far below the wall clock, so
+neither can fire on anything but a stalled or hostile peer. The idle bound is deliberately much
+longer and deliberately silent: every kept-alive client is idle between requests, the kubelet's
+readiness probe included, and a `408` written into a connection the client believes is idle is
+the response most likely to be misread as the answer to its *next* request.
+
+**Until `4h6.58` the head bound did not exist and this section said it did** — the body
+deadline was taken inside `_execute`, i.e. after the whole head had already been parsed with no
+deadline of any kind, while `BODY_READ_TIMEOUT_S`'s own comment read "request line to last
+byte". MEASURED: a connection that sent a single byte `b"P"` and then nothing was still open at
+35s, holding a daemon handler thread that nothing would ever free. A false control stated
+alongside true ones is worse than a missing one, which is why the constant, its comment and
+this table are now derived from the same three values.
+
+**These three bound DURATION, NOT COUNT, and the residual is part of the claim.** Nothing here
+caps concurrent connections or handler threads. `_Server` is a `ThreadingHTTPServer` with
+`daemon_threads = True` — one thread per accepted connection, spawned unconditionally — and
+socketserver's `request_queue_size` of 5 is the **listen backlog**, i.e. how many connections
+may wait to be accepted, not how many may be alive. MEASURED: 400 silent connections produce
+400 threads, accepted at ~530/s, at ~20.7 kB per idle connection. Memory is not the binding
+constraint; the **pod task budget** is — the kubelet's `pod_pids_limit` of 1024, the same outer
+backstop `PID_BUDGET`'s comment cites, shared by the supervisor's own threads and by every
+process the fork server needs to run an execution. So roughly **16 silent connections per
+second, sending zero bytes, pins the pod at its task budget indefinitely**, at which point
+`fork()` fails and `/execute` cannot run at all. Note the gradient that creates, because it is
+counter-intuitive: at 65s against 10s, sending ZERO bytes is ~6.5x cheaper per connection than
+sending one, so the cheapest attack is governed by `IDLE_READ_TIMEOUT_S` — not by the head
+bound `4h6.58` was about.
+
+**And one unbounded hold is not closed by any of the three: the response WRITE.**
+`self.wfile.write(body)` has no deadline, so a client that sends a well-formed request and then
+never reads the answer parks a handler thread in `write` once the socket buffer fills, for as
+long as it likes. Every *read* off the socket is bounded; the write is not, and neither is the
+number of peers doing either.
 
 **The request line and headers are bounded as one block at 64 KiB (`MAX_HEADER_BYTES`), then
 `431` with the connection closed** — a consequence of `4h6.87`'s `_HeaderBoundedReader`, which
@@ -1512,7 +1551,7 @@ exception, and there are no others.
 | `400` | unparseable JSON, unknown field, missing or malformed field, token inconsistency, `timeout_s` out of range | `InvalidRequest` and a specific subtype |
 | `404` | any path other than `/health`, `/execute` and `/artifact` | `NotFound` |
 | `405` | wrong method on `/health`, `/execute` or `/artifact` | `MethodNotAllowed` |
-| `408` | request body not fully received within 10s | `RequestTimeout` |
+| `408` | request head not terminated within 10s (`HEAD_READ_TIMEOUT_S`), or request body not fully received within 10s (`BODY_READ_TIMEOUT_S`); connection closed | `RequestTimeout` |
 | `409` | tokens expired while queued | `TokenExpired` |
 | `409` | `execution_id` names a live or still-retained execution | `DuplicateExecutionId` |
 | `413` | body over 1 MiB, or `code` over 256 KiB | `PayloadTooLarge` |
@@ -1969,8 +2008,10 @@ deliberate:**
   `take` became the whole peek every round, the **whole body** was consumed off the kernel queue
   onto the heap, the `finally` never ran, and the request blocked in `recv_into` forever instead
   of being refused. `total` never approaches `MAX_HEADER_BYTES` there, so `_HeaderTooLarge` does
-  not fire either — fail-**open**, pre-auth, and permanent, since the connection carries no
-  timeout outside `_read_body` and `_Server`'s handler threads are daemons. MEASURED over the
+  not fire either — fail-**open**, pre-auth, and permanent, since at the time the connection
+  carried no timeout outside `_read_body` and `_Server`'s handler threads are daemons. (`4h6.58`
+  has since put a deadline on the head read, so the same defect would now end in a `408` after
+  `HEAD_READ_TIMEOUT_S` rather than never; the rolling window is still what makes it not happen.) MEASURED over the
   4 blank-line shapes × 7 chunk sizes: 28/28 with the rolling window, 26/28 without, failing
   exactly the 1-byte cells whose blank line is `\r\n` (2-byte peeks are rescued by the `\n\r\n`
   member, and `\n\n` fits a 2-byte window). `SUPERVISOR_TEST_STATIC_SEAM=1` restores the
@@ -2006,6 +2047,18 @@ Previously the equivalent bound was per line (`http.client._MAXLINE`, 64 KiB) an
 request line answered 414. The 100-header cap (`http.client._MAXHEADERS`) is *unchanged* —
 `parse_headers` still enforces it on the head this reader hands over, answering 431 exactly as
 it did before.
+
+**And since `4h6.58` the head read carries the deadline the contract claims for it.** The arm
+and the disarm both live inside `_read_head`, on every path including both raises, and that
+placement is the whole of the fix rather than an implementation detail: `_read_body`'s `finally`
+does `settimeout(None)`, so a deadline armed once per *connection* — in `setup()`, the obvious
+place — is gone by the time the **second** request on a kept-alive connection reads its head. It
+would work once and then silently stop working. Arming per head instead means nothing
+`_read_body` does to the socket can outlive it. One deadline covers the whole head rather than
+each `recv`, because a per-`recv` timer is reset forever by a peer dripping a byte at a time —
+the same peer shape the rolling seam window above exists for. `SUPERVISOR_TEST_ARM_ONCE=1` in
+`scripts/test-supervisor.py` restores the once-per-connection arming and turns the keep-alive
+check red while leaving the first-request check green, which is exactly the shape of the trap.
 
 #### Which process holds token bytes, and how the child gets its credential
 
@@ -2434,6 +2487,23 @@ to the SDK as `GENETICS_SDK_AUDIT_FD`. The supervisor holds the read end and dra
 third thread that shares the `reaped` event and `DRAIN_GRACE_S` deadline the output and status
 pipes use — the audit write end is inherited by an escaped descendant exactly as the output
 pipe's is, so EOF is not something waiting longer can produce.
+
+**Because the supervisor's stdout is now the audit channel, everything else the supervisor
+writes to it is on that channel too** — and the HTTP access line carries the caller's raw
+request line. `4h6.64`: the handler's `log_message` override had dropped the stdlib's
+`_control_char_table` translation, which exists precisely so a request line cannot put ANSI
+escapes or bare CRs onto the server's log. It is restored, so an operator reading `kubectl logs`
+cannot be shown a line that lies about how many records there are. What it never could do,
+checked and re-checked: **forge an SDK audit record.** `SDK_CALL_RE` is anchored and
+`log_message` appends `" <code> <size>"` after the request line, so no crafted request produces a
+line the analyzer reads as a genuine call — attribution was never at risk. The table is taken
+from `BaseHTTPRequestHandler` when the interpreter has it and rebuilt identically when it does
+not, rather than letting the log path raise on an `AttributeError` — with the reason for the
+fallback stated honestly. `_control_char_table` is private, so nothing promises it stays, but it
+is MEASURED present since **3.10**: this checkout's 3.12 and the image's distroless 3.11 both
+take the stdlib's, so **the fallback is dead code in the shipped image**. It is kept as
+defensiveness against an interpreter that drops it, not because any interpreter in play lacks
+it, and the rebuilt table was verified dict-equal to the stdlib's.
 
 `_AuditForwarder`, one instance per execution, does four things and each was demonstrated:
 
