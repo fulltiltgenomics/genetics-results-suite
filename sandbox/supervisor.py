@@ -487,6 +487,26 @@ FS_CONTROL_TIMEOUT_S = 30.0
 # 2 * KILL_GRACE_S, which must stay well under FS_CONTROL_TIMEOUT_S.
 FS_SWEEP_MAX_ROUNDS = 4
 FS_SWEEP_BUDGET_S = 10.0
+
+# genetics-results-suite-4h6.68. HOW MANY ZOMBIES ONE SIGCHLD DELIVERY MAY REAP. The supervisor
+# is PID 1, so anything whose own parent died reparents HERE — but only when it reparents PAST
+# the fork server, which happens exactly when the fork server is dead or when
+# PR_SET_CHILD_SUBREAPER did not take (see _fs_become_subreaper). Unreaped, those stay zombies
+# for the pod's lifetime and each holds a slot against pod_pids_limit in a replicas-1 pod.
+# THE CAP IS THE POINT: this runs inside a signal handler, and an unbounded waitpid loop there
+# is its own hazard — a peer forking faster than this reaps would pin the main thread inside the
+# handler. SIGCHLD is not queued, so a delivery that hits the cap leaves the remainder for the
+# next one.
+# WHY 64 IS ENOUGH IS THE DELIVERY BEHAVIOUR, NOT A PID BUDGET. An earlier version of this note
+# said 64 was "far above the number of descendants a single execution can strand", and that is
+# FALSE: PID_BUDGET = 32 is enforced over _group_members(pgid) — process-group membership only —
+# and a setsid() descendant leaves that group (MEASURED; see the note at the top of this file),
+# so one execution can strand well past 64, bounded only by the kubelet's pod_pids_limit of 1024.
+# What makes the cap safe is that deliveries are not coalesced in practice: each child death
+# raises the pending flag again and the eval loop re-runs the handler, so a remainder is taken by
+# the next delivery rather than kept. The residual is a remainder with NO later child death at
+# all, and it is stated here rather than pretended away.
+ORPHAN_REAP_MAX_ROUNDS = 64
 # The execution payload (code + env + cwd, as JSON) travels as an anonymous descriptor the
 # fork server never reads. MAX_CODE_BYTES bounds the code; the rest is env and JSON overhead.
 PAYLOAD_MAX_BYTES = MAX_CODE_BYTES + 64 * 1024
@@ -1861,6 +1881,18 @@ class ForkServer:
         self._lock = threading.Lock()
         # Why a socket that has failed once is never used again: see _poison.
         self._broken = None
+        # A reason recorded by a path that MUST NOT LOG — the SIGCHLD orphan reaper's, via
+        # note_reaped (genetics-results-suite-4h6.68). Emitted later by _flush_broken_log, from
+        # a normal thread. Plain attribute for the same reason `_broken` is one.
+        self._broken_unlogged = None
+        # THE COLLISION SURFACE WITH THE PID 1 ORPHAN REAPER, and the two plain attributes that
+        # resolve it (genetics-results-suite-4h6.68). Plain attributes, never a lock: note_reaped
+        # is reached from a SIGCHLD handler, and a handler that blocks on a lock the interrupted
+        # thread already holds deadlocks PID 1. `exit_status` is where a status the reaper
+        # consumed on this handle's behalf is published; `_closing` is close()'s claim on
+        # self.pid, which makes the reaper stand down for the whole of the grace loop.
+        self.exit_status = None
+        self._closing = False
 
     @classmethod
     def start(cls):
@@ -1881,13 +1913,44 @@ class ForkServer:
         LOG.info("fork server started as pid %d", pid)
         return cls(pid, parent)
 
-    def _mark_broken(self, reason):
+    def _mark_broken(self, reason, log=True):
         """Record, once, that this handle is finished. Safe from any thread: `_broken` is a
         plain attribute so that alive() can read and set it WITHOUT self._lock, which
         wait_nowait holds for the entire lifetime of an execution (timeout=None). Taking that
-        lock in alive() made every /health during an execution block until the child exited."""
+        lock in alive() made every /health during an execution block until the child exited.
+
+        `log=False` IS FOR THE SIGCHLD ORPHAN REAPER AND FOR NOTHING ELSE
+        (genetics-results-suite-4h6.68). That caller arrives from a signal handler in PID 1, and
+        logging there re-enters the logging machinery at an arbitrary point in the interrupted
+        thread. MEASURED with main()'s exact setup — a StreamHandler on a BufferedWriter over a
+        stdout pipe whose consumer had stalled, i.e. a congested container log stream — the
+        handler raised `RuntimeError: reentrant call inside <_io.BufferedWriter>`, which escaped
+        note_reaped, was not caught by _reap_orphans' OSError guard, and aborted the delivery
+        with 4 of 5 zombies unreaped; SIGCHLD is not queued, so they were never retried.
+
+        THE REASON IS NOT DROPPED, and setting `_broken` before logging is what used to drop it:
+        once `_broken` is non-None nothing re-enters this method, so a failed log call lost the
+        single most operationally important line in this file for good. It is parked in
+        `_broken_unlogged` and printed by _flush_broken_log from a serving thread. Ordinary
+        callers keep logging inline, where it is both safe and immediate."""
         if self._broken is None:
             self._broken = reason
+            if log:
+                LOG.error("fork server control socket is unusable and will not be reused: %s",
+                          reason)
+            else:
+                self._broken_unlogged = reason
+
+    def _flush_broken_log(self):
+        """Print, from a NORMAL thread, a reason the signal handler had to record silently.
+
+        alive() calls it, which is where /health already reads the broken state, so the line
+        appears on the next readiness probe rather than not at all. Read-then-clear with no
+        lock: two threads racing here at worst print it twice, and printing it twice is the
+        failure this is willing to have — printing it zero times is the one it is not."""
+        reason = self._broken_unlogged
+        if reason is not None:
+            self._broken_unlogged = None
             LOG.error("fork server control socket is unusable and will not be reused: %s", reason)
 
     def _poison(self, reason):
@@ -1953,7 +2016,11 @@ class ForkServer:
         the child exited — a readiness probe that stalls for the length of every execution is
         worse than the failure it was added to detect. It touches only the flag and the pid,
         never the socket, so it cannot close an fd another thread is blocked on.
+
+        IT IS ALSO WHERE THE SILENT PATH BECOMES VISIBLE. The orphan reaper cannot log (see
+        _mark_broken), so whatever it recorded is printed here, on a serving thread.
         """
+        self._flush_broken_log()
         pid = self.pid  # read ONCE: close() may set it to None between two reads
         if self._broken is not None or pid is None:
             return False
@@ -1967,6 +2034,37 @@ class ForkServer:
             self.pid = None  # reaped here, so close() must not wait for it again
             self._mark_broken("the fork server exited")
             return False
+        return True
+
+    def note_reaped(self, pid, status):
+        """Publish a wait status the PID 1 orphan reaper consumed instead of this handle.
+
+        genetics-results-suite-4h6.68. `waitpid(-1, WNOHANG)` cannot be told to skip a pid — it
+        reports which child it took only after taking it — so the reaper cannot avoid the fork
+        server's zombie. It hands it here instead, and the handle treats a published status as
+        exactly what its own waitpid would have returned: `pid` goes None, so alive() answers
+        False without a syscall and close() has nothing left to wait for or kill.
+
+        WHY THAT IS THE FIX RATHER THAN A TIDY-UP. Without it close()'s grace loop would poll a
+        pid the reaper had already consumed, and at its deadline send SIGKILL to a pid the kernel
+        is free to have handed to somebody else. ECHILD makes that unlikely — the poll raises and
+        close() returns — but the window between the last poll and the kill is real, and this
+        removes it by never letting the reaper take a pid close() is holding: see `_closing`.
+
+        IT RUNS IN A SIGNAL HANDLER, SO IT DOES NOT LOG. `log=False` below is not tidiness:
+        logging from here raised `RuntimeError: reentrant call inside <_io.BufferedWriter>`
+        against a congested stdout, and because that escaped this method it aborted the whole
+        delivery and left the rest of the zombies unreaped. The reason reaches the log from
+        alive(), on a serving thread — see _mark_broken and _flush_broken_log.
+
+        Returns True when `pid` was this fork server. False (the common case: an ordinary orphan)
+        means the caller may discard the status.
+        """
+        if pid != self.pid:
+            return False
+        self.exit_status = status
+        self.pid = None  # read ONCE by alive() and close(), so this is a single publish
+        self._mark_broken("the fork server exited (reaped by the PID 1 orphan reaper)", log=False)
         return True
 
     def fork_child(self, payload_fd, out_w, status_w, audit_w):
@@ -2026,7 +2124,18 @@ class ForkServer:
                 reaped if isinstance(reaped, list) else [])
 
     def close(self, grace=2.0):
-        """Close the control socket and reap the fork server. Idempotent."""
+        """Close the control socket and reap the fork server. Idempotent.
+
+        `_closing` IS SET FIRST AND IS LOAD-BEARING (genetics-results-suite-4h6.68): it is what
+        stops the PID 1 orphan reaper from consuming self.pid while the grace loop below owns it,
+        which is what keeps the SIGKILL at the end of that loop off a recycled pid. It is a plain
+        bool rather than a lock because the reaper runs in a SIGCHLD handler, and CPython runs
+        handlers in the MAIN thread — the same thread main() calls this from — so the flag is set
+        before any later handler invocation can read it, with no lock and therefore no way for a
+        handler to deadlock against the thread it interrupted. Nothing clears it: close() is
+        shutdown, and after it the process is on its way out.
+        """
+        self._closing = True
         with self._lock:
             try:
                 self._sock.close()
@@ -2056,7 +2165,19 @@ class ForkServer:
 
 
 class _SelfWaiter:
-    """The waiter for a child of THIS process. Not used in production — see _reap."""
+    """The waiter for a child of THIS process. Not used in production — see _reap.
+
+    IT MUST NOT SHARE A PROCESS WITH THE PID 1 ORPHAN REAPER (genetics-results-suite-4h6.68).
+    reap() calls waitpid on a specific pid, so a generic waitpid(-1) that got there first turns
+    it into ECHILD, which _reap propagates into _execute_inner's finally. That is not a live
+    hazard: in the image every execution child is a GRANDchild forked by the fork server, and
+    this class is used only by tests that fork their own children. It is NOT true that no test
+    process ever has a reaper — scripts/test-supervisor.py calls install_orphan_reaper directly
+    in one check — but that check forks only its own child, and it restores the previous SIGCHLD
+    disposition in a finally, so no _SelfWaiter user ever shares a process with a live reaper.
+    Anything that starts forking execution children out of the supervisor again re-opens the
+    hazard for real, which is why it is written here and not only in a bead.
+    """
 
     @staticmethod
     def wait_nowait(pid):
@@ -2073,6 +2194,74 @@ class _SelfWaiter:
 
 
 SELF_WAITER = _SelfWaiter()
+
+
+def _reap_orphans(fs=None, max_rounds=ORPHAN_REAP_MAX_ROUNDS, supervisor=None):
+    """Reap up to `max_rounds` dead children of THIS process. Returns the pids reaped.
+
+    genetics-results-suite-4h6.68. THE CLASS THIS EXISTS FOR IS NARROW AND IT IS NOT THE ORDINARY
+    ONE. bd415f9 made the fork server a child subreaper and gave it a bounded re-enumerating
+    FS_OP_SWEEP, so on every ordinary path a descendant that outlives its parent reparents to the
+    FORK SERVER and the sweep kills and reaps it. What is left reparents PAST the fork server to
+    PID 1 — the supervisor — and nothing here ever waited on it:
+      * the fork server is dead (the `stranded` path _execute_inner already handles), so its
+        surviving descendants land on PID 1. MEASURED: state 'S', then 'Z' after a kill, still
+        'Z' a second later, never waitpid()ed;
+      * PR_SET_CHILD_SUBREAPER was unavailable or failed, which _fs_become_subreaper only WARNS
+        about — the sweep then silently has nothing to enumerate and every escapee lands here.
+    A zombie costs a PID slot against pod_pids_limit for the pod's lifetime, in a replicas-1 pod
+    that serves every later user until it restarts.
+
+    WHAT IT CANNOT DO, and the doc says so rather than implying otherwise: a LIVE descendant is
+    not a zombie. Reaping does not touch a setsid()'d process that is still running, still
+    holding a pipe write end and still burning CPU — that one is bounded by _drain's deadline
+    (genetics-results-suite-4h6.62) and by nothing else.
+
+    BOUNDED THREE WAYS, because it is driven from a signal handler:
+      * `max_rounds` caps one delivery;
+      * every waitpid is WNOHANG, so no round can block;
+      * OSError ends the loop rather than propagating — ECHILD is simply "nothing left", and a
+        handler that raises would surface the exception at an arbitrary bytecode in PID 1.
+
+    IT PUBLISHES EVERY PID IT CONSUMES, because waitpid(-1) has no way to skip one — it reports
+    which child it took only AFTER taking it. So each owner that might have been waiting for a
+    pid is handed the status instead, and none of them is left polling or signalling a pid that
+    is gone. There are two:
+      * `fs` -> ForkServer.note_reaped, for the fork server's own pid. ForkServer.close()
+        additionally claims fs.pid with `_closing` and this stands down entirely while it is set.
+      * `supervisor` -> Supervisor.note_child_reaped, for the RUNNING EXECUTION's child. That is
+        not hypothetical and it is not the grandchild case: while the fork server lives the child
+        is ITS child and the waitid(WNOWAIT) discipline in FS_OP_WAIT owns it in another process
+        entirely, but when the fork server dies mid-execution — one of the two cases this whole
+        function exists for — the child reparents HERE and becomes a direct child of PID 1. Read
+        note_child_reaped for what taking its status silently would otherwise break.
+    A PUBLISHER THAT RAISES MUST NOT COST THE REMAINING ZOMBIES THEIR REAP, so each is called
+    inside its own guard rather than under the OSError guard above: note_reaped's own failure
+    mode (a reentrant logging call) used to escape that guard and abort the whole delivery, and
+    SIGCHLD is not queued, so what it abandoned was never retried.
+    """
+    reaped = []
+    if fs is not None and getattr(fs, "_closing", False):
+        # close() owns fs.pid until the process exits. Standing down entirely for that window is
+        # cheaper than making the reaper and the grace loop agree about one pid, and it costs
+        # nothing: the only orphans it declines to reap belong to a pod that is shutting down.
+        return reaped
+    for _ in range(max_rounds):
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        for owner, publish in ((fs, "note_reaped"), (supervisor, "note_child_reaped")):
+            if owner is None:
+                continue
+            try:
+                getattr(owner, publish)(pid, status)
+            except BaseException:  # noqa: BLE001 - one publisher may not cost the rest their reap
+                pass
+        reaped.append(pid)
+    return reaped
 
 
 def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None, sink=None):
@@ -2097,7 +2286,12 @@ def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None,
     reaped and no amount of waiting produces EOF. Without a deadline the execution slot is
     held by a pipe read rather than by a process, which no kill-the-child bead can fix.
     `reaped` is set by the caller once waitpid has returned; after that this gives the
-    already-buffered bytes `grace` seconds to arrive and then abandons the fd.
+    already-buffered bytes `grace` seconds to arrive and then abandons the fd. IT ABANDONS
+    WHETHER OR NOT BYTES ARE STILL ARRIVING (genetics-results-suite-4h6.62). A deadline evaluated
+    only when the fd went quiet was no deadline at all against the writer it was built for: a
+    descendant that setsid()s away and writes continuously never lets the fd go quiet, so the
+    thread and its CPU were held for the pod's lifetime. The FD is still leaked in that case,
+    deliberately — see the abandon path in _execute_inner.
 
     `sink` (4h6.45, the AUDIT pipe) hands every block STRAIGHT to a consumer and buffers
     nothing, so `limit` does not apply and the returned bytes are empty. It is used where the
@@ -2129,10 +2323,20 @@ def _drain(fd, limit, reaped=None, grace=DRAIN_GRACE_S, poll=0.2, on_limit=None,
             continue
         except OSError:
             break
+        # THE DEADLINE IS EVALUATED WHETHER OR NOT THE FD IS READY — genetics-results-suite-4h6.62,
+        # and the one line that used to sit inside `if not ready:` is the whole bug. A descendant
+        # that setsid()s away and writes CONTINUOUSLY keeps `ready` truthy on every pass, so the
+        # deadline was never reached and this thread ran for the pod's lifetime, discarding bytes
+        # and burning CPU. WHAT IT BOUNDS IS THE THREAD AND THE CPU, not the escapee: reaping does
+        # not touch a live writer and nothing here kills it. The read end is then closed by
+        # _execute_inner's post-join cleanup, as on every other abandoned drain, so a still-live
+        # writer takes EPIPE/SIGPIPE on its next write; the descriptor is leaked only in the
+        # backstop branch there, where a drain thread outlived its own deadline and closing an fd
+        # it may be blocked on would be undefined. Stated in docs/code-execution-security.md.
+        if deadline is not None and time.monotonic() >= deadline:
+            abandoned = True
+            break
         if not ready:
-            if deadline is not None and time.monotonic() >= deadline:
-                abandoned = True
-                break
             continue
         try:
             block = os.read(fd, 65536)
@@ -2308,9 +2512,11 @@ class Job:
     # written at exactly one moment — inside _reap, under kill_lock, while the zombie is still
     # held by waitid(WNOWAIT) — and read at exactly one moment, by _kill_survivors, on the
     # completion path immediately afterwards. Nothing signals a LIVE child from it. See
-    # _kill_survivors for why the value cannot have gone stale in between.
+    # _kill_survivors for why the value cannot have gone stale in between. It is CLEARED in one
+    # further place, Supervisor.note_child_reaped, because the one case where the write happens
+    # and the reap does not is exactly the case where the number becomes recyclable.
     __slots__ = ("req", "conn", "enqueued_at", "pid", "deadline", "dirs", "owner",
-                 "kill_lock", "reaped", "reaped_pgid", "limit", "done")
+                 "kill_lock", "reaped", "reaped_pgid", "reaped_status", "limit", "done")
 
     def __init__(self, req, conn, owner=None):
         self.req = req
@@ -2333,6 +2539,11 @@ class Job:
         # The child's OWN process group, read in _reap while its zombie was still held. None
         # when it never had one. Read only by _kill_survivors, only after the reap.
         self.reaped_pgid = None
+        # A wait status the PID 1 orphan reaper consumed on this job's behalf, which happens
+        # only when the fork server died mid-execution and the child reparented to PID 1
+        # (genetics-results-suite-4h6.68). Non-None is how _execute_inner tells that case apart
+        # from a reap it did itself. See Supervisor.note_child_reaped.
+        self.reaped_status = None
         self.limit = None      # the first supervisor limit that fired: a reserved error type
         self.done = threading.Event()   # set once the child is reaped; stops the watchdog
 
@@ -2904,6 +3115,89 @@ class Supervisor:
         finally:
             self._release(job, retain)
 
+    def note_child_reaped(self, pid, status):
+        """Publish, to the running job, a wait status the PID 1 orphan reaper consumed.
+
+        genetics-results-suite-4h6.68. "EXECUTION CHILDREN ARE GRANDCHILDREN, SO A waitpid(-1)
+        HERE CANNOT REACH THEM" IS TRUE ONLY WHILE THE FORK SERVER IS ALIVE, and the exception
+        is one of the exact two cases the reaper exists for. When the fork server dies
+        mid-execution the child reparents to PID 1 and becomes a DIRECT child of this process,
+        and a waitpid(-1) takes its status — _reap has already raised ForkServerError by then, so
+        `job.reaped` is still False and `job.pid` still names it.
+
+        WHAT THAT BREAKS is the invariant _kill_group is built on and states: "a zombie keeps its
+        pgid and its pid cannot be recycled until it is reaped, so re-reading under the lock is
+        sound". Once the reaper has reaped it the number is the kernel's to hand out again, while
+        _signal_group still guards only on `job.reaped` — so the stranded path spends the whole
+        of KILL_GRACE_S polling a job that can never go reaped, then SIGKILLs that number.
+        MEASURED as real PID 1 in a pid namespace with ns_last_pid forcing reuse: a bystander
+        forked onto the same number was alive before the signal and gone after it. _watchdog ->
+        _fire_limit -> _kill_group reaches the same place for a timeout. The second harm needs no
+        recycling at all: _resolve_pgid returns None for a pid that no longer exists, so the log
+        gained a flatly false line — "child has no process group of its own; signalling pid N
+        alone" — about a child that did setsid() into its own group, and "signalling pid N alone"
+        is itself the dangerous act.
+
+        THE FIX IS ForkServer.note_reaped's, APPLIED TO THE EXECUTION CHILD: publish the status
+        rather than let anything later poll or signal that pid. With `reaped` set and `pid`
+        cleared, _signal_group and _kill_group answer _SIGNAL_GONE at their first guard and
+        _resolve_pgid returns None without reading /proc, so nothing signals a number that no
+        longer names the child and the false diagnostic cannot be reached. The ordinary case is
+        untouched: while the fork server lives, `_reap`'s waitid(WNOWAIT) discipline runs in the
+        fork server and this is never called for the child at all.
+
+        NO LOCK IS TAKEN, WHICH IS THE DECISION `_closing` MADE FOR THE SAME REASON. This runs
+        inside a SIGCHLD handler, which CPython delivers on the MAIN thread; a serving thread
+        holds job.kill_lock across the whole of _signal_group and self._lock across every queue
+        decision, and a handler that blocks on a lock the interrupted thread holds deadlocks
+        PID 1 — there is no timeout to fall back on and no other thread to run the handler. Every
+        access below is a single attribute load or store, `_running` is read ONCE into a local,
+        and both flags a signal path consults are ORed, so no reader can observe a half-published
+        state that says "not reaped" about a pid that is gone.
+
+        THE RESIDUAL, stated rather than papered over. TWO paths could signal a pid this handler
+        had already freed, and an earlier wording of this paragraph named only one of them.
+        _kill_survivors was the other, and closing it is why `reaped_pgid` is cleared above:
+        _reap stamps `reaped_pgid` BEFORE the waitpid that can fail, so a fork server dying
+        between the FS_OP_WAIT reply and the FS_OP_REAP reply leaves the pgid stamped, `reaped`
+        still False and the child reparented here — the stranded branch is then NOT taken and
+        _execute_inner's else branch calls _kill_survivors UNCONDITIONALLY. For a setsid() child
+        that pgid IS the child's pid, which this handler just made recyclable. MEASURED under
+        `unshare -Urpf --mount-proc` with ns_last_pid forcing reuse: a bystander forked onto pid
+        117 was alive before, the supervisor announced "its process group 117 still has members;
+        killing them" about what was in fact an unrelated process, and it was gone after.
+        Clearing the pgid makes _kill_survivors' existing `pgid is None` guard — already the
+        handled answer for a child that never reached setsid() — the answer here too.
+
+        WHAT GENUINELY REMAINS IS ONE SIGNAL, ONCE: a _signal_group that has ALREADY passed its
+        `job.reaped` check when this runs will still deliver THAT ONE signal. The window is one
+        _resolve_pgid, MEASURED at 3.1 microseconds between the guard and the os.kill/os.killpg.
+        It is not closable from here — waitpid reports whose status it took only after taking it,
+        so no ordering puts the kill before the reap — and taking kill_lock would not close it
+        either, only serialise it. THE ESCALATION IS REFUSED: a second _signal_group answers
+        _SIGNAL_GONE at its first guard (measured), so the 2-second grace loop, the SIGKILL at
+        the end of it and every later signal are all gone, which is where the exposure was.
+
+        Returns True when `pid` was the running execution's child AND this call is what
+        marked it reaped; False for an already-reaped job, which is the guard above.
+        """
+        job = self._running  # read ONCE: a serving thread clears it in _release
+        # `job.reaped` IS PART OF THE MATCH, not a redundant re-check. _reap never clears
+        # job.pid and _release does not clear _running until the whole response is built, so a
+        # job reaped NORMALLY still names its pid here; if the kernel recycles that number and
+        # the new process dies before _execute_inner's finally reads reaped_status, this would
+        # stamp a FOREIGN status onto a healthy execution (measured: reaped_status = 1337) and
+        # log "the fork server died mid-execution" about a run that completed fine.
+        if job is None or job.reaped or pid != job.pid:
+            return False
+        # Cleared BEFORE `reaped`, so anything that observes the job reaped also observes the
+        # pgid gone. See THE RESIDUAL above for what reads it.
+        job.reaped_pgid = None
+        job.reaped_status = status
+        job.reaped = True
+        job.pid = None
+        return True
+
     def _execute(self, job):
         # THE UNLINK IS IN A finally BECAUSE EVERY OTHER ARRANGEMENT LEAKS A CREDENTIAL. The
         # unlink that matters is the one below, the moment the child is reaped; this one is
@@ -3071,6 +3365,14 @@ class Supervisor:
                           job.req.execution_id)
                 _kill_group(job)
             else:
+                if job.reaped_status is not None:
+                    # Not stranded any more, but not an ordinary completion either: the fork
+                    # server died and the PID 1 reaper took the child's status (4h6.68). Without
+                    # this line the case that used to log "the reap did not complete" would pass
+                    # in silence, and it is the case an operator most needs to see.
+                    LOG.error("execution %s: the fork server died mid-execution and the PID 1 "
+                              "orphan reaper consumed the child's wait status; its pid was "
+                              "published rather than signalled", job.req.execution_id)
                 # 4h6.66: the ordinary completion, which used to signal NOTHING.
                 _kill_survivors(job)
             # 4h6.83: and then whatever left the process group entirely. BEFORE the drain
@@ -3352,7 +3654,11 @@ def _kill_survivors(job):
 
       * THE VALUE WAS READ WHILE THE ZOMBIE WAS HELD. _reap resolves it under kill_lock
         between waitid(WNOWAIT) and waitpid, so at the moment it was read it named THIS
-        child's group and nothing else — the pid was not recyclable.
+        child's group and nothing else — the pid was not recyclable. The one path where that
+        stops being true is the reap that never completes: _reap stamps the pgid before the
+        waitpid that can raise ForkServerError, and the PID 1 orphan reaper then consumes the
+        child. Supervisor.note_child_reaped clears the slot for exactly that reason, so this
+        function reaches the `pgid is None` line below instead of killing a recycled group.
       * A PROCESS GROUP WITH LIVE MEMBERS CANNOT BE RECYCLED. The kernel keeps the pid number
         allocated while anything still has it as its pgrp, so if this kill has anything at all
         to reach, the number still means what it meant. If the group is empty the number could
@@ -5019,6 +5325,58 @@ def start(scratch_root=None, run_assertions=True, retention_s=None):
                     run_assertions=run_assertions)
 
 
+def install_orphan_reaper(supervisor):
+    """Make PID 1 reap what reparents to it. True if the handler was installed.
+
+    genetics-results-suite-4h6.68. See _reap_orphans for which orphans reach PID 1 at all and
+    which are the fork server's sweep to handle.
+
+    WHY SIGCHLD AND NOT A POLLING THREAD. Two reasons, and the second is the one that decides it.
+    A handler reaps the moment a zombie appears, so a PID slot is never held for a poll interval.
+    And CPython delivers signals to the MAIN thread only, which is the thread main() runs
+    ForkServer.close() on — that is what lets `_closing` be a plain bool that the reaper and
+    close() cannot interleave over, instead of a lock a handler could deadlock on.
+
+    THE HANDLER IS SILENT, AND MAKING IT SO TOOK MORE THAN DECLINING TO WRITE A LOG CALL HERE.
+    It used to reach LOG.error anyway, through _reap_orphans -> ForkServer.note_reaped ->
+    _mark_broken. MEASURED with main()'s exact logging setup — a StreamHandler on a BufferedWriter
+    over a stdout pipe with a stalled consumer, i.e. a congested container log stream — that
+    raised `RuntimeError: reentrant call inside <_io.BufferedWriter>` INSIDE the handler; the
+    exception escaped note_reaped, missed _reap_orphans' OSError guard and aborted the delivery
+    with 4 of 5 zombies unreaped, which SIGCHLD's lack of queueing makes permanent. The reaper
+    path now RECORDS its reason without emitting it (ForkServer._mark_broken(log=False)) and
+    ForkServer.alive() flushes it from a serving thread, which is where /health already reads the
+    broken state — so nothing on this path logs and the line is still printed once. The handler
+    cannot raise either: an exception out of a handler surfaces at whatever bytecode the main
+    thread happened to be executing. Whatever the reaper returns is discarded here; what an
+    operator needs to see about strays is already logged by the fork server's sweep.
+
+    INSTALLED AFTER bring_up(), so the fork server already exists and its handle is the one
+    note_reaped can publish into. `supervisor` is passed as well as `supervisor.forkserver`,
+    because the second publisher is the SUPERVISOR's — an execution child stranded by a dead fork
+    server reparents to PID 1 and this handler is what would otherwise steal its status. See
+    Supervisor.note_child_reaped. A fork server that died during bring_up is not this function's
+    problem: ForkServer.alive() reads ECHILD, marks the handle broken and /health goes non-ok,
+    which is the path that already existed.
+    """
+
+    def _sigchld(_signum, _frame):
+        try:
+            _reap_orphans(supervisor.forkserver, supervisor=supervisor)
+        except BaseException:  # noqa: BLE001 - a handler in PID 1 must never propagate
+            pass
+
+    try:
+        signal.signal(signal.SIGCHLD, _sigchld)
+    except (ValueError, OSError) as exc:
+        LOG.warning(
+            "could not install the SIGCHLD orphan reaper (%s): a descendant that reparents past "
+            "the fork server to PID 1 will stay a zombie and hold a pid slot for the pod's "
+            "lifetime", exc)
+        return False
+    return True
+
+
 def main(argv=None):
     logging.basicConfig(
         stream=sys.stdout,
@@ -5057,6 +5415,8 @@ def main(argv=None):
         if supervisor.forkserver is not None:
             supervisor.forkserver.close()
         return 1
+    # After bring_up, so supervisor.forkserver is set and fs.pid has a handle to publish into.
+    install_orphan_reaper(supervisor)
     LOG.info("ready")
     serving.join()
     httpd.server_close()

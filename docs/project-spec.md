@@ -1097,6 +1097,37 @@ start it, because the image still ships no `CMD` and the manifest still declares
     before the next one runs, rather than surviving for the pod's lifetime as it did before.
     This bounds the **inter-execution** exposure only: a resident is alive for all of its
     own execution, and the mechanism is **unverified under gVisor** (`4h6.51`).
+  - **what reparents PAST the fork server, to PID 1 (`genetics-results-suite-4h6.68`)** — the
+    sweep above only sees processes that reparent **to the fork server**. Two cases skip it: the
+    fork server is dead (the `stranded` path), and `PR_SET_CHILD_SUBREAPER` not taking, which is
+    a `LOG.warning` and nothing else — after either, a survivor reparents to PID 1, the
+    supervisor, which waited on nothing but its own fork server and left it a **zombie for the
+    pod's lifetime**, one pid slot each against `pod_pids_limit` 1024 on a `replicas: 1` pod.
+    `main()` now installs a **SIGCHLD handler** that runs a bounded `waitpid(-1, WNOHANG)` loop
+    (`ORPHAN_REAP_MAX_ROUNDS` = 64 per delivery; the cap is because it runs in a signal handler).
+    **It reaps corpses and nothing else** — a live `setsid()`'d escapee is untouched by it, and a
+    delivery that hits the cap leaves the remainder to the next one (the cap is safe because
+    `SIGCHLD` deliveries are not coalesced in practice, **not** because 64 exceeds what one
+    execution can strand — `PID_BUDGET` is enforced over process-group membership only, which a
+    `setsid()` descendant leaves). **It publishes every pid it consumes rather than trying to
+    skip one**, because `waitpid(-1)` reports which child it took only after taking it. Two
+    owners are published to: the fork server's own handle (`ForkServer.note_reaped`, with
+    `ForkServer.close` claiming `fs.pid` via `_closing` while its grace loop runs), and **the
+    running execution's child** (`Supervisor.note_child_reaped`). The second is not a
+    grandchild case: execution children are grandchildren only while the fork server lives, and
+    when it dies mid-execution the child reparents to PID 1, so a reaper that took its status
+    silently would leave `_kill_group` running its full grace and then `SIGKILL`ing a pid the
+    kernel may have recycled. Publishing marks the job reaped and clears BOTH the pid and the
+    pgid `_reap` recorded, so every signal path answers "gone" and `_kill_survivors` — the only
+    reader of that pgid, and one the completion path runs unconditionally — has nothing to
+    signal; without the second half a `setsid()` child's pgid, which IS its pid, was killed on
+    the completion path (measured under `unshare` with `ns_last_pid`: an unrelated bystander).
+    Publishing is also refused for a job already marked reaped, so a recycled pid cannot stamp a
+    foreign status onto a healthy execution. Both publishers are lock-free plain attributes: the
+    handler runs on the main thread and must never block on a lock a serving thread holds. What
+    remains is one signal, once — a `_signal_group` already past its `reaped` check delivers
+    that signal, a 3.1 microsecond window that no ordering can close because `waitpid` reports
+    whose status it took only after taking it; the escalation after it is refused.
 
   See `docs/code-execution-security.md` → "As built (`4h6.55`)".
 - **The child is forked, never exec'd** — that is the whole return on `prewarm()`, whose
@@ -1117,7 +1148,15 @@ start it, because the image still ships no `CMD` and the manifest still declares
   sweep (`4h6.83`), which runs before the drain is joined and so usually delivers the EOF as a
   side effect. The deadline stays anyway, because the sweep can fail and because the slot must
   be freed regardless; an `abandoned` log line now means a control failed rather than the
-  expected outcome.
+  expected outcome. **That deadline is evaluated whether or not bytes are still arriving**
+  (`genetics-results-suite-4h6.62`): it used to be checked only when `select` reported the fd
+  idle, so an escapee that `setsid()`d and wrote **continuously** kept the fd ready on every
+  pass, the deadline was never reached, and one drain thread plus the CPU to discard its bytes
+  was held for the pod's lifetime. What that bounds is the **thread and the CPU**. The read end
+  is closed by the post-join cleanup, as on every other abandoned drain, so a still-live writer
+  gets `EPIPE`/`SIGPIPE` on its next write; the descriptor is leaked only in the backstop branch
+  where a drain thread outlived its own deadline, because closing an fd another thread is
+  blocked on is undefined.
 - **`SIGTERM` drains, reaps, answers and only then exits.** The shutdown thread waits on
   `Supervisor.quiescent()` — the execution slot free **and** no handler still owing a response
   — not on `idle()`, which goes true in `run()`'s `finally` before the `200` is written. The
