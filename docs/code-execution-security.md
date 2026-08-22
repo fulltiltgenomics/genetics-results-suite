@@ -1668,6 +1668,27 @@ in the code:
   because what this guarantees on its own is only that an escapee cannot block the queue. An
   `abandoned` warning in the log is now evidence that a control failed rather than the expected
   outcome it used to be.
+- **The drain deadline is evaluated whether or not bytes are still arriving**
+  (`genetics-results-suite-4h6.62`). It used to be checked only inside the branch `select` takes
+  when the fd goes quiet, which made it no deadline at all against the writer it was built for:
+  a descendant that `setsid()`s away and writes **continuously** keeps the fd ready on every
+  pass, so `time.monotonic() >= deadline` was never reached and one drain thread — plus the CPU
+  to keep reading and discarding — was held for the pod's lifetime, on a `replicas: 1` pod that
+  serves every later user. **Reachability, stated exactly:** since the end-of-execution sweep
+  moved *before* the drain joins, such a writer is normally already dead, so this needs the
+  sweep to miss — a dead fork server, a `PR_SET_CHILD_SUBREAPER` that did not take, a chain
+  deeper than `FS_SWEEP_MAX_ROUNDS`, or an unreadable `/proc` — which is the same residual set
+  the PID 1 reaper below exists for. **What the fix bounds, and what it does not.** It bounds
+  the **thread and the CPU**, and nothing else about the escapee: the process keeps running, and
+  a reaper does not touch it, because a live continuous writer is not a zombie. The **read end**
+  is closed by the same post-join cleanup every other abandoned drain goes through, so a
+  still-live writer takes `EPIPE`/`SIGPIPE` on its next write rather than the supervisor leaking
+  the descriptor — a consequence of the existing cleanup, not something this change added. **The
+  descriptor leak that remains** is the backstop branch: if a drain thread somehow outlives its
+  own deadline it is logged at ERROR (`… did not stop; leaking its read end`) and its read end
+  is deliberately **not** closed, because closing an fd another thread is blocked on is
+  undefined. That is a leak, it is bounded by nothing but a pod restart, and it is documented
+  rather than fixed.
 - **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
   list carrying the right value is the same claim. Anything else is a `400`.
 - **The child's working directory is `/scratch/<id>/tmp`.** `WORKDIR` is `/genetics` on a
@@ -2367,6 +2388,145 @@ implements prctl and `/proc` in the sentry; `4h6.51` owns measuring it, and a su
 does not take degrades to exactly the old behaviour and logs a warning rather than failing.
 This is still **not a containment boundary** — a PID namespace per execution is the mechanism
 that would be one, at the seccomp price recorded elsewhere in this document.
+
+**And PID 1 reaps what reparents past the fork server** (`genetics-results-suite-4h6.68`). The
+sweep above only ever sees a process that reparents **to the fork server**. Two cases skip it
+entirely: the fork server is dead — the `stranded` path `_execute_inner` already handles, after
+which survivors reparent to PID 1 — and `PR_SET_CHILD_SUBREAPER` being unavailable or failing,
+which `_fs_become_subreaper` only **warns** about, after which the sweep has nothing to
+enumerate and every escapee lands on PID 1 as well. The supervisor waited on nothing but its own
+fork server, so such a corpse stayed a zombie for the pod's lifetime. MEASURED: state `S`, then
+`Z` after a kill, still `Z` a second later, never `waitpid()`ed. **Each zombie costs a pid slot**
+against the kubelet's `pod_pids_limit` of 1024, permanently, on a `replicas: 1` pod that serves
+every later user until it restarts — and pid exhaustion is the same state in which a failed fork
+leaks descriptors, so the two compound. `main()` now installs a `SIGCHLD` handler running a
+bounded `waitpid(-1, WNOHANG)` loop; `install_orphan_reaper` and `_reap_orphans` are the two
+symbols.
+
+**What it does NOT cover, and none of this may be read as a bound on strays:**
+
+- **It reaps corpses. It does not kill anything.** A live `setsid()`'d descendant — still
+  running, still holding a pipe write end, still burning CPU — is untouched by reaping. Killing
+  strays is the fork server's sweep, and where the sweep misses, nothing kills them. The drain
+  deadline above is what keeps such a process from costing a thread as well.
+- **One delivery reaps at most `ORPHAN_REAP_MAX_ROUNDS` = 64.** The cap is not decoration: this
+  runs in a signal handler in PID 1, and an unbounded `waitpid` loop there is its own hazard —
+  a peer forking and dying faster than the loop reaps would pin the main thread inside the
+  handler. **Why 64 is enough is the delivery behaviour, not a pid budget.** An earlier wording
+  here justified it as "far above the number of descendants a single execution can strand",
+  which is false: `PID_BUDGET` = 32 is enforced over `_group_members(pgid)` — **process-group
+  membership only** — and a `setsid()` descendant leaves that group (measured; it is why
+  `FS_OP_SWEEP` enumerates by parentage instead), so one execution can strand well past 64,
+  bounded only by `pod_pids_limit` 1024. What makes the cap safe is that `SIGCHLD` deliveries
+  are not coalesced in practice — each child death raises the pending flag again and the eval
+  loop re-runs the handler — so a remainder is taken by the next delivery rather than kept. The
+  residual is a remainder with **no later child death at all**, and it is stated here rather
+  than pretended away.
+- **The handler is silent and cannot raise, and making it silent took more than declining to
+  write a log call.** It used to reach `LOG.error` anyway, through `_reap_orphans` →
+  `ForkServer.note_reaped` → `_mark_broken`. MEASURED with `main()`'s exact logging setup — a
+  `StreamHandler` on a `BufferedWriter` over a stdout pipe whose consumer had stalled, i.e. a
+  congested container log stream — that raised `RuntimeError: reentrant call inside
+  <_io.BufferedWriter>` *inside* the handler; the exception escaped `note_reaped`, was not
+  caught by `_reap_orphans`' `OSError` guard, and aborted the delivery with 4 of 5 zombies
+  unreaped — permanently, since `SIGCHLD` is not queued. The reaper path now **records** its
+  reason without emitting it (`_mark_broken(log=False)`) and `ForkServer.alive()` flushes it
+  from a serving thread, which is where `/health` already reads the broken state, so the line
+  that matters most in that file — *the control socket is unusable and will not be reused* — is
+  still printed exactly once instead of being lost to `_broken` having been set before the log
+  call. **`alive()` has exactly one caller** — the `/health` branch in `Supervisor.health()` —
+  so the parked reason surfaces on the **next readiness probe and nowhere else**: a fork server
+  that dies during shutdown, after the last probe, prints nothing at all. Ordinary serving-thread callers of `_mark_broken` keep logging inline. The handler still
+  swallows everything as well, because an exception out of a handler surfaces at an arbitrary
+  bytecode in the main thread, and each publisher is called inside its own guard so that one
+  raising cannot cost the remaining zombies their reap.
+- **It is installed by `main()` alone**, after `bring_up()`. A process that imports the module
+  and drives it directly runs no reaper for the length of its life, which is what keeps
+  `_SelfWaiter` — the waiter for a child of *this* process — usable there; a generic
+  `waitpid(-1)` in the same process would turn its `waitpid` into `ECHILD`. The stronger
+  sentence, that "the test harness has no reaper", is **not** true and was: `scripts/test-
+  supervisor.py` calls `install_orphan_reaper` directly in one check. That check forks only its
+  own child and restores the previous `SIGCHLD` disposition in a `finally`, so no `_SelfWaiter`
+  user ever shares a process with a live reaper — there is no live hazard, only a claim that had
+  to be narrowed. Nothing in the image uses `_SelfWaiter` at all, because every execution child
+  is a *grand*child of the supervisor while the fork server lives.
+
+**The two collisions, and how each is resolved.** `waitpid(-1)` cannot be told to skip a pid —
+it reports which child it took only *after* taking it — so the reaper **publishes rather than
+skips**: every pid it consumes is handed to whoever might have been waiting for it, and nothing
+is left polling or signalling a pid that is gone.
+
+1. **The fork server's own pid.** `ForkServer.note_reaped` records the status, clears `pid` and
+   marks the handle broken (silently — see above), after which `alive()` answers `False` without
+   a syscall and `close()` has nothing left to wait for. That closes the dangerous ordering in
+   which `close()`'s grace loop polls a pid the reaper had already consumed and then sends
+   `SIGKILL` to a pid the kernel is free to have handed to somebody else. `close()` additionally
+   sets a plain `_closing` flag **first**, and the reaper stands down entirely while it is set,
+   so no reap can land between that loop's last poll and its kill.
+2. **The running execution's child — and the earlier wording here denied this one existed.** It
+   said a supervisor-side reaper cannot steal an execution's wait status, because the
+   `waitid(P_PID, WEXITED|WNOWAIT)` discipline `4h6.41` established lives in the **fork server**
+   and execution children are the supervisor's grandchildren, so that wait happens in another
+   process entirely. **That is true only while the fork server is alive**, and the exception is
+   one of the exact two cases this reaper exists for: when the fork server dies mid-execution
+   (`test_forkserver_death_mid_execution` drives it) the child reparents to PID 1 and becomes a
+   **direct child of the supervisor**, so `waitpid(-1)` takes its status. `_reap` has already
+   raised `ForkServerError` by then, so `job.reaped` stays `False` and `job.pid` still names it,
+   which breaks the invariant `_kill_group` states: *a zombie keeps its pgid and its pid cannot
+   be recycled until it is reaped*. Once the reaper has reaped it the number is reusable, while
+   `_signal_group` guards only on `job.reaped` — so the stranded path spent the full
+   `KILL_GRACE_S` polling a job that could never go reaped and then `SIGKILL`ed that number,
+   and `_watchdog` → `_fire_limit` → `_kill_group` reached the same place for a timeout.
+   MEASURED as real PID 1 in a pid namespace with `ns_last_pid` forcing reuse: a bystander
+   forked onto the same number was alive before the signal and gone after it. A second harm
+   needed no recycling at all — `_resolve_pgid` returns `None` for a pid that no longer exists,
+   so the log gained the flatly false line *"child has no process group of its own; signalling
+   pid N alone"* about a child that had `setsid()`'d into its own group.
+
+   **What makes it safe now** is the same publishing move: `Supervisor.note_child_reaped`
+   records the status on the running job, sets `reaped` and clears `pid`, so `_signal_group` and
+   `_kill_group` answer `_SIGNAL_GONE` at their first guard, `_resolve_pgid` returns `None`
+   without reading `/proc`, and nothing signals a number that no longer names the child. The
+   case is no longer silent either: `_execute_inner` logs at ERROR that the fork server died and
+   the PID 1 reaper consumed the child's status, in place of the *"the reap did not complete"*
+   line it used to print.
+
+   **The publisher clears `reaped_pgid` too, and an earlier revision of this section did not say
+   so because it had missed the second path.** `_reap` stamps `job.reaped_pgid` **before** the
+   `waitpid` that can raise, so a fork server dying between the `FS_OP_WAIT` reply and the
+   `FS_OP_REAP` reply leaves the pgid stamped while `reaped` is still `False` — the `stranded`
+   branch is then *not* taken, and `_execute_inner`'s `else` branch calls `_kill_survivors`
+   **unconditionally** on that pgid. For a `setsid()` child the pgid **is** the child's pid,
+   which the reaper has just made recyclable, so the harm is the same one, in a narrower window
+   and on the *completion* path. MEASURED under `unshare -Urpf --mount-proc` with `ns_last_pid`:
+   a bystander forked onto pid 117 was alive before, the supervisor announced *"the execution
+   completed but its process group 117 still has members; killing them"* about what was in fact
+   an unrelated process, and it was gone after. `note_child_reaped` now clears the slot, and
+   `_kill_survivors` — its **only** reader — treats `None` as nothing to do, which is already how
+   it handles a child that never reached `setsid()`. It also refuses to publish onto a job whose
+   `reaped` is already set: `_reap` never clears `job.pid` and `_release` does not clear
+   `_running` until the whole response is built, so a normally-reaped job could otherwise be
+   matched on a recycled pid and take a foreign status (measured: `reaped_status = 1337`).
+
+   **What genuinely remains** is one signal, once: a `_signal_group` that has *already* passed
+   its `job.reaped` check when the handler runs will still deliver **that one signal**. The
+   window is a single `_resolve_pgid`, **measured at 3.1 microseconds** between the guard and the
+   `os.kill`/`os.killpg`. It is not closable — no ordering can put the kill before the reap,
+   because `waitpid` reports whose status it took only after taking it — and taking the lock
+   would only serialise it, not reorder it. **The escalation is refused**: a second
+   `_signal_group` answers `_SIGNAL_GONE` (measured), so the two-second grace loop, the `SIGKILL`
+   at the end of it and every later signal are all gone, which is where the exposure was.
+
+**Neither publisher takes a lock, and that is the same decision for both.** The handler runs
+inside `SIGCHLD`, which CPython delivers on the **main thread**; a serving thread holds
+`job.kill_lock` across the whole of `_signal_group` and `Supervisor._lock` across every queue
+decision, and a handler that blocks on a lock the interrupted thread holds deadlocks PID 1 —
+there is no timeout to fall back on and no other thread to run the handler. Every access on
+both paths is a single attribute load or store, `_running` and `pid` are each read once into a
+local, and both flags a signal path consults are OR-ed, so no reader can observe a half-published
+state that claims "not reaped" about a pid that is gone. `_closing` is a bool for the same
+reason, and `main()` calls `close()` on the main thread, so the flag is set before any later
+handler invocation can read it.
 
 #### `4h6.41` — wall clock, memory, oom_score_adj, pid budget
 
