@@ -38,9 +38,15 @@
 #   SANDBOX_TOKEN_SIGNING_KEY, INTERNAL_API_SECRET, SANDBOX_ENABLED
 #                        the sandbox's per-execution credential configuration. Generated
 #                        once into DEV_STACK_RUN_DIR and reused; override to pin a value.
-#                        WITHOUT THEM db-api and results-api resolve no sandbox principal
-#                        and serve the SDK with no per-execution accounting at all, which
-#                        is indistinguishable from the bug the tokens exist to fix.
+#                        WITHOUT THE SIGNING KEY OR SECRET, db-api and results-api resolve
+#                        no sandbox principal and serve the SDK with no per-execution
+#                        accounting at all, which is indistinguishable from the bug the
+#                        tokens exist to fix. SANDBOX_ENABLED defaults to false because this
+#                        script starts NO sandbox supervisor: a true default would offer
+#                        run_analysis with nothing behind it, and its failure would misreport
+#                        as a transient SandboxUnavailable (genetics-results-suite-4h6.86).
+#                        Start one with scripts/run-sandbox-local.sh and set
+#                        SANDBOX_ENABLED=true yourself to exercise the sandboxed path.
 #   SANDBOX_URL          code-execution sandbox (default: http://127.0.0.1:8081, what
 #                        scripts/run-sandbox-local.sh publishes). MUST be set explicitly:
 #                        the client's own default is 127.0.0.1:8080, which is db-api here
@@ -196,8 +202,18 @@ dev_secret() {
 if [ "$COMMAND" = up ]; then
     SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(dev_secret sandbox-token-signing-key)}"
     INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(dev_secret internal-api-secret)}"
-    SANDBOX_ENABLED="${SANDBOX_ENABLED:-true}"
+    SANDBOX_ENABLED="${SANDBOX_ENABLED:-false}"
     export SANDBOX_TOKEN_SIGNING_KEY INTERNAL_API_SECRET SANDBOX_ENABLED
+    # this script starts no sandbox supervisor, so a true SANDBOX_ENABLED (from the
+    # developer's own environment or MCP_ENV_FILE) is a claim this stack cannot back —
+    # check it once, non-blocking, rather than let a phantom sandbox surface later as a
+    # SandboxUnavailable that looks transient (genetics-results-suite-4h6.86). A bare 200
+    # is not readiness: the supervisor binds before prewarm finishes and answers "starting"
+    # until it is done, same as scripts/run-sandbox-local.sh checks.
+    if [ "$SANDBOX_ENABLED" = true ] \
+        && ! curl -fsS --max-time 2 "$SANDBOX_URL/health" 2>/dev/null | grep -q '"status": "ok"'; then
+        echo "  WARN: SANDBOX_ENABLED=true but no sandbox answers ok at $SANDBOX_URL/health — start one with scripts/run-sandbox-local.sh, or run_analysis will look available and fail as a false SandboxUnavailable" >&2
+    fi
 fi
 
 # Every port decision comes from `ss`. Without it the queries return nothing and the script
