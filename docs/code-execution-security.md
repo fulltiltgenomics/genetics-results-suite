@@ -1178,7 +1178,9 @@ A chat-backend restart mid-execution is exactly this case and needs no separate 
 old response is undeliverable, the artifacts survive their retention window, and the retry
 arrives with a **fresh** `execution_id` (per the duplicate rule above) and queues normally. A
 `SIGTERM` to the *supervisor* is the other direction and is already specified: it stops
-accepting (`503 NotReady`) and lets the in-flight child finish inside the 130s grace.
+accepting (`503 NotReady`) and lets the in-flight child finish inside the 130s grace — **and
+it also waits for that execution's response to be written**, which is a separate step and was
+not always taken; see "The drain waits for the answer" below.
 
 #### `POST /execute` — response
 
@@ -1713,6 +1715,96 @@ and produces a loud warning rather than a silent behaviour change:
   are unretrievable by construction. The image never sets it.
 - The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
   Linux developer machine and failing it is the intended outcome elsewhere.
+
+#### The drain waits for the answer, not just for the slot (`4h6.57`, `4h6.63`)
+
+`terminationGracePeriodSeconds: 130` buys the supervisor three steps on `SIGTERM`: drain, reap,
+**answer**. The third one used to be skippable. (It buys no *wipe*: `wipe_unrecognised_scratch`
+has exactly one call site, in `bring_up()` — it is a **startup** sweep, and `/scratch` is an
+`emptyDir` destroyed with the pod. What a `SIGKILL` at the end of the grace actually costs is
+the in-flight **answer** and the clean `forkserver.close()` and child reap.) `_terminate` starts
+`_shutdown_when_idle`, which polled `Supervisor.idle()` — and `idle()` goes true in `run()`'s
+`finally`, where the
+execution slot is released, which runs **before** the handler writes the `200`. A `SIGTERM`
+landing in that window let `httpd.shutdown()` return, `main()` fall through `server_close()` and
+`forkserver.close()`, and the process exit with the response truncated or unsent. Nothing else
+covered it: `_Server` sets `daemon_threads = True`, and `socketserver._Threads.append` returns
+early for a daemon thread, so `ThreadingMixIn.server_close()` joins an empty list — **no part of
+the shutdown path waits for a handler thread**. The client sees a reset for an execution that
+**completed** and whose artifacts are retained, and `sandbox_client` classifies a reset as
+`SandboxUnavailable` with `retryable: true` — so the model is told to re-run a script whose side
+effects have already happened.
+
+The fix is an explicit count of responses still owed, not a wider `idle()` and not a sleep.
+`POST /execute`'s handler takes the count before any work and gives it back in a `finally` that
+covers **every** exit — the deliberate returns, the fall-through after the `200`, and anything
+that escapes, which includes `_send_json` itself: it calls `send_response()`/`end_headers()`
+outside its own `except OSError`, so a client resetting mid-execution raises
+`ConnectionResetError` straight out of the handler body. The exits are not counted here on
+purpose — a `finally` covers any number of them, so a number would buy nothing and rot. The
+shutdown path polls a new predicate, `Supervisor.quiescent()` (`idle()` **and** nothing owed).
+`idle()` is unchanged, because
+`_await_slot`, `_release` and `health()` all read it as a statement about the execution slot.
+
+**What is counted, and why the rest is safe uncounted.** Only `POST /execute` is counted.
+`/health` and `/artifact` are not, and that is a property of those routes rather than an
+oversight: both are idempotent `GET`s with no side effect, so a reset on one cannot cause the
+duplicate-execution harm this whole mechanism exists to prevent, and artifacts live in the
+pod's `emptyDir` and are lost to termination either way — a retry against the replacement pod
+gets a terminal `404`, not a wrong answer. The consequence that matters operationally is that a
+kubelet readiness probe can never hold the drain open.
+
+**And the wait is bounded — `DRAIN_DEADLINE_S = 125.0`.** The gate waits on something that has
+no deadline of its own: `_send_json`'s write is socketserver's `_SocketWriter` doing a blocking
+`sendall` on a connection deliberately left at `settimeout(None)` by `_read_head`/`_read_body`,
+so a peer that stops ACKing parks the handler for `tcp_retries2` (~15 minutes) and a peer that
+never reads can park it for as long as it likes — measured at 115s and still climbing with
+20 000 pipelined `400`s on one unread socket, against 0.0s for the pre-`4h6.57` gate. An unbounded
+gate therefore converts *one truncated response* into *a process that never exits*, `SIGKILL`ed
+at the end of the grace, losing the clean `forkserver.close()` and child reap on top of the
+answer that was lost anyway. At `DRAIN_DEADLINE_S` the gate proceeds regardless of the count and
+logs at `ERROR` with the number of responses it abandoned. The arithmetic: an execution already
+running when the `SIGTERM` landed can need `MAX_TIMEOUT_S` (120) plus `KILL_GRACE_S` (2) to reach
+its deadline and be reaped, so 125 sits **above** 122 and never cuts the normal path short, and
+**below** the manifest's 130 by 5s — room for `httpd.shutdown()`, `server_close()` and
+`forkserver.close()`, which all run after the gate returns. The worst case degrades back to
+exactly what it was before this change: a truncated response.
+
+**Two routes to the same hang, closed by two different things.** A count that leaked on one exit
+path would make the drain never reach zero; that route is closed by the `finally`. A count that
+is perfectly balanced but whose exit never *happens* — the parked `sendall` — reaches the
+identical outcome **with no leak at all**; that route is closed only by the ceiling. Neither
+substitutes for the other. `begin_drain()` having already run does *not* keep the wait short by
+itself: it makes `/execute` answer `503` before reading a body, but a `503` is still a counted
+response that has to be written, and it is written down the same unbounded socket.
+
+`4h6.63` is the same ownership question one step earlier. `_execute_inner` created its three
+pipe pairs *above* the `try` whose `except BaseException` closes every descriptor an execution
+holds, so an `EMFILE` from the second or third `os.pipe()` — and fd exhaustion is the only state
+in which `os.pipe()` fails at all — leaked the two or four already made, permanently, in the one
+state where the process can least afford them. The pipes are now created inside that `try`, with
+all seven descriptor names bound to `None` first so the handler can run before any of them
+exists. (The bead that recorded this also asserted the surrounding sequence needed restructuring
+around `_relocate_above`; that stopped being true when `4h6.55` moved the fork into the fork
+server — `_relocate_above` now runs in a different process.)
+
+`scripts/test-supervisor.py` covers all of it with negative controls that restore the defect
+rather than flag it:
+
+- `SUPERVISOR_TEST_SHUTDOWN_ON_IDLE=1` reinstates the `idle()`-only gate. The shutdown check is
+  constructed, not raced — `_release` is wrapped so the drain and the shutdown thread start at
+  the instant the slot is freed — and the property asserted is an ordering: what the shutdown
+  gate had seen when it returned.
+- `SUPERVISOR_TEST_COUNT_NO_FINALLY=1` moves `end_response()` out of the `finally`. It exists
+  because it was measured that this control leaves the error-exit checks entirely green — every
+  one of those exits *returns normally* and so needs no `finally` — which means the only check
+  that can hold the `finally` honest is one that drives an exception **out of** the counted
+  region. That is `test_shutdown_count_escapes`, and it is the check the control turns red.
+- `SUPERVISOR_TEST_SHUTDOWN_NO_CEILING=1` reinstates the unbounded gate, turning
+  `test_shutdown_ceiling` red. The ceiling is exercised against an overridden deadline
+  (`_shutdown_when_idle`'s `deadline_s` argument), not by waiting out 125 real seconds.
+- `SUPERVISOR_TEST_PIPES_OUTSIDE_TRY=1` reinstates a pipe pair created outside the `try`
+  (`4h6.63`).
 
 ### As built (`4h6.40`) — the local Docker backend, and the six things it does not reproduce
 

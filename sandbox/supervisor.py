@@ -121,6 +121,24 @@ MAX_QUEUED_WAIT_S = 120.0             # the number the 300s token TTL constrains
 RETRY_AFTER_S = 60
 KILL_GRACE_S = 2.0                    # SIGTERM -> SIGKILL, timeout and output-cap paths
 
+# THE CEILING ON THE SIGTERM DRAIN — what makes _shutdown_when_idle a BOUNDED wait. It has to
+# sit between two numbers. Above: an execution already running when the SIGTERM landed can take
+# MAX_TIMEOUT_S (120) to reach its own deadline plus KILL_GRACE_S (2) to be SIGKILLed and
+# reaped = 122s, and its answer still has to be written after that, so any ceiling at or below
+# 122 would cut short the normal path this gate exists to protect. Below: the manifest's
+# terminationGracePeriodSeconds is 130, and httpd.shutdown(), server_close() and
+# forkserver.close() all run AFTER this returns. 125 leaves 3s of write margin over the 122 and
+# 5s of exit margin under the 130.
+#
+# WHY A CEILING AT ALL: _send_json's write is socketserver's _SocketWriter doing a blocking
+# sendall on a connection deliberately left at settimeout(None), so a peer that stops ACKing
+# parks the handler for tcp_retries2 (~15 minutes on this host) and a peer that never reads can
+# park it for as long as it likes. Without a ceiling ONE such connection holds the drain past
+# the grace, the kubelet SIGKILLs, and the clean forkserver.close() and child reap are lost on
+# top of the answer that was already lost. With it the worst case degrades back to the
+# truncated response it was before 4h6.57 — strictly no worse, and loudly logged.
+DRAIN_DEADLINE_S = 125.0
+
 # Not a wire value and not in section 2: how long the supervisor keeps reading the pipes
 # AFTER the child has been reaped. A `setsid()`ed descendant inherits the write ends, so EOF
 # is not something waiting longer can produce — see _drain.
@@ -2352,6 +2370,11 @@ class Supervisor:
         self._running = None
         self._pending_ids = set()
         self._retained_ids = set()
+        # HANDLERS THAT OWE A RESPONSE, which is NOT the same thing as the execution slot.
+        # genetics-results-suite-4h6.57: the slot is given back in run()'s `finally`, which
+        # runs before the handler writes the 200, so idle() cannot be what tells the shutdown
+        # path the process may exit. Guarded by the same _lock as _running/_waiting.
+        self._responding = 0
         # execution_id -> [monotonic deadline, measured bytes], in COMPLETION ORDER. Insertion
         # order is what makes "oldest-first eviction" a property of the structure rather than a
         # sort key somebody has to remember to keep in step with the clock.
@@ -2500,6 +2523,31 @@ class Supervisor:
     def idle(self):
         with self._lock:
             return self._running is None and not self._waiting
+
+    def begin_response(self):
+        """A request handler has taken on a response it has not written yet."""
+        with self._lock:
+            self._responding += 1
+
+    def end_response(self):
+        """...and has finished writing it, or has failed in a way that never will."""
+        with self._lock:
+            self._responding -= 1
+
+    def responses_in_flight(self):
+        with self._lock:
+            return self._responding
+
+    def quiescent(self):
+        """idle(), AND no handler still owes a response. The shutdown path's predicate.
+
+        DELIBERATELY NOT idle(). idle() is about the EXECUTION SLOT — _await_slot, _release
+        and health() all read it that way — and it goes true in run()'s `finally`, before the
+        handler writes the 200. Widening idle() would change what every one of those callers
+        sees; the one caller that must also wait for the answer gets its own predicate.
+        """
+        with self._lock:
+            return self._running is None and not self._waiting and self._responding == 0
 
     # -- the queue ---------------------------------------------------------------------
 
@@ -2914,18 +2962,23 @@ class Supervisor:
         seed_mplconfig(dirs.mplconfig)
         _deliver_tokens(job)
 
-        out_r, out_w = os.pipe()
-        st_r, st_w = os.pipe()
-        # 4h6.45. Created BEFORE the fork because that is the only way a descriptor reaches a
-        # forked child, and read by this process alone.
-        audit_r, audit_w = os.pipe()
-        # EVERYTHING FROM HERE TO THE FORK IS INSIDE THE try, and the try used to start five
-        # lines lower. _payload_fd raises OSError for real reasons — memfd_create ENOMEM, or
-        # os.open/os.write ENOSPC/EDQUOT on the fallback against the 512Mi emptyDir — and
-        # dirs.child_env can raise too; either one leaked all six pipe descriptors, which is
-        # the leak this change set out to remove, moved five lines up.
-        payload_fd = None
+        # EVERY DESCRIPTOR AN EXECUTION CREATES IS MADE INSIDE THIS try, and the try used to
+        # start after the three os.pipe() calls. _payload_fd raises OSError for real reasons —
+        # memfd_create ENOMEM, or os.open/os.write ENOSPC/EDQUOT on the fallback against the
+        # 512Mi emptyDir — and dirs.child_env can raise too; either one leaked all six pipe
+        # descriptors. genetics-results-suite-4h6.63 moved the pipes in as well: os.pipe()
+        # itself raises EMFILE under the fd exhaustion that is the only realistic driver here,
+        # and with the calls outside the try a failing second or third one leaked the pair(s)
+        # already made — two or four descriptors lost in exactly the state where the process
+        # can least afford them. All seven names are bound to None first, so the handler below
+        # is safe to run before any of the descriptors exists; _fs_close_all tolerates None.
+        payload_fd = out_r = out_w = st_r = st_w = audit_r = audit_w = None
         try:
+            out_r, out_w = os.pipe()
+            st_r, st_w = os.pipe()
+            # 4h6.45. Created BEFORE the fork because that is the only way a descriptor
+            # reaches a forked child, and read by this process alone.
+            audit_r, audit_w = os.pipe()
             claims = job.req.claims[TOKEN_AUDIENCES[0]]
             env = dirs.child_env(claims)
             # THE STAMP COMES FROM THE CLAIMS, NOT FROM THE BODY AND NOT FROM THE CHILD.
@@ -4743,6 +4796,31 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def _execute(self):
+        # genetics-results-suite-4h6.57. The count is taken BEFORE any work and given back
+        # only once the answer has been written to the socket, so a SIGTERM cannot let the
+        # shutdown path decide the process is finished in the window between run()'s `finally`
+        # releasing the execution slot and _send_json reaching the wire. A client that reads a
+        # reset there is told the execution failed, retryably, for an execution that COMPLETED
+        # and whose artifacts are retained.
+        #
+        # A finally, not a decrement per exit, and deliberately NOT a count of exits: the
+        # body below returns normally from three except: clauses and from the fall-through
+        # after the 200, and it also lets exceptions ESCAPE — _send_json calls send_response()
+        # and end_headers() outside its own `except OSError`, so a client that resets
+        # mid-execution raises ConnectionResetError straight out of here. A `finally` covers
+        # any number of exits, which is why the number is not written down: it would only rot.
+        # A count that leaked on one of them would turn a truncated response into a drain that
+        # never reaches zero — the kubelet then SIGKILLs at terminationGracePeriodSeconds,
+        # costing the clean forkserver.close() and child reap on top of the answer. The other
+        # route to that same outcome — a write that never returns, with no leak at all — is
+        # closed by DRAIN_DEADLINE_S, not by this `finally`; it takes both.
+        SUPERVISOR.begin_response()
+        try:
+            self._execute_and_answer()
+        finally:
+            SUPERVISOR.end_response()
+
+    def _execute_and_answer(self):
         started = time.monotonic()
         execution_id = None
         try:
@@ -4988,8 +5066,48 @@ def main(argv=None):
     return 0
 
 
-def _shutdown_when_idle(httpd, supervisor, poll=0.25):
-    while not supervisor.idle():
+def _shutdown_when_idle(httpd, supervisor, poll=0.25, deadline_s=None):
+    """Stop serving once nothing is queued, nothing is running AND no answer is still owed —
+    or once DRAIN_DEADLINE_S has passed, whichever comes first.
+
+    genetics-results-suite-4h6.57. This polled idle(), which goes true in run()'s `finally` —
+    before the handler writes the 200. A SIGTERM landing in that window let httpd.shutdown()
+    run, main() return and the process exit with the response truncated or unsent; the server
+    sets daemon_threads = True, so socketserver's server_close() joins nothing and no other
+    part of the shutdown waits for a handler thread. sandbox_client reads the reset as
+    SandboxUnavailable with retryable true, so the model is told to run again a script that
+    already ran to completion.
+
+    WHAT IT WAITS FOR, AND WHAT IT DOES NOT. Only POST /execute is counted. /health and
+    /artifact are not, and that is safe rather than an oversight: both are idempotent GETs with
+    no side effect, so a reset on one cannot cause the duplicate-execution harm this gate
+    exists to prevent, and artifacts live in the pod's emptyDir and are lost to termination
+    either way — a retry against the new pod gets a terminal 404, not a wrong answer. Not
+    counting them also means a readiness probe can never hold the drain open.
+
+    AND IT IS BOUNDED. The wait has a ceiling because the thing it waits on has none:
+    _send_json's write is a blocking sendall on a connection left at settimeout(None), so a
+    peer that never reads (or merely stops ACKing) parks a counted handler indefinitely. That
+    would convert a truncated response into a process that never exits, is SIGKILLed at
+    terminationGracePeriodSeconds and loses forkserver.close() and the child reap as well —
+    strictly worse than what it replaced. At DRAIN_DEADLINE_S this proceeds regardless, which
+    degrades the worst case back to the truncated response, and says so at ERROR: an operator
+    reading that line needs to know an answer was abandoned. See DRAIN_DEADLINE_S for the
+    arithmetic against the 130s grace, MAX_TIMEOUT_S and KILL_GRACE_S.
+    """
+    limit = DRAIN_DEADLINE_S if deadline_s is None else deadline_s
+    deadline = time.monotonic() + limit
+    while not supervisor.quiescent():
+        if time.monotonic() >= deadline:
+            LOG.error(
+                "drain deadline reached after %.0fs with %d response(s) still in flight and "
+                "%s; shutting down anyway. THOSE ANSWERS ARE ABANDONED — the client sees a "
+                "truncated or unsent response. Proceeding is deliberate: waiting past "
+                "terminationGracePeriodSeconds would cost the clean fork-server shutdown and "
+                "child reap on top of the answer.",
+                limit, supervisor.responses_in_flight(),
+                "an execution still in flight" if not supervisor.idle() else "the slot free")
+            break
         time.sleep(poll)
     httpd.shutdown()
 
