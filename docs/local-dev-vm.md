@@ -96,12 +96,24 @@ the script does not name is passed through untouched. Put these there rather tha
 
 `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are the exception to "put it in the
 `.env`": the script **generates** them once into `DEV_STACK_RUN_DIR`
-(`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend
-together with `SANDBOX_ENABLED=true`, so the minter and both verifiers agree. They have to be
+(`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend —
+unconditionally, whatever `SANDBOX_ENABLED` is set to — so the minter and both verifiers agree.
+Without them both verifiers resolve **no sandbox principal at all** and serve the SDK with no
+per-execution accounting (`genetics-results-suite-0lf`): that follows from the two credentials
+and from nothing else, since neither verifier reads `SANDBOX_ENABLED`. They have to be
 stable across restarts — rotating the key invalidates a token minted seconds earlier — and they
 must not land in a repo. Setting either variable yourself still wins.
 
-**This changes what an unauthenticated local request can do, and it is not a subtlety.**
+`SANDBOX_ENABLED` itself defaults to **`false`**: `dev-stack.sh` starts no sandbox
+supervisor, so a `true` default would offer `run_analysis` with nothing behind it and its
+failure would misreport as a transient `SandboxUnavailable`
+(genetics-results-suite-4h6.86). Start a supervisor with `scripts/run-sandbox-local.sh`
+and set `SANDBOX_ENABLED=true` yourself (in the environment or in `MCP_ENV_FILE`) to
+exercise the sandboxed path locally; if you do, `dev-stack.sh up` probes `SANDBOX_URL/health`
+once and warns loudly if nothing answers `"status": "ok"` there.
+
+**Provisioning `INTERNAL_API_SECRET` — not the `SANDBOX_ENABLED` default above — changes
+what an unauthenticated local request can do, and it is not a subtlety.**
 db-api's auth middleware is fail-open on an **empty** `INTERNAL_API_SECRET` (`api/main.py`
 warns `every endpoint is reachable without authentication` and lets everything through), so
 simply having the variable set flips it to **enforcing**. Measured 2026-08-17 against the local

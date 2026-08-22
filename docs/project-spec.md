@@ -1489,10 +1489,24 @@ What is load-bearing about it:
 - **It provisions the sandbox's per-execution credentials** (`genetics-results-suite-4h6.49`):
   `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are generated once into
   `DEV_STACK_RUN_DIR` — stable across restarts, outside every repo, never in a working tree —
-  and exported with `SANDBOX_ENABLED=true`. Without them db-api and results-api resolve **no
-  sandbox principal at all** and serve the sandbox SDK with no per-execution accounting, which
-  is locally indistinguishable from the bug the tokens exist to fix
-  (`genetics-results-suite-0lf`). Override any of the three to pin a value.
+  and exported to the services it starts unconditionally, whatever `SANDBOX_ENABLED` is set to.
+  Without them db-api and results-api resolve **no sandbox principal at all** and serve the
+  sandbox SDK with no per-execution accounting, which is locally indistinguishable from the bug
+  the tokens exist to fix (`genetics-results-suite-0lf`). That hazard belongs to the two
+  credentials and to nothing else: both verifiers raise `SANDBOX_TOKEN_SIGNING_KEY is not set`
+  before they look at a token (`app/core/sandbox_token.py`, `api/sandbox_auth.py`), so `admit()`
+  is never reached and the execution map stays empty, and with `INTERNAL_API_SECRET` empty
+  db-api's auth middleware is fail-open on top of that. Neither verifier consults
+  `SANDBOX_ENABLED` — it is read only by the startup guard `require_sandbox_config`, which is
+  inert while it is false, and by results-api's collapse of its anonymous surface. Override any
+  of the three to pin a value.
+- **`SANDBOX_ENABLED` defaults to `false`** (`genetics-results-suite-4h6.86`), which is a
+  separate fact about what the stack can back rather than about the credentials above: the
+  script starts no sandbox supervisor, so a `true` default would offer `run_analysis` with
+  nothing behind it and its failure would misreport as a transient `SandboxUnavailable`. Set it
+  to `true` only after starting a supervisor with `scripts/run-sandbox-local.sh`; the script's
+  `up` command then probes `SANDBOX_URL/health` once and warns if nothing answers
+  `"status": "ok"` there.
 - **`status` reads `DATASET_ID` from `/proc/<pid>/environ`**, because `/health` does not
   report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
   `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.

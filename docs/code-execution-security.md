@@ -2792,11 +2792,16 @@ change.** Each one made the local run *look* fine while proving less:
 1. `scripts/run-sandbox-local.sh` pointed `GENETICS_API_URL` at `host.docker.internal:4000` —
    the cluster's results-api Service port. Locally `:4000` is **chat-api**, which answers 404
    on `/api`; results-api is on `:2000`. The SDK was talking to chat-backend.
-2. `scripts/dev-stack.sh` provisioned no `SANDBOX_TOKEN_SIGNING_KEY`, no `INTERNAL_API_SECRET`
-   and no `SANDBOX_ENABLED`, so db-api and results-api resolved **no sandbox principal at all**
+2. `scripts/dev-stack.sh` provisioned no `SANDBOX_TOKEN_SIGNING_KEY` and no
+   `INTERNAL_API_SECRET`, so db-api and results-api resolved **no sandbox principal at all**
    and served the SDK with no per-execution accounting — locally indistinguishable from the bug
    the tokens exist to fix. It now generates both secrets once into `DEV_STACK_RUN_DIR` (stable
-   across restarts, outside every repo) and exports them with `SANDBOX_ENABLED=true`.
+   across restarts, outside every repo) and exports them unconditionally. It set no
+   `SANDBOX_ENABLED` either, which left results-api's anonymous surface at its wider `@is_public`
+   set, but that is a separate consequence: neither verifier reads that variable, so it was
+   never what emptied the accounting. The script now exports it too, defaulting to `false` as of
+   `genetics-results-suite-4h6.86` — it starts no supervisor, so a `true` default offered
+   `run_analysis` with nothing behind it (see `docs/local-dev-vm.md`).
 3. `SANDBOX_RETENTION_S` had no way through `run-sandbox-local.sh`, so the retention deadline
    was unobservable in container mode. It is now passed through.
 
