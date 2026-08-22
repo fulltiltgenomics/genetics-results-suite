@@ -7,7 +7,7 @@ between clusters at runtime except read-only source data (GCS/BigQuery).
 | `DEPLOY_ENV` | GCP project | cluster | primary host | branch built | state prefix |
 |---|---|---|---|---|---|
 | `daly` | `daly-finngenie` | `finngenie` | `genegenie.broadinstitute.org` (301 from `finngenie.…`) | `master` | `gs://genetics-results-terraform-daly/genetics-results-suite` |
-| `daly-staging` | `daly-finngenie` | `finngenie-staging` | `staging-genegenie.broadinstitute.org` | `staging` | `gs://genetics-results-terraform-daly/genetics-results-suite-staging` |
+| `daly-staging` | `daly-finngenie` | `finngenie-staging` | `staging.genegenie.broadinstitute.org` | `staging` | `gs://genetics-results-terraform-daly/genetics-results-suite-staging` |
 | `finngen` | (separate project) | `finngenie` | `finngenie.finngen.fi` | `master` | `gs://genetics-results-terraform/genetics-results-suite` |
 
 `daly` and `daly-staging` are managed from the same admin instance; `finngen` is managed
@@ -83,6 +83,30 @@ Two shared-project hazards are handled explicitly:
   clusters use the `genetics` namespace, so it also filters on `K8S_CLUSTER` (injected into
   `monitor-cronjob.yaml` from the terraform `cluster_name` output). Unset, the variable is
   omitted from the filter and the old project-wide behaviour returns.
+- **Cookie domain.** `staging.genegenie.broadinstitute.org` is a **subdomain of** the
+  production host `genegenie.broadinstitute.org`, not a sibling. The rename did not create a
+  cross-host cookie channel — `broadinstitute.org` is not a public suffix, so the old
+  `staging-genegenie.broadinstitute.org` could equally have set `Domain=broadinstitute.org`,
+  and production would have sent it. What the rename narrowed is the *value* needed to open
+  the channel: under the hyphen that value was `Domain=broadinstitute.org`, which also leaks
+  to every other Broad host and reads as obviously over-broad in review; under the dot it is
+  `Domain=genegenie.broadinstitute.org` — literally the correct value for the production
+  deployment, so a tfvars or manifest copied from production produces it verbatim and
+  survives review.
+  Two components set cookies on this host. `k8s/deployments/oauth2-proxy.yaml` passes
+  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` and no `--cookie-domain`.
+  Keycloak is served on the *same* host under `/auth` (`deploy.sh` builds `KEYCLOAK_HOST` from
+  `DOMAIN` + `KEYCLOAK_PATH`); `k8s/deployments/keycloak.yaml` sets no cookie attributes at
+  all, and the gateway nginx block rewrites them with `proxy_cookie_flags ~ secure
+  samesite=none`, deliberately, for the Apple `form_post` callback — so `AUTH_SESSION_ID` /
+  `KEYCLOAK_IDENTITY` / `KEYCLOAK_SESSION` / `KC_RESTART` are the `SameSite=None` half, the
+  fully cross-site-usable half if a `Domain` is ever introduced.
+  What is actually verified is narrow: **no component sets an explicit cookie `Domain`, so
+  cookies are host-only.** That is a default, not a control — nothing asserts it. Two edits
+  would open the channel: a cookie-domain setting on oauth2-proxy, or nginx's
+  `proxy_cookie_domain` — the sibling directive to the `proxy_cookie_flags` already in use,
+  inside a shell `printf` in `deploy.sh`, which is the site least likely to be caught by
+  anyone grepping manifests for `--cookie-domain`.
 
 ### Known limitation: the Workload Identity principal is shared
 
@@ -104,18 +128,18 @@ which is hardcoded in ~40 manifests.
 
 ## Before deploying
 
-- [ ] **DNS.** Create an A record for `staging-genegenie.broadinstitute.org` → `34.36.39.82`
+- [ ] **DNS.** Create an A record for `staging.genegenie.broadinstitute.org` → `34.36.39.82`
       (the reserved global IP `staging-finngenie-broadinstitute-org-ip`). Do this **first** —
       the Google-managed certificate cannot provision until the record resolves, and a
       ManagedCertificate that starts in `FAILED_NOT_VISIBLE` takes a delete/recreate to retry.
-      Verify: `dig +short staging-genegenie.broadinstitute.org`.
+      Verify: `dig +short staging.genegenie.broadinstitute.org`.
 - [ ] **`staging` branches exist.** `build-all.sh` clones with `--branch staging` and fails
       outright if the branch is missing. Needed in `genetics-results-browser`,
       `genetics-results-api`, `genetics-mcp-server`, `genetics-results-db`.
       (`monitor` and `keycloak` build from this repo's working tree — no branch involved.)
 - [ ] **Google OAuth client.** Add the staging broker callback to the existing client's
       authorized redirect URIs (or create a separate client):
-      `https://staging-genegenie.broadinstitute.org/auth/realms/genetics/broker/google/endpoint`
+      `https://staging.genegenie.broadinstitute.org/auth/realms/genetics/broker/google/endpoint`
 - [ ] **Fill in `.env.daly-staging`** (created, gitignored, currently blank where it matters):
       `ANTHROPIC_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and
       `OAUTH2_PROXY_CLIENT_SECRET` (`openssl rand -base64 32` — it is written to
@@ -164,12 +188,24 @@ kubectl config current-context   # ..._us-central1-a_finngenie-staging
 
 - [ ] **Certificate.** `kubectl get managedcertificate -n genetics -w` — `Provisioning` →
       `Active` takes 15–60 min after DNS resolves.
+- [ ] **Certificate SAN.** Once `Active`, read the SAN that was actually issued:
+      `openssl s_client -connect <ip>:443 -servername staging.genegenie.broadinstitute.org
+      </dev/null | openssl x509 -noout -text | grep DNS:` — it must be
+      `staging.genegenie.broadinstitute.org` exactly. `kubectl describe managedcertificate -n
+      genetics` shows the `spec.domains` this deploy *requested*, generated from the same
+      tfvars value you are validating, so it echoes staleness rather than detecting it; only
+      the `openssl` branch reads the issued certificate. A stale `domains` normally means the
+      certificate never provisions at all (`FAILED_NOT_VISIBLE`, per the DNS step above); it
+      reaches `Active` for the wrong name only if the stale host happens to resolve to the
+      same IP, which nothing here checks. Either way `domains[0]` also drives `KC_HOSTNAME`
+      and the ingress host rules (`terraform/outputs.tf`), so a mismatch surfaces as a
+      redirect/login loop.
 - [ ] **Keycloak realm.** The realm import runs **only against an empty database**. Check
       `deploy.sh` printed `keycloak-realm rendered (apple IdP: google-only)`; if
       `GOOGLE_CLIENT_ID` was missing at that point, fix `.env.daly-staging` and either delete
       the `keycloak-postgres-data` PVC (staging has nothing to lose) or edit the live realm in
       the admin console.
-- [ ] **Sign in** at `https://staging-genegenie.broadinstitute.org` with an allow-listed
+- [ ] **Sign in** at `https://staging.genegenie.broadinstitute.org` with an allow-listed
       account and confirm Google is the only IdP offered.
 - [ ] **Check isolation.** Confirm production is untouched: its monitor should not report
       staging containers, and `genetics_chat_logs` should contain no staging rows.
