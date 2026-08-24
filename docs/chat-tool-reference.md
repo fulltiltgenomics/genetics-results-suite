@@ -332,18 +332,36 @@ test rather than resolved from a profile (see the route-completeness bullet belo
 other profiles change with the flag too (`None` 64 tools / 28,417 chars, `api` 62 / 24,745,
 `code` 6 / 14,741; `rag` and `nocode` are unaffected).
 
-`tests/test_system_prompt.py` pins five properties over its own `PROFILES` list —
-`[None, "api", "bigquery", "rag", "code"]`, which does **not** include `nocode` — and every
-one of them reads the RENDERED prompt rather than `_Block` metadata, so an assertion cannot
-pass by restating the constant it guards. Only **absence** and **structure** are run with
-`ENABLE_SUBAGENTS` both true and false; the rest run with subagents off:
+`tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
+over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
+now includes `nocode`, the arm the `code` arm is measured against; it was missing until
+`genetics-results-suite-4h6.78`/`.79`, so thirteen parametrised test functions never
+exercised the comparator. Every one of the seven reads the RENDERED prompt rather than
+`_Block` metadata, so an assertion cannot pass by restating the constant it guards. Only
+**absence** and the body-under-heading half of **structure** are run with
+`ENABLE_SUBAGENTS` both true and false; the `products`-imperative check inside **capability
+gating** and both directions of **route completeness** are run with `SANDBOX_ENABLED` both
+ways; the rest run with subagents off:
 
 - **absence** — every tool name appearing in the emitted prompt is in the resolved tool
   list. It tokenises the prompt itself rather than reusing the gate's own matcher, so the
-  two implementations have to agree.
+  two implementations have to agree. They are independent on the ALGORITHM but not on the
+  NORMALISATION: neither sees a plural or suffixed mention (`get_hla_by_alleles` for
+  `get_hla_by_allele`), so they would agree while both being wrong. No such mention exists
+  today; `_Block`'s docstring carries the instruction to name tools verbatim
+  (`genetics-results-suite-4h6.78`).
+- **one routing home per surface**
+  (`TestRoutingArbitrationHasOneHomePerSurface`) — no arm is told to prefer a path it does
+  not have: the database fallback is absent wherever `query_database` is, and the SDK
+  wording wherever `run_analysis` is.
 - **presence** — the emitted section headings are pinned per profile, and the load-bearing
   science and grounding strings are asserted present. Absence-only assertions could not see
   text going missing, which is how the over-subtraction above survived review.
+- **domain science survives filtering** (`TestDomainScienceSurvives`) — the
+  MPRA / caQTL / variant-effect / open-chromatin distinction and the grounding and
+  terminology rules are present on every profile. That distinction is a statement about
+  what the assays measure and is not reachable through `list_capabilities`, so removing
+  tools must not remove it.
 - **structure** — no body line may land under a different heading than it has in the
   unfiltered text, and no heading may be emitted with no body under it.
 - **capability gating of guidance keyed on a parameter or an output field**
@@ -386,11 +404,19 @@ pass by restating the constant it guards. Only **absence** and **structure** are
   `get_variant_protein_effect` and whose own prompt describes what it returns — and nothing
   had pinned it.
 
-A sixth property, **routing**, is deliberately not parametrised over the profiles: every
-surface that can reach data emits exactly one arm-routing sentence, checked over ~80 tool sets
-synthesised from the full list by removing single tools and flag-shaped tool families (see
-"Choosing How to Get Data" below). Profile-parametrised checks could not see the defect it
-guards, because all five profiles carry the example tools the arbitration cited.
+The remaining **three** classes are deliberately not parametrised over the profiles.
+**Routing** (`TestEverySurfaceWithADataPathIsRouted`): every surface that can reach data
+emits exactly one arm-routing sentence, checked over ~80 tool sets synthesised from the
+full list by removing single tools and flag-shaped tool families (see "Choosing How to Get
+Data" below). Profile-parametrised checks could not see the defect it guards, because every profile that
+actually emits the arbitration (`None`, `nocode`) carries all three example tools, so no
+profile ever exercises the case the defect lived in — arbitration emitted with an example
+tool absent. **The gate itself**
+(`TestAssemblyMechanism`): `_assemble` is exercised on synthetic `_Block`s, so the
+mechanism is pinned independently of today's prompt text. **Arm neutrality**
+(`TestRunAnalysisWordingIsArmNeutral`): the `run_analysis` bullet is byte-identical across
+every arm that carries it (`None`, `api`, `bigquery`, `code`), which is what makes the
+`code`-vs-`nocode` A/B a comparison of tools rather than of wording.
 
 `tests/test_llm_service.py::TestResolveLocalToolNames` pins the resolution itself: that
 `MCP_ENABLED=false` advertises nothing, and that `ENABLE_SUBAGENTS=true` with a dead
@@ -434,14 +460,14 @@ and stop there rather than pointed at a route it does not have.
 
 
 The routing arbitration (section "Choosing How to Get Data"), **one variant per surface**.
-Emitted when the api tools and `query_database` are both present — i.e. profile `None`:
+Emitted when the api tools and `query_database` are both present — profiles `None` and `nocode`:
 
 ```text
 - **Prefer the dedicated API tools over the database.** They access the same underlying data. Use a dedicated tool (e.g. get_credible_sets_by_gene, get_exome_results_by_gene, get_gene_based_results) even when querying several genes — calling a tool several times is fine and gives cleaner results than writing SQL.
 - Fall back to the database for queries that genuinely cannot be expressed with the API tools: complex joins, custom aggregations across many phenotypes, or filters the API tools do not support.
 ```
 
-Emitted whenever `run_analysis` is present — which is every profile except `rag`, and which a
+Emitted whenever `run_analysis` is present — every profile except `rag` and `nocode`, and which a
 feature flag in front of that tool (`genetics-results-suite-4h6.56`) would remove with no
 edit to the prompt:
 
@@ -471,8 +497,9 @@ leaving the `run_analysis` bullet unopposed on the very benchmark built to compa
 precondition is a `requires_all` now and each `(e.g. …)` list is its own block, so an absent
 example costs the examples and not the arbitration. `TestEverySurfaceWithADataPathIsRouted` in
 `genetics-mcp-server/tests/test_system_prompt.py` holds the invariant over ~80 synthesised tool
-sets rather than over the five profiles — every profile carries all three example tools, which
-is why profile-by-profile checking could not see the dependence.
+sets rather than over the six profiles — every profile that emits the arbitration carries all
+three example tools, so profile-by-profile checking never exercises the case the defect lived
+in.
 
 The prompt no longer carries a "call `get_database_schema` first" instruction: that is a
 precondition of one tool, and it lives in `query_database`'s own description, which travels
