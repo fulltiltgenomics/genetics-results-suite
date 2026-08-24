@@ -188,11 +188,12 @@ fi
 
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
-# NO CMD IN THE IMAGE AND NO command:/args: IN THE MANIFEST. The image's ENTRYPOINT is the
-# bare interpreter and the supervisor is supplied HERE, at run time. Baking it in would also
-# clear the refusal in scripts/deploy.sh that is currently the only thing keeping a
-# Deployment with no working supervisor from scheduling behind a `kubectl apply` that
-# returned 0 — that is genetics-results-suite-4h6.50's to clear, deliberately last.
+# NO CMD IN THE IMAGE. The ENTRYPOINT is the bare interpreter and the supervisor is supplied
+# HERE, at run time — the same argv k8s/deployments/sandbox.yaml now passes as
+# `args: ["/genetics/supervisor.py"]` (genetics-results-suite-4h6.50), so this run exercises
+# the deployed invocation. Baking a CMD into the image instead would make a manifest that has
+# lost its args: start a supervisor anyway, which is what deploy.sh's container-level
+# command:/args: refusal relies on being loud.
 docker run -d --name "${NAME}" \
   --read-only \
   --cap-drop ALL \

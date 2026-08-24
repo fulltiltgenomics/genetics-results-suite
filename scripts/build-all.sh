@@ -39,6 +39,8 @@ APP_NAME="${APP_NAME:-FinnGenie}"
 echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
 SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
+# set to the reason by either sandbox skip branch below; read by the final summary
+SANDBOX_SKIPPED=""
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src"' EXIT
@@ -147,6 +149,7 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
   # image build would refuse anyway (build-checks.py), so stop here with a readable reason
   SANDBOX_PLACEHOLDERS=$(find "${SANDBOX_DIR}/schema" "${SANDBOX_DIR}/stubs" -name 'PLACEHOLDER*' 2>/dev/null | tr '\n' ' ')
   if [ "${SANDBOX_DOCS_OK}" -ne 0 ] || [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
+    SANDBOX_SKIPPED="the schema docs / SDK stubs could not be generated or verified"
     echo ""
     echo "!!! SKIPPING sandbox: could not generate or verify the schema docs and SDK stubs"
     echo "!!! (gen-sandbox-docs.py / test-sandbox-docs.py exit ${SANDBOX_DOCS_OK};"
@@ -161,6 +164,7 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     rm -rf "${SANDBOX_DIR}/.sdk-src"
   fi
 else
+  SANDBOX_SKIPPED="${MCP_SERVER_BRANCH} of genetics-mcp-server has no src/genetics_mcp_server/sdk"
   echo ""
   echo "!!! SKIPPING sandbox: ${MCP_SERVER_BRANCH} of genetics-mcp-server has no"
   echo "!!! src/genetics_mcp_server/sdk. The sandbox image is not shippable without"
@@ -168,4 +172,38 @@ else
 fi
 
 echo ""
-echo "All images built and pushed."
+if [ -z "${SANDBOX_SKIPPED}" ]; then
+  echo "All images built and pushed."
+  exit 0
+fi
+
+# THE SUMMARY LINE MUST NOT LIE. Both sandbox skips above are deliberate guards (an image with
+# no SDK or with placeholder schema docs is not shippable — genetics-results-suite-4h6.11/4h6.13)
+# and they stay non-fatal for a suite build that does not deploy the sandbox. What was wrong is
+# that the skip was a warning in the middle of a long build log and the script still signed off
+# with "All images built and pushed." That was survivable only while deploy.sh refused to apply
+# sandbox.yaml at all; now that the manifest carries args:, the next deploy applies a sandbox
+# Deployment pointing at a tag this run never pushed. So: always restate the skip at the end, and
+# make it FATAL when this deployment's tfvars actually enables the sandbox — the same
+# sandbox_pool_enabled derivation deploy.sh uses for ENABLE_SANDBOX, read from the same file.
+# An explicit ENABLE_SANDBOX in the environment wins, as it does there.
+echo "!!! Every image EXCEPT the sandbox was built and pushed."
+echo "!!! sandbox SKIPPED: ${SANDBOX_SKIPPED}"
+TFVARS_SANDBOX_POOL="false"
+if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
+  TFVARS_SANDBOX_POOL="true"
+fi
+if [ "${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}" = "true" ]; then
+  if [ -n "${ENABLE_SANDBOX:-}" ]; then
+    WHY="ENABLE_SANDBOX=${ENABLE_SANDBOX} in the environment"
+  else
+    WHY="sandbox_pool_enabled = true in ${TFVARS##*/}"
+  fi
+  echo "!!! The sandbox is enabled for this deployment (${WHY}), so scripts/deploy.sh WILL"
+  echo "!!! apply k8s/deployments/sandbox.yaml and the pod would ImagePullBackOff on a tag"
+  echo "!!! that was never pushed. Failing this build rather than handing the deploy a"
+  echo "!!! missing image."
+  exit 1
+fi
+echo "!!! The sandbox is not enabled for this deployment, so this is not fatal — but do not"
+echo "!!! enable it until the sandbox image builds."

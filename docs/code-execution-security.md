@@ -157,12 +157,35 @@ and is not duplicated here.
   and break "one execution at a time" from per-pod to per-cluster; a liveness probe racing a
   legitimate 120s execution restarts the pod and kills the script, which the supervisor's own
   wall clock already handles.
-- **No `command` / `args`.** The image ships no `CMD` on purpose and the supervisor (`4h6.39`)
-  does not exist yet, so an applied pod would start `python3` with no script and
-  CrashLoopBackOff — it *schedules*, so this is not the Pending case. `scripts/deploy.sh`
-  therefore refuses to apply the file at all while it declares neither field, naming `4h6.39`;
-  the refusal is keyed on the manifest and clears itself when `4h6.50` adds `args:` (the last
-  bead of the supervisor chain — `4h6.39` deliberately does not touch the manifest).
+- **`args: ["/genetics/supervisor.py"]`, and still no `CMD` in the image** (`4h6.50`). The
+  image's ENTRYPOINT is the bare interpreter, so the pod runs
+  `/usr/bin/python3 /genetics/supervisor.py`. The absolute path rather than `-m supervisor`
+  is **not** because the module would fail to resolve — measured in the image, CPython
+  prepends the process's cwd to `sys.path` for `-m` regardless of `PYTHONPATH`, `WORKDIR` is
+  `/genetics`, and `docker run … -m prewarm` exits 0 — but because an absolute path does not
+  depend on the cwd the container happens to start in, and is the same argv
+  `scripts/run-sandbox-local.sh` passes. Keeping the default *out of the image* is what keeps
+  the failure loud: with no `CMD`, a manifest that loses its `args:` starts `python3` with no
+  script and CrashLoopBackOffs — it *schedules*, so this is not the Pending case — behind a
+  `kubectl apply` that returned 0 with nothing waiting on the rollout. `scripts/deploy.sh`
+  therefore refuses to apply the file unless the **container named `sandbox`, in the
+  Deployment named `sandbox`**, declares a non-empty `command:` or `args:`. It parses the file
+  with PyYAML rather than grepping it, so indentation cannot trip it and a `command:` belonging
+  to an initContainer, another container or another document in the file cannot clear it; a
+  file it cannot parse, or a missing PyYAML, fails **closed** with the cause named.
+- **The sandbox image must exist before the manifest is applied** (`4h6.50`). `scripts/build-all.sh`
+  skips the sandbox image **non-fatally** when the resolved genetics-mcp-server branch has no
+  SDK (`4h6.11`) or when the generated schema docs and stubs fail to verify (`4h6.13`). Those
+  skips are correct as guards — neither image is shippable — but while the `args:` refusal above
+  was unclearable they could not reach the cluster, and now they can: a build that omitted the
+  image, followed by a deploy that applies the Deployment, is an ImagePullBackOff behind a
+  `kubectl apply` that returned 0. Both ends are closed. `build-all.sh` no longer signs off with
+  "All images built and pushed." after a skip; it restates the skip as the last line and **exits
+  non-zero when the deployment's tfvars actually sets `sandbox_pool_enabled = true`** (the same
+  derivation deploy.sh uses). `deploy.sh` independently verifies `${REGISTRY}/sandbox:${TAG}`
+  exists in Artifact Registry before applying, treating a definite `NOT_FOUND` as fatal and an
+  unanswerable query (no `gcloud`, no `artifactregistry.reader`) as a warning — inability to
+  answer is not evidence of absence and must not block a deploy.
 - **The apply is gated on the node pool.** `scripts/deploy.sh` skips the file unless
   `ENABLE_SANDBOX=true`, derived from `sandbox_pool_enabled` in `terraform.tfvars` rather than
   being a second switch, and refuses the apply outright if no node carries `workload=sandbox`
@@ -1789,8 +1812,10 @@ per-execution directory and child environment, the startup assertions and the fo
 it runs the real supervisor in the local interpreter against a temporary `/scratch` root and
 forks real children. The image now carries the file (`sandbox/Dockerfile` copies it to
 `/genetics/supervisor.py`), which does **not** make the image start one: there is still no
-`CMD`, `k8s/deployments/sandbox.yaml` still declares no `command`/`args`, and `deploy.sh`
-still refuses to apply it. `4h6.50` clears that, last in the chain and deliberately so.
+`CMD`. `4h6.50` supplies it from the manifest instead — `args: ["/genetics/supervisor.py"]` on
+the sandbox container — which is what clears `deploy.sh`'s refusal, last in the chain and
+deliberately so. Verified against the built image rather than assumed: `docker run <image>
+/genetics/supervisor.py` binds `:8080` and answers `/health`.
 
 **The child is forked and never exec'd.** That is what makes `prewarm()` worth anything —
 the pre-imported numpy/scipy/polars/matplotlib pages are inherited copy-on-write — and it is
@@ -2048,10 +2073,14 @@ entrypoint and the same supervisor** in a plain container:
 ```
 
 **There is no local code path.** The supervisor is passed as the container's command at
-`docker run` time, exactly as `4h6.50` will pass it as `args:`; the image still ships no
-`CMD` and the manifest still declares neither `command` nor `args`, so `scripts/deploy.sh`'s
-refusal is untouched and nothing here can reach a cluster. chat-backend's client holds one
-base URL and does the same thing against both.
+`docker run` time, which is exactly what the manifest now does with
+`args: ["/genetics/supervisor.py"]` (`4h6.50`, landed); the image still ships no `CMD`, so the
+local runner and the pod share one argv rather than one of them relying on a baked default.
+Nothing here can reach a cluster because this is a `docker run` on a laptop, not because
+`scripts/deploy.sh` refuses the manifest — that refusal is now *satisfied* by the `args:` key,
+and it checks the container named `sandbox` in the Deployment named `sandbox` rather than
+anything about this script. chat-backend's client holds one base URL and does the same thing
+against both.
 
 | local flag | the manifest line it stands in for |
 |---|---|
@@ -4629,9 +4658,25 @@ older `genetics-secrets` that predates this work fails at deploy time rather tha
 start.
 
 The one lockout is **`SANDBOX_ENABLED=true` with either secret missing**, which is
-`sys.exit(1)` in both services by design — a crash-looping db-api and results-api is the
-whole suite down. Both manifests therefore ship it as `"false"`; the deploy that creates the
-sandbox Deployment (`4h6.7`) flips it, and must do so only after `create-secrets.sh` has run.
+`sys.exit(1)` in both verifiers by design — a crash-looping db-api and results-api is the
+whole suite down. **Three manifests ship `SANDBOX_ENABLED: "false"`, not two**
+(`genetics-results-suite-4h6.85`): `k8s/deployments/db-api.yaml`, `results-api.yaml` and
+`chat-backend.yaml`. chat-backend is not a verifier — it mints the tokens and gates the
+`run_analysis` tool — so it does not key the startup assertion, but leaving it `"false"` while
+the sandbox is live withholds `run_analysis` from every tool list with no signal anywhere. The
+deploy that creates the sandbox Deployment (`4h6.7`) flips all three, and must do so only after
+`create-secrets.sh` has run; `scripts/test-network-policies.py` fails the deploy if any of the
+three is left `"false"` or undeclared once a sandbox workload is discoverable.
+
+**What the enabled deploy actually does with the sandbox** (`scripts/deploy.sh`, with
+`ENABLE_SANDBOX=true`): the preflight checks the gVisor node, the container-level `args:` and
+the sandbox image's presence in the registry *before the first apply*; the manifest loop
+resolves the db-api and results-api ClusterIPs from the live cluster, substitutes them into
+`hostAliases` and applies `sandbox.yaml`; and `sandbox` is appended **last** to the
+`kubectl rollout restart` / `rollout status` list — last on purpose, because `strategy: Recreate`
+on a single pinned node makes the restart a brief outage of code execution and a restart
+mid-execution kills that script. With the gate off, none of that runs: the file is skipped, never
+deleted.
 **Rollback direction: set `SANDBOX_ENABLED=false` and restart** — that restores service
 immediately without touching secrets or images, and only disables the startup assertion, not
 the token validation. Since `genetics-results-suite-rhh` it also does **not** re-open
