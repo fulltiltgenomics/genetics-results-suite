@@ -572,10 +572,54 @@ evaporate. So the map's protection rests on **Yama's `ptrace_scope=1`**, not on 
 profile — **MEASURED under `runc`, UNVERIFIED under gVisor**, which implements `ptrace` and
 `/proc` in the sentry and which `4h6.51` owns measuring (no `runsc` on this machine, measured
 2026-08-20). Read it as one unmeasured gVisor fact, not as a property of the profile list
-above. INFERENCE, not measured: the value is the **node's** — a pod with
-`readOnlyRootFilesystem` and no `CAP_SYS_ADMIN` cannot write `/proc/sys/kernel/yama/*` — so a
-node booted with `ptrace_scope=0` removes this protection entirely, and nothing in
-`k8s/deployments/sandbox.yaml` asserts or checks the value.
+above. **The same map, and now the per-execution artifact key (`4h6.88`), rest on it.**
+
+**MEASURED UNDER GVISOR 2026-08-24, and the earlier "UNVERIFIED under gVisor" is now
+resolved.** A real `PTRACE_ATTACH` (request 16, via `ctypes`) at uid 65532 inside one
+container, `ptrace_scope=1`, under both runtimes:
+
+| attacker → target | `runsc` | `runc` |
+|---|---|---|
+| sibling → sibling (same uid, **not** a descendant) | **DENIED, `EPERM`** | **DENIED, `EPERM`** |
+| parent → its own child (a descendant) | **ALLOWED**, returns 0 | **ALLOWED**, returns 0 |
+
+Identical under both. **The parent→child row is the control and it is what makes this a
+security property rather than an artefact:** it rules out "`ptrace` is simply unimplemented
+under gVisor" masquerading as protection. gVisor implements the Yama **relational** rule, not
+a blanket ban. So the secrecy the digest map and the artifact key depend on **is sound under
+gVisor as this sandbox is configured today**.
+
+**"A node booted with `ptrace_scope=0` removes this protection entirely" was wrong, and it is
+wrong in a way worth stating exactly.** It is not that the node's value is merely irrelevant.
+Two measured facts:
+
+1. **gVisor's `ptrace_scope` is a sandbox-internal emulated sysctl.** The guest reads and
+   writes its own; the host's was 1 before these tests and still 1 after. So the node's value
+   is not the lever the old sentence claimed it was.
+2. **gVisor does not create the read-only `/proc/sys` mount `runc` uses to enforce the OCI
+   `readonlyPaths` list.** `grep " /proc/sys " /proc/mounts` returns a `ro` proc mount under
+   `runc` and **nothing** under `runsc`. Writing `0` to
+   `/proc/sys/kernel/yama/ptrace_scope` on the real image: `runsc` at uid 65532 → `EACCES`,
+   value stays 1; `runsc` at **uid 0 → SUCCEEDS**, value becomes 0; `runc` at uid 65532 →
+   `EACCES`; `runc` at uid 0 → `EROFS`. The full chain was then demonstrated: under `runsc` as
+   uid 0, after lowering the value, the sibling→sibling attach that was `EPERM` above
+   **returns 0**. The sysctl is live, not decorative.
+
+**So under gVisor, `ptrace_scope=1` is protected by the sandbox never having uid 0, and by
+nothing else.** The read-only-`/proc/sys` layer that would independently protect it under
+`runc` is **absent**. There is no live exposure today — the pod is `runAsNonRoot` at 65532
+with `drop: [ALL]` and `allowPrivilegeEscalation: false`, so nothing inside can become uid 0 —
+but **the defence-in-depth layer a reader would assume is there is not there**, and any future
+change that grants root inside the sandbox silently voids this property instead of hitting a
+second wall. Treat "no uid 0 in the sandbox" as load-bearing for `4h6.82` and `4h6.88`, not as
+hygiene.
+
+**RESIDUAL, stated rather than quietly dropped.** These measurements are from **docker/runsc on
+a development machine**. On GKE Sandbox the `/proc` masking is supplied by **containerd**, not
+docker, and containerd's `readonlyPaths` handling may produce a different mount table. The
+**dependency** — uid 0 inside the sandbox would void `ptrace_scope=1` — transfers as a design
+conclusion. The **exact writability result does not**, and should be re-measured on a real GKE
+Sandbox node. Nothing in `k8s/deployments/sandbox.yaml` asserts or checks the value either way.
 
 ### Where the image lives
 
@@ -1081,8 +1125,10 @@ opposite: the queue described immediately below holds up to two *other* users' r
 one executes, and retention holds completed ones for five minutes, so the pod is co-tenanted
 by construction — just not simultaneously. What the fork server (`4h6.55` option (b), "As built"
 below) removes is the memory route between those tenants. Of the other two: the `/scratch`
-route is closed for **integrity** and open for **reading**
-(`genetics-results-suite-4h6.82` closed, `genetics-results-suite-4h6.88` open), and the
+route is closed for **integrity** (`genetics-results-suite-4h6.82`) and, for **reading**,
+closed **between** executions and open **within** one (`genetics-results-suite-4h6.88`:
+retained artifacts are encrypted, the live window is not — see "Artifact encryption at rest"),
+and the
 escaped-process route is **bounded** across executions — a chain of `setsid()`'d processes is
 cleared `FS_SWEEP_MAX_ROUNDS` (4) levels deep per execution, and a deeper one loses four more
 levels on each subsequent execution — and open **within** one
@@ -1209,6 +1255,7 @@ Non-2xx is reserved for the supervisor refusing or being unable to run it at all
 | `error` | object or `null` | present iff `status != "ok"`; see below |
 | `artifacts` | array of objects, always present, `[]` if none | the manifest; see below |
 | `artifacts_omitted` | integer ≥ 0 | files present in the artifacts directory that could not be listed retrievably; see below |
+| `artifacts_retained_in_clear` | boolean | true iff the seal pass could **neither encrypt nor delete** what the script wrote, so those bytes stay readable at the shared uid until the reaper removes the directory (`4h6.88`); false on every other outcome, including a plain failure that ended in deletion. Always present. Deliberately **not** folded into `artifacts_omitted`, which means "produced, present, not listed" and cannot distinguish "destroyed everything" from "destroyed nothing" |
 
 The response carries **no token, no filesystem path, no environment and no host name**.
 
@@ -1390,9 +1437,10 @@ adds no new trust assumption, only a new thing to read.
 enumerable by any process at the shared uid 65532 — MEASURED from inside a second execution's
 child, which listed `/scratch`, found a previous execution's directory by name and read its
 `artifacts/private.csv`. The id being unguessable bounds who can ask *the supervisor* for
-bytes; it bounds nothing about who can open the file. That gap is
-`genetics-results-suite-4h6.88` and is **open**; see "What the retention window serves" below
-for the half that is closed.
+bytes; it bounds nothing about who can open the file. **Opening it no longer yields the
+plaintext** — see "Artifact encryption at rest" below for exactly which half of that
+`genetics-results-suite-4h6.88` closes and which half it does not — and see "What the
+retention window serves" for the integrity half (`4h6.82`).
 
 **What the retention window serves: the bytes the manifest described, or nothing**
 (`genetics-results-suite-4h6.82`). The same measurement showed the peer artifact could be
@@ -1433,12 +1481,171 @@ execution is still readable but no longer verifiable. The cost is that a caller 
 retention evicts older executions sooner — the same denial the disk ceiling already accepts.
 
 **What that does *not* close, stated so the bound is not overread.** It does not stop the
-**reading** (`4h6.88`, above; under one uid no filesystem mechanism bounds it). It does not
+**reading** — that is `4h6.88`, and what it now bounds is stated in the next subsection; under
+one uid no *filesystem* mechanism bounds it, and encryption is not a filesystem mechanism. It does not
 cover **planting into a LIVE execution before `build_manifest` runs** — that window is inside
 what the manifest is built from, though it is now narrower, because the process-group kill and
 the fork server's sweep both run before `_retain` and `build_manifest`. It does not cover
 **deletion or DoS**: a same-uid process can still delete a retained artifact, and the answer is
 then an honest `404`.
+
+**Artifact encryption at rest** (`genetics-results-suite-4h6.88`). Between the reap and the
+manifest, the supervisor seals the retained artifacts in place with AES-256-GCM under a
+**per-execution key that exists only in the supervisor's memory** and is never written
+anywhere. `read_artifact` opens it again on the way out. The file on disk becomes
+`nonce(12) || ciphertext || tag(16)`.
+
+**The property is "a retained directory is sealed or empty", and it is structural.** Stated
+that way rather than as "every retained artifact is sealed" because the second sentence was
+measurably false: the seal pass runs on the **completion** path, so any exception out of
+`_execute_inner` — a `ForkServerError` out of `_reap`, which this module models explicitly —
+propagated **past** it, and `run()`'s `finally` then retained the directory for the whole of
+`RETENTION_S` with the child's plaintext exactly where it wrote it. It is now enforced in
+`_release`, on the retain path itself, which every route to retention passes through:
+`Job.sealed` records whether the seal pass ran, and if it did not, `_secure_unsealed` empties
+the whole execution directory (`artifacts/`, `tmp/`, `home/`, the caches) and leaves the
+directory itself in place so the id stays reserved and the reaper's schedule is unchanged.
+Nothing is lost by that: no manifest was built and no digest map was recorded, and
+`read_artifact` refuses every name of an execution with an empty map, so **every byte in such
+a directory is already unreachable through the API** and readable only by a same-uid peer.
+
+**The one case where the property does not hold is reported, not logged over.** If plaintext
+can be neither sealed nor deleted — a same-uid peer `chmod 0500` on `artifacts/` between the
+retain and the seal, MEASURED — then **no arrangement of this code removes it**, and the
+residual is exactly that: the artifacts **are** retained in the clear, readable by any process
+at the shared uid until the reaper removes the directory. What the supervisor can do is say
+so, and it does — a `LOG.error` naming the execution, and **`artifacts_retained_in_clear: true`
+in the `200` response**. It is a field of its own and not a larger `artifacts_omitted`, because
+that field means "produced, present, not listed" and cannot carry "we could not remove your
+data"; `_purge_artifacts` returns whether the directory is actually empty precisely so the
+caller can tell "destroyed everything" from "destroyed nothing".
+
+**It is not a `500`, and that is a fix, not an omission.** Answering `500` was the first
+attempt and it is a **same-uid denial-of-service kill switch**: MEASURED 3 for 3, a second
+process at this uid — the `setsid()` escapee this document already models — polling
+`/scratch/*/artifacts` and `chmod 0500`-ing any directory holding a file turned every
+execution into `http 500, output null`, destroying the stdout of scripts that had **run to
+completion**. And the `500` buys **no confidentiality**: in the only case that produces it,
+deletion is what failed, so the peer already holds the plaintext whether the caller is told
+`200` or `500`. `ENOSPC` does not reach this path either — injecting `OSError(ENOSPC)` into
+the seal's write answers `200` with the output and `artifacts_omitted: 1`, because `unlink`
+succeeds when the write does not — so the path is adversarial in practice, and withholding a
+successful analysis would have been the attacker's whole payoff. The caller now keeps its
+output **and** is told, in a field it can branch on, that those artifacts are exposed.
+
+The same limit applies on the `_release` side: if `_secure_unsealed` cannot delete an entry it
+says so in the log and the entry stays in the clear until the reaper removes the directory.
+Nothing here can remove a file the kernel refuses to unlink — what changed is that the code no
+longer claims it did.
+
+**What it closes, precisely: the cross-execution read of a COMPLETED execution** — the attack
+that was actually demonstrated (`listdir(/scratch)` → a peer's `artifacts/private.csv` →
+`SECRET-VICTIM-DATA`). For the 300–330 s of the retention window, a process at the shared uid
+that opens another execution's artifact now gets ciphertext.
+
+**What it does NOT close, and this list is the point of the subsection:**
+
+- **The LIVE window is untouched.** The child writes **plaintext** with a raw `open()` into
+  its own `artifacts/`, and there is **no SDK chokepoint to intercept**: the shipped SDK and
+  the stubs under `sandbox/stubs/` expose **no artifact-writing function at all** — the
+  supervisor hands the child `SANDBOX_ARTIFACTS_DIR` and the script uses ordinary file I/O.
+  So encryption *cannot* live on the write side. A same-uid resident reading **during** an
+  execution reads exactly what it read before. That window is up to `timeout_s` (1–120,
+  default 60) + `KILL_GRACE_S` (2 s), plus the reap-to-seal tail.
+- **The `setsid()` escapee keeps its write access.** A descendant that left the process group
+  survives `_kill_group` and still holds `/scratch/<id>/artifacts` (see "What the kill path
+  reaches"). Sealing writes a new inode and `rename()`s it into place, which does break the
+  fd it was already holding — but it can `open()` the name again at the same uid and write
+  over the sealed file. **GCM's tag makes that write DETECTABLE, not IMPOSSIBLE:** the read
+  answers `409 ArtifactModified` instead of serving it. This is a genuine improvement over
+  the digest map alone — the tag also catches a whole sealed file *moved* between names or
+  lifted from another execution, which a content hash cannot — and it is still detection, not
+  prevention.
+- **The key is no better protected than the digest map.** It sits in the same process memory
+  and rests on the same two things: **Yama `kernel.yama.ptrace_scope=1` plus the fact that
+  the supervisor is the child's ancestor** — **not** on the seccomp profile, which allows
+  `ptrace` (`RuntimeDefault`, MEASURED, `4h6.90`). That refusal is now MEASURED under **both**
+  `runsc` and `runc` (see "What the default profile blocks, re-derived": sibling→sibling
+  `EPERM`, parent→child allowed, identically under each), so it is a live property and not an
+  assumption — with the single point of failure named there: **uid 0 inside the sandbox would
+  void it**, because gVisor has no read-only `/proc/sys` to stop the sysctl being lowered. The
+  key inherits that standing exactly and does not improve it. What it *does* add is that the
+  key is minted **per execution** and dies with the entry it belongs to.
+- **A supervisor restart destroys every retained artifact.** This is **not a new behaviour**:
+  the whole retention registry (`_retention`, `_retained_ids`, `_artifact_digests`) is
+  already in memory only, and `wipe_unrecognised_scratch()` deletes every execution directory
+  at startup. Losing the keys changes nothing that was not already lost.
+
+**Why the key can be held here at all.** `ForkServer.start()` runs once in `bring_up()`,
+**after** `prewarm()` and **before** `ready` — so the snapshot every execution child is forked
+from is taken *before any key exists*, and no key can reach a child through it. That property
+holds only while `_forkserver_main`'s standing rule holds: **nothing per-execution may travel
+the fork-server control socket.** A key passed through it would void `4h6.55` option (b)
+outright.
+
+**Implementation choices worth knowing, because each was a fork in the road:**
+
+- **`ctypes.CDLL("libcrypto.so.3")`, no new dependency.** `sandbox/requirements.txt` pins
+  `numpy`, `scipy`, `polars`, `matplotlib`, `httpx` and nothing else; `cryptography` would add
+  a bundled OpenSSL and a large Rust-built shared object to the image whose job is to *be* the
+  boundary. The soname is **hardcoded** because `ctypes.util.find_library("crypto")` returns
+  `None` in a distroless image (no `ldconfig`, no `gcc`) — MEASURED in `genetics-sandbox:local`
+  (python 3.11.2, OpenSSL 3.0.19), where 10 MiB sealed in 0.035 s and opened in 0.033 s: about
+  0.2 s against the whole 64 MiB artifact quota, charged to the execution that produced it.
+- **The manifest still describes the PLAINTEXT.** `size` and the sha256 are measured during
+  the seal pass, while the plaintext still exists, so nothing downstream changes meaning
+  because the file grew an envelope. `4h6.82`'s digest binding is unchanged and is verified
+  **after** decryption, on the bytes that will actually be returned. Hashing the ciphertext
+  instead would have been cheaper and would have quietly redefined that property.
+- **`ARTIFACT_READ_MAX_BYTES` (512 KiB) is charged against the PLAINTEXT.** The cap exists to
+  bound the *response* — base64 of the plaintext inside a 1 MiB JSON envelope — so a sealed
+  file is allowed 28 bytes more on disk and the plaintext is re-checked after it is opened. An
+  artifact of exactly 512 KiB is served as it was before; 512 KiB + 1 is still `413`. The
+  boundary did not move in either direction, and the tests assert both sides of it.
+- **What cannot be served is deleted rather than sealed.** `read_artifact` can only be asked
+  for a bare name, and `build_manifest` lists only retrievable regular files with
+  `st_nlink == 1` directly in `artifacts/` — so a **subdirectory's contents**, a **symlink**, a
+  **hard link** and a **name with a control character in it** have no reader at all. Retaining
+  them would leave exactly the plaintext this pass exists to remove, so the pass deletes them
+  and counts them into `artifacts_omitted`.
+- **It fails closed, and "closed" means destroyed — but destruction is per file wherever it
+  can be.** A file that cannot be sealed is **deleted, counted into `artifacts_omitted`, and
+  the pass carries on**; the rest of the execution's artifacts are sealed and served normally.
+  It used to raise on the first failure and the caller destroyed the execution's whole output,
+  which cost three readable artifacts when a fourth was unreadable — the security property is
+  identical either way (what is not sealed is gone) with a blast radius of one file instead of
+  an execution, and `ENOSPC` is a realistic trigger because the seal writes a full temporary
+  copy of each artifact into the same 512Mi `emptyDir` the retained trees live in. **The
+  whole-directory purge is kept for a failure that cannot be attributed to one file** — the
+  directory not opening, more entries than the scan bound can account for, libcrypto going
+  away — because then nothing on disk has been examined and nothing on disk can be trusted.
+  The two outcomes that are *not* allowed are "plaintext left on disk and retained" and "the
+  artifact vanishes silently behind a 200"; the execution itself still answers, because the
+  retention path failing is not the script failing. If libcrypto is unusable at all,
+  `bring_up()` raises **before `ready`** and the pod CrashLoopBackOffs rather than degrading
+  quietly.
+- **The envelope costs disk, and the figure is in the units the quota uses.** 28 bytes per
+  file of *apparent* size — but the quota is charged in `st_blocks * 512 + DIRENT_COST_BYTES`,
+  not apparent size, so the overshoot is measured in **blocks**. MEASURED on a 512 KiB
+  artifact: 28 bytes of apparent growth, **4096 bytes of `st_blocks` growth**. 28 bytes can
+  push a file into at most one more 4 KiB block, so the true worst case is
+  `ARTIFACT_ENTRY_BUDGET` × 4096 = **4 MiB** per execution, not the 28 KiB an earlier revision
+  of this bullet claimed (146× low). The seal pass runs **after** `_trim_artifacts`, so a
+  retained tree can sit that far over the 64 MiB per-execution quota; the measured `st_blocks`
+  growth is added back into the cached retained size, so `RETAINED_ARTIFACTS_CEILING_BYTES`
+  (256 MiB) and the watchdog's aggregate check are still enforced over true numbers — the
+  *ceiling* stays exact and it is the *per-execution quota* that becomes a quota plus a
+  bounded envelope. `SCRATCH_AGGREGATE_CEILING_BYTES` re-measures on every poll and needs no
+  correction.
+- **A zero-byte artifact is an ordinary output and is sealed and served like any other.** An
+  empty result frame from `to_csv`, a log nothing wrote to: it seals to a bare 28-byte
+  envelope with the sha256 of `b""`, and `GET /artifact` answers `200` with an empty body.
+  This is called out because it was the one input that broke: GCM needs no update call for
+  zero bytes, the read path made one anyway, and the resulting `ValueError` out of the
+  `ctypes` layer reached `socketserver.handle_error` — which logs a traceback and **closes the
+  socket with no status line**. The startup selftest now probes the zero-byte case as well as
+  the 132-byte one, and the read path's crypto arm catches on the *property* ("the crypto
+  layer could not open this") rather than on an enumeration of exception types.
 
 **Retained executions only.** A running execution is not served: its bytes are still moving
 and a half-written PNG is worse than a 404. By the time the submitter has the id in a
@@ -2264,8 +2471,12 @@ finding 1 exactly.
   It has since been **split in half**: the **integrity** half — the retention window serving
   attacker-controlled content under another user's execution id — is **closed** by the manifest
   digests described under `GET /artifact` above (`genetics-results-suite-4h6.82`). The
-  **reading** half is `genetics-results-suite-4h6.88` and is **open**, and under one uid no
-  filesystem mechanism bounds it.
+  **reading** half is `genetics-results-suite-4h6.88`: the **retained** window is closed by
+  encrypting every artifact in place under a per-execution key held only in supervisor memory,
+  and the **live** window — a resident reading while the execution is still running, when the
+  child's own plaintext `open()` is what put the bytes there — is **open**. Under one uid no
+  *filesystem* mechanism bounds either; encryption is not a filesystem mechanism, which is why
+  it reaches the first half and cannot reach the second. See "Artifact encryption at rest".
 - **Finding 3, a `setsid()` resident that survives every group kill** (`genetics-results-suite-4h6.83`).
   A detached grandchild of an earlier execution polls `/scratch`, reads the *next* execution's
   mode-0600 token file inside the read-once window, and is unreachable by `killpg` because it
@@ -4909,8 +5120,18 @@ resolved that by simply keeping the directory would silently invert the "nothing
 property that 6.1 and 6.4 assert. The rule:
 
 - On completion, the supervisor deletes everything under `/scratch/<id>` **except**
-  `/scratch/<id>/artifacts` — the one subdirectory the SDK writes named outputs into.
+  `/scratch/<id>/artifacts` — the one subdirectory whose contents are retrievable afterwards.
+  **Nothing in the SDK writes it.** An earlier version of this line called it "the one
+  subdirectory the SDK writes named outputs into"; that was wrong. The shipped SDK and the
+  stubs under `sandbox/stubs/` expose **no artifact-writing function at all** — the supervisor
+  exports `SANDBOX_ARTIFACTS_DIR` into the child's environment and the script writes there
+  with an ordinary `open()`. That absence is not cosmetic: it is why `4h6.88` had to encrypt
+  **after** the reap rather than at a write chokepoint, and why the live window stays open.
   Working files, temp, `HOME`, caches and any inputs go immediately.
+- Everything retained is **encrypted in place** before the manifest is built
+  (`genetics-results-suite-4h6.88`); anything that could never have been served — a
+  subdirectory, a symlink, a hard link, an unretrievable name — is deleted instead. See
+  "Artifact encryption at rest" under `GET /artifact`.
 - `/scratch/<id>/artifacts` is retained for **5 minutes** from completion, then deleted
   unconditionally by the supervisor's reaper, whether or not it was ever read. Five
   minutes is longer than any plausible same-turn retrieval and far shorter than a session.
@@ -4980,8 +5201,9 @@ wrote those files successfully, so a name the model can see in its own code may 
 offered, and asking for it is a legitimate `404`. The manifest never *lies* — the trim runs
 before it is built, precisely so it cannot advertise a name that is already gone, and the
 deletions are folded into `artifacts_omitted`. **That field is a combined floor, not a trim
-counter.** It is `omitted + trimmed`: `build_manifest`'s own omissions (entries it could not
-`stat`, or that were not regular files with `st_nlink == 1`) plus the trim's deletion count,
+counter.** It is `omitted + trimmed + purged`: `build_manifest`'s own omissions (entries it
+could not `stat`, or that were not regular files with `st_nlink == 1`), plus the trim's
+deletion count, plus whatever the seal pass destroyed or could not seal (`4h6.88`),
 and the first half stops being a count of its own past the scan limit — beyond that the
 directory is no longer enumerated and the supervisor logs that `artifacts_omitted` is a floor.
 A client can read it as "at least this many names are missing", never as "the trim deleted
