@@ -1133,7 +1133,33 @@ def seal_artifact(dfd, name, key, aad, chunk_bytes=CRYPT_CHUNK_BYTES):
     src = dst = None
     try:
         try:
-            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+            # O_NONBLOCK FOR read_artifact_bytes' REASON (genetics-results-suite-4h6.52), and
+            # THIS is the site that reaches it in production: seal_retained_artifacts lstat'd
+            # the entry and found a regular file with st_nlink == 1, then opens it BY NAME —
+            # the identical check-then-open window. A same-uid peer that unlinks a listed file
+            # and mkfifos it back inside that window would block O_RDONLY in the kernel
+            # forever, on _execute_inner's completion path, holding the execution slot with no
+            # timeout above it. With the flag the open returns instead of blocking. MEASURED
+            # against the real production path (seal_retained_artifacts -> build_manifest ->
+            # read_artifact), the two fifo cases differ: a WRITERLESS fifo gives EOF on the
+            # first read, `not got` ends the loop with nothing written, and what gets renamed
+            # over the name is an EMPTY sealed regular file, digest e3b0c442… — served empty
+            # with 200. A fifo WITH A QUEUED WRITER instead gives EAGAIN only until the writer's
+            # bytes arrive; the loop reads and seals whatever the peer chose to write, and that
+            # peer-chosen content is what gets digested, sealed and later served under the
+            # victim execution's name. So the sealed file is not always empty, and the digest
+            # recorded here is faithfully the digest of what is actually served either way —
+            # that guarantee holds, but it is not by itself reassuring in the second case. This
+            # is still not a new hole: it sits inside the one-uid trust boundary
+            # genetics-results-suite-4h6.88 already concedes (a same-uid peer with write access
+            # to the name could feed it arbitrary bytes through many other means), and the
+            # flag's own defence was re-verified directly — a plain O_WRONLY|O_TRUNC by the same
+            # peer in the same window produces an IDENTICAL empty-digest outcome (sealed map
+            # (0, e3b0c442…)), so O_NONBLOCK destroys nothing here that was not already
+            # destroyable. The alternative — blocking open — is the denial the flag exists to
+            # prevent, and a blocking O_RDONLY would have reached this same open-then-read state
+            # once a writer held the fifo, so O_NONBLOCK introduces no new exposure of its own.
+            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
         except OSError as exc:
             raise ArtifactCryptoError(f"cannot open {name!r}: {exc}")
         try:
@@ -1396,9 +1422,23 @@ def _artifact_digest(dfd, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
 
     Opened relative to `dfd` with O_NOFOLLOW for build_manifest's reasons, not for tidiness:
     a path-based open here would re-admit the symlink route the directory fd exists to close.
+    O_NONBLOCK for read_artifact_bytes' reason (genetics-results-suite-4h6.52): the caller
+    stat'd the entry and found a regular file, but a same-uid peer can replace it with a fifo
+    before this open, and O_RDONLY would then block the manifest build forever. With the flag
+    the open returns instead of blocking, which is the whole of what it buys.
+
+    WHAT IT DOES NOT BUY IS None FOR THAT FIFO, and it is worth being exact because the
+    obvious reading is wrong. A writerless fifo read non-blocking gives EOF, not EAGAIN, so
+    this returns sha256(b"") — a real digest over zero bytes. That empty hash is NOT harmless
+    in general: if the peer swaps the fifo for an EMPTY REGULAR FILE before the read, the hash
+    matches and read_artifact_bytes serves it as digest-verified, which is the blank-the-file
+    case of the 409 binding defeated. What makes it moot is narrower and worth stating plainly:
+    this branch of build_manifest (`sealed is None`) has no production caller — _execute_inner
+    always passes a sealed map — so _artifact_digest runs only in tests. If a caller ever
+    reaches it with a live artifacts directory, that gap has to be closed here first.
     """
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
     except OSError:
         return None
     try:
@@ -1562,8 +1602,10 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
       * `_name_is_retrievable` first — a bare name, no separators, no control characters.
       * the directory fd is opened O_NOFOLLOW and the file is opened *relative to it*, so
         neither the artifacts directory nor the file can be a symlink out of /scratch/<id>.
-      * regular file with st_nlink == 1 — no FIFO to block the read on, no device, and no
-        hard link to something outside the tree.
+      * the file open also carries O_NONBLOCK, so a fifo left where a regular file was
+        listed cannot hang the open before any check runs (genetics-results-suite-4h6.52).
+      * regular file with st_nlink == 1 — no FIFO served, no device, and no hard link to
+        something outside the tree.
 
     Not-found is deliberately indistinguishable across "no such name", "not a regular file"
     and "the open failed": the caller learns only whether the artifact it was told about is
@@ -1624,17 +1666,23 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
         raise RequestError(404, "NotFound", "no such artifact")
     try:
         try:
-            # HAZARD, PRE-EXISTING AND NOT FIXED HERE: this open BLOCKS FOREVER on a FIFO with
-            # no writer, because O_RDONLY on a fifo waits for one and the fstat that rejects
-            # non-regular files runs after it. The docstring's "no FIFO to block the read on"
-            # is therefore a claim about what is SERVED, not about what is opened. The
-            # expected_digests check above narrows it — a planted fifo is not in the manifest
-            # and is refused before this line, and build_manifest lists regular files only —
-            # but a same-uid process that REPLACES a listed name with a fifo during the
-            # retention window still reaches it, and _artifact_digest's own open has the same
-            # shape between the stat and the read. The fix is O_NONBLOCK plus a re-open, and it
-            # belongs with whoever owns the read path rather than with the integrity binding.
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+            # O_NONBLOCK IS A CONTROL, NOT TIDINESS (genetics-results-suite-4h6.52). Without it
+            # this open BLOCKS FOREVER on a FIFO with no writer — O_RDONLY on a fifo waits for
+            # one, and the fstat that rejects non-regular files runs after the open — so a
+            # same-uid process that REPLACES a listed name with a fifo during the retention
+            # window hangs the serving thread and, through it, the chat turn waiting on the
+            # read. expected_digests narrows the hazard (a PLANTED fifo is not in the manifest
+            # and is refused above, and build_manifest lists regular files only) but does not
+            # close it, because the replacement happens after the manifest was built. NO
+            # RE-OPEN IS NEEDED: nothing non-regular is ever served, so the flag has only to
+            # let the open RETURN, after which S_ISREG refuses it in the ordinary way. It is
+            # inert for regular files, which are all that survives that check. This is now the
+            # only path that SERVES artifact bytes — chat-backend's local reader, which carried
+            # this flag from the start, was removed when read_artifact became an HTTP proxy —
+            # so the property has to hold here or it holds nowhere. It is not the only place
+            # the supervisor opens an artifact by name after stat'ing it: seal_artifact does
+            # the same on the completion path and carries the flag for the same reason.
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
         except OSError:
             raise RequestError(404, "NotFound", "no such artifact")
         try:
@@ -3463,9 +3511,11 @@ class Supervisor:
         uid 65532, MEASURED from inside an execution's child, which is
         genetics-results-suite-4h6.88 and is open. What the id bounds is who can ask this
         process for bytes; what the digest map below bounds is which bytes it will hand over.
-        There is no per-session check here — the sid-scoped resolution
-        genetics-results-suite-4h6.52 specifies belongs in chat-backend, which is the only
-        side that knows which session owns which execution.
+        There is no per-session check here, and there is not meant to be one: the sid-scoped
+        resolution genetics-results-suite-4h6.52 specifies belongs in chat-backend, the only
+        side that knows which session owns which execution, and now LIVES there — it records
+        each execution's manifest against the authenticated sid and resolves the model's
+        artifact NAME against that record before an execution_id ever reaches this route.
 
         THE DIGEST MAP IS PART OF THE ANSWER, not an optimisation. An execution that was
         retained without a manifest ever being built — an exception between ExecutionDirs

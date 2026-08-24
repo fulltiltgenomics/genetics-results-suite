@@ -1201,7 +1201,7 @@ everything downstream keys on — one `execution_id` names exactly one directory
 and one audit trail. Reusing the directory would merge two runs' artifacts into a manifest
 chat-backend has already recorded, and wiping and re-running would delete artifacts
 `read_artifact` may still be serving from the first run; both leave the `jti`/`sid` join
-`4h6.52`'s sid-scoped retrieval will build on pointing at content that is not what was
+`4h6.52`'s sid-scoped retrieval is built on pointing at content that is not what was
 recorded.
 
 **The maximum wait — not the depth — is the number the token lifetime constrains.** The
@@ -1372,13 +1372,14 @@ tolerate that and must not parse `message` for meaning.
 One entry per retrievable file, and **the shape is dictated by what `read_artifact` can
 actually consume** (`4h6.15`, `ToolExecutor.read_artifact` in
 `genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`). That function takes a
-**bare name** and resolves it against `SANDBOX_ARTIFACTS_DIR`; it rejects separators,
-backslashes, `.`/`..`, absolute paths, NUL and anything where `Path(name).name != name`
-*before* touching the filesystem, refuses a symlinked artifacts directory, requires the
-resolved directory to sit under a hardcoded `/scratch/` prefix, opens that directory with
-`O_DIRECTORY|O_NOFOLLOW` and verifies **the descriptor** through `/proc/self/fd`, then opens
-the file relative to that descriptor with `O_NOFOLLOW|O_NONBLOCK` and refuses anything that
-is not a regular file with `st_nlink == 1`.
+**bare name** and nothing else: it rejects separators, backslashes, `.`/`..`, absolute
+paths, NUL and anything where `Path(name).name != name`, then resolves the name against the
+session's recorded manifests to get an `execution_id` and asks the sandbox for it over HTTP.
+Since `4h6.52` it performs **no local filesystem access at all** — the descriptor checks
+(`O_NOFOLLOW` on the artifacts directory, the file opened *relative to that descriptor* with
+`O_NOFOLLOW|O_NONBLOCK`, `S_ISREG`, `st_nlink == 1`) run inside the sandbox in
+`read_artifact_bytes`, against the directory the hostile child actually wrote to. See
+section 6 for why the read moved.
 
 | field | type | notes |
 |---|---|---|
@@ -1408,11 +1409,13 @@ The supervisor lists a file **only if it would survive that read**, which means 
 
 Anything failing those is **omitted and counted in `artifacts_omitted`**, never listed with a
 mangled name and never silently dropped: a nonzero count tells an operator something is
-there without disclosing an attacker-chosen string. Files **over `read_artifact`'s 4 MiB read
-limit are still listed** with their true size — the refusal that follows tells the model to
-write a smaller summary, which is more useful than the file appearing not to exist. Note
-these are three separate numbers and none of them is the others: the 4 MiB per-read limit,
-the 64Mi per-execution artifact quota, and the 512Mi `emptyDir` `sizeLimit` the supervisor's
+there without disclosing an attacker-chosen string. Files **over the 512 KiB read limit are
+still listed** with their true size — the refusal that follows tells the model to write a
+smaller summary, which is more useful than the file appearing not to exist. Note these are
+three separate numbers and none of them is the others: the 512 KiB per-read limit
+(`ARTIFACT_READ_MAX_BYTES`, one number since `4h6.52` converged the two readers — it used to
+be 4 MiB on `read_artifact`'s own local path and 512 KiB on this route), the 64Mi
+per-execution artifact quota, and the 512Mi `emptyDir` `sizeLimit` the supervisor's
 sub-quotas must keep the kubelet away from.
 
 `content_type` is derived from the name (`mimetypes.guess_type`, falling back to
@@ -1431,12 +1434,14 @@ event. It is noted here only so nobody adds that assertion later and gets a flak
 else under the directory goes immediately (section 6). The manifest is what chat-backend
 records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
 
-#### `GET /artifact` — one file back out, for images only
+#### `GET /artifact` — one file back out
 
-The third route, added by `genetics-results-suite-8z1`. It is **the retrieval half of
-`4h6.52` and does not close it**: `4h6.52` also owes the sid-scoped resolution that would let
-the *model* ask for an arbitrary artifact by name, and that half is still open. Nothing the
-model can call reaches this route.
+The third route, added by `genetics-results-suite-8z1` for the automatic image fetch and made
+the **only** artifact read path by `4h6.52`, which moved `read_artifact` onto it. Two callers
+now: `_fetch_analysis_images`, which resolves the `execution_id` from the run it just
+performed, and `read_artifact`, which resolves it from the session's recorded manifests. The
+model supplies a **name** to the second and nothing at all to the first; no model-supplied
+value reaches this route's `execution_id`.
 
 ```
 GET /artifact?execution_id=<uuid4>&name=<bare name>
@@ -1542,6 +1547,31 @@ in the `200` response**. It is a field of its own and not a larger `artifacts_om
 that field means "produced, present, not listed" and cannot carry "we could not remove your
 data"; `_purge_artifacts` returns whether the directory is actually empty precisely so the
 caller can tell "destroyed everything" from "destroyed nothing".
+
+**And the caller now passes it on (`4h6.97`).** For a while it did not: `_render_analysis`
+rebuilds the tool result from a whitelist and this field was not on it, so a signal the
+supervisor raised correctly reached nobody. It is now rendered **only when true**, matching how
+`artifacts_omitted` is handled — a field that is false on every run is noise the model learns
+to skip past — with wording that says what the model can honestly act on. The exposure is to
+**other tenants' code in the pod, not to this user**: the user's own artifacts are theirs to
+see, so "your results may be compromised" would be wrong on both halves. What the note asks
+for is that the model report the cleanup failure and stop treating those artifacts as trusted
+input, because bytes readable by a peer are writable by one — the same condition
+`read_artifact`'s `409` exists to catch. The primary audience remains the **operator**, and
+that half was already working through `LOG.error`.
+
+**And the analysed script must not be able to delete it again one layer out.** Rendering the
+field was necessary and not sufficient: chat-backend truncates a serialised tool result over
+`mcp_max_result_size` (50,000 chars) to an ordered **prefix**, and `output` in a `run_analysis`
+result is **script-controlled** up to the supervisor's 64 KiB cap. MEASURED with the field
+rendered seventh, after `output`: a 66,569-byte result cut at 50,000 contained **neither the
+flag nor the note**, behind a generic `[TRUNCATED: ...]` that says nothing about a dropped
+field — so a script that both provoked the condition (`chmod` on `artifacts/`, the same
+adversarial trigger) and printed ~50 KB suppressed its own warning. Two independent defences
+now stand: `_render_analysis` emits the field and its note **ahead of `output`**, so they are
+inside any surviving prefix, and `_truncation_notice` **re-attaches the note** from the whole
+pre-truncation result, which does not depend on serialisation order at all. Both are pinned by
+`tests/test_code_execution_tools.py::TestArtifactsRetainedInClear::test_a_large_output_cannot_truncate_the_signal_away`.
 
 **It is not a `500`, and that is a fix, not an omission.** Answering `500` was the first
 attempt and it is a **same-uid denial-of-service kill switch**: MEASURED 3 for 3, a second
@@ -1696,8 +1726,10 @@ The 512 KiB cap is set against `MAX_RESPONSE_BYTES` (1 MiB), not against what a 
 base64 is +33% inside a JSON envelope, so 512 KiB of file is ~700 KiB of body and stays clear.
 Letting `_cap_response` fire instead would answer "response too large", which reads as a
 supervisor fault; a 413 names the real reason. A matplotlib PNG at the SDK's default dpi is a
-few tens of KiB. **This is a fourth number** and is not the manifest's 4 MiB `read_artifact`
-limit, the 64Mi per-execution artifact quota, or the 512Mi `emptyDir` `sizeLimit`.
+few tens of KiB. Since `4h6.52` this **is** `read_artifact`'s limit as well — the tool proxies
+to this route, so the 4 MiB it used to allow on its own local read is gone and 512 KiB is the
+single per-read number. It remains distinct from the 64Mi per-execution artifact quota and the
+512Mi `emptyDir` `sizeLimit`.
 
 **What chat-backend does with it.** After a `status: ok` execution, `_fetch_analysis_images`
 fetches at most **four** artifacts whose manifest `content_type` starts with `image/` and
@@ -1962,10 +1994,13 @@ and produces a loud warning rather than a silent behaviour change:
   otherwise be unstartable.
 - **`GENETICS_MPLCACHE` unset → `MPLCONFIGDIR` starts empty** and matplotlib rebuilds its
   font cache per execution (seconds), instead of the copy being free.
-- **`SANDBOX_SCRATCH_ROOT` set → the `/scratch` root moves.** Test-only, and warned about in
-  those words: `read_artifact` refuses any artifacts directory that does not resolve under a
-  **hardcoded** `/scratch/` prefix (`4h6.15`), so artifacts written under an overridden root
-  are unretrievable by construction. The image never sets it.
+- **`SANDBOX_SCRATCH_ROOT` set → the `/scratch` root moves.** Test-only, and warned about.
+  The hardcoded `/scratch/` prefix this bullet used to cite was the **local** reader's
+  (`4h6.15`); that reader is gone, and the supervisor resolves artifacts against whatever root
+  it was started with, so an overridden root now serves reads normally rather than making them
+  unretrievable. It stays test-only for the reason it always was: the root is the isolation
+  boundary the pod spec, the quotas and the startup sweep are all written against. The image
+  never sets it.
 - The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
   Linux developer machine and failing it is the intended outcome elsewhere.
 
@@ -5285,129 +5320,141 @@ hands the model a read primitive over **every conversation in the deployment**. 
   `ENABLE_SCRIPT_EXECUTION` stays `false` (section 1), which is what makes that variable
   inert today; `read_artifact` must not be the thing that makes it live again.
 
-### As built (`4h6.15`) — the read is descriptor-based end to end, the allow-list is structural, scoping is not there yet
+### As built (`4h6.15`, `4h6.52`) — the read proxies over HTTP, the checks run in the sandbox, and the name is resolved against the `sid`
 
-Everything above this subsection that is not repeated here is still design. What exists is
-`ToolExecutor.read_artifact`, `ToolExecutor._open_artifacts_dir` and
-`ToolExecutor._artifacts_dir` in
-`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`, plus
-`_ARTIFACTS_DIR_PREFIX` in the same file.
+Everything specified above this subsection is now implemented. `4h6.15` built the tool with a
+descriptor-based read of chat-backend's **own** filesystem, a deliberate deviation recorded
+here because there was no sandbox HTTP service to proxy to; `4h6.52` replaced that with the
+proxy this section always specified. What exists now:
 
-**Two descriptors, and every decision taken off an `fstat`.** The name is checked before the
-filesystem is touched (rejects `.`, `..`, separators, backslashes, NUL, absolute paths, and
-anything where `Path(name).name != name`), then `_validate_path` re-checks the resolved path
-against the single-entry allow-list. Both of those are advisory: both answer a question
-about a *path*, and the executing code owns the directory — under the decided option (b) it
-runs as the pod's single uid 65532, the very uid that created `/scratch/<id>`, so it owns that
-directory *a fortiori*, without any chown being needed. The enforcing layer is a pair of
-descriptors:
+- `ToolExecutor.read_artifact`, `ToolExecutor._artifact_error`, `_ArtifactManifests` and the
+  module constants `ARTIFACT_READ_MAX_BYTES` / `ARTIFACT_RETENTION_S` in
+  `genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`;
+- `SandboxClient.get_artifact` and `ArtifactResult` in the same repo's `sandbox_client.py`;
+- `read_artifact_bytes`, `_artifact_digest` and `Supervisor.read_artifact` in
+  `sandbox/supervisor.py`, behind `GET /artifact` (section 2).
 
-1. `_open_artifacts_dir()` opens the configured directory **once** with
-   `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, then verifies the **descriptor** rather than the
-   path by reading `/proc/self/fd/<dirfd>` — the kernel's own name for the inode that fd
-   holds. That name must start with the hardcoded prefix and must **not** end in the
-   kernel's `" (deleted)"` suffix. It fails closed to `None`.
-2. The artifact is then opened as a **bare name relative to that fd**,
-   `os.open(name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, dir_fd=dirfd)`. `S_ISREG`, the
-   link-count check, the size check and the chunked `os.read` loop all run against that one
-   file descriptor. After `_open_artifacts_dir` returns, nothing addresses anything by path.
+`ToolExecutor._artifacts_dir`, `_open_artifacts_dir` and `_ARTIFACTS_DIR_PREFIX` **no longer
+exist**. Nothing in chat-backend opens a local path for an artifact, so the prefix that made
+`SANDBOX_ARTIFACTS_DIR=/data` unreachable has nothing left to guard: the variable has no
+reader in that process at all, which is strictly stronger than a guarded one.
+`SUBAGENT_ALLOWED_PATHS` gained no reader at any point.
 
-**The lesson is why the shape looks like this.** The first version validated a path and then
-re-opened it, and a validator won that race 825 times in 6,000 calls. The fix — open once
-with `O_NOFOLLOW` — was then re-attacked and found to be the *same* defect one level up:
-`O_NOFOLLOW` guards only the **final** component, and `artifacts` is an **intermediate**
-component the child owns. `rmdir`-ing it and relinking it at another execution's retained
-artifacts between the check and the open leaked out-of-tree content **151 times in 20,000
-iterations (0.76%)**. `_validate_path` was no help at all there: it resolves both sides
-through the same swapped link, so they agree and it passes. The real defect was never the
-missing flag — it was **addressing anything by path after checking it**, and fixing that at
-one level only relocated it to the next. Re-attacking the descriptor form gave **0 leaks in
-40,000 iterations** across two swapper profiles, and the deterministic control that
-previously returned out-of-tree content now refuses.
+**The checks did not go away; they moved to the pod where the hostile party is.** The
+descriptor discipline `4h6.15` arrived at — and the measurements that forced it — now
+describes `read_artifact_bytes`: the artifacts directory is opened once with
+`O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, the artifact is opened as a bare name **relative to
+that fd** with `O_NOFOLLOW | O_NONBLOCK`, and `S_ISREG`, `st_nlink == 1` and the size all come
+off that one descriptor. Two checks exist there that the local reader never had, because they
+need state only the supervisor holds: the name must be in the digest map the manifest was
+built from, so a **planted** file is `404` before it is opened, and the returned bytes must
+still hash to what they hashed to then, so an **altered** one is `409` (`4h6.82`, `4h6.88`).
 
-Three properties follow from taking the answer off descriptors:
+**Why the lesson survives the move.** The first version of the local read validated a path and
+re-opened it, and a validator won that race 825 times in 6,000 calls. Opening once with
+`O_NOFOLLOW` was then found to be the *same* defect one level up — `O_NOFOLLOW` guards only
+the **final** component, and `artifacts` is an intermediate one the child owns, so relinking it
+at another execution's retained artifacts leaked out-of-tree content **151 times in 20,000
+iterations (0.76%)**. `_validate_path` was no help at all: it resolves both sides through the
+same swapped link, so they agree. The real defect was **addressing anything by path after
+checking it**, and fixing it at one level only relocated it to the next. Re-attacking the
+descriptor form gave **0 leaks in 40,000 iterations**. That is why the sandbox-side read has
+the shape it has, and it is the reason `_validate_path`'s answer is advisory wherever it runs.
 
-- The `" (deleted)"` refusal is load-bearing, not hygiene. `rmdir` followed by re-creating a
-  directory at the same path with planted content is refused, because the fd still names the
-  deleted inode and the kernel says so.
-- `O_NONBLOCK` on the file open is a control, not tidiness. `O_RDONLY` on a FIFO with no
-  writer blocks **in the kernel**, before `S_ISREG` is ever reached, so a script doing
-  `os.mkfifo(artifacts/results.tsv)` hangs the calling coroutine — and with it chat-backend
-  — indefinitely. That is a trivial in-sandbox denial of service, and it hung a validator's
-  own harness for about four minutes before the flag was added. Such a name is now refused
-  in under a millisecond, by `S_ISREG` after the non-blocking open. The flag is inert for
-  regular files, which are all that survives that check.
-- `st_nlink != 1` refuses hardlinks. Path resolution could never have caught this one at
-  all: a hardlink has nothing to resolve, so both path-based layers see an in-tree path over
-  an out-of-tree inode and pass. Stating it here means the property does not depend on
-  `fs.protected_hardlinks` being set on the node.
+**`O_NONBLOCK` on the file open is a control, not tidiness, and `4h6.52` had to add it on the
+sandbox side.** `O_RDONLY` on a FIFO with no writer blocks **in the kernel**, before `S_ISREG`
+is ever reached. The local reader carried the flag from the start; the sandbox-side open did
+not, and its own comment said so — the digest map narrows the hazard (a *planted* fifo is not
+in the manifest, and `build_manifest` lists regular files only) but does not close it, because
+a same-uid peer can `unlink` a name the manifest **did** list and `mkfifo` it back during
+retention. Once the local reader was removed this became the only path that serves artifact
+bytes to a caller, so the property had to hold here or nowhere.
 
-Failures are uniform: a resolution failure, a symlink, a hardlink, a non-regular file, a
-directory that fails descriptor verification and a missing name all return the same
-`Artifact not found`, so which names exist outside the allow-list is not learnable by
-probing. An oversized file is refused rather than truncated, and the error deliberately
-omits the byte count.
+**It is not, however, the only place the supervisor opens an artifact by name after stat'ing
+it, and the first round of `4h6.52` fixed the two that production does not reach.**
+`seal_retained_artifacts` lstats each entry, checks `S_ISREG` and `st_nlink == 1`, and then
+opens it by name relative to the directory fd in `seal_artifact` — the identical
+check-then-open window, on `_execute_inner`'s completion path, holding the execution slot with
+no timeout above it. That open now carries the flag too; a writerless fifo left in that window
+yields EOF on the first read, so what is renamed over the name is an empty sealed file rather
+than a wedged thread. `_artifact_digest` carries the flag for the mirror-image reason
+(`build_manifest` stats an entry, finds a regular file, and the replacement can land before
+the digest's own open) — but note that `build_manifest`'s only production caller always passes
+a `sealed` map, so that branch, and with it `_artifact_digest`, is reached today only by tests.
+`scripts/test-supervisor.py::test_artifact_fifo_does_not_block` drives all three on a thread
+with a deadline, because the failure under test is a hang.
 
-**The allow-list root is checked structurally, and every check fails closed.**
-`_artifacts_dir()` returns `""` — meaning artifact reads are simply not enabled — unless the
-configured directory passes both:
+**Cross-execution scoping is implemented, in chat-backend, and it is the authorization.**
+`run_analysis` records each completed execution's manifest against the **authenticated**
+`session_id` in `_ArtifactManifests`; `llm_service._execute_tool` injects that session into
+`read_artifact` exactly as it injects the identity into `run_analysis`, stripping any
+same-named key the model emitted first. The declared schema still has one parameter, `name`.
+A name recorded under another session resolves to nothing and returns the **same** answer as a
+name that never existed — not merely refused, invisible. Collisions within one `sid` resolve
+most-recent-first, as specified above. The map is recorded for a failed execution too when the
+supervisor still reported a manifest: a script that raised after writing its plot produced a
+real, retained artifact.
 
-- **It may not itself be a symlink** (`lstat`, `S_ISLNK`). This is reachable, not operator
-  error. `/scratch/<id>` is created and written by uid 65532, and under the decided option (b)
-  the child runs as that same uid — it owns the directory outright rather than by a chown, so
-  the swap is at least as reachable as it would be under (a). The child can `rmdir` its own
-  `artifacts` and relink the name at another execution's retained artifacts; because
-  `_validate_path` resolves both sides, *every* file under that target would then validate.
-  That is precisely the cross-execution channel 6.4 exists to prevent. Note that this check,
-  like `_validate_path`, is a path answer and therefore advisory — `_open_artifacts_dir`'s
-  `O_NOFOLLOW` on the directory open is what actually holds it, at the moment of use.
-- **Its resolved path must sit under a hardcoded `/scratch/` prefix**
-  (`_ARTIFACTS_DIR_PREFIX`, patched only by tests), and `_open_artifacts_dir` re-asserts the
-  same prefix against the descriptor. The prefix is what makes the chat-backend
-  misconfiguration *unreachable* rather than merely unmade: `read_artifact` is registered in
-  the chat backend, chat-backend has no `/scratch` volume and never will, so
-  `SANDBOX_ARTIFACTS_DIR=/data` — the PVC holding `chat_history.db` and `llm_config.db` —
-  cannot resolve. Before the prefix existed, a single env var staying unset was the entire
-  safety property. `SUBAGENT_ALLOWED_PATHS` gains no reader here; `_artifacts_dir` is its
-  own variable for exactly the reason the allow-list subsection above gives.
+**The map is in memory, bounded, and expires with the artifacts — deliberately not
+persisted.** `RETENTION_S` is 300 s and the per-execution encryption key lives only in the
+supervisor's process memory, so a row that outlives either the retention window or the sandbox
+process points at bytes nobody can serve. A persisted map would buy only a longer window in
+which the tool promises a read that ends in `404` or `409`; expiring with the artifacts keeps
+the two sides failing together. Bounds: 512 sessions (LRU by last write) × 128 executions
+each. **They are memory bounds, not headroom over the window**, and the earlier claim that both
+were "far above what a 5-minute window can hold" was wrong: it assumed an execution takes tens
+of seconds, whereas a trivial script returns in well under a second, so ~600 executions fit in
+one 300 s window. 128 is sized off measurement instead — benchmark turns reach 58 tool calls,
+so it leaves better than 2× headroom over anything observed — and the consequence past it is
+chosen and benign: the oldest row is evicted while its artifacts may still be on disk, and a
+read of one of those names gets the non-retryable `ArtifactNotFound` whose wording already says
+to re-run the script. chat-backend is `replicas: 1`, and for this map that is load-bearing in
+its own right — a second replica resolves nothing for a read routed to it — the same premise
+db-api's per-execution byte counter and results-api's sandbox budget already run on
+(`k8s/deployments/chat-backend.yaml` carries the comment).
 
-**A stated limitation: the prefix check is a *location* check, not an *ownership* one.** It
-proves the descriptor names an inode under `/scratch/`; it does not prove that inode is
-*this* execution's artifacts directory. Point `SANDBOX_ARTIFACTS_DIR` at some other
-directory that happens to sit under the prefix and its contents are readable. This is not
-reachable from a sandboxed script — it requires control of the parent process's environment
-— and it is the same gap the scoping paragraph below describes, but it is worth stating
-outright rather than leaving implicit in "the env var points at the right directory".
+**The two readers are one reader.** `_fetch_analysis_images` (automatic, image-only, at most
+four) and `read_artifact` (by name, session-scoped) both go through
+`SandboxClient.get_artifact`. Before `4h6.52` they disagreed: 4 MiB against 512 KiB, and text
+truncation on the local path only. Two user-visible decisions were taken rather than inherited:
 
-**Cross-execution scoping is not implemented.** The tool takes a bare artifact name and
-nothing else — there is no session argument, no execution argument, and no server-side
-resolution of a name against the executions belonging to a `sid`. Which execution's
-artifacts are reachable rests **entirely** on `SANDBOX_ARTIFACTS_DIR` pointing at the right
-directory, constrained only by the structural checks above. The authorization mechanism
-specified earlier in this section and the manifest that name resolution would consult are
-still design, and belong to `genetics-results-suite-4h6.52`. They were never `4h6.11`'s —
-that task is closed and did not do them, so do not read its state as evidence any of this
-landed. Until `4h6.52` lands, the retrievability claims 6.2 and 6.4 lean on are met by
-deployment configuration, not by code.
+- **The byte cap is now 512 KiB, a reduction from 4 MiB.** The supervisor answers `413` above
+  `ARTIFACT_READ_MAX_BYTES`, so any larger number here would only promise bytes the sandbox
+  refuses. `413` is surfaced as its own non-retryable error telling the model to have the
+  script write a smaller summary.
+- **The 100k-character text truncation survives.** It bounds the **model's context**, which no
+  transport cap does — 512 KiB of TSV is well over 100k tokens in one tool result — and it is
+  the one of the two a caller can act on, because `truncated: true` says what happened.
 
-**What `genetics-results-suite-8z1` did and did not change here.** The HTTP path from
-chat-backend to the sandbox pod now exists — `GET /artifact`, specified in section 2 — but
-`read_artifact` **does not use it** and is unchanged: it still reads
-`SANDBOX_ARTIFACTS_DIR` locally and still tells the model it cannot reach a `run_analysis`
-artifact. The only caller of the new route is `_fetch_analysis_images`, which resolves the
-`execution_id` server-side from the run it just performed and fetches image artifacts
-automatically. So the route removes the "there is nowhere to proxy to" blocker for `4h6.52`
-without touching the tool or its scoping gap.
+**Error mapping, because two of these statuses reach this tool for the first time.**
+`409 ArtifactModified` is reported as itself, non-retryable, with the only repair that works:
+re-run the analysis, do not re-read, and tell the user the earlier output could not be trusted.
+Letting it surface as a generic failure would invite exactly the retry that cannot succeed.
+`404` and a name this session never produced share one wording. A transport failure or a `500`
+is `ArtifactUnavailable` and **is** retryable — a server-side fault is not a bad name. A `400`
+(the supervisor rejecting an `execution_id` chat-backend itself resolved) is our bug, and gets
+the not-found wording rather than a description of our internals.
 
-**Deployment note — an availability concern, not a security one.** `_open_artifacts_dir`
-verifies the descriptor through `/proc/self/fd/`. If the sandbox pod ever runs with a masked
-or otherwise restricted `/proc`, the `readlink` fails, the function fails closed, and
-`read_artifact` refuses **everything** — correct behaviour, but a total loss of the feature
-rather than a leak. Confirm `/proc/self/fd` is readable in the pod once, when
-`k8s/deployments/sandbox.yaml` is written (`4h6.7`).
+**Two failures that look server-side are deterministic and are therefore NOT retryable.** A
+`200` whose body the client cannot parse (`SandboxProtocol`) returns the same body to the same
+`execution_id` and name, and an `execution_id` the client's own pre-flight refuses
+(`SandboxBadExecutionId`) issues no request at all — re-asking re-rejects the identical id. Both
+used to fall through to the retryable `ArtifactUnavailable`, and nothing above this tool bounds
+the retries the way `run_analysis`'s 300 s `wait_for` does, so `retryable` here has to mean "a
+second ask could plausibly succeed" rather than "the fault was not the model's".
 
-`read_artifact`'s exclusion from the MCP tool set landed with this change; see section 5,
-layer 1.
+**The sandbox-side read needs no `/proc`, and this is worth stating because the local
+reader's `/proc/self/fd` verification did not survive the move and an operator debugging a
+read failure should not go looking for it.** That step existed because chat-backend was handed
+a *path* it had to prove it had opened; the supervisor is not — it constructs
+`/scratch/<execution-id>/artifacts` itself from an id it validated, opens it `O_NOFOLLOW`, and
+opens the file relative to that descriptor. There is nothing to re-verify, and
+`read_artifact_bytes` never consults `/proc`. A masked or restricted `/proc` in the sandbox pod
+does not disable artifact reads.
+
+`read_artifact`'s exclusion from the MCP tool set landed with `4h6.15`; see section 5, layer 1.
+It is also excluded from every subagent skill by name, so no dispatcher reaches it without a
+session.
 
 ### 6.3 Resource exhaustion starving chat-backend
 
@@ -5621,9 +5668,7 @@ closed and **did** ship the SDK — nothing else. Where it was cited as the owne
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
 | `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
-| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **that proxy hop and the
-sid-scoped resolution are `genetics-results-suite-4h6.52`'s, not this task's; `4h6.15` shipped
-the descriptor-based local read only**; `_validate_path` runs **inside the sandbox pod** with allow-list `/scratch/<id>/artifacts`, **never `SUBAGENT_ALLOWED_PATHS`** (which is `/data`, the chat-data PVC). `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
+| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
 
 **One finding outside this document's scope that other tasks need.** Five executor methods
