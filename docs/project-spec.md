@@ -997,6 +997,37 @@ cannot import one definition. Do not restate it here; the essentials only:
   execution id — because `read_artifact` takes a bare name and refuses anything else. The
   supervisor keeps one thing back from that response: a sha256 per listed file, in memory, and
   `GET /artifact` serves nothing that no longer matches it (`4h6.82`).
+- **Retained artifacts are encrypted at rest** (`4h6.88`). Between the reap and the manifest
+  the supervisor seals the retained files in place with **AES-256-GCM** under a
+  **per-execution key held only in its own memory** (`ctypes` over `libcrypto.so.3` — no new
+  dependency), and decrypts on the read path. Anything that could never have been served — a
+  subdirectory, a symlink, a hard link, an unretrievable name — is **deleted** rather than
+  sealed, and counted into `artifacts_omitted`. **This closes the cross-execution read of a
+  COMPLETED execution and nothing more:** the child writes plaintext with a raw `open()` while
+  it runs and the SDK exposes no artifact-writing function to intercept, so the **live window**
+  — up to `timeout_s` + `KILL_GRACE_S` plus the reap-to-seal tail — is untouched, and a
+  `setsid()` escapee's post-seal write is made **detectable** by the GCM tag, not prevented.
+  The manifest keeps describing the **plaintext** (size and sha256 measured during the pass),
+  so `ARTIFACT_READ_MAX_BYTES` still bounds the plaintext and the `4h6.82` binding is unchanged.
+  It **fails closed**, and the guarantee is stated as **"a retained directory is sealed or
+  empty"** rather than "every retained artifact is sealed", because the second is not what the
+  code enforces. A file that cannot be sealed is **deleted and counted**, and the rest of the
+  execution's artifacts are unaffected; a failure that cannot be attributed to one file
+  destroys the whole directory. An execution that **raised before the seal pass ran** —
+  a `ForkServerError`, a manifest failure — has its whole directory emptied on the retain path
+  in `_release`, which is what makes the property structural rather than dependent on the
+  happy path; nothing is lost, because no manifest was built for it and `read_artifact` serves
+  nothing for an execution with no digest map. If plaintext can be neither sealed **nor
+  deleted** — a same-uid peer `chmod 0500` on `artifacts/`, MEASURED — then nothing this code
+  does removes it, so the supervisor **says so instead of withholding the result**: the
+  response is still a `200` with the script's output, carrying
+  **`artifacts_retained_in_clear: true`**, its own field rather than a larger
+  `artifacts_omitted`, which means "produced, present, not listed" and cannot carry "we could
+  not remove your data". It answered `500` for one round and that was a **same-uid
+  denial-of-service kill switch** (MEASURED 3 for 3: a peer sealing the directory shut turned
+  every completed execution into `500`, output null) which bought no confidentiality at all,
+  since deletion is precisely what failed and the peer already holds the plaintext either way.
+  A pod whose `libcrypto` cannot seal never reports ready.
 - **The supervisor forwards the SDK audit stream to the pod's stdout** (`4h6.45`), the only
   stream the cluster's logging agent collects. It holds the read end of the child's audit fd,
   applies the rate, byte and per-line caps there rather than in the SDK, matches every line
@@ -1072,12 +1103,22 @@ start it, because the image still ships no `CMD` and the manifest still declares
     sha256s every file it lists, the map is kept in supervisor memory, and `read_artifact`
     re-hashes before it serves, so an artifact that was **overwritten** is refused `409
     ArtifactModified` and one that was **planted** is refused `404`. That is the integrity half.
-    The **reading** half is not closable under one uid and is `genetics-results-suite-4h6.88`,
-    **open**. What keeps the map out of the same-uid child's reach is **Yama
+    The **reading** half is `genetics-results-suite-4h6.88`: a **retained** directory is now
+    sealed or empty — its artifacts are sealed in place with AES-256-GCM under a per-execution
+    key held only in supervisor memory, and whatever cannot be sealed is deleted —
+    which closes the **cross-execution read of a completed execution** — the attack that was
+    demonstrated. It does **not** close the **live** window: the child writes plaintext with a
+    raw `open()` into its own `artifacts/` and the shipped SDK exposes no artifact-writing
+    function to intercept, so a same-uid resident reading *during* an execution is untouched.
+    What keeps the map — and now the key — out of the same-uid child's reach is **Yama
     (`kernel.yama.ptrace_scope=1`), not the seccomp profile** — `RuntimeDefault` allows
     `ptrace` (MEASURED, `genetics-results-suite-4h6.90`), and Yama refuses `PTRACE_MODE_ATTACH`
-    only because the supervisor is the child's *ancestor*. MEASURED under `runc`, **UNVERIFIED
-    under gVisor** (`4h6.51`). `PTRACE_MODE_READ` is a separate gate that Yama does not
+    only because the supervisor is the child's *ancestor*. MEASURED 2026-08-24 under **both**
+    `runc` and `runsc` — sibling→sibling `EPERM`, parent→child allowed under each, the second
+    being the control that rules out `ptrace` merely being unimplemented. Under gVisor that
+    refusal is protected by **the sandbox never having uid 0 and by nothing else**: there is no
+    read-only `/proc/sys` mount, so uid 0 can lower the sysctl (measured locally; on GKE Sandbox
+    `/proc` masking comes from containerd and must be re-measured). `PTRACE_MODE_READ` is a separate gate that Yama does not
     restrict, so the child can still read the supervisor's `/proc/<pid>/environ` — see
     `docs/code-execution-security.md` → "What the default profile blocks, re-derived".
   - **the `setsid()` resident (`genetics-results-suite-4h6.83`)** — the fork server sets
@@ -1229,7 +1270,19 @@ start it, because the image still ships no `CMD` and the manifest still declares
   of it) and asserts it is gone and reaped, then disables the kill and the sweep and asserts
   the same probes survive; `artifact integrity` overwrites a retained artifact with the same
   number of bytes and plants another beside it, asserts both are refused, then asserts the
-  same reads with the digest binding disabled hand the attacker's bytes back. Container mode drives the same wire checks
+  same reads with the digest binding disabled hand the attacker's bytes back; `artifact
+  encryption` (`4h6.88`) reads a retained artifact off disk at the shared uid and asserts it is
+  the sealed envelope rather than the bytes the script wrote, pins the 512 KiB read cap against
+  the **plaintext** at both sides of the boundary **and at zero bytes**, and proves the three
+  fail-closed outcomes — per-file deletion, whole-directory purge, and the one case where
+  plaintext can be neither sealed nor removed and the pass says so — plus the structural
+  guarantee that an execution which raised before the seal retains an **empty** directory.
+  Five controls of its own: `SUPERVISOR_TEST_NO_SEAL=1` restores the pre-`4h6.88` completion
+  path, `SUPERVISOR_TEST_SEAL_NO_AAD=1` drops the **name** from the associated data,
+  `SUPERVISOR_TEST_SEAL_NO_EID_AAD=1` drops the **execution id** from it,
+  `SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1` removes the fail-closed destruction, and
+  `SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE=1` removes the emptying of a directory retained
+  without ever having been sealed. Container mode drives the same wire checks
   against the image and adds a group that has no in-process equivalent because it is about the
   image (read-only rootfs, no writable `/tmp`, pruned venv, the SDK and matplotlib importing,
   no credential in the child's environment). `--container-name NAME` is what lets the audit-stream

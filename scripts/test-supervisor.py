@@ -93,6 +93,19 @@ plants a second one beside it, asserts both are refused, and then asserts that t
 with the digest binding disabled hand the attacker's content back. Neither group runs in
 container mode and both say so by name.
 
+ARTIFACT ENCRYPTION AT REST (4h6.88) IS `test_artifact_encryption`, and it is written around
+what the bead actually closes. The assertion is that a read of a RETAINED artifact at the
+shared uid — the harness's own uid, which is the threat model and not a shortcut — returns the
+sealed envelope and not the bytes the script wrote. THE LIVE WINDOW IS NOT ASSERTED ABOUT and
+is not closed: the child writes plaintext with a raw open() while it runs. The group also pins
+the two things a reviewer would otherwise have to take on trust — that ARTIFACT_READ_MAX_BYTES
+is charged against the PLAINTEXT, asserted at exactly the cap and one byte over, and that a
+seal which dies partway DESTROYS the artifacts rather than retaining them in the clear or
+letting them vanish behind a 200. Three controls: SUPERVISOR_TEST_NO_SEAL=1 restores the
+pre-4h6.88 completion path, SUPERVISOR_TEST_SEAL_NO_AAD=1 drops the artifact's name from the
+associated data, and SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 removes the fail-closed
+destruction. The wire group carries the same property against a REAL execution.
+
 Two checks are about the fork-without-exec model rather than the wire, because both were
 reachable from a script: a forged status record on fd 3 must not turn exit 0 into
 status "error", and a descendant that setsid()s away with the output pipe must not hold the
@@ -177,15 +190,16 @@ def skip(name, reason):
     print(f"  skip  {name} ({reason})")
 
 
-def expect_request_error(name, fn, status, type_):
+def expect_request_error(name, fn, status, type_, suffix=""):
     try:
         fn()
     except sup.RequestError as exc:
-        check(name, exc.status == status and exc.type == type_, f"got {exc.status} {exc.type}")
+        check(name, exc.status == status and exc.type == type_,
+              f"got {exc.status} {exc.type}" + suffix)
     except Exception as exc:
-        check(name, False, f"raised {type(exc).__name__}: {exc}")
+        check(name, False, f"raised {type(exc).__name__}: {exc}" + suffix)
     else:
-        check(name, False, "no error raised")
+        check(name, False, "no error raised" + suffix)
 
 
 # --------------------------------------------------------------------------------------
@@ -637,6 +651,602 @@ def test_artifact_integrity(tmp):
           eid not in s._artifact_digests, f"{sorted(s._artifact_digests)}")
 
 
+ENV_NO_SEAL = "SUPERVISOR_TEST_NO_SEAL"
+ENV_SEAL_NO_AAD = "SUPERVISOR_TEST_SEAL_NO_AAD"
+ENV_SEAL_NO_EID_AAD = "SUPERVISOR_TEST_SEAL_NO_EID_AAD"
+ENV_SEAL_KEEPS_PLAINTEXT = "SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT"
+ENV_SEAL_NO_RELEASE_PURGE = "SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE"
+
+
+def _unsealed_retained(self, job):
+    """_seal_retained as the completion path was BEFORE 4h6.88. The negative control.
+
+    Nothing is encrypted, nothing is purged and no key is kept, and `None` tells build_manifest
+    to hash the directory from disk exactly as it used to. read_artifact then finds no key and
+    reads plaintext — which is the whole pre-fix behaviour, restored in one method.
+
+    `job.sealed` IS STILL SET, because the pre-fix path set no such flag and _release must not
+    react to this control by emptying the directory — that would make the control test
+    _secure_unsealed instead of the seal.
+    """
+    job.sealed = True
+    return None, 0, True
+
+
+def _aad_without_name(execution_id, name):
+    """artifact_aad with the NAME dropped, so every artifact of one execution is sealed under
+    the same associated data and their ciphertexts become interchangeable. The control for the
+    NAME half of the binding, which is what makes a relabel fail rather than succeed."""
+    return execution_id.encode("utf-8")
+
+
+def _aad_without_execution_id(execution_id, name):
+    """artifact_aad with the EXECUTION ID dropped, so the same name in two executions is sealed
+    under the same associated data. The control for the OTHER half.
+
+    IT EXISTS BECAUSE _aad_without_name DOES NOT COVER IT. That control still binds the
+    execution id, so it turns red only on the relabel and the "lifted into another execution"
+    half of the same check went untested — a check asserting name AND execution id had a
+    negative control for one of them. The two are separate env vars rather than one because a
+    control that drops both cannot show which half each assertion rests on.
+    """
+    return name.encode("utf-8")
+
+
+def _purge_that_keeps_plaintext(artifacts_dir):
+    """_purge_artifacts with the deletion removed: it counts what it found and leaves it on
+    disk. The control for the fail-closed arm — with it installed a seal that dies partway
+    leaves the plaintext exactly where the child wrote it.
+
+    It returns `emptied=False` because that is the TRUTH about what it did. The pre-fix
+    _purge_artifacts returned a bare count, which is precisely the defect
+    genetics-results-suite-4h6.88's review found: the caller could not tell "destroyed
+    everything" from "destroyed nothing" and logged the first while the second had happened.
+    A control that lied in the second slot would exercise the log line rather than the
+    plumbing.
+    """
+    return sum(1 for _ in sup._iter_dir_names(artifacts_dir, sup.TRIM_ENTRY_CEILING)), False
+
+
+def _release_without_purge(self, job):
+    """_secure_unsealed with the emptying removed. The control for the structural half of the
+    property: with it installed, an execution that raises before the seal retains its whole
+    directory in the clear for RETENTION_S, which is the original demonstrated attack."""
+    return None
+
+
+def _fake_job(root, execution_id):
+    """What _seal_retained reads off a job: its execution id and its directories."""
+    dirs = sup.ExecutionDirs(root, execution_id)
+    dirs.create()
+    return types.SimpleNamespace(dirs=dirs,
+                                 req=types.SimpleNamespace(execution_id=execution_id))
+
+
+def _write(path, data):
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+def test_artifact_encryption(tmp):
+    """genetics-results-suite-4h6.88: a RETAINED artifact must not be plaintext on disk.
+
+    WHAT THIS PROVES AND WHAT IT CANNOT. The demonstrated attack is a second execution's child
+    doing listdir(/scratch), opening a peer's artifacts/private.csv and reading
+    SECRET-VICTIM-DATA out of it — every file under /scratch is readable at the shared uid
+    65532 and mkdir 0700 protects nothing when there is one uid. What is asserted here is the
+    thing that closes: after the seal pass, the bytes a same-uid reader finds on disk are not
+    the bytes the script wrote. THE LIVE WINDOW IS NOT CLOSED and is not asserted about — the
+    child writes plaintext with a raw open() while it runs, and no test here or elsewhere may
+    be read as covering that.
+
+    The reads are done AT THE HARNESS'S OWN UID for the same reason test_artifact_integrity
+    does its writes there: the threat is any process at the shared uid, and routing it through
+    a forked child would test the fork rather than the control.
+
+    FIVE NEGATIVE CONTROLS, because most of these checks would pass vacuously on an empty or
+    unsealed directory. SUPERVISOR_TEST_NO_SEAL=1 puts the pre-4h6.88 completion path back,
+    SUPERVISOR_TEST_SEAL_NO_AAD=1 drops the NAME from the associated data,
+    SUPERVISOR_TEST_SEAL_NO_EID_AAD=1 drops the EXECUTION ID from it,
+    SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 removes the fail-closed destruction, and
+    SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE=1 removes the emptying of a directory that is
+    retained without ever having been sealed.
+    """
+    no_seal = os.environ.get(ENV_NO_SEAL) == "1"
+    no_aad = os.environ.get(ENV_SEAL_NO_AAD) == "1"
+    no_eid_aad = os.environ.get(ENV_SEAL_NO_EID_AAD) == "1"
+    keeps_plaintext = os.environ.get(ENV_SEAL_KEEPS_PLAINTEXT) == "1"
+    no_release_purge = os.environ.get(ENV_SEAL_NO_RELEASE_PURGE) == "1"
+    seal_suffix = (" (SUPERVISOR_TEST_NO_SEAL=1 is installed: this is the control)"
+                   if no_seal else "")
+    aad_suffix = ((" (SUPERVISOR_TEST_SEAL_NO_AAD=1 is installed: this is the control)"
+                   if no_aad else "")
+                  + (" (SUPERVISOR_TEST_SEAL_NO_EID_AAD=1 is installed: this is the control)"
+                     if no_eid_aad else ""))
+    purge_suffix = (" (SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 is installed: this is the "
+                    "control)" if keeps_plaintext else "")
+    release_suffix = (" (SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE=1 is installed: this is the "
+                      "control)" if no_release_purge else "")
+
+    real_seal_retained = sup.Supervisor._seal_retained
+    real_secure_unsealed = sup.Supervisor._secure_unsealed
+    real_aad = sup.artifact_aad
+    real_purge = sup._purge_artifacts
+    real_seal_artifact = sup.seal_artifact
+    real_seal_retained_artifacts = sup.seal_retained_artifacts
+    if no_seal:
+        sup.Supervisor._seal_retained = _unsealed_retained
+    if no_aad:
+        sup.artifact_aad = _aad_without_name
+    if no_eid_aad:
+        sup.artifact_aad = _aad_without_execution_id
+    if keeps_plaintext:
+        sup._purge_artifacts = _purge_that_keeps_plaintext
+    if no_release_purge:
+        sup.Supervisor._secure_unsealed = _release_without_purge
+    try:
+        root = os.path.join(tmp, "sealed")
+        os.makedirs(root)
+        s = sup.Supervisor(root, ready=True)
+
+        # -- the pass itself, over a directory holding what a real child can leave behind ----
+        eid = "44444444-4444-4444-8444-444444444444"
+        job = _fake_job(root, eid)
+        art = job.dirs.artifacts
+        secret = b"SECRET-VICTIM-DATA,1\n"
+        _write(os.path.join(art, "private.csv"), secret)
+        _write(os.path.join(art, "second.csv"), b"another,2\n")
+        # Four things build_manifest omits and read_artifact can never address, and that are
+        # therefore pure retained plaintext with no reader: a subdirectory's contents, a
+        # symlink, a hard link to a file outside the tree, and a name with a control character.
+        os.makedirs(os.path.join(art, "subdir"))
+        _write(os.path.join(art, "subdir", "hidden.txt"), b"HIDDEN-PLAINTEXT")
+        os.symlink("/etc/passwd", os.path.join(art, "link.txt"))
+        _write(os.path.join(root, "outside.csv"), b"OUTSIDE-PLAINTEXT")
+        os.link(os.path.join(root, "outside.csv"), os.path.join(art, "hardlink.csv"))
+        _write(os.path.join(art, "new\nline.txt"), b"CONTROL-CHAR-PLAINTEXT")
+        # A ZERO-BYTE ARTIFACT is an ordinary output, not an edge case somebody contrived: an
+        # empty result frame from to_csv, a log nothing wrote to. It seals to a bare envelope
+        # and it is the case the read path used to die on.
+        _write(os.path.join(art, "empty.bin"), b"")
+
+        s._retention[eid] = [time.monotonic() + 900, 100]
+        sealed, purged, secured = s._seal_retained(job)
+
+        left = sorted(os.listdir(art))
+        check("artifact seal: what no read path can ever address is deleted rather than "
+              "retained in the clear — a subdirectory, a symlink, a hard link and an "
+              "unretrievable name all go, and are counted into artifacts_omitted",
+              left == ["empty.bin", "private.csv", "second.csv"] and purged == 4,
+              f"left {left}, purged {purged}" + seal_suffix)
+        check("artifact seal: the pass reports that the directory is secured, which is the "
+              "only thing that means 'no plaintext was left behind'",
+              secured is True, f"secured {secured!r}" + seal_suffix)
+
+        with open(os.path.join(art, "private.csv"), "rb") as fh:
+            on_disk = fh.read()
+        check("artifact seal: THE PROPERTY — a same-uid reader of a retained artifact gets "
+              "the sealed envelope, not the bytes the script wrote",
+              secret not in on_disk and on_disk[:len(secret)] != secret,
+              f"read {on_disk[:40]!r} back off disk" + seal_suffix)
+        check("artifact seal: the envelope costs exactly a nonce and a tag",
+              len(on_disk) == len(secret) + sup.ARTIFACT_ENVELOPE_BYTES,
+              f"{len(on_disk)} bytes on disk for {len(secret)} of plaintext" + seal_suffix)
+        check("artifact seal: the pass reports the PLAINTEXT size and the PLAINTEXT digest, "
+              "measured while the plaintext still existed",
+              sealed and sealed.get("private.csv")
+              == (len(secret), hashlib.sha256(secret).hexdigest()),
+              f"got {sealed.get('private.csv') if sealed else sealed!r}" + seal_suffix)
+
+        entries, omitted, digests = sup.build_manifest(art, sealed=sealed)
+        by_name = {e["name"]: e for e in entries}
+        check("artifact seal: the manifest still describes the PLAINTEXT — same size, same "
+              "digest — so nothing downstream changes meaning because the file grew",
+              by_name.get("private.csv", {}).get("size") == len(secret)
+              and digests.get("private.csv") == hashlib.sha256(secret).hexdigest(),
+              f"got {by_name.get('private.csv')} {digests.get('private.csv')!r}")
+
+        s._record_digests(eid, digests)
+        s._retained_ids.add(eid)
+        key = s._artifact_keys.get(eid)
+        check("artifact seal: the key is a MUTABLE buffer, so it can be wiped in place rather "
+              "than rebound",
+              no_seal or (isinstance(key, bytearray) and len(key) == sup.ARTIFACT_KEY_BYTES),
+              f"got {type(key).__name__}" + seal_suffix)
+        # NOT asserted for these files: the cached size is charged in st_blocks, and a
+        # 21-byte artifact and its 49-byte envelope occupy the same block, so the honest
+        # growth here is 0. The check that the correction happens at all is in the read-cap
+        # block below, where the artifact is exactly one page short of the next block.
+
+        data, ctype = s.read_artifact(eid, "private.csv")
+        check("artifact seal: the read path opens it again and hands back the plaintext",
+              data == secret and ctype == "text/csv", f"got {data!r} {ctype}")
+
+        # THE ZERO-BYTE BOUNDARY. The size group below pins ARTIFACT_READ_MAX_BYTES and
+        # ARTIFACT_READ_MAX_BYTES + 1 and never pinned 0, and 0 is where the read broke:
+        # seal_artifact handled it correctly, open_artifact raised ValueError out of the
+        # ctypes layer, and no handler on the way to the socket caught that type.
+        # RECORDED RATHER THAN PASSED VACUOUSLY under the control: these two are statements
+        # about a seal map and a sealed file, and SUPERVISOR_TEST_NO_SEAL=1 produces neither.
+        if no_seal:
+            skip("artifact seal: a ZERO-BYTE artifact seals to a bare envelope and is "
+                 "advertised with the digest of nothing",
+                 "SUPERVISOR_TEST_NO_SEAL=1 builds no seal map")
+            skip("artifact seal: and a zero-byte sealed artifact is exactly the envelope on "
+                 "disk", "SUPERVISOR_TEST_NO_SEAL=1 seals nothing")
+        else:
+            check("artifact seal: a ZERO-BYTE artifact seals to a bare envelope and is "
+                  "advertised with the digest of nothing",
+                  sealed.get("empty.bin") == (0, hashlib.sha256(b"").hexdigest()),
+                  f"got {sealed.get('empty.bin')!r}")
+            check("artifact seal: and a zero-byte sealed artifact is exactly the envelope on "
+                  "disk",
+                  os.path.getsize(os.path.join(art, "empty.bin"))
+                  == sup.ARTIFACT_ENVELOPE_BYTES,
+                  f"{os.path.getsize(os.path.join(art, 'empty.bin'))} bytes")
+        empty_read = None
+        try:
+            empty_read = s.read_artifact(eid, "empty.bin")
+        except Exception as exc:                     # noqa: BLE001 — the point is the TYPE
+            empty_read = exc
+        check("artifact seal: THE 0-BYTE READ — an empty artifact the manifest advertised "
+              "opens and returns b'', rather than raising a type no handler catches and "
+              "killing the connection with no status line",
+              empty_read == (b"", "application/octet-stream"),
+              f"got {empty_read!r}")
+
+        if no_seal:
+            # EVERY check the else branch owns is recorded, not only the first. Four of them
+            # used to simply not execute under this control with nothing in the output to say
+            # so, which is how a mode ends up proving less than its summary line claims.
+            for name, why in (
+                ("artifact seal: a sealed file MOVED to another name inside the same "
+                 "execution is refused", "leaves nothing sealed to move"),
+                ("artifact seal: a sealed artifact does not open under a name, or an "
+                 "execution id, it was not sealed for", "seals nothing to bind an AAD to"),
+                ("artifact seal: another execution's key does not open it",
+                 "mints no key for a wrong one to be substituted for"),
+                ("artifact seal: a file planted AFTER the pass is not in the seal map",
+                 "builds no seal map for a planted file to be absent from"),
+                ("artifact seal: forgetting a retained execution WIPES its key in place",
+                 "keeps no key to wipe"),
+            ):
+                skip(name, f"SUPERVISOR_TEST_NO_SEAL=1 {why}")
+        else:
+            first = os.path.join(art, "private.csv")
+            second = os.path.join(art, "second.csv")
+            with open(first, "rb") as fh:
+                a_bytes = fh.read()
+            with open(second, "rb") as fh:
+                b_bytes = fh.read()
+            _write(first, b_bytes)
+            _write(second, a_bytes)
+            expect_request_error(
+                "artifact seal: a sealed file MOVED to another name inside the same execution "
+                "is refused",
+                lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+            _write(first, a_bytes)
+            _write(second, b_bytes)
+
+            # THE NAME BINDING IS ASSERTED ON THE PRIMITIVE, not through read_artifact, and
+            # the distinction is the whole reason this check is written this way. A swapped
+            # file is refused through read_artifact whether or not the name is in the
+            # associated data, because the PLAINTEXT digest catches it as well — so that
+            # check cannot tell the two apart and must not be read as evidence for either.
+            # What only the AAD catches is a ciphertext opening under a name, or an
+            # execution, it was not sealed for.
+            aad_dir = os.path.join(tmp, "aad")
+            os.makedirs(aad_dir, exist_ok=True)
+            _write(os.path.join(aad_dir, "one.csv"), b"BOUND-TO-ITS-OWN-NAME\n")
+            probe_key = sup.new_artifact_key()
+            adfd = os.open(aad_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                sup.seal_artifact(adfd, "one.csv", probe_key, sup.artifact_aad(eid, "one.csv"))
+            finally:
+                os.close(adfd)
+            with open(os.path.join(aad_dir, "one.csv"), "rb") as fh:
+                one_blob = fh.read()
+            other_eid = "88888888-8888-4888-8888-888888888888"
+            moved = []
+            for label, aad in (("another name", sup.artifact_aad(eid, "two.csv")),
+                               ("another execution",
+                                sup.artifact_aad(other_eid, "one.csv"))):
+                try:
+                    sup.open_artifact(one_blob, probe_key, aad)
+                except sup.ArtifactCryptoError:
+                    continue
+                moved.append(label)
+            sup.wipe_artifact_key(probe_key)
+            check("artifact seal: a sealed artifact does not open under a name, or an "
+                  "execution id, it was not sealed for — both are bound into the associated "
+                  "data, so a ciphertext cannot be relabelled or lifted between executions",
+                  not moved, f"opened under {moved}" + aad_suffix)
+
+            other_key = sup.new_artifact_key()
+            s._artifact_keys[eid] = other_key
+            expect_request_error(
+                "artifact seal: another execution's key does not open it",
+                lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+            sup.wipe_artifact_key(other_key)
+            s._artifact_keys[eid] = key
+
+            planted = os.path.join(art, "planted.csv")
+            _write(planted, b"PLANTED-BY-A-PEER")
+            entries_now, _, _ = sup.build_manifest(art, sealed=sealed)
+            check("artifact seal: a file planted AFTER the pass is not in the seal map, so the "
+                  "manifest omits it rather than listing something it cannot open",
+                  "planted.csv" not in {e["name"] for e in entries_now},
+                  f"got {[e['name'] for e in entries_now]}")
+            os.unlink(planted)
+
+            key_object = key
+            s._forget_retained(eid)
+            check("artifact seal: forgetting a retained execution WIPES its key in place and "
+                  "drops it, so the key never outlives the entry it belongs to",
+                  eid not in s._artifact_keys
+                  and key_object == bytearray(sup.ARTIFACT_KEY_BYTES),
+                  f"{eid in s._artifact_keys}, key {bytes(key_object)!r}")
+
+        # -- the read cap applies to the PLAINTEXT, at the boundary ------------------------
+        cap = sup.ARTIFACT_READ_MAX_BYTES
+        for size, want_status in ((cap, None), (cap + 1, 413)):
+            beid = ("55555555-5555-4555-8555-555555555555" if want_status is None
+                    else "66666666-6666-4666-8666-666666666666")
+            bjob = _fake_job(root, beid)
+            _write(os.path.join(bjob.dirs.artifacts, "big.bin"), b"z" * size)
+            s._retention[beid] = [time.monotonic() + 900, 0]
+            bsealed, _, _ = s._seal_retained(bjob)
+            if want_status is None:
+                check("artifact seal: the envelope growth is added back into the cached "
+                      "retained size, so RETAINED_ARTIFACTS_CEILING is not enforced against "
+                      "a pre-seal number (this artifact is a whole number of blocks, so the "
+                      "envelope really does cost another one)",
+                      no_seal or s._retention[beid][1] > 0,
+                      f"cached size {s._retention[beid][1]}" + seal_suffix)
+            _, _, bdigests = sup.build_manifest(bjob.dirs.artifacts, sealed=bsealed)
+            s._record_digests(beid, bdigests)
+            s._retained_ids.add(beid)
+            if want_status is None:
+                got, _ = s.read_artifact(beid, "big.bin")
+                check("artifact seal: an artifact of EXACTLY ARTIFACT_READ_MAX_BYTES is still "
+                      "served — the cap bounds the response, so it is charged against the "
+                      "plaintext and the envelope does not push it over",
+                      len(got) == cap, f"got {len(got)} bytes for a {size}-byte artifact")
+            else:
+                expect_request_error(
+                    "artifact seal: one byte over the cap is still 413, so sealing did not "
+                    "move the boundary in either direction",
+                    lambda: s.read_artifact(beid, "big.bin"), 413, "ArtifactTooLarge")
+
+        # -- fail closed, LOCALISED: one unsealable file does not destroy the rest ----------
+        # The blast radius is the finding. The pass used to raise on the first file it could
+        # not seal and the caller answered by destroying the execution's WHOLE output —
+        # MEASURED, three readable artifacts vanished behind a 200 because a fourth was
+        # chmod 000. chmod is contrived; ENOSPC is not, and the seal writes a full temporary
+        # copy of every artifact into the same 512Mi emptyDir the retained trees live in.
+        feid = "77777777-7777-4777-8777-777777777777"
+        fjob = _fake_job(root, feid)
+        for n in range(3):
+            _write(os.path.join(fjob.dirs.artifacts, f"f{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[feid] = [time.monotonic() + 900, 0]
+        calls = []
+
+        def failing_seal(dfd, name, key_, aad, chunk_bytes=sup.CRYPT_CHUNK_BYTES):
+            calls.append(name)
+            if len(calls) == 2:
+                raise sup.ArtifactCryptoError("simulated libcrypto failure")
+            return real_seal_artifact(dfd, name, key_, aad, chunk_bytes)
+
+        sup.seal_artifact = failing_seal
+        try:
+            fsealed, fomitted_n, fsecured = s._seal_retained(fjob)
+        finally:
+            sup.seal_artifact = real_seal_artifact
+        victim = calls[1] if len(calls) > 1 else None
+        remaining = sorted(os.listdir(fjob.dirs.artifacts))
+        clear = []
+        for name in remaining:
+            with open(os.path.join(fjob.dirs.artifacts, name), "rb") as fh:
+                if b"PLAINTEXT-" in fh.read():
+                    clear.append(name)
+        check("artifact seal: FAIL CLOSED — a file that could not be sealed leaves no "
+              "plaintext behind, because the alternative is retaining exactly what the seal "
+              "exists to remove",
+              not clear, f"still in the clear: {clear}" + seal_suffix + purge_suffix)
+        localised_name = ("artifact seal: LOCALISED — the one unsealable file is deleted and "
+                          "the execution's OTHER artifacts are sealed and still listed, so a "
+                          "single failure does not destroy an output the caller has already "
+                          "paid for")
+        manifest_name = ("artifact seal: LOCALISED — the manifest advertises the survivors "
+                         "and not the one that went, so no caller is told about an artifact "
+                         "it cannot have")
+        if no_seal:
+            skip(localised_name, "SUPERVISOR_TEST_NO_SEAL=1 seals nothing to survive")
+        else:
+            check(localised_name,
+                  victim is not None and victim not in remaining
+                  and len(remaining) == 2 and set(fsealed) == set(remaining),
+                  f"remaining {remaining}, victim {victim!r}, sealed {sorted(fsealed)}")
+        check("artifact seal: LOCALISED — the deleted file is counted into "
+              "artifacts_omitted, so it does not vanish silently either",
+              fomitted_n == 1, f"got {fomitted_n}" + seal_suffix + purge_suffix)
+        check("artifact seal: LOCALISED — and the pass still reports the directory secured, "
+              "because everything that is not sealed is gone",
+              fsecured is True, f"secured {fsecured!r}" + seal_suffix + purge_suffix)
+        fentries, _, fdigests = sup.build_manifest(fjob.dirs.artifacts, sealed=fsealed)
+        if no_seal:
+            skip(manifest_name, "SUPERVISOR_TEST_NO_SEAL=1 builds no seal map to filter by")
+        else:
+            check(manifest_name,
+                  {e["name"] for e in fentries} == set(remaining)
+                  and victim not in fdigests,
+                  f"got {[e['name'] for e in fentries]}")
+
+        # -- fail closed, WHOLE EXECUTION: a failure that cannot be attributed to one file --
+        geid = "99999999-9999-4999-8999-999999999999"
+        gjob = _fake_job(root, geid)
+        for n in range(3):
+            _write(os.path.join(gjob.dirs.artifacts, f"g{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[geid] = [time.monotonic() + 900, 0]
+
+        def unlocalisable(*a, **kw):
+            # What "cannot be attributed to one file" means: the directory would not open, the
+            # entry bound was exceeded, libcrypto went away. Nothing on disk has been examined,
+            # so nothing on disk can be trusted.
+            raise sup.ArtifactCryptoError("simulated non-localisable failure")
+
+        sup.seal_retained_artifacts = unlocalisable
+        try:
+            gsealed, gomitted_n, gsecured = s._seal_retained(gjob)
+        finally:
+            sup.seal_retained_artifacts = real_seal_retained_artifacts
+        gremaining = sorted(os.listdir(gjob.dirs.artifacts))
+        gclear = []
+        for name in gremaining:
+            with open(os.path.join(gjob.dirs.artifacts, name), "rb") as fh:
+                if b"PLAINTEXT-" in fh.read():
+                    gclear.append(name)
+        check("artifact seal: FAIL CLOSED — a failure the pass cannot attribute to any one "
+              "file destroys the whole directory, because nothing in it has been examined",
+              not gclear, f"still in the clear: {gclear}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — and it does not vanish silently either: the "
+              "destroyed artifacts are counted into artifacts_omitted and nothing is listed",
+              gsealed == {} and gomitted_n == 3,
+              f"got {gsealed!r} {gomitted_n}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — the whole-directory purge succeeded, so the pass "
+              "reports the directory secured",
+              gsecured is True, f"secured {gsecured!r}" + seal_suffix + purge_suffix)
+        gentries, _, gdigests = sup.build_manifest(gjob.dirs.artifacts, sealed=gsealed)
+        check("artifact seal: FAIL CLOSED — the manifest built afterwards advertises nothing, "
+              "so no caller is told about an artifact it cannot have",
+              gentries == [] and gdigests == {},
+              f"got {gentries} {gdigests}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — and the execution still answers, because the "
+              "retention path failing is not the script failing",
+              geid in s._retention and geid not in s._artifact_keys,
+              f"retained {geid in s._retention}, key {geid in s._artifact_keys}")
+
+        # -- NOT fail-closed, and it says so: plaintext that could not be REMOVED either -----
+        # MEASURED before the fix: a same-uid peer chmod 0500 on artifacts/ between the retain
+        # and the seal produced the log line "destroyed 0 rather than retaining them in the
+        # clear" over two files that were, at that moment, in the clear — and a 200 whose only
+        # signal was a larger artifacts_omitted. A count cannot distinguish "destroyed
+        # everything" from "destroyed nothing", so _purge_artifacts now returns whether the
+        # directory is actually empty and every caller has to answer it.
+        ueid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ujob = _fake_job(root, ueid)
+        for n in range(2):
+            _write(os.path.join(ujob.dirs.artifacts, f"u{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[ueid] = [time.monotonic() + 900, 0]
+        sup.seal_retained_artifacts = unlocalisable
+        sup._purge_artifacts = lambda d: (0, False)   # the chmod 0500 outcome, deterministically
+        try:
+            with _LogCapture() as ulog:
+                usealed, uomitted_n, usecured = s._seal_retained(ujob)
+        finally:
+            sup.seal_retained_artifacts = real_seal_retained_artifacts
+            sup._purge_artifacts = (_purge_that_keeps_plaintext if keeps_plaintext
+                                    else real_purge)
+        check("artifact seal: NOT SECURED — when the plaintext can be neither sealed nor "
+              "deleted the pass says so, because that is the one outcome artifacts_omitted "
+              "cannot describe",
+              usecured is False and usealed == {},
+              f"secured {usecured!r}, sealed {usealed!r}")
+        check("artifact seal: NOT SECURED — and the log does not claim a property the code "
+              "did not achieve: it says the artifacts are retained in the clear, and never "
+              "'destroyed N rather than retaining them in the clear'",
+              "RETAINED IN THE CLEAR" in "\n".join(ulog.lines)
+              and "rather than retaining them in the clear" not in "\n".join(ulog.lines),
+              f"logged {ulog.lines!r}")
+        real_purge(ujob.dirs.artifacts)
+
+        # -- an entry that will not even stat is removed and counted, not skipped ------------
+        # `continue` on the os.stat left such an entry outside BOTH halves of "what is not
+        # sealed is deleted" and outside artifacts_omitted: neither sealed, nor purged, nor
+        # counted. A dangling symlink is the cheapest way to build one whose stat succeeds only
+        # with follow_symlinks=False, so the stat itself is made to fail instead.
+        seid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        sjob = _fake_job(root, seid)
+        _write(os.path.join(sjob.dirs.artifacts, "kept.csv"), b"KEPT\n")
+        _write(os.path.join(sjob.dirs.artifacts, "unstattable.csv"), b"PLAINTEXT-X\n")
+        s._retention[seid] = [time.monotonic() + 900, 0]
+        real_stat = os.stat
+
+        def refusing_stat(path, *a, **kw):
+            if path == "unstattable.csv":
+                raise OSError(5, "simulated EIO")
+            return real_stat(path, *a, **kw)
+
+        os.stat = refusing_stat
+        try:
+            ssealed, somitted_n, ssecured = s._seal_retained(sjob)
+        finally:
+            os.stat = real_stat
+        sleft = sorted(os.listdir(sjob.dirs.artifacts))
+        unstat_name = ("artifact seal: an entry that cannot be examined is REMOVED and "
+                       "COUNTED rather than skipped — nothing may be neither sealed, nor "
+                       "purged, nor reported")
+        if no_seal:
+            skip(unstat_name, "SUPERVISOR_TEST_NO_SEAL=1 never examines an entry at all")
+        else:
+            check(unstat_name,
+                  sleft == ["kept.csv"] and somitted_n == 1 and ssecured is True,
+                  f"left {sleft}, omitted {somitted_n}, secured {ssecured!r}")
+
+        # -- STRUCTURAL: a directory retained WITHOUT the seal pass is emptied ---------------
+        # THE ORIGINAL DEMONSTRATED ATTACK, reproduced against the sealed build. _seal_retained
+        # runs on the completion path only, so ANY exception out of _execute_inner — a
+        # ForkServerError out of _reap, which this module models explicitly — propagated PAST
+        # it and run()'s finally retained the directory with the child's plaintext exactly
+        # where it wrote it, for the whole of RETENTION_S. The read path answering 404 is not
+        # a defence: the threat is a same-uid open() on a flat, enumerable /scratch.
+        reid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        rjob = sup.Job(types.SimpleNamespace(execution_id=reid), None)
+        rjob.dirs = sup.ExecutionDirs(root, reid)
+        rjob.dirs.create()
+        _write(os.path.join(rjob.dirs.artifacts, "private.csv"), b"SECRET-VICTIM-DATA,1\n")
+        _write(os.path.join(rjob.dirs.tmp, "scratch.tmp"), b"SECRET-VICTIM-DATA,2\n")
+        check("artifact seal: (setup) a job that never reached the seal pass is not marked "
+              "sealed", rjob.sealed is False, f"sealed {rjob.sealed!r}")
+        s._release(rjob, retain=True)
+        rleft = []
+        for dirpath, _, filenames in os.walk(rjob.dirs.base):
+            rleft.extend(os.path.join(dirpath, f) for f in filenames)
+        rclear = []
+        for path in rleft:
+            with open(path, "rb") as fh:
+                if b"SECRET-VICTIM-DATA" in fh.read():
+                    rclear.append(os.path.relpath(path, rjob.dirs.base))
+        check("artifact seal: STRUCTURAL — an execution that RAISED before the seal retains "
+              "nothing in the clear; nothing was ever advertised for it, so emptying the "
+              "directory costs no caller anything",
+              not rclear, f"still in the clear: {sorted(rclear)}" + release_suffix)
+        check("artifact seal: STRUCTURAL — and the directory itself stays, so the execution "
+              "id remains reserved and the reaper removes it on the usual schedule",
+              os.path.isdir(rjob.dirs.base) and reid in s._retention,
+              f"dir {os.path.isdir(rjob.dirs.base)}, retained {reid in s._retention}")
+        s._forget_retained(reid)
+
+        # -- the startup gate ---------------------------------------------------------------
+        probe_dir = os.path.join(tmp, "selftest")
+        os.makedirs(probe_dir)
+        selftest_raised = None
+        try:
+            sup.crypto_selftest(probe_dir)
+        except Exception as exc:
+            selftest_raised = exc
+        check("artifact seal: crypto_selftest passes and leaves nothing behind — it is the "
+              "startup gate, so a pod whose libcrypto cannot seal never reports ready",
+              selftest_raised is None and os.listdir(probe_dir) == [],
+              f"raised {selftest_raised!r}, left {os.listdir(probe_dir)}")
+    finally:
+        sup.Supervisor._seal_retained = real_seal_retained
+        sup.Supervisor._secure_unsealed = real_secure_unsealed
+        sup.artifact_aad = real_aad
+        sup._purge_artifacts = real_purge
+        sup.seal_artifact = real_seal_artifact
+        sup.seal_retained_artifacts = real_seal_retained_artifacts
+
 def test_artifact_scoping(tmp):
     """The id is the authorisation, and only a RETAINED execution has one."""
     root = os.path.join(tmp, "scoping")
@@ -872,6 +1482,19 @@ def test_http(server):
         else:
             out_csv = os.path.join(server.host_scratch, payload["execution_id"],
                                    "artifacts", "out.csv")
+            # 4h6.88 over the wire, against an artifact a REAL execution wrote: what a process
+            # at the shared uid finds on disk is the sealed envelope, not what the script
+            # wrote. The bytes are kept so the negative control below can put back what was
+            # THERE rather than what was WRITTEN — restoring plaintext would no longer
+            # authenticate, and the control has to isolate the write's content, not the seal.
+            with open(out_csv, "rb") as fh:
+                sealed_on_disk = fh.read()
+            check("http: a retained artifact is SEALED on disk — a same-uid read gets the "
+                  "envelope and not the four bytes the script wrote "
+                  "(genetics-results-suite-4h6.88)",
+                  b"a,b\n" not in sealed_on_disk
+                  and len(sealed_on_disk) == 4 + sup.ARTIFACT_ENVELOPE_BYTES,
+                  f"read {sealed_on_disk!r} off disk")
             with open(out_csv, "wb") as fh:
                 fh.write(b"x,y\n")     # same four bytes' worth of shape, different content
             status, _, body = server.request(
@@ -890,13 +1513,98 @@ def test_http(server):
                   status == 404 and body["error"]["type"] == "NotFound", f"got {status} {body}")
             os.unlink(planted)
             with open(out_csv, "wb") as fh:
-                fh.write(b"a,b\n")     # restore, so later checks see the execution's own bytes
+                fh.write(sealed_on_disk)   # restore, so later checks see the execution's own bytes
             status, _, art = server.request(
                 "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
-            check("http: NEGATIVE CONTROL — restoring the original bytes makes /artifact serve "
-                  "it again, so the refusal is the digest and not the write",
+            check("http: NEGATIVE CONTROL — restoring the SEALED bytes the execution itself "
+                  "left on disk makes /artifact serve it again, so the refusal is the content "
+                  "check and not the fact that a write happened",
                   status == 200 and base64.b64decode(art["content_base64"]) == b"a,b\n",
                   f"got {status} {art}")
+
+        # THE ZERO-BYTE BOUNDARY, ON THE WIRE (genetics-results-suite-4h6.88). An empty
+        # artifact is ordinary — a result frame with no rows, a log nothing wrote to — and it
+        # is the case where the sealed read used to raise out of the ctypes layer into
+        # socketserver.handle_error, which logs a traceback and CLOSES THE SOCKET WITH NO
+        # STATUS LINE. So this asserts a STATUS, not only a body: a wire check is the only
+        # one that can tell "409" from "the connection died".
+        status, _, body = server.request("POST", "/execute", body=make_body(
+            code="import os\n"
+                 "d = os.environ['SANDBOX_ARTIFACTS_DIR']\n"
+                 "open(os.path.join(d, 'empty.bin'), 'wb').close()\n"
+                 "open(os.path.join(d, 'ok.csv'), 'w').write('a,1\\n')\n"))
+        empty_eid = body["execution_id"]
+        check("http: an execution that writes a ZERO-BYTE artifact lists it in the manifest "
+              "with size 0",
+              status == 200
+              and {(e["name"], e["size"]) for e in body["artifacts"]}
+              == {("empty.bin", 0), ("ok.csv", 4)},
+              f"got {status} {body.get('artifacts')}")
+        check("http: a normal execution carries artifacts_retained_in_clear false — the field "
+              "is always present, so a client can read it without treating absence as safe",
+              body.get("artifacts_retained_in_clear") is False,
+              f"got {body.get('artifacts_retained_in_clear')!r}")
+        status, _, art = server.request(
+            "GET", f"/artifact?execution_id={empty_eid}&name=empty.bin")
+        check("http: GET on the zero-byte artifact the manifest advertised answers 200 with "
+              "an empty body — the manifest must never name something the read cannot serve",
+              status == 200 and art.get("size") == 0
+              and base64.b64decode(art["content_base64"]) == b"",
+              f"got {status} {art}")
+        status, _, art = server.request(
+            "GET", f"/artifact?execution_id={empty_eid}&name=ok.csv")
+        check("http: and the non-empty artifact of the same execution still serves, so the "
+              "zero-byte case did not poison the connection or the key",
+              status == 200 and base64.b64decode(art["content_base64"]) == b"a,1\n",
+              f"got {status} {art}")
+
+        # THE WIRE ANSWER WHEN PLAINTEXT COULD NOT BE REMOVED (genetics-results-suite-4h6.88).
+        # A 200 whose only signal is a larger artifacts_omitted is not adequate for "we could
+        # not remove your data": that field means "produced, present, not listed". So the
+        # response carries artifacts_retained_in_clear, and this is the only place the mapping
+        # from `secured=False` to the wire can be observed.
+        #
+        # AND IT MUST NOT BE A 500. That was the first answer, and it was a same-uid
+        # DENIAL-OF-SERVICE kill switch: MEASURED 3 for 3, a second process at this uid
+        # polling /scratch/*/artifacts and chmod 0500-ing them turned every execution into
+        # `http=500 output=None` — the stdout of a script that ran to completion, destroyed by
+        # a peer. The 500 bought no confidentiality either: deletion is exactly what failed,
+        # so that peer already holds the plaintext whichever status the caller gets. These two
+        # checks pin the trade in both directions — the output survives, AND the exposure is
+        # stated rather than folded into a count.
+        not_secured_name = ("http: an execution whose retained plaintext could be neither "
+                            "sealed nor deleted still returns its stdout — a same-uid peer "
+                            "cannot deny service by making the seal fail")
+        not_secured_field = ("http: and it says so in artifacts_retained_in_clear, its own "
+                             "field, NOT by inflating artifacts_omitted — the caller must be "
+                             "able to tell 'not listed' from 'readable at this uid'")
+        if server.container:
+            for name in (not_secured_name, not_secured_field):
+                skip(name, "the supervisor is in another process; nothing here can "
+                           "make its seal pass report an unsecured directory")
+        else:
+            real_seal = sup.Supervisor._seal_retained
+            sup.Supervisor._seal_retained = lambda self, job: ({}, 2, False)
+            try:
+                status, _, body = server.request("POST", "/execute", body=make_body(
+                    code="import os\n"
+                         "open(os.path.join(os.environ['SANDBOX_ARTIFACTS_DIR'],'x.csv'),'w')"
+                         ".write('a\\n')\n"
+                         "print('STDOUT-THE-CALLER-PAID-FOR')\n"))
+            finally:
+                sup.Supervisor._seal_retained = real_seal
+            check(not_secured_name,
+                  status == 200 and body["status"] == "ok" and body["error"] is None
+                  and "STDOUT-THE-CALLER-PAID-FOR" in (body.get("output") or ""),
+                  f"got {status} {body}")
+            # 3 = the stub's 2 purged + the one artifact the script wrote, which the manifest
+            # omits because the (stubbed) seal map does not name it. The count is still a
+            # truthful "produced, present, not listed"; what it cannot say is that those bytes
+            # are readable at this uid, which is the boolean's job.
+            check(not_secured_field,
+                  body.get("artifacts_retained_in_clear") is True
+                  and body["artifacts"] == [] and body["artifacts_omitted"] == 3,
+                  f"got {body}")
 
         # an uncaught exception
         status, _, body = server.request("POST", "/execute", body=make_body(
@@ -5322,6 +6030,7 @@ def run_in_process():
         test_manifest(tmp)
         test_artifact_scoping(tmp)
         test_artifact_integrity(tmp)
+        test_artifact_encryption(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
         print("fork server units")
@@ -5457,6 +6166,9 @@ def run_container(base_url, retention_s=None, container_name=None):
         "artifact manifest (test_manifest) — needs the harness's own view of /scratch",
         "artifact integrity (test_artifact_integrity) — tampers with a retained artifact "
         "directly, which needs the harness's own view of /scratch",
+        "artifact encryption at rest (test_artifact_encryption) — reads a retained artifact "
+        "off disk at the shared uid and drives _seal_retained directly, both of which need "
+        "the harness's own view of /scratch",
         "what an execution leaves behind (test_survivors) — reads /proc for a pid in the "
         "supervisor's pid namespace, and disables the kill and the sweep in the module to get "
         "its negative control",

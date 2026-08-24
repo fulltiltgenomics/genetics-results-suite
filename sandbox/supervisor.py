@@ -18,6 +18,15 @@ This file started as genetics-results-suite-4h6.39 (the skeleton). Its five hole
   4h6.46  /scratch sub-quotas, artifact retention, the reaper -> _watchdog, _retain, reap_expired
           the budget arithmetic is stated ONCE, above ARTIFACT_QUOTA_BYTES, and is mirrored in
           docs/code-execution-security.md's "4h6.46" table; do not restate it a second time
+  4h6.88  A RETAINED DIRECTORY IS SEALED OR EMPTY, under a per-execution AES-256-GCM key
+          held only here -> seal_retained_artifacts, Supervisor._seal_retained,
+          Supervisor._secure_unsealed, read_artifact_bytes
+          The property is stated over the DIRECTORY, not over "every artifact", because the
+          seal pass runs on the completion path and an exception out of _execute_inner
+          reaches _release without passing it — see _secure_unsealed, which is what makes the
+          guarantee structural. It closes the CROSS-EXECUTION read of a COMPLETED execution
+          and NOT the live window; the "Artifact encryption at rest" block below says exactly
+          what it does not close
 
 WHAT 4h6.45 DOES AND DOES NOT CHANGE ABOUT THE AUDIT TRAIL. The records now reach the pod's
 own stdout — the only stream the cluster's logging agent collects — attributed from the
@@ -248,7 +257,24 @@ WATCHDOG_POLL_S = 0.2
 #
 #     RETAINED_ARTIFACTS_CEILING   256Mi   steady state, EXACT: every retained artifacts/ has
 #                                          been trimmed to ARTIFACT_QUOTA by _retain, so the
-#                                          ceiling is enforced over measured, bounded sizes
+#                                          ceiling is enforced over measured, bounded sizes.
+#                                          Sealing (4h6.88) runs AFTER the trim and adds
+#                                          ARTIFACT_ENVELOPE_BYTES (28 B) per file — but the
+#                                          quota is charged in st_blocks*512 + DIRENT_COST,
+#                                          NOT in apparent size, so the overshoot is measured
+#                                          in BLOCKS. MEASURED on a 512 KiB artifact: 28 B of
+#                                          apparent growth, 4096 B of st_blocks growth. 28 B
+#                                          can push a file into at most one more 4 KiB block,
+#                                          so the true worst case is ARTIFACT_ENTRY_BUDGET *
+#                                          4096 = 4 MiB over ARTIFACT_QUOTA, not the 28 KiB
+#                                          this comment used to claim (146x low).
+#                                          _seal_retained adds the measured growth back into
+#                                          the cached row, so the CEILING stays exact over
+#                                          sizes that are true; it is the per-execution quota
+#                                          that is now a ceiling plus a bounded envelope. The
+#                                          448 <= 480 below is UNCHANGED by this: it is built
+#                                          on the 256 Mi ceiling, and the ceiling is enforced
+#                                          over post-seal sizes.
 #   + EXECUTION_TOTAL_QUOTA        192Mi   the one live execution
 #   = 448Mi
 #   <= SCRATCH_AGGREGATE_CEILING   480Mi   = 512Mi - 32Mi reserved for .supervisor and for
@@ -312,7 +338,8 @@ ARTIFACT_ENTRY_BUDGET = 1024          # entries directly under artifacts/ AND th
 # binds. The per-entry figure is deliberately generous — a 64-char str is ~113 B, a dict slot
 # ~100 B — because over-charging evicts earlier and under-charging is the failure being fixed.
 RETAINED_DIGEST_ENTRY_COST_BYTES = 320
-RETAINED_ROW_COST_BYTES = 512         # the row, the id string and the per-execution dict slots
+RETAINED_ROW_COST_BYTES = 512         # the row, the id string, the 32-byte artifact key and
+                                      # the per-execution dict slots
 RETAINED_STATE_CEILING_BYTES = 4 * 1024 * 1024
 
 # The largest artifact GET /artifact will hand back, chosen against MAX_RESPONSE_BYTES rather
@@ -867,6 +894,462 @@ def wipe_unrecognised_scratch(root, keep=()):
 
 
 # --------------------------------------------------------------------------------------
+# Artifact encryption at rest (genetics-results-suite-4h6.88)
+# --------------------------------------------------------------------------------------
+#
+# WHAT THIS CLOSES, AND WHAT IT DOES NOT. /scratch is fully enumerable and readable by any
+# process at the shared uid 65532 — MEASURED from inside a second execution's child, which
+# listed /scratch, opened a previous execution's artifacts/private.csv and read
+# SECRET-VICTIM-DATA out of it. Sealing every RETAINED artifact under a key that exists only
+# in this process's memory closes THAT read: the cross-execution read of a COMPLETED
+# execution, which is the attack that was actually demonstrated.
+#
+# IT DOES NOT CLOSE THE LIVE WINDOW, and nothing here may be worded as though it did. The
+# child writes PLAINTEXT with a raw open() into its own artifacts/ and there is no SDK
+# chokepoint to intercept — the shipped SDK and stubs expose no artifact-writing function at
+# all — so a same-uid resident reading DURING an execution is untouched. That window is up to
+# timeout_s (1-120, default 60) plus KILL_GRACE_S, plus the reap-to-seal tail.
+#
+# NOR DOES IT MAKE THE KEY UNREACHABLE. The key inherits exactly the protection
+# _artifact_digests already has and no more: YAMA kernel.yama.ptrace_scope=1 plus the fact
+# that the supervisor is the child's ANCESTOR. It is NOT seccomp — RuntimeDefault ALLOWS
+# ptrace (MEASURED, genetics-results-suite-4h6.90). What it does add over the digest map is
+# that the key is minted per execution and dies with the retained entry it belongs to.
+#
+# THE KEY MUST NEVER REACH THE FORK SERVER. ForkServer.start() runs once in bring_up(),
+# BEFORE ready and therefore before any key exists, so no key is in the snapshot every
+# execution child is forked from. That is the whole reason this is safe, and it holds only
+# while _forkserver_main's rule holds: nothing per-execution may travel the control socket
+# (see its docstring, and the bead it names).
+#
+# WHY ctypes AND NOT A LIBRARY. sandbox/requirements.txt pins numpy, scipy, polars,
+# matplotlib and httpx and nothing else. `cryptography` would drag a bundled OpenSSL and a
+# large Rust-built shared object into the image whose whole job is to BE a security boundary,
+# for a primitive the libcrypto already linked into this interpreter provides. MEASURED in
+# the image (genetics-sandbox:local, python 3.11.2, OpenSSL 3.0.19):
+# ctypes.util.find_library("crypto") returns None — there is no ldconfig and no gcc in a
+# distroless image — so the soname is HARDCODED rather than discovered. 10 MiB sealed in
+# 0.035s and opened in 0.033s: ~0.2s against the whole 64 MiB artifact quota, charged to the
+# execution that produced it.
+LIBCRYPTO_SONAME = "libcrypto.so.3"
+ARTIFACT_KEY_BYTES = 32               # AES-256
+GCM_NONCE_BYTES = 12                  # what GCM is defined over; another length costs a GHASH
+GCM_TAG_BYTES = 16
+ARTIFACT_ENVELOPE_BYTES = GCM_NONCE_BYTES + GCM_TAG_BYTES
+CRYPT_CHUNK_BYTES = 1 << 20           # what the streaming seal holds in RAM at once
+_ARTIFACT_KEY_ZEROS = bytes(ARTIFACT_KEY_BYTES)
+
+_EVP_CTRL_AEAD_SET_IVLEN = 0x9
+_EVP_CTRL_AEAD_GET_TAG = 0x10
+_EVP_CTRL_AEAD_SET_TAG = 0x11
+
+_LIBCRYPTO = None
+
+
+class CryptoUnavailable(RuntimeError):
+    """libcrypto is missing or does not behave. bring_up() raises rather than becoming ready.
+
+    FAIL CLOSED AT THE POD, NOT AT THE EXECUTION. A supervisor that cannot seal would have to
+    either retain plaintext or destroy every artifact it produces, and both are worse than a
+    pod that never reports ready: a CrashLoopBackOff is something a deploy notices, and
+    nobody's data sits in the clear while it is being noticed.
+    """
+
+
+class ArtifactCryptoError(Exception):
+    """One artifact could not be sealed or opened. Carries no key material and no plaintext."""
+
+
+def _libcrypto():
+    """The loaded libcrypto with its argtypes declared. Cached; raises CryptoUnavailable.
+
+    THE argtypes ARE NOT OPTIONAL. ctypes treats an unprototyped call as variadic, and the
+    five-argument EVP_EncryptInit_ex/EVP_DecryptInit_ex then fail at the varargs boundary with
+    "this function takes at least 6 arguments (5 given)". The probe that measured this hit it,
+    so it is written down here rather than rediscovered.
+    """
+    global _LIBCRYPTO
+    if _LIBCRYPTO is not None:
+        return _LIBCRYPTO
+    try:
+        lib = ctypes.CDLL(LIBCRYPTO_SONAME)
+    except OSError as exc:
+        raise CryptoUnavailable(f"cannot load {LIBCRYPTO_SONAME}: {exc}")
+    ptr, cint = ctypes.c_void_p, ctypes.c_int
+    ubytes = ctypes.POINTER(ctypes.c_ubyte)
+    try:
+        lib.EVP_CIPHER_CTX_new.restype, lib.EVP_CIPHER_CTX_new.argtypes = ptr, []
+        lib.EVP_CIPHER_CTX_free.restype, lib.EVP_CIPHER_CTX_free.argtypes = None, [ptr]
+        lib.EVP_aes_256_gcm.restype, lib.EVP_aes_256_gcm.argtypes = ptr, []
+        for fname in ("EVP_EncryptInit_ex", "EVP_DecryptInit_ex"):
+            fn = getattr(lib, fname)
+            fn.restype, fn.argtypes = cint, [ptr, ptr, ptr, ubytes, ubytes]
+        for fname in ("EVP_EncryptUpdate", "EVP_DecryptUpdate"):
+            fn = getattr(lib, fname)
+            fn.restype, fn.argtypes = cint, [ptr, ubytes, ctypes.POINTER(cint), ubytes, cint]
+        for fname in ("EVP_EncryptFinal_ex", "EVP_DecryptFinal_ex"):
+            fn = getattr(lib, fname)
+            fn.restype, fn.argtypes = cint, [ptr, ubytes, ctypes.POINTER(cint)]
+        lib.EVP_CIPHER_CTX_ctrl.restype = cint
+        lib.EVP_CIPHER_CTX_ctrl.argtypes = [ptr, cint, cint, ptr]
+    except AttributeError as exc:
+        raise CryptoUnavailable(f"{LIBCRYPTO_SONAME} is missing an EVP symbol: {exc}")
+    _LIBCRYPTO = lib
+    return lib
+
+
+def _as_ubytes(buf):
+    """A POINTER(c_ubyte) VIEW of a writable buffer. No copy — so no second heap copy of a key
+    or of somebody's plaintext to outlive the in-place wipe of the buffer it came from.
+
+    THE LENGTH IS THE BUFFER'S OWN, and it used to be `max(len(buf), 1)` in an attempt to cover
+    the empty case. That is backwards: `from_buffer` requires the SOURCE to be at least as
+    large as the array type, so asking for one byte of a zero-length bytearray raises
+    ValueError("Buffer size too small") instead of producing a usable pointer. MEASURED: a
+    0-byte artifact — an empty result frame from to_csv, a log nothing wrote to — sealed
+    correctly and then failed to OPEN, out of a call chain no handler caught, so the request
+    got no status line at all. A zero-length ctypes array is legal and is what an empty buffer
+    should map to; the callers that must not hand OpenSSL a zero-length update guard it
+    themselves (see open_artifact).
+    """
+    return (ctypes.c_ubyte * len(buf)).from_buffer(buf)
+
+
+def _gcm_context(lib, key, nonce, aad, encrypt):
+    """An AES-256-GCM context with key, nonce and AAD absorbed. The caller frees it."""
+    ctx = lib.EVP_CIPHER_CTX_new()
+    if not ctx:
+        raise ArtifactCryptoError("EVP_CIPHER_CTX_new failed")
+    try:
+        init = lib.EVP_EncryptInit_ex if encrypt else lib.EVP_DecryptInit_ex
+        update = lib.EVP_EncryptUpdate if encrypt else lib.EVP_DecryptUpdate
+        if init(ctx, lib.EVP_aes_256_gcm(), None, None, None) != 1:
+            raise ArtifactCryptoError("EVP init (cipher) failed")
+        if lib.EVP_CIPHER_CTX_ctrl(ctx, _EVP_CTRL_AEAD_SET_IVLEN, GCM_NONCE_BYTES, None) != 1:
+            raise ArtifactCryptoError("EVP set ivlen failed")
+        if init(ctx, None, None, _as_ubytes(key), _as_ubytes(nonce)) != 1:
+            raise ArtifactCryptoError("EVP init (key) failed")
+        if aad:
+            aadbuf = bytearray(aad)
+            absorbed = ctypes.c_int(0)
+            if update(ctx, None, ctypes.byref(absorbed), _as_ubytes(aadbuf), len(aadbuf)) != 1:
+                raise ArtifactCryptoError("EVP aad failed")
+        return ctx
+    except Exception:
+        lib.EVP_CIPHER_CTX_free(ctx)
+        raise
+
+
+def artifact_aad(execution_id, name):
+    """The associated data an artifact is sealed under: its execution id and its own name.
+
+    BINDING BOTH IS THE POINT. Without it a sealed file could be moved between names inside
+    one execution, or lifted whole into another execution's directory, and would still open
+    and still match a digest. With it either move fails authentication, which is the same
+    answer a flipped byte gets. The separator is NUL, which cannot occur in either field.
+    """
+    return execution_id.encode("utf-8") + b"\x00" + name.encode("utf-8")
+
+
+def new_artifact_key():
+    """A fresh per-execution AES-256 key in a MUTABLE buffer, so it can be wiped in place.
+
+    READ WITH readinto, NOT os.urandom(): os.urandom returns an immutable `bytes`, and
+    bytearray(os.urandom(32)) leaves that object on the heap where wiping the bytearray
+    cannot reach it. This module has MEASURED exactly that failure for request bodies
+    (4h6.87) — a copy in a freed arena outliving the buffer that was zeroed — so key material
+    is written once, into the buffer it lives in.
+    """
+    key = bytearray(ARTIFACT_KEY_BYTES)
+    try:
+        with open("/dev/urandom", "rb", buffering=0) as fh:
+            got = fh.readinto(key)
+    except OSError as exc:
+        wipe_artifact_key(key)
+        raise ArtifactCryptoError(f"cannot read /dev/urandom: {exc}")
+    if got != ARTIFACT_KEY_BYTES:
+        wipe_artifact_key(key)
+        raise ArtifactCryptoError(f"/dev/urandom returned {got} bytes")
+    return key
+
+
+def wipe_artifact_key(key):
+    """Zero a key IN PLACE — this file's idiom for sensitive buffers (4h6.87). Rebinding a
+    `bytes` leaves the old object in an arena, which is why a key is never a `bytes`."""
+    if key is not None:
+        key[:] = _ARTIFACT_KEY_ZEROS
+
+
+def _write_all(fd, data):
+    """Write every byte of `data` or raise. os.write is allowed to write fewer.
+
+    EVERY write in seal_artifact goes through this, not only the body's. A short write on the
+    nonce, on the EncryptFinal block or on the tag produces a TRUNCATED sealed file that is
+    then renamed over the plaintext: the artifact is permanently 409 and nothing raised. Short
+    writes are rare on a regular file and are not impossible — a filesystem filling up under
+    the write is the realistic route, and /scratch is a 512Mi emptyDir the seal writes a whole
+    second copy of each artifact into.
+    """
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        written += os.write(fd, view[written:])
+
+
+def seal_artifact(dfd, name, key, aad, chunk_bytes=CRYPT_CHUNK_BYTES):
+    """Replace `name` under `dfd` with nonce || ciphertext || tag. (plaintext_size, digest).
+
+    `digest` is the sha256 of the PLAINTEXT, or None when the plaintext is larger than
+    ARTIFACT_READ_MAX_BYTES — the same None with the same meaning `_artifact_digest` returns
+    for a file the read path can only ever answer 413 for. It is computed HERE because after
+    this call the plaintext no longer exists to hash.
+
+    STREAMED THROUGH A FIXED BUFFER AND SWAPPED IN BY rename(), for three reasons:
+      * MEMORY. One artifact may be the whole 64 MiB quota; holding it and its ciphertext in
+        RAM would be a ~128 MiB transient in a 3 GiB pod for every large artifact.
+      * ATOMICITY. A seal that dies partway leaves the ORIGINAL file untouched, so the caller
+        destroys a known state instead of guessing which files are half-written.
+      * IT BREAKS THE setsid() ESCAPEE'S EXISTING WRITE HANDLE. rename() gives the name a new
+        inode, so a descendant that left the process group and kept an fd on the old one is
+        writing to something unlinked, unserved and about to be freed. It can still open() the
+        name again — same uid — and THAT write is DETECTED by the tag, not prevented.
+    """
+    lib = _libcrypto()
+    tmp = ".seal-" + os.urandom(8).hex()
+    nonce = bytearray(GCM_NONCE_BYTES)
+    try:
+        with open("/dev/urandom", "rb", buffering=0) as fh:
+            if fh.readinto(nonce) != GCM_NONCE_BYTES:
+                raise ArtifactCryptoError("short nonce")
+    except OSError as exc:
+        raise ArtifactCryptoError(f"cannot read /dev/urandom: {exc}")
+    inbuf = bytearray(chunk_bytes)
+    outbuf = bytearray(chunk_bytes + GCM_TAG_BYTES)
+    inview, outview = memoryview(inbuf), memoryview(outbuf)
+    tag = bytearray(GCM_TAG_BYTES)
+    digest = hashlib.sha256()
+    plaintext_size = 0
+    ctx = None
+    src = dst = None
+    try:
+        try:
+            src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+        except OSError as exc:
+            raise ArtifactCryptoError(f"cannot open {name!r}: {exc}")
+        try:
+            dst = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                          dir_fd=dfd)
+        except OSError as exc:
+            raise ArtifactCryptoError(f"cannot create the sealed copy of {name!r}: {exc}")
+        ctx = _gcm_context(lib, key, nonce, aad, encrypt=True)
+        in_c, out_c = _as_ubytes(inbuf), _as_ubytes(outbuf)
+        _write_all(dst, nonce)
+        reader = io.FileIO(src, "r", closefd=False)
+        produced = ctypes.c_int(0)
+        while True:
+            got = reader.readinto(inview)
+            if not got:
+                break
+            digest.update(inview[:got])
+            plaintext_size += got
+            if lib.EVP_EncryptUpdate(ctx, out_c, ctypes.byref(produced), in_c, got) != 1:
+                raise ArtifactCryptoError("EVP_EncryptUpdate failed")
+            _write_all(dst, outview[:produced.value])
+        if lib.EVP_EncryptFinal_ex(ctx, out_c, ctypes.byref(produced)) != 1:
+            raise ArtifactCryptoError("EVP_EncryptFinal_ex failed")
+        if produced.value:
+            _write_all(dst, outview[:produced.value])
+        if lib.EVP_CIPHER_CTX_ctrl(ctx, _EVP_CTRL_AEAD_GET_TAG, GCM_TAG_BYTES,
+                                   ctypes.cast(_as_ubytes(tag), ctypes.c_void_p)) != 1:
+            raise ArtifactCryptoError("EVP get tag failed")
+        _write_all(dst, tag)
+        # CHECKED, not swallowed by the finally: close() is where a deferred write error is
+        # reported, and an unchecked close is how a failed writeback becomes a truncated file
+        # that the rename below then swaps over the plaintext. NOT FSYNCED, deliberately: the
+        # emptyDir is destroyed with the pod, retention is RETENTION_S, and nothing here has a
+        # durability requirement that outlives either — so a per-artifact disk sync on the
+        # completion path (up to ARTIFACT_ENTRY_BUDGET of them, holding the execution slot)
+        # would buy nothing this module needs. What the short-write loop and this close DO buy
+        # is that a write which fails RAISES instead of renaming a truncated seal into place.
+        try:
+            os.close(dst)
+        except OSError as exc:
+            dst = None
+            raise ArtifactCryptoError(f"cannot close the sealed copy of {name!r}: {exc}")
+        dst = None
+        try:
+            os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except OSError as exc:
+            raise ArtifactCryptoError(f"cannot swap in the sealed copy of {name!r}: {exc}")
+        tmp = None
+    except OSError as exc:
+        raise ArtifactCryptoError(f"sealing {name!r} failed: {exc}")
+    finally:
+        if ctx is not None:
+            lib.EVP_CIPHER_CTX_free(ctx)
+        for fd in (src, dst):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        if tmp is not None:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+        # In place, on every path including the raise: the chunk buffer holds the user's
+        # plaintext and the nonce sits beside the key it was used with.
+        inbuf[:] = bytes(len(inbuf))
+        outbuf[:] = bytes(len(outbuf))
+        nonce[:] = bytes(GCM_NONCE_BYTES)
+    if plaintext_size > ARTIFACT_READ_MAX_BYTES:
+        return plaintext_size, None
+    return plaintext_size, digest.hexdigest()
+
+
+def open_artifact(blob, key, aad):
+    """The plaintext inside nonce || ciphertext || tag, or raise ArtifactCryptoError.
+
+    THE TAG IS AN INTEGRITY CHECK IN ITS OWN RIGHT and it is verified before a byte is
+    returned: a sealed file that was modified, moved to another name, moved to another
+    execution or written under a different key does not open. read_artifact_bytes still
+    checks the manifest's sha256 on top of it — see there for why both are kept.
+    """
+    if len(blob) < ARTIFACT_ENVELOPE_BYTES:
+        raise ArtifactCryptoError("sealed artifact is shorter than its envelope")
+    lib = _libcrypto()
+    nonce = bytearray(blob[:GCM_NONCE_BYTES])
+    body = bytearray(blob[GCM_NONCE_BYTES:len(blob) - GCM_TAG_BYTES])
+    tag = bytearray(blob[len(blob) - GCM_TAG_BYTES:])
+    out = bytearray(len(body) + GCM_TAG_BYTES)
+    outview = memoryview(out)
+    ctx = None
+    try:
+        ctx = _gcm_context(lib, key, nonce, aad, encrypt=False)
+        produced = ctypes.c_int(0)
+        total = 0
+        # SKIPPED FOR AN EMPTY BODY, and this is a correctness fix rather than an
+        # optimisation. GCM over zero bytes of plaintext is a well-defined thing to
+        # authenticate — the tag is still computed over the AAD — and it needs no update call
+        # at all. Making the call anyway means building a zero-length view of an empty
+        # buffer, which is where a 0-byte artifact used to die with a ValueError nothing
+        # caught.
+        if body:
+            if lib.EVP_DecryptUpdate(ctx, _as_ubytes(out), ctypes.byref(produced),
+                                     _as_ubytes(body), len(body)) != 1:
+                raise ArtifactCryptoError("EVP_DecryptUpdate failed")
+            total = produced.value
+            produced.value = 0
+        if lib.EVP_CIPHER_CTX_ctrl(ctx, _EVP_CTRL_AEAD_SET_TAG, GCM_TAG_BYTES,
+                                   ctypes.cast(_as_ubytes(tag), ctypes.c_void_p)) != 1:
+            raise ArtifactCryptoError("EVP set tag failed")
+        if lib.EVP_DecryptFinal_ex(ctx, _as_ubytes(out), ctypes.byref(produced)) != 1:
+            raise ArtifactCryptoError("authentication failed")
+        return bytes(outview[:total + produced.value])
+    finally:
+        if ctx is not None:
+            lib.EVP_CIPHER_CTX_free(ctx)
+        out[:] = bytes(len(out))
+        body[:] = bytes(len(body))
+        nonce[:] = bytes(GCM_NONCE_BYTES)
+
+
+def crypto_selftest(directory):
+    """Seal and open a probe in `directory`; prove a flipped byte and a wrong key are refused.
+
+    RUN AT STARTUP, BEFORE ready. The alternative is discovering at the end of somebody's
+    execution that artifacts cannot be sealed, at the one moment when every outcome is bad.
+    It exercises the real file path — open, stream, rename — and not only the primitive, so a
+    filesystem that cannot support the swap fails here too. Raises CryptoUnavailable, which
+    bring_up() deliberately does not catch.
+    """
+    key = other = None
+    name = ".crypto-selftest"
+    path = os.path.join(directory, name)
+    probe = b"supervisor artifact seal selftest" * 4
+    try:
+        key = new_artifact_key()
+        aad = artifact_aad("00000000-0000-4000-8000-000000000000", name)
+        with open(path, "wb") as fh:
+            fh.write(probe)
+        dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            size, digest = seal_artifact(dfd, name, key, aad)
+        finally:
+            os.close(dfd)
+        with open(path, "rb") as fh:
+            sealed = fh.read()
+        if size != len(probe) or digest != hashlib.sha256(probe).hexdigest():
+            raise CryptoUnavailable("the seal reported the wrong plaintext size or digest")
+        if len(sealed) != len(probe) + ARTIFACT_ENVELOPE_BYTES:
+            raise CryptoUnavailable(
+                f"a sealed artifact is {len(sealed)} bytes for {len(probe)} of plaintext; "
+                f"the envelope is supposed to cost exactly {ARTIFACT_ENVELOPE_BYTES}")
+        if open_artifact(sealed, key, aad) != probe:
+            raise CryptoUnavailable("AES-256-GCM round trip did not return the plaintext")
+        flipped = bytearray(sealed)
+        flipped[GCM_NONCE_BYTES] ^= 0x01
+        tagged = bytearray(sealed)
+        tagged[-1] ^= 0x01
+        wrong_aad = artifact_aad("00000000-0000-4000-8000-000000000000", "other")
+        other = new_artifact_key()
+        for blob, use, why in ((bytes(flipped), key, "a flipped ciphertext byte"),
+                               (bytes(tagged), key, "a flipped tag byte"),
+                               (sealed, other, "a wrong key"),
+                               (sealed, key, "a wrong name in the AAD")):
+            aad_here = wrong_aad if why.endswith("AAD") else aad
+            try:
+                open_artifact(blob, use, aad_here)
+            except ArtifactCryptoError:
+                continue
+            raise CryptoUnavailable(f"{why} was accepted; the tag is not being checked")
+        # THE ZERO-BYTE BOUNDARY IS PART OF THE GATE. An empty artifact is an ordinary thing
+        # for a script to produce — a result frame with no rows written by to_csv, a log
+        # nothing wrote to — and it took a different path through the ctypes layer than the
+        # 132-byte probe above: the seal was correct, the OPEN raised ValueError out of a
+        # zero-length buffer view, and nothing between there and socketserver caught it, so
+        # the request got no status line. The probe that would have caught it costs one more
+        # round trip at startup.
+        empty_name = ".crypto-selftest-empty"
+        empty_path = os.path.join(directory, empty_name)
+        empty_aad = artifact_aad("00000000-0000-4000-8000-000000000000", empty_name)
+        try:
+            with open(empty_path, "wb"):
+                pass
+            dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                size, digest = seal_artifact(dfd, empty_name, key, empty_aad)
+            finally:
+                os.close(dfd)
+            with open(empty_path, "rb") as fh:
+                empty_sealed = fh.read()
+            if size != 0 or digest != hashlib.sha256(b"").hexdigest():
+                raise CryptoUnavailable(
+                    "a zero-byte artifact reported the wrong plaintext size or digest")
+            if len(empty_sealed) != ARTIFACT_ENVELOPE_BYTES:
+                raise CryptoUnavailable(
+                    f"a sealed zero-byte artifact is {len(empty_sealed)} bytes; the envelope "
+                    f"is supposed to cost exactly {ARTIFACT_ENVELOPE_BYTES}")
+            if open_artifact(empty_sealed, key, empty_aad) != b"":
+                raise CryptoUnavailable("a zero-byte artifact did not open to zero bytes")
+        finally:
+            try:
+                os.unlink(empty_path)
+            except OSError:
+                pass
+    except ArtifactCryptoError as exc:
+        raise CryptoUnavailable(f"artifact encryption is not usable: {exc}")
+    finally:
+        wipe_artifact_key(key)
+        wipe_artifact_key(other)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------------------
 # The artifact manifest
 # --------------------------------------------------------------------------------------
 
@@ -937,8 +1420,28 @@ def _artifact_digest(dfd, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
 
 
 def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
-                   scan_limit=EXECUTION_ENTRY_BUDGET):
+                   scan_limit=EXECUTION_ENTRY_BUDGET, sealed=None):
     """(entries, omitted, digests). Lists a file only if it would survive read_artifact's checks.
+
+    `sealed` IS WHAT seal_retained_artifacts MEASURED BEFORE IT ENCRYPTED (4h6.88):
+    {name: (plaintext size, plaintext sha256 or None)}. Passing it changes two things and
+    deliberately nothing else.
+
+      * `size` and the digest are the PLAINTEXT's, not the sealed file's. That is the whole
+        reason the map exists: the manifest goes on being a statement about the bytes a
+        caller will actually receive, so nothing downstream — the model's view of how big an
+        artifact is, the 409 ArtifactModified binding, the read cap — changes meaning because
+        the file on disk grew an envelope. Hashing the ciphertext instead would have been
+        cheaper and would have quietly redefined 4h6.82's property.
+      * A NAME THAT IS NOT IN THE MAP IS OMITTED. After the seal pass every retrievable file
+        is in it, so a name that is not was created AFTER the pass — by a setsid() escapee, or
+        by another process at the shared uid — and is dropped here rather than listed and then
+        refused by the digest check.
+
+    None means the directory is plaintext and is hashed from disk, which is what every caller
+    outside _execute_inner wants (unit tests, and any future non-encrypting path). Forgetting
+    it on a SEALED directory fails closed rather than open: the digests would be over
+    ciphertext, so every read would answer 409 rather than serving anything.
 
     `digests` IS A SECURITY CONTROL AND NOT A CACHE (genetics-results-suite-4h6.82). It maps
     each listed name to the sha256 of the bytes that were there when the manifest was built,
@@ -947,8 +1450,20 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
     WHAT KEEPS IT OUT OF THE CHILD'S REACH IS YAMA (kernel.yama.ptrace_scope=1), NOT THE
     SECCOMP PROFILE: RuntimeDefault ALLOWS ptrace (MEASURED, genetics-results-suite-4h6.90),
     and Yama refuses PTRACE_MODE_ATTACH only because the supervisor is the child's ANCESTOR.
-    MEASURED under runc, UNVERIFIED under gVisor (4h6.51); a node with ptrace_scope=0 voids
-    the property and nothing here checks it.
+    MEASURED UNDER BOTH RUNTIMES 2026-08-24, and the per-execution artifact key (4h6.88) rests
+    on exactly the same thing. A real PTRACE_ATTACH at uid 65532: sibling -> sibling is EPERM
+    under runsc AND under runc, while parent -> own child is ALLOWED under both — the second
+    row is the control, ruling out "ptrace is unimplemented under gVisor" masquerading as
+    protection. The old claim here, "a node with ptrace_scope=0 voids the property", was
+    written for a runc world and is wrong: gVisor's ptrace_scope is a SANDBOX-INTERNAL emulated
+    sysctl and the node's value is not the lever. What IS the lever is uid 0: gVisor does not
+    create the read-only /proc/sys mount runc uses for the OCI readonlyPaths list, so under
+    runsc uid 0 can write ptrace_scope=0 (MEASURED, and the sibling attach then succeeds) where
+    runc answers EROFS. This pod is runAsNonRoot with drop:[ALL], so there is no exposure
+    today — but "no uid 0 in the sandbox" is LOAD-BEARING for this map and for the artifact
+    key, not hygiene. Residual: GKE Sandbox masks /proc through containerd, not docker, so the
+    writability half must be re-measured there; the dependency transfers, the mount table may
+    not. See docs/code-execution-security.md. Nothing here checks any of it.
     MEASURED from inside a second execution's child: `/scratch` is fully enumerable at the
     shared uid, and a previous execution's `artifacts/private.csv` could be read, OVERWRITTEN
     and joined by a PLANTED file. read_artifact re-hashes on the way out and refuses when the
@@ -1004,9 +1519,17 @@ def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
             if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 omitted += 1
                 continue
+            if sealed is None:
+                size, digest = st.st_size, _artifact_digest(dfd, name)
+            else:
+                record = sealed.get(name)
+                if record is None:
+                    omitted += 1
+                    continue
+                size, digest = record
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            entries.append({"name": name, "size": st.st_size, "content_type": ctype})
-            digests[name] = _artifact_digest(dfd, name)
+            entries.append({"name": name, "size": size, "content_type": ctype})
+            digests[name] = digest
     finally:
         os.close(dfd)
     if seen >= scan_limit:
@@ -1027,7 +1550,7 @@ class _DigestsUnset:
 
 
 def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
-                        expected_digests=_DigestsUnset):
+                        expected_digests=_DigestsUnset, key=None, execution_id=None):
     """(bytes, content_type) for one artifact, or raise RequestError.
 
     THE CHECKS RUN HERE, INSIDE THE SANDBOX, against the directory the child actually wrote
@@ -1061,7 +1584,30 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
     manifest was never built, which refuses everything). It has to be passed EXPLICITLY — there
     is no default — so that unit tests can drive the name and descriptor checks on a bare
     directory without the fail-open case being reachable by omission (see _DigestsUnset).
+
+    `key` AND `execution_id` ARE THE SEAL (4h6.88). Both or neither. With them the file on
+    disk is nonce || ciphertext || tag and is opened here, in the supervisor, under the
+    per-execution key that never left this address space; without them the file is read as
+    plaintext, which is what a directory no seal pass ever ran over actually contains.
+
+    A MISSING KEY IS NOT A FAIL-OPEN, and it is worth being precise about why. If the pass DID
+    run and the key is gone, the bytes on disk are ciphertext and their sha256 is not the
+    plaintext digest the manifest recorded, so the read answers 409 and serves nothing. The
+    only way a plaintext read of a sealed execution could succeed is if somebody replaced the
+    sealed file with the exact plaintext it was made from — which requires already having that
+    plaintext, so it discloses nothing.
+
+    THE CAP APPLIES TO THE PLAINTEXT, NOT TO THE FILE. ARTIFACT_READ_MAX_BYTES exists to bound
+    the RESPONSE — the body is base64 of the plaintext inside a 1 MiB JSON envelope — so it is
+    a statement about what is returned, not about how the bytes are stored. Charging the
+    envelope against it would newly 413 an artifact that fitted before encryption, for a
+    reason that has nothing to do with the response it would produce. So a sealed file is
+    allowed ARTIFACT_ENVELOPE_BYTES more on disk, and the plaintext is re-checked against the
+    real cap after it is opened.
     """
+    if (key is None) != (execution_id is None):
+        raise TypeError("read_artifact_bytes: key and execution_id go together; one without "
+                        "the other cannot build the AAD the artifact was sealed under")
     if expected_digests is _DigestsUnset:
         raise TypeError("read_artifact_bytes: pass expected_digests explicitly; None disables "
                         "the integrity binding and must be chosen, not defaulted into")
@@ -1095,17 +1641,18 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 raise RequestError(404, "NotFound", "no such artifact")
-            if st.st_size > max_bytes:
+            envelope = 0 if key is None else ARTIFACT_ENVELOPE_BYTES
+            if st.st_size > max_bytes + envelope:
                 raise RequestError(
                     413,
                     "ArtifactTooLarge",
-                    f"artifact is {st.st_size} bytes; the limit is {max_bytes}",
+                    f"artifact is {st.st_size - envelope} bytes; the limit is {max_bytes}",
                 )
             # Bounded by max_bytes and not by st_size: the size was read before the read, and
             # a setsid() escapee still holding a write handle can grow the file in between
             # (see this module's docstring on what the kill path does not contain).
             chunks = []
-            remaining = max_bytes + 1
+            remaining = max_bytes + envelope + 1
             while remaining > 0:
                 chunk = os.read(fd, min(remaining, 1 << 20))
                 if not chunk:
@@ -1117,10 +1664,39 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
     finally:
         os.close(dfd)
     data = b"".join(chunks)
-    if len(data) > max_bytes:
+    if len(data) > max_bytes + (0 if key is None else ARTIFACT_ENVELOPE_BYTES):
         raise RequestError(
             413, "ArtifactTooLarge", f"artifact exceeds the {max_bytes} byte limit"
         )
+    if key is not None:
+        try:
+            data = open_artifact(data, key, artifact_aad(execution_id, name))
+        except Exception as exc:
+            # THE TAG FAILING MEANS THE SAME THING A DIGEST MISMATCH MEANS: these are not the
+            # bytes the manifest described. It is the stronger of the two checks — it also
+            # catches a whole sealed file lifted from another name or another execution, which
+            # a digest over content alone cannot — and it is reported as the same 409 so a
+            # caller is not asked to distinguish two flavours of "this moved".
+            #
+            # THE CATCH IS A PROPERTY, NOT AN ENUMERATION, and that is deliberate. It used to
+            # name (ArtifactCryptoError, CryptoUnavailable) and a ValueError out of the ctypes
+            # layer went straight past it: through _artifact(), which catches RequestError and
+            # OSError, past do_GET, which has no generic arm, into socketserver.handle_error —
+            # which logs a traceback and CLOSES THE SOCKET WITH NO STATUS LINE. MEASURED on a
+            # 0-byte artifact the manifest had already advertised. The bug that produced it is
+            # fixed at its source in _as_ubytes; this arm exists so that the NEXT one costs a
+            # 409 rather than a dead connection. The property is "the crypto layer cannot open
+            # this", whatever it raised while failing to.
+            LOG.error("artifact %r for execution %s did not authenticate; refusing to serve "
+                      "it (genetics-results-suite-4h6.88): %s", name, execution_id, exc)
+            raise RequestError(
+                409, "ArtifactModified",
+                "artifact no longer matches the manifest and will not be served",
+            )
+        if len(data) > max_bytes:
+            raise RequestError(
+                413, "ArtifactTooLarge", f"artifact exceeds the {max_bytes} byte limit"
+            )
     if expected_digests is not None:
         # Over the bytes that would be RETURNED, not over the file: the two are the same
         # object only when nothing has grown it, and it is the returned bytes that a caller
@@ -1134,6 +1710,163 @@ def read_artifact_bytes(artifacts_dir, name, max_bytes=ARTIFACT_READ_MAX_BYTES,
                 "artifact no longer matches the manifest and will not be served",
             )
     return data, mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
+def _purge_artifacts(artifacts_dir):
+    """Delete every entry directly under artifacts/. Returns (removed, emptied).
+
+    `emptied` IS THE PART A CALLER MUST NOT IGNORE. A count alone cannot tell "destroyed
+    everything" from "destroyed nothing", and the caller was writing a log line that claimed
+    the first while the second had happened: MEASURED, a same-uid peer chmod 0500 on
+    artifacts/ between the retain and the seal produced "destroyed 0 rather than retaining
+    them in the clear" over two files that were still, in fact, in the clear. False is
+    therefore "plaintext may still be on disk", and every caller has to answer it.
+
+    THE FAIL-CLOSED ARM of the seal pass. If sealing could not complete, the two outcomes that
+    are not allowed are "plaintext left on disk and retained" and "the caller is told nothing".
+    This takes the first one off the table; the count it returns is added to
+    artifacts_omitted, which already means "present but not listed", so the response says how
+    many artifacts the execution produced and did not get.
+
+    IT DRAINS IN BOUNDED PASSES rather than deleting as it streams, for _trim_artifacts'
+    reason and one more. Materialising the whole directory is what does not survive a child
+    that made 300,000 entries; deleting entries WHILE a readdir is in progress is unspecified
+    by POSIX for the entries not yet returned, and on a hash-ordered directory it really does
+    skip some — which here would mean leaving plaintext behind on the one path whose whole job
+    is to remove it. So each pass materialises at most TRIM_SCAN_CHUNK names, deletes those,
+    and re-scans; a pass that removes nothing gives up rather than looping on names it cannot
+    delete.
+    """
+    removed = 0
+    seen = 0
+    while True:
+        names = list(_iter_dir_names(artifacts_dir, TRIM_SCAN_CHUNK))
+        if not names:
+            return removed, True
+        seen += len(names)
+        dropped = 0
+        for name in names:
+            path = os.path.join(artifacts_dir, name)
+            try:
+                is_dir = stat.S_ISDIR(os.stat(path, follow_symlinks=False).st_mode)
+            except OSError:
+                continue
+            if _remove_entry(path, is_dir):
+                dropped += 1
+        removed += dropped
+        if dropped == 0 or seen > TRIM_ENTRY_CEILING:
+            LOG.error("could not empty %s: %d entries seen, %d deleted, and the last pass "
+                      "removed %d — artifacts may still be in the clear", artifacts_dir,
+                      seen, removed, dropped)
+            return removed, False
+
+
+def seal_retained_artifacts(artifacts_dir, execution_id, key,
+                            scan_limit=EXECUTION_ENTRY_BUDGET):
+    """Encrypt everything retained under artifacts/. (sealed, purged, growth, stranded).
+
+    RUNS BETWEEN _retain AND build_manifest, on a quiescent tree: the child is reaped, the
+    drain threads are joined, the non-artifact directories are gone and the quota trim has
+    already run. It is the only moment at which the supervisor knows the artifacts are
+    complete and still holds the execution slot.
+
+    WHAT IS NOT SEALED IS DELETED, and that is what makes the property true rather than
+    nearly true. build_manifest lists only retrievable regular files with st_nlink == 1
+    directly in artifacts/, and read_artifact can only ever be asked for a bare name — so a
+    SUBDIRECTORY's contents, a name with a control character in it, a hard link and a symlink
+    are all things no caller can ever retrieve. Retaining them buys nobody anything and leaves
+    exactly the plaintext this pass exists to remove, so they go. Their count reaches the
+    response through artifacts_omitted, the same field build_manifest would have counted them
+    in.
+
+    A FAILURE IS LOCALISED TO ONE FILE WHEREVER IT CAN BE. "What is not sealed is deleted"
+    is the property, and it is satisfied per entry: a file that cannot be sealed is REMOVED
+    and counted into `purged`, and the pass carries on with the rest. It used to raise, and
+    the caller's answer to the raise was to destroy the whole execution's output — MEASURED,
+    one chmod 000 file took three perfectly readable artifacts with it, behind a 200 whose
+    manifest was empty. chmod is contrived; ENOSPC is not, and the seal writes a full
+    temporary copy of every artifact into a 512Mi emptyDir that may already hold up to 256Mi
+    of retained trees. The security property is identical either way — an unsealable file is
+    gone — with a blast radius of one file instead of an execution.
+
+    WHAT STILL RAISES IS WHAT CANNOT BE LOCALISED: the directory not opening, more entries
+    than `scan_limit` (everything past the bound is unexamined and therefore possibly
+    plaintext), and CryptoUnavailable, which is a statement about the process rather than
+    about one file. The caller's answer to the raise is still _purge_artifacts.
+
+    `stranded` COUNTS ENTRIES THAT ARE NEITHER SEALED NOR REMOVED — an unsealable file whose
+    unlink also failed. It is not zero-or-raise: it is the one outcome that leaves plaintext
+    on disk, so it is returned rather than logged, and the caller decides what the wire says.
+
+    `growth` is what the envelopes cost in the same st_blocks accounting _trim_artifacts and
+    _dir_usage use, so the caller can correct the retained size it cached BEFORE this ran.
+    Without that correction RETAINED_ARTIFACTS_CEILING_BYTES would be enforced over sizes that
+    are each up to ARTIFACT_ENVELOPE_BYTES per file too small.
+    """
+    sealed = {}
+    purged = 0
+    growth = 0
+    stranded = 0
+    dfd = os.open(artifacts_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        # MATERIALISED FIRST, which build_manifest does not need to do and this does: the pass
+        # UNLINKS entries and RENAMES over them, and a readdir running across those changes may
+        # skip entries POSIX never promised it would return. Skipping one here means leaving
+        # plaintext. Bounded by scan_limit, so the list is not a function of how many files the
+        # child chose to create.
+        names = list(_iter_dir_names(dfd, scan_limit + 1))
+        if len(names) > scan_limit:
+            # Not a partial success. Everything past the bound is unexamined and therefore
+            # possibly plaintext, so the honest answer is that the pass did not complete.
+            raise ArtifactCryptoError(
+                f"artifacts/ still holds more than {scan_limit} entries after the trim; "
+                f"the seal pass cannot account for all of them")
+        for name in names:
+            path = os.path.join(artifacts_dir, name)
+            try:
+                st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            except OSError as exc:
+                # A NAME THAT WOULD NOT STAT IS STILL AN ENTRY. `continue` here left it
+                # outside both halves of "what is not sealed is deleted" AND outside
+                # artifacts_omitted, so it was neither sealed, nor purged, nor counted — the
+                # one shape this pass exists to make impossible. Nothing can be learned about
+                # it, so it is removed on the same terms as a file that could not be sealed.
+                LOG.warning("execution %s: %r could not be examined for sealing (%s); "
+                            "removing it", execution_id, name, exc)
+                if _remove_entry(path, False):
+                    purged += 1
+                else:
+                    stranded += 1
+                continue
+            if (not _name_is_retrievable(name) or not stat.S_ISREG(st.st_mode)
+                    or st.st_nlink != 1):
+                if _remove_entry(path, stat.S_ISDIR(st.st_mode)):
+                    purged += 1
+                else:
+                    stranded += 1
+                continue
+            before = st.st_blocks * 512
+            try:
+                size, digest = seal_artifact(dfd, name, key, artifact_aad(execution_id, name))
+            except (ArtifactCryptoError, OSError) as exc:
+                LOG.error("execution %s: could not seal %r (%s); deleting it rather than "
+                          "retaining it in the clear, and the rest of the execution's "
+                          "artifacts are unaffected (genetics-results-suite-4h6.88)",
+                          execution_id, name, exc)
+                if _remove_entry(path, False):
+                    purged += 1
+                else:
+                    stranded += 1
+                continue
+            sealed[name] = (size, digest)
+            try:
+                growth += os.stat(name, dir_fd=dfd,
+                                  follow_symlinks=False).st_blocks * 512 - before
+            except OSError:
+                growth += ARTIFACT_ENVELOPE_BYTES
+    finally:
+        os.close(dfd)
+    return sealed, purged, growth, stranded
 
 
 def _iter_dir_names(path, limit):
@@ -2516,7 +3249,8 @@ class Job:
     # further place, Supervisor.note_child_reaped, because the one case where the write happens
     # and the reap does not is exactly the case where the number becomes recyclable.
     __slots__ = ("req", "conn", "enqueued_at", "pid", "deadline", "dirs", "owner",
-                 "kill_lock", "reaped", "reaped_pgid", "reaped_status", "limit", "done")
+                 "kill_lock", "reaped", "reaped_pgid", "reaped_status", "limit", "done",
+                 "sealed")
 
     def __init__(self, req, conn, owner=None):
         self.req = req
@@ -2546,6 +3280,23 @@ class Job:
         self.reaped_status = None
         self.limit = None      # the first supervisor limit that fired: a reserved error type
         self.done = threading.Event()   # set once the child is reaped; stops the watchdog
+        # True once _seal_retained has RUN over this job's artifacts/, whatever it concluded.
+        # It is the flag _release keys "a retained directory is sealed or empty" on: False at
+        # release means the completion path never got that far — an exception out of
+        # _execute_inner — and the directory is about to be retained with nothing having
+        # looked at it. See Supervisor._secure_unsealed.
+        #
+        # IT MEANS "THE PASS WAS ENTERED", NOT "THE DIRECTORY IS SECURED", and _seal_retained
+        # sets it BEFORE doing any work. So the two are not the same claim: the pass sets it,
+        # then catches Exception and purges. A BaseException raised inside the pass would skip
+        # both that arm and _secure_unsealed on the release path, and the plaintext would stay
+        # retained — MEASURED with an injected KeyboardInterrupt: artifacts on disk,
+        # PLAINTEXT=True. NOT REACHABLE TODAY: KeyboardInterrupt is delivered only to the main
+        # thread and this runs on a handler thread, nothing in the path raises SystemExit or a
+        # cancellation, and MemoryError is an Exception and is caught. What would make it real
+        # is any of those changing — moving the completion path onto the main thread, adding a
+        # cancellation mechanism, or a hard timeout that throws into this thread.
+        self.sealed = False
 
 
 def peer_gone(sock):
@@ -2614,6 +3365,15 @@ class Supervisor:
         # charged against RETAINED_STATE_CEILING_BYTES and evicted with the execution it
         # belongs to — see _retained_memory_costs and _enforce_retained_ceiling.
         self._artifact_digests = {}
+        # execution_id -> bytearray(32), the AES-256-GCM key its retained artifacts are sealed
+        # under (genetics-results-suite-4h6.88). SAME PLACE AND SAME PROTECTION AS THE DIGEST
+        # MAP, which is the honest claim: YAMA ptrace_scope=1 plus ancestry, not seccomp.
+        # WHAT IT ADDS is that it is minted per execution, AFTER ForkServer.start() has already
+        # taken the snapshot every child is forked from, so no child's address space can
+        # contain it; and it dies with the retained entry it belongs to, in _forget_retained,
+        # which is the only eviction path. A bytearray and never `bytes`, so it can be wiped in
+        # place. Its memory cost sits inside RETAINED_ROW_COST_BYTES.
+        self._artifact_keys = {}
         self.retention_s = RETENTION_S if retention_s is None else retention_s
         self._stop_reaper = threading.Event()
         # Set by bring_up(), which forks it before the supervisor is ready and therefore before
@@ -2713,18 +3473,27 @@ class Supervisor:
         so serves nothing: nothing was ever advertised for it, so there is nothing a caller
         can legitimately be asking for, and whatever is on disk got there on a path that was
         never described to anybody.
+
+        THE KEY IS PART OF THE ANSWER TOO (4h6.88). A retained execution whose artifacts were
+        sealed has one; one that never reached the seal pass does not, and its directory is
+        plaintext — which is exactly what read_artifact_bytes then reads. That is not a
+        fail-open: a sealed directory with no key answers 409 for everything, because
+        ciphertext does not hash to the plaintext digest the manifest recorded.
         """
         if not isinstance(execution_id, str) or not EXECUTION_ID_RE.fullmatch(execution_id):
             raise RequestError(400, "InvalidRequest", "execution_id must be a lowercase uuid4")
         with self._lock:
             retained = execution_id in self._retained_ids
             digests = self._artifact_digests.get(execution_id) or {}
+            key = self._artifact_keys.get(execution_id)
         if not retained:
             # One shape for "never existed", "still running" and "reaped": which of the three
             # it is would tell a caller holding a guessed id something about the pod's state.
             raise RequestError(404, "NotFound", "no such execution")
         dirs = ExecutionDirs(self.scratch_root, execution_id)
-        return read_artifact_bytes(dirs.artifacts, name, expected_digests=digests)
+        return read_artifact_bytes(dirs.artifacts, name, expected_digests=digests,
+                                   key=key,
+                                   execution_id=None if key is None else execution_id)
 
     def begin_drain(self):
         self.draining = True
@@ -2823,6 +3592,21 @@ class Supervisor:
         # mtime sweep removed it, up to five minutes later. Whatever created the directory,
         # something must own deleting it.
         if retain:
+            # SEALED OR EMPTY, STRUCTURALLY. _seal_retained runs on the completion path only,
+            # so ANY exception out of _execute_inner — a ForkServerError out of _reap, which
+            # this module explicitly models and has a dedicated test for, a manifest failure,
+            # a ClientGone — propagated PAST the seal and landed here, and this method then
+            # retained the directory for the whole of RETENTION_S with the child's plaintext
+            # exactly where it wrote it. MEASURED, and it is the ORIGINAL demonstrated attack
+            # reproduced against the sealed build: a same-uid open() on a flat, enumerable
+            # /scratch. It is not answered by the read path returning 409 — the read path was
+            # never the threat.
+            #
+            # Making it structural means the guarantee no longer depends on the happy path
+            # reaching a call. Whatever the outcome, by the time an id is in _retained_ids its
+            # directory has been through the seal pass or has been emptied.
+            if not job.sealed:
+                self._secure_unsealed(job)
             self._register_retention(job.req.execution_id, job.dirs)
         with self._cv:
             if self._running is job:
@@ -2831,6 +3615,58 @@ class Supervisor:
             if retain:
                 self._retained_ids.add(job.req.execution_id)
             self._cv.notify_all()
+
+    def _secure_unsealed(self, job):
+        """Empty a directory that is about to be retained without having been sealed.
+
+        THERE IS NOTHING IN IT TO LOSE, which is what makes emptying it the right answer
+        rather than a harsh one. This runs only when _execute_inner raised, so no manifest was
+        built, no digest map was recorded and no key was minted — and read_artifact refuses
+        every name of an execution with an empty digest map (see its docstring). Every byte
+        under /scratch/<id> at this moment is therefore unreachable through the API and
+        readable by any process at the shared uid: cost with no benefit.
+
+        THE WHOLE BASE TREE, not only artifacts/. _retain is what normally deletes tmp/, home/,
+        the caches and the token file, and _retain runs on the completion path only — so on
+        this path they are all still there, holding whatever the script wrote into them. The
+        directory ITSELF stays, empty: it is what keeps the execution id 409-reserved for the
+        retention window, and the reaper removes it on the same schedule as any other.
+
+        NEVER RAISES. It runs from _release, which runs from run()'s finally, where an
+        exception would replace the error the caller is about to be given.
+        """
+        eid = job.req.execution_id
+        if job.dirs is None:
+            return
+        removed = 0
+        failed = []
+        try:
+            names = os.listdir(job.dirs.base)
+        except OSError as exc:
+            LOG.error("execution %s: cannot list its directory to empty it after a failed "
+                      "execution (%s); anything it holds stays in the clear until the reaper "
+                      "removes it (genetics-results-suite-4h6.88)", eid, exc)
+            return
+        for name in names:
+            path = os.path.join(job.dirs.base, name)
+            try:
+                is_dir = (not os.path.islink(path)) and os.path.isdir(path)
+            except OSError:
+                is_dir = False
+            if _remove_entry(path, is_dir):
+                removed += 1
+            else:
+                failed.append(name)
+        if failed:
+            LOG.error("execution %s: did not complete, and %d of its %d retained entries "
+                      "could not be deleted (%s); they ARE RETAINED IN THE CLEAR until the "
+                      "reaper removes the directory (genetics-results-suite-4h6.88)",
+                      eid, len(failed), len(names), ", ".join(sorted(failed)[:8]))
+        elif removed:
+            LOG.warning("execution %s: did not complete, so its %d retained entries were "
+                        "deleted rather than kept in the clear — nothing was ever advertised "
+                        "for it, so nothing could have been served "
+                        "(genetics-results-suite-4h6.88)", eid, removed)
 
     def _register_retention(self, execution_id, dirs):
         """Give a created directory a retention deadline and a measured size. Idempotent.
@@ -2928,6 +3764,95 @@ class Supervisor:
                 self._artifact_digests[execution_id] = digests
         if recorded:
             self._enforce_retained_ceiling()
+
+    def _seal_retained(self, job):
+        """Encrypt the retained artifacts under a fresh per-execution key.
+
+        Returns (sealed, omitted, secured). `secured` is False when plaintext could not be
+        removed from artifacts/ and is therefore still on disk; nothing else means that.
+
+        genetics-results-suite-4h6.88. Runs between _retain and build_manifest — after the
+        trim, so nothing is sealed that is about to be deleted, and before the manifest, so
+        the manifest can be built over the plaintext sizes and digests this pass measured and
+        can omit anything that appears afterwards.
+
+        IT FAILS CLOSED, and the choice is worth stating because two other outcomes were
+        available and both are wrong. Leaving the artifacts in the clear would keep the
+        response useful and leave the exposure this exists to close. Failing the whole
+        execution 500 would throw away stdout the caller has already paid for, over a failure
+        in the retention path that has nothing to do with whether the script ran. So what
+        cannot be sealed is DESTROYED and its count is reported through artifacts_omitted —
+        the field that already means "produced, present, not listed" — with a LOG.error beside
+        it. The caller gets its execution result and a truthful statement that N artifacts are
+        not being handed over.
+
+        DESTRUCTION IS PER FILE WHEREVER IT CAN BE. seal_retained_artifacts localises a
+        failure to the entry that caused it, so the whole-execution purge below now runs only
+        for a failure that could not be attributed to one file at all — the directory not
+        opening, more entries than the scan bound, libcrypto going away. One unreadable file
+        no longer takes an execution's other outputs with it.
+
+        THE ONE OUTCOME THAT IS NOT FAIL-CLOSED IS REPORTED RATHER THAN LOGGED OVER. If the
+        plaintext can neither be sealed nor deleted — a same-uid peer chmod 0500 on
+        artifacts/ between _retain and here, MEASURED — then no arrangement of this code
+        removes it, and the log line that used to be printed ("destroyed 0 rather than
+        retaining them in the clear") was false on its face. `secured=False` says so, and
+        _execute_inner turns it into the response's artifacts_retained_in_clear: "we could
+        not remove your data" is not something a larger artifacts_omitted can carry, and it is
+        not a reason to withhold the response either — see the block at that call site for why
+        answering 500 was a same-uid denial-of-service kill switch that bought no
+        confidentiality.
+
+        THE CACHED RETAINED SIZE IS CORRECTED HERE. _retain caches what _trim_artifacts
+        measured, which is a PRE-SEAL number; the envelopes are added to it so
+        _enforce_retained_ceiling and the watchdog's aggregate check are not enforced against
+        a size that is up to ARTIFACT_ENVELOPE_BYTES per file too small.
+        """
+        eid = job.req.execution_id
+        key = None
+        job.sealed = True
+        try:
+            key = new_artifact_key()
+            sealed, purged, growth, stranded = seal_retained_artifacts(
+                job.dirs.artifacts, eid, key)
+        except Exception as exc:
+            # A PROPERTY, NOT AN ENUMERATION. This used to name
+            # (ArtifactCryptoError, CryptoUnavailable, OSError), which is a list of the ways
+            # the pass was expected to fail rather than a statement about the directory. Any
+            # other type escaped past the fail-closed arm entirely and left the plaintext
+            # retained — the exact outcome this method exists to make unreachable. The
+            # question here is "did the seal complete", and every negative answer to it goes
+            # the same way.
+            wipe_artifact_key(key)
+            destroyed, emptied = _purge_artifacts(job.dirs.artifacts)
+            if emptied:
+                LOG.error("execution %s: could not seal its retained artifacts (%s); "
+                          "destroyed %d rather than retaining them in the clear "
+                          "(genetics-results-suite-4h6.88)", eid, exc, destroyed)
+            else:
+                LOG.error("execution %s: could not seal its retained artifacts (%s) AND could "
+                          "not delete them (%d removed); artifacts ARE RETAINED IN THE CLEAR "
+                          "and readable by any process at this uid until the reaper removes "
+                          "the directory (genetics-results-suite-4h6.88)",
+                          eid, exc, destroyed)
+            return {}, destroyed, emptied
+        if stranded:
+            LOG.error("execution %s: %d artifact(s) could neither be sealed nor deleted; they "
+                      "ARE RETAINED IN THE CLEAR and readable by any process at this uid "
+                      "until the reaper removes the directory "
+                      "(genetics-results-suite-4h6.88)", eid, stranded)
+        with self._lock:
+            recorded = eid in self._retention
+            if recorded:
+                self._retention[eid][1] += growth
+                self._artifact_keys[eid] = key
+        if not recorded:
+            # _enforce_retained_ceiling evicted this execution between _retain and here, so
+            # the directory is already gone. Keeping the key would leak 32 bytes per eviction
+            # for the life of the pod and unlock nothing.
+            wipe_artifact_key(key)
+            return {}, purged + stranded, not stranded
+        return sealed, purged + stranded, not stranded
 
     def _retained_sizes(self):
         """[(execution_id, bytes)] in completion order — which is oldest-first.
@@ -3029,12 +3954,22 @@ class Supervisor:
         return evicted
 
     def _forget_retained(self, execution_id):
-        """Delete a retained execution's directory and make its id reusable again."""
+        """Delete a retained execution's directory and make its id reusable again.
+
+        THE KEY DIES HERE, AND THIS IS THE ONLY PLACE IT CAN (4h6.88). Every route by which a
+        retained execution stops existing — the TTL, the disk ceiling, the memory ceiling, the
+        orphan sweep — goes through this method, so "the key never outlives the entry it
+        belongs to" is a property of the structure rather than a rule four call sites have to
+        remember. It is wiped IN PLACE before it is dropped: popping the reference alone would
+        leave the bytes in a freed arena, which is the failure 4h6.87 measured for request
+        bodies.
+        """
         shutil.rmtree(os.path.join(self.scratch_root, execution_id), ignore_errors=True)
         with self._cv:
             self._retention.pop(execution_id, None)
             self._retained_ids.discard(execution_id)
             self._artifact_digests.pop(execution_id, None)
+            wipe_artifact_key(self._artifact_keys.pop(execution_id, None))
             self._cv.notify_all()
 
     def reap_expired(self):
@@ -3426,10 +4361,37 @@ class Supervisor:
         except OSError:
             pass
 
-        # THE ORDER IS TRIM, THEN LIST. _retain brings artifacts/ back inside its quota; a
-        # manifest built before that would name files the trim deletes a moment later.
+        # THE ORDER IS TRIM, THEN SEAL, THEN LIST, and each step depends on the one before.
+        # _retain brings artifacts/ back inside its quota, so nothing is encrypted that is
+        # about to be deleted and a manifest built earlier would name files the trim removes.
+        # _seal_retained (4h6.88) encrypts what is left under a key only this process holds and
+        # measures the plaintext sizes and digests while the plaintext still exists.
+        # build_manifest then describes the PLAINTEXT — the bytes a caller will receive — and
+        # omits anything that turned up after the seal.
         trimmed = self._retain(job)
-        artifacts, omitted, digests = build_manifest(dirs.artifacts)
+        sealed, purged, secured = self._seal_retained(job)
+        # THE ONE THING artifacts_omitted CANNOT SAY, CARRIED IN ITS OWN FIELD. Every other
+        # seal failure ends with the plaintext gone, and a larger omitted count is a complete
+        # and truthful account of it. This one ends with the plaintext still on disk at a uid
+        # the threat model says is shared, and a number that means "produced, present, not
+        # listed" would be the response claiming a property the code did not achieve. So it
+        # gets its own boolean, and NOT a 500.
+        #
+        # WHY NOT A 500: IT WOULD BE A SAME-UID KILL SWITCH AND IT BUYS NO CONFIDENTIALITY.
+        # This answer used to be `raise RequestError(500, ...)`. MEASURED, 3 for 3, with a
+        # second process at this uid — the setsid() escapee this module already models —
+        # polling /scratch/*/artifacts and chmod 0500-ing any directory holding a file: every
+        # execution came back 500 with output None, so a peer that cannot read anything it
+        # could not read before can nonetheless destroy the stdout of every script that runs
+        # to completion in this pod. And the 500 protects nothing: in the only case that
+        # produces it, DELETION is what failed, so the peer already holds the plaintext
+        # whether the caller is told 200 or 500. ENOSPC does not reach here either — injecting
+        # OSError(ENOSPC) into the seal's write answers 200 with the output and omitted=1,
+        # because unlink succeeds when the write does not — so the path is adversarial in
+        # practice and handing an attacker a kill switch is very nearly its whole effect.
+        # What the caller loses by the 200 is nothing; what it keeps is the analysis it paid
+        # for, plus an explicit statement that its artifacts are readable at this uid.
+        artifacts, omitted, digests = build_manifest(dirs.artifacts, sealed=sealed)
         self._record_digests(job.req.execution_id, digests)
 
         return self._response(
@@ -3442,7 +4404,8 @@ class Supervisor:
             out_stopped=out_box.get("stopped", False),
             status_raw=st_box.get("raw", b""),
             artifacts=artifacts,
-            artifacts_omitted=omitted + trimmed,
+            artifacts_omitted=omitted + trimmed + purged,
+            artifacts_retained_in_clear=not secured,
         )
 
     def _response(
@@ -3457,6 +4420,7 @@ class Supervisor:
         status_raw,
         artifacts,
         artifacts_omitted,
+        artifacts_retained_in_clear=False,
     ):
         child_error = None
         if status_raw:
@@ -3546,6 +4510,12 @@ class Supervisor:
             "error": error,
             "artifacts": artifacts,
             "artifacts_omitted": artifacts_omitted,
+            # SEPARATE FROM artifacts_omitted ON PURPOSE (4h6.88). Omission is recoverable and
+            # says nothing about exposure; this says the seal pass could neither encrypt nor
+            # delete what the script wrote, so those bytes sit in the clear at the shared uid
+            # until the reaper removes the directory. Folding it into a count would make the
+            # two indistinguishable, which is the whole reason it exists.
+            "artifacts_retained_in_clear": artifacts_retained_in_clear,
         }
 
 
@@ -5271,6 +6241,14 @@ def bring_up(supervisor, run_assertions=True):
     os.makedirs(mpl_dir, mode=0o700)
     seed_mplconfig(mpl_dir)
     os.environ["MPLCONFIGDIR"] = mpl_dir
+
+    # 4h6.88, and it is a startup gate rather than a per-execution try/except on purpose. If
+    # AES-256-GCM is not usable in this image, every execution's choice is between retaining
+    # plaintext and destroying the artifacts it just produced; refusing to become ready
+    # surfaces that as a CrashLoopBackOff the deploy sees. It seals a probe in the
+    # supervisor's own directory, so the file path — open, stream, rename — is exercised too,
+    # and BEFORE ForkServer.start() so nothing it allocates is in the fork snapshot.
+    crypto_selftest(sup_dir)
 
     module = load_prewarm()
     if module is None:
