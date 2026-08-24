@@ -788,7 +788,18 @@ credential the caller is already using.
 **The stubs are generated, so this passage is checkable rather than asserted.**
 `scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
 from the SDK source, `scripts/test-sandbox-docs.py` fails if the committed stubs differ from a
-fresh generation, and `scripts/build.sh` stages them into the image. A change to the SDK's
+fresh generation, and `scripts/build.sh` stages them into the image. **Neither script defaults to
+`sandbox/.sdk-src`** (`genetics-results-suite-4h6.60`): `build.sh` creates that staged copy and
+removes it on an `EXIT` trap, so a copy found on disk means an *interrupted* build — the old
+default was, by construction, reachable only when it was stale, and a regeneration from it would
+rewrite these shipped stubs from an old SDK while the check that exists to catch that either
+passed against the wrong source or failed for an unrelated-looking reason. With no `--sdk-src`
+both scripts now take `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the live sibling
+genetics-mcp-server checkout (worktree-matching one first, each gated on
+`src/genetics_mcp_server/sdk` existing, the resolution `run-sandbox-local.sh` already used),
+print which source they chose, and report a leftover staged copy instead of reading it.
+`build.sh` is unaffected — it passes `--sdk-src` explicitly, pointing at the copy it staged that
+run. A change to the SDK's
 docstrings therefore *cannot* leave the shipped stubs describing the old transport without
 failing that check — which is what caught this row after `4h6.44` landed. Re-derive the row
 above from the regenerated stubs; do not adjust it in place.
@@ -3886,6 +3897,30 @@ because the sandbox is the one caller whose input is attacker-influenced. Concre
    deploy that creates the sandbox Deployment): if `SANDBOX_ENABLED` is true and either
    `INTERNAL_API_SECRET` or `SANDBOX_TOKEN_SIGNING_KEY` is unset, `sys.exit(1)`. The
    configuration is then unbootable in *both* the key-set and the both-unset shapes.
+
+   **A truthy key is not a usable key** (`genetics-results-suite-4h6.36`). The gate above tests
+   presence, and `"   "`, `"\n"`, `"x"` and `"0"` all pass it — the `kubectl create secret
+   --from-file` of a near-empty file — and then become guessable HMAC keys that mint valid
+   sandbox principals. So both verifiers additionally `sys.exit(1)` when
+   `SANDBOX_TOKEN_SIGNING_KEY` is **shorter than 32 bytes** ignoring surrounding whitespace
+   (`MIN_SIGNING_KEY_BYTES` in `api/sandbox_auth.py` and `app/core/sandbox_token.py`, kept equal
+   in both because the two share one deployed key). 32 is the threshold the crypto layer already
+   names: RFC 7518 §3.2 requires an HS256 key at least as long as the hash output, and PyJWT
+   raises `InsecureKeyLengthWarning: The HMAC key is N bytes long, which is below the minimum
+   recommended length of 32 bytes for SHA256` under it — this moves that warning from a log line
+   nobody reads to a refusal to boot. Nothing a correct install produces is affected:
+   `create-secrets.sh`'s `openssl rand -base64 32` is 44 chars and `dev-stack.sh`'s
+   `secrets.token_urlsafe(32)` is 43.
+
+   **The gate measures the stripped key and then discards it; nothing normalises the value used
+   for signing or verifying, and nothing may.** chat-backend MINTS with its own copy of the
+   secret and the two verifiers VERIFY with the exact bytes they are given, so a `.strip()` in
+   `_signing_key()` would verify `"key"` against tokens signed with `"key\n"` and 401 **every
+   legitimate sandbox token**. Normalisation would have to change the minter and both verifiers
+   in one coordinated deploy; a length check needs no such coordination, which is the whole
+   reason it is the fix. A key that differs from its stripped form is instead **logged as a
+   warning at startup**, so a trailing-newline secret is visible rather than silently
+   load-bearing.
 7. **`SANDBOX_TOKEN_SIGNING_KEY` joins `deploy.sh`'s existing "check secrets exist" gate**,
    next to the secrets it already verifies before applying manifests. Rule 6 refuses to run
    the pair mis-configured; this stops the pair being *deployed* apart in the first place,
@@ -4692,8 +4727,9 @@ checks that key (and `internal-api-secret`) is non-empty before applying anythin
 older `genetics-secrets` that predates this work fails at deploy time rather than at pod
 start.
 
-The one lockout is **`SANDBOX_ENABLED=true` with either secret missing**, which is
-`sys.exit(1)` in both verifiers by design — a crash-looping db-api and results-api is the
+The one lockout is **`SANDBOX_ENABLED=true` with either secret missing, or with a
+`SANDBOX_TOKEN_SIGNING_KEY` under 32 bytes** (`4h6.36`), which is `sys.exit(1)` in both
+verifiers by design — a crash-looping db-api and results-api is the
 whole suite down. **Three manifests ship `SANDBOX_ENABLED: "false"`, not two**
 (`genetics-results-suite-4h6.85`): `k8s/deployments/db-api.yaml`, `results-api.yaml` and
 `chat-backend.yaml`. chat-backend is not a verifier — it mints the tokens and gates the
