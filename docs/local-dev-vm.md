@@ -102,7 +102,14 @@ Without them both verifiers resolve **no sandbox principal at all** and serve th
 per-execution accounting (`genetics-results-suite-0lf`): that follows from the two credentials
 and from nothing else, since neither verifier reads `SANDBOX_ENABLED`. They have to be
 stable across restarts — rotating the key invalidates a token minted seconds earlier — and they
-must not land in a repo. Setting either variable yourself still wins.
+must not land in a repo. Setting either variable yourself still wins — **but be careful where**:
+exporting it before `dev-stack.sh up` wins everywhere, while putting it in `MCP_ENV_FILE` wins
+for chat-backend **only**, because that file is sourced (`set -a`) after the generated value is
+already exported and only chat-backend's subshell reads it. The minter then signs with a
+different key than the verifiers hold, and every sandboxed execution 401s from both backends —
+indistinguishable at a glance from a broken token, not a config-precedence mismatch. `up` checks
+`MCP_ENV_FILE` for either name before sourcing it and warns loudly (non-blocking, so a
+deliberate override still works) if it finds one.
 
 `SANDBOX_ENABLED` itself defaults to **`false`**: `dev-stack.sh` starts no sandbox
 supervisor, so a `true` default would offer `run_analysis` with nothing behind it and its
