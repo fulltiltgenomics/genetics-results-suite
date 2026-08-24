@@ -880,8 +880,8 @@ without the pool yields a pod that is Pending forever while `kubectl apply` retu
 deploy reports success. An explicit `ENABLE_SANDBOX` in the environment still wins (for
 `SKIP_TERRAFORM=true` re-applies), and a **sandbox preflight** immediately after kubectl is
 configured — *before the first `kubectl apply` of the run* — then refuses on either of two
-preconditions: no node carrying `workload=sandbox`, or a `sandbox.yaml` that still declares
-neither `command:` nor `args:`. Both used to sit inside the `for f in deployments/*.yaml` loop,
+preconditions: no node carrying `workload=sandbox`, or a `sandbox.yaml` whose sandbox
+**container** declares neither `command:` nor `args:`. Both used to sit inside the `for f in deployments/*.yaml` loop,
 where `sandbox.yaml` sorts second-to-last, so `exit 1` fired only after every other manifest had
 been applied and skipped the cronjob apply, all rollout restarts and all rollout-status waits —
 a half-finished deploy whose freshly built `:latest` images were never rolled, with no summary
@@ -890,19 +890,54 @@ yet registered the label reads identically to no pool at all, and the fix there 
 re-run rather than to change terraform. The `command`/`args` refusal exists because a manifest
 with neither **schedules and CrashLoopBackOffs** — "Pending forever" is only the no-pool case —
 and nothing downstream waits on the sandbox rollout, so the deploy would exit 0 and print success
-over a pod that can never serve; it is keyed on the manifest, not on a ticket number, so it
-clears itself the moment `4h6.50` adds `args:` — the last bead of the supervisor chain, which is
-why `4h6.39` writes the supervisor without touching this manifest. Turning the sandbox on is
-therefore a deliberate two-step: set `sandbox_pool_enabled = true` (plus
-`sandbox_node_service_account`) in the **main checkout's** gitignored `terraform.tfvars`, then
-deploy — and until the supervisor lands, that deploy is refused with `4h6.39` named.
+over a pod that can never serve. `4h6.50` cleared it by adding the `args:` line, and the check
+stays for the day someone removes it. It **parses the manifest with PyYAML** (`python3`, the way
+`scripts/test-network-policies.py` already reads `k8s/deployments/`) and asks one scoped question:
+does the container named `sandbox`, in the Deployment named `sandbox`, declare a non-empty
+`command:` or `args:`? Both grep forms it replaced were wrong, measured end to end: matching
+anywhere in the file was cleared by a `readinessProbe.exec.command`, and anchoring to the 8-space
+container-key indentation (`^ {8}(command|args):`) was cleared by an `initContainers:` entry or a
+second document whose `command:` happened to land in the same column — with the sandbox
+container's own `args:` deleted — while a semantically identical reformat that moved the real
+`args:` two columns *refused* the deploy with a message claiming the key was absent. The parsed
+form is immune to both. It fails **closed** with the cause named when the file cannot be parsed or
+PyYAML is missing, and its three outcomes are distinguished in the message: no such container,
+container with no `command`/`args`, could not parse.
 
-**The manifest carries no `command`/`args`, deliberately.** The image's ENTRYPOINT is the bare
-interpreter and it ships no `CMD`; the supervisor is `genetics-results-suite-4h6.39`'s to
-write (and `4h6.50`'s to wire in here), and a placeholder would be indistinguishable from a
-real one at runtime — the same reasoning that kept `CMD` out of the image. Until it lands, an
-applied pod would start
-`python3` with no script and exit, which is the second reason the gate defaults off.
+**A third precondition, added with the `args:` line** (`4h6.50`): the sandbox **image must
+already be in the registry**. `scripts/build-all.sh` skips the sandbox image non-fatally when the
+resolved genetics-mcp-server branch has no SDK (`4h6.11`) or when the generated schema docs fail
+to verify (`4h6.13`); while the `args:` refusal was unclearable that could never reach a cluster,
+and now it can — a Deployment pointing at a tag nobody pushed is an ImagePullBackOff behind a
+`kubectl apply` that returned 0, the same silent success by another route. So `deploy.sh` runs
+`gcloud artifacts docker images describe ${REGISTRY}/sandbox:${TAG}` once `REGISTRY` is resolved
+(which is why this one is not in the earlier preflight — `REGISTRY` is not known there) and
+refuses on a definite `NOT_FOUND`; a query it cannot answer at all warns instead, since inability
+to answer is not evidence of absence. The three outcomes are kept apart deliberately: `gcloud`
+being off `PATH` is checked with `command -v` **before** the query (the shell's own
+`gcloud: command not found` used to match the fatal `not found` substring and kill the deploy
+while naming the image as the cause), and the fatal test is anchored to gcloud's own error shape
+(`ERROR: (gcloud.<command>) …`, or an explicit `NOT_FOUND`) rather than to a phrase any program
+can emit. A warning names the reason it found — missing tool, missing `artifactregistry.reader`,
+no credentials, or something else — and quotes gcloud's first line.
+The other end is closed in `build-all.sh` itself: after a sandbox skip it no longer prints
+"All images built and pushed.", it restates the skip as its last line, and it **exits non-zero
+when the deployment's tfvars sets `sandbox_pool_enabled = true`** — i.e. the skip is fatal
+exactly when the sandbox is about to be deployed.
+
+Turning the sandbox on is therefore a deliberate two-step: set `sandbox_pool_enabled = true`
+(plus `sandbox_node_service_account`) in the **main checkout's** gitignored `terraform.tfvars`,
+then deploy.
+
+**The manifest supplies the supervisor as `args: ["/genetics/supervisor.py"]`, and the image
+still ships no `CMD`.** The image's ENTRYPOINT is the bare interpreter, so the pod runs
+`/usr/bin/python3 /genetics/supervisor.py` — an absolute path rather than `-m supervisor`
+because it does not depend on the cwd the container starts in, **not** because the module
+would fail to resolve: measured in the image, CPython prepends the cwd to `sys.path` for
+`-m` whatever `PYTHONPATH` says, `WORKDIR` is `/genetics`, and `-m` resolves there today.
+It is the same argv `scripts/run-sandbox-local.sh` passes, so the local supervisor tests
+exercise the deployed invocation. Keeping the default out of the *image* is what keeps a lost
+`args:` loud rather than silent, which is what the preflight above depends on.
 
 Security-relevant fields, and what each one is for:
 
@@ -921,11 +956,15 @@ Security-relevant fields, and what each one is for:
 | env | `GENETICS_API_URL`, `BIGQUERY_API_URL` only | **No credentials, and none may be added** — not `INTERNAL_API_SECRET`, not `SANDBOX_TOKEN_SIGNING_KEY`. Per-execution tokens arrive in the body of chat-backend's POST and live 300s; a pod-spec value would make them static pod-lifetime credentials. `SANDBOX_ARTIFACTS_DIR` is likewise **not** set here: it is per-execution (`/scratch/<execution-id>/artifacts`) and a fixed pod-wide value would be exactly the cross-execution shared directory that removing `/tmp` prevented. |
 | resources | requests 500m / 1Gi / 1Gi ephemeral, limits 1500m / 3Gi / 2Gi ephemeral | As in "The sandbox pool" above and `docs/code-execution-security.md` § 2. The memory limit is the cgroup the runsc sentry is charged against too. |
 | probes | readiness on `/health`, **no liveness probe** | The supervisor enforces its own wall clock; a liveness probe racing a legitimate 120s execution would restart the pod and destroy it for nothing. Kubelet probes are exempt from NetworkPolicy on this dataplane, which is why `sandbox-policy.yaml` carries no probe rule. With no liveness probe, **readiness is the only lever the pod has**, so `/health` must report every unrecoverable state and not just startup and drain: a dead or poisoned fork server answers `503 forkserver-down`, which de-endpoints the pod. It is deliberately not restarted in process — see `docs/code-execution-security.md` → "When the fork server fails". |
+| `args` | `["/genetics/supervisor.py"]` | The image's ENTRYPOINT is the bare interpreter and it ships **no `CMD`**, so the pod runs `/usr/bin/python3 /genetics/supervisor.py`. Absolute path, not `-m supervisor`, because it does not depend on the container's cwd — `-m supervisor` would in fact resolve (CPython prepends the cwd to `sys.path` for `-m` regardless of `PYTHONPATH`, and `WORKDIR` is `/genetics`), so this is a robustness choice, not a necessity. Supplying it here rather than baking a `CMD` is what makes a lost `args:` a loud CrashLoopBackOff instead of a silently wrong default, which is the precondition `deploy.sh`'s refusal checks — parsed with PyYAML and scoped to the container named `sandbox` in the Deployment named `sandbox`, so no other container's or document's `command:` can clear it and reindentation cannot trip it. |
 | `strategy` / `terminationGracePeriodSeconds` | `Recreate` / 130 | The pool is one pinned node whose remaining headroom includes two rows this document records as undetermined, so a surge pod is not obviously schedulable; `Recreate` also keeps "one execution at a time" true cluster-wide. 130s is the 120s hard ceiling plus time to reap, answer and wipe. |
 
-`SANDBOX_ENABLED` stays `"false"` on db-api and results-api — flipping it is the separate,
-user-gated step that turns the feature on, and `scripts/test-network-policies.py` enforces the
-pairing whenever `ENABLE_SANDBOX=true`.
+`SANDBOX_ENABLED` stays `"false"` on **three** manifests, not two (`genetics-results-suite-4h6.85`):
+`db-api.yaml`, `results-api.yaml` and `chat-backend.yaml`. Flipping all three is the separate,
+user-gated step that turns the feature on — chat-backend is not a verifier, but leaving it
+`"false"` withholds `run_analysis` from every tool list with no signal anywhere — and
+`scripts/test-network-policies.py` enforces the pairing across all three whenever a sandbox
+workload is discoverable.
 
 ### The sandbox HTTP contract (summary — the definition lives elsewhere)
 
@@ -1053,9 +1092,10 @@ The program the sandbox pod runs, and the thing whose absence made
 `sandbox/requirements.txt` already ships — `sandbox/prune_venv.py` deletes pip and
 everything outside the SDK's import closure, so a new dependency has to be added there
 deliberately. `sandbox/Dockerfile` copies it to `/genetics/supervisor.py`; that does **not**
-start it, because the image still ships no `CMD` and the manifest still declares no
-`command`/`args`, which is what `scripts/deploy.sh` refuses to apply until
-`genetics-results-suite-4h6.50` wires it up as the last bead of the chain.
+start it, because the image still ships no `CMD`. `k8s/deployments/sandbox.yaml` names it
+instead — `args: ["/genetics/supervisor.py"]` on the sandbox container
+(`genetics-results-suite-4h6.50`, the last bead of the chain) — which is what clears
+`scripts/deploy.sh`'s refusal to apply that file.
 
 - **The per-execution limits are built.** The wall clock and rlimits (`4h6.41`), the output
   caps (`4h6.42`), token delivery to the child (`4h6.43`) and the `/scratch` quotas, retention
@@ -1907,9 +1947,21 @@ merged into stdout: kubectl exits 0 while printing auth-plugin deprecation warni
 those into the base64 payload would abort the script on GNU coreutils and, on a busybox `base64`
 that skips non-alphabet bytes, write a corrupted value back over the live secret.
 The single lockout is
-`SANDBOX_ENABLED=true` with either secret missing — both services `sys.exit(1)` by design, so
-that crash-loops db-api and results-api. Both manifests ship `SANDBOX_ENABLED: "false"`; the
-deploy that creates the sandbox Deployment flips it, after `create-secrets.sh`. **Rollback:
+`SANDBOX_ENABLED=true` with either secret missing — both verifiers `sys.exit(1)` by design, so
+that crash-loops db-api and results-api. **Three** manifests ship `SANDBOX_ENABLED: "false"` —
+`db-api.yaml`, `results-api.yaml` and `chat-backend.yaml` (`genetics-results-suite-4h6.85`); the
+deploy that creates the sandbox Deployment flips all three, after `create-secrets.sh`.
+
+**What that deploy does with the sandbox itself**, now that `k8s/deployments/sandbox.yaml`
+carries `args:` and `deploy.sh` will apply it (`genetics-results-suite-4h6.50`): with
+`ENABLE_SANDBOX=true` the preflight checks the gVisor node, the container-level `args:` and the
+sandbox image's presence in Artifact Registry *before the first apply*; the manifest loop
+resolves the db-api and results-api ClusterIPs from the live cluster into `hostAliases` and
+applies the file; and `sandbox` is appended **last** to the `kubectl rollout restart` and
+`rollout status` lists — last deliberately, because `strategy: Recreate` on one pinned node makes
+that restart a brief outage of code execution and a restart mid-execution kills the running
+script. With the gate off the file is skipped, never deleted, which is why the network-policy
+harness probes the cluster rather than trusting `ENABLE_SANDBOX`. **Rollback:
 set `SANDBOX_ENABLED=false` and restart** — it disables only the startup assertion, never the
 token validation, and since `genetics-results-suite-rhh` it no longer widens results-api's
 anonymous surface either (that is `ANONYMOUS_SURFACE_MINIMAL`, which defaults to on and is
@@ -2190,10 +2242,11 @@ initContainer stalls the rollout; without the check the pod becomes a crash-loop
 slips past `deploy.sh`'s `kubectl rollout status ... || true` and still prints "Deployment
 complete".
 
-- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (`REGISTRY` defaults to the selected environment's repo; `tag` defaults to `latest`). It only sets the image reference — the cluster acted on is whatever kubectl's current context points at, which the script echoes. Known services: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`. It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`.
+- **Single service update**: `./scripts/rollout.sh <service> [tag]` — updates one deployment image (`REGISTRY` defaults to the selected environment's repo; `tag` defaults to `latest`). It only sets the image reference — the cluster acted on is whatever kubectl's current context points at, which the script echoes. Known services, re-derived from `IMAGE_MAP`: `frontend`, `bff`, `results-api`, `chat-backend`, `mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak` (9). It only swaps container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs need `deploy.sh`. A service whose Deployment does not exist on the current context gets a "Not deployed" message and exit 1 instead of a bare `kubectl` `NotFound` — the ordinary case for `sandbox` and for `keycloak`, both of which `deploy.sh` applies only when their gate is on — while a query that *failed* (no context, expired credentials, unreachable API server) is reported as "could not ask", with kubectl's own error kept, rather than as a missing service. **`monitor` is the one deliberate absence**, and for the only reason that discriminates: it is a CronJob, so `kubectl set image deployment/monitor` cannot address it. `keycloak` used to be excluded alongside it on the grounds that it is "built from *this* repo's working tree rather than from a cloned sibling" — which is equally true of `sandbox` and `monitor`, so it never discriminated; it is a Deployment named `keycloak` whose container is named `keycloak` and whose image is `${REGISTRY}/keycloak:latest`, so it is now in the map.
+  - **`rollout.sh sandbox` is not an ordinary rollout** (`genetics-results-suite-4h6.37`). The sandbox Deployment is `strategy: Recreate` with `terminationGracePeriodSeconds: 130`, so the restart **kills an in-flight execution** and leaves no sandbox for up to ~130 s before the replacement is even scheduled; chat-backend surfaces that as a tool error, not a wrong answer. The script's `kubectl rollout status --timeout=300s` tolerates it — 300 s exceeds the 130 s grace period with room for the supervisor's prewarm and the readiness probe's 5 s delay + 10 s period.
 - **Build all images**: `./scripts/build-all.sh` — clones the service repos and builds/pushes all Docker images to Artifact Registry, including the local `monitor`, `keycloak` and `sandbox` build contexts (those build from this repo's working tree and so have no branch). Per-service branches come from `FRONTEND_BRANCH`, `RESULTS_API_BRANCH`, `MCP_SERVER_BRANCH`, `DB_API_BRANCH`, `RAG_SERVICE_BRANCH` — all default `master` except rag-service (`deploy_jk`), and they are set per deployment in `.env.<DEPLOY_ENV>` (daly-staging sets them all to `staging`). `REGISTRY` defaults to the selected environment's repo
 - **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (same `DEPLOY_ENV`, `REGISTRY` and branch env vars as build-all.sh). `sandbox` is also accepted: it builds the local `sandbox/` context rather than a clone, but still clones genetics-mcp-server for the SDK.
-- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today; `genetics-results-suite-4h6.11` has landed only on `worktree-db-only-architecture`), so a suite build stays green while the sandbox is unshippable. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py`, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell (`genetics-results-suite-4h6.31`), that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds), and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source is staged — it never skips silently. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` names views **bare** (`FROM credible_sets_v`), with no project or dataset prefix and no backticks (`genetics-results-suite-bee`). db-api's `_qualify_tables` rewrites a bare name to `` `{PROJECT_ID}.{DATASET_ID}.{view}` `` and only in a genuine table position — the regex anchors on `FROM`/`JOIN`, so it no longer mistakes ordinary words in string literals for tables, which is what the earlier fully-qualified convention existed to avoid. Qualifying is now the failure mode rather than the fix: db-api owns the dataset identity, so the same emitted SQL serves dev and production, and the backticks must come off with the prefix because the rewrite does not match a backtick after the whitespace. The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files (`genetics-results-suite-4h6.13`, now landed). See `docs/code-execution-security.md`, "Where the image lives".
+- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today; `genetics-results-suite-4h6.11` has landed only on `worktree-db-only-architecture`). That skip keeps a suite build green **only where the sandbox is not being deployed**: `build-all.sh` restates the skip as its last line instead of printing "All images built and pushed.", and **exits 1 when this deployment's tfvars sets `sandbox_pool_enabled = true`** (the same derivation `deploy.sh` uses for `ENABLE_SANDBOX`, `ENABLE_SANDBOX` in the environment still winning) — so on exactly the staging bring-up that turns the sandbox on, an unshippable sandbox fails the build rather than being carried past it. See "How the sandbox is turned on" above. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py`, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell (`genetics-results-suite-4h6.31`), that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds), and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source is staged — it never skips silently. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` names views **bare** (`FROM credible_sets_v`), with no project or dataset prefix and no backticks (`genetics-results-suite-bee`). db-api's `_qualify_tables` rewrites a bare name to `` `{PROJECT_ID}.{DATASET_ID}.{view}` `` and only in a genuine table position — the regex anchors on `FROM`/`JOIN`, so it no longer mistakes ordinary words in string literals for tables, which is what the earlier fully-qualified convention existed to avoid. Qualifying is now the failure mode rather than the fix: db-api owns the dataset identity, so the same emitted SQL serves dev and production, and the backticks must come off with the prefix because the rewrite does not match a backtick after the whitespace. The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files (`genetics-results-suite-4h6.13`, now landed). See `docs/code-execution-security.md`, "Where the image lives".
 - **Create secrets**: `./scripts/create-secrets.sh` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor). It needs the **config profile** to know whether to write `keycloak-secrets` (daly only), and reads it with `tfvar config_profile` out of the tfvars `scripts/lib/env.sh` resolved. That file is gitignored and exists only in the main checkout; `resolve_deploy_env` **refuses with exit 1** when it is missing, rather than letting a guessed profile write the wrong per-profile secrets (`genetics-results-suite-1xp`). `CONFIG_PROFILE=daly|finngen` overrides the value read from the file, and that `daly|finngen` is **enforced**, not advertised: any other value (a typo, a case slip like `Daly`, or a tfvars with no `config_profile` line, which parses to empty) also exits 1, because an unrecognised profile would otherwise fall through to `ENABLE_KEYCLOAK=false` and skip `keycloak-secrets` silently. Before that guard existed it died with exit 2 and no output at all, because the `grep` on the missing file tripped `pipefail`.
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst

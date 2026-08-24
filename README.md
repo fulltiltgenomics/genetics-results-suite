@@ -381,6 +381,16 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+`rollout.sh` knows nine services — `frontend`, `bff`, `results-api`, `chat-backend`,
+`mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak` — and only swaps container images,
+so ConfigMap-driven pods (auth-gateway) and the CronJobs still need `deploy.sh`. `monitor` is
+deliberately not in that list, for the only reason that actually discriminates: it is a CronJob,
+not a Deployment, so `kubectl set image deployment/monitor` cannot address it. A service with no
+Deployment on the current context gets a "Not deployed" message and exit 1 — the ordinary case
+for `sandbox` and `keycloak`, which are applied only when their gates are on. A query that
+*failed* rather than answered (no context, expired credentials, unreachable API server) is
+reported as "could not ask", with kubectl's own error, instead of as a missing service.
+
 ### Deploying the trusted-proxy marker
 
 **Roll out `bff` before `results-api`, and never both in the same `deploy.sh`.** results-api
@@ -460,16 +470,29 @@ local `/scratch` tmpfs is charged to the container's memory cgroup while the pod
 against it (the name is what lets the audit-stream group read the container's stdout);
 `--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
 
-The Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because
-the image ships no `CMD` and the supervisor is supplied at run time — so it is applied only when
+The Deployment is `k8s/deployments/sandbox.yaml`. The image ships no `CMD` and its ENTRYPOINT is
+the bare interpreter, so the manifest supplies the supervisor itself —
+`args: ["/genetics/supervisor.py"]` on the sandbox container. It is applied only when
 `ENABLE_SANDBOX=true`, which `scripts/deploy.sh` derives from `sandbox_pool_enabled` in
-`terraform.tfvars`. A preflight in deploy.sh — before the first `kubectl apply` of the run, so a
-refusal cannot strand a half-finished deploy — refuses that apply if no node carries
-`workload=sandbox` (the pod would be Pending forever) or while the manifest still declares no
-`command`/`args` (it would schedule and CrashLoopBackOff while the deploy printed success); the
-second refusal names `genetics-results-suite-4h6.39` (the supervisor) and clears itself when
-`genetics-results-suite-4h6.50` wires it into the manifest. See "The sandbox Deployment" in
-`docs/project-spec.md` and
+`terraform.tfvars`, and a preflight in deploy.sh — before the first `kubectl apply` of the run, so
+a refusal cannot strand a half-finished deploy — refuses that apply on three preconditions: no
+node carries `workload=sandbox` (the pod would be Pending forever); the sandbox **container**
+declares neither `command:` nor `args:` (it would schedule and CrashLoopBackOff while the deploy
+printed success — the manifest is parsed with PyYAML and the question is scoped to the container
+named `sandbox` in the Deployment named `sandbox`, so no initContainer, sidecar, other document or
+nested probe `exec.command` can clear it, reformatting cannot trip it, and a file that cannot be
+parsed fails closed); or `${REGISTRY}/sandbox:${TAG}` is definitely not in Artifact Registry —
+`gcloud` being absent, unauthenticated or unauthorised warns and proceeds instead, naming which
+of those it was, because not being able to ask is not evidence the image is missing. That last one exists because `scripts/build-all.sh` skips the sandbox image
+non-fatally when the mcp-server branch has no SDK or the generated schema docs fail to verify —
+which would otherwise deploy a Deployment pointing at a tag nobody pushed. `build-all.sh` no
+longer claims "All images built and pushed." after such a skip, and exits non-zero when the
+tfvars actually enables the sandbox. Once applied, `sandbox` is restarted and waited on **last**
+in the deploy's rollout list, because `strategy: Recreate` makes that restart a brief outage of
+code execution. To update it on its own: `./scripts/rollout.sh sandbox <tag>` (it kills any
+in-flight execution and leaves no sandbox for up to ~130 s; the 300 s rollout-status timeout
+covers that, and it prints a "Not deployed" message rather than a raw `kubectl` error when the
+gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` and
 [docs/code-execution-security.md](docs/code-execution-security.md).
 
 ## Running the suite locally

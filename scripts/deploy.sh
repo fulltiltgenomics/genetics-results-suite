@@ -102,12 +102,86 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   # on this rollout, so the deploy would exit 0 and print success over a pod that can never
   # serve. That is the same silent success the gate exists to prevent, so refuse it too. Keyed
   # on the manifest, not on a ticket number: the check clears itself when 4h6.50 lands `args:`.
-  if ! grep -Eq '^[[:space:]]*(command|args):' "${ROOT_DIR}/k8s/deployments/sandbox.yaml"; then
-    echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml declares no command/args."
-    echo "       The supervisor process is genetics-results-suite-4h6.39 and has not landed; the"
-    echo "       image's ENTRYPOINT is the bare interpreter, so this pod would CrashLoopBackOff"
-    echo "       while the deploy reported success. Land the supervisor chain (4h6.50 adds 'args:'"
-    echo "       to that manifest) before enabling the sandbox, or set sandbox_pool_enabled = false."
+  # PARSED, NOT GREPPED, and scoped to the one container it is about. The indentation-anchored
+  # grep this replaced was wrong in both directions, measured end to end: an initContainer or a
+  # second document carrying a `command:`/`args:` key at the same column CLEARED it with the
+  # sandbox container's own `args:` deleted, and a semantically identical reformat that moved
+  # the real `args:` two columns TRIPPED it with a message claiming the key was absent. So ask
+  # the question directly — does the container named `sandbox` in the Deployment named `sandbox`
+  # run something — the way scripts/test-network-policies.py already reads this directory.
+  # Fails closed on an unparseable file or a missing PyYAML (exit 2), because "cannot tell"
+  # must not read as "fine"; each exit code below names the cause it actually detected.
+  SANDBOX_ARGV_RC=0
+  SANDBOX_ARGV_ERR=$(python3 - "${ROOT_DIR}/k8s/deployments/sandbox.yaml" 2>&1 >/dev/null <<'PY'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print("PyYAML is not installed (pip install pyyaml)", file=sys.stderr)
+    sys.exit(2)
+
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        docs = list(yaml.safe_load_all(fh))
+except (OSError, yaml.YAMLError) as exc:
+    print(str(exc).replace("\n", " ")[:300], file=sys.stderr)
+    sys.exit(2)
+
+deployment = None
+for doc in docs:
+    if not isinstance(doc, dict):
+        continue
+    if doc.get("kind") == "Deployment" and (doc.get("metadata") or {}).get("name") == "sandbox":
+        deployment = doc
+        break
+if deployment is None:
+    print("no Deployment named 'sandbox' in the file", file=sys.stderr)
+    sys.exit(3)
+
+# containers: only. initContainers and ephemeralContainers are deliberately NOT consulted —
+# an init container that runs something says nothing about what the serving container runs.
+spec = (((deployment.get("spec") or {}).get("template") or {}).get("spec") or {})
+containers = spec.get("containers") or []
+container = None
+for c in containers:
+    if isinstance(c, dict) and c.get("name") == "sandbox":
+        container = c
+        break
+if container is None:
+    names = ", ".join(sorted(str(c.get("name")) for c in containers if isinstance(c, dict))) or "none"
+    print("the sandbox Deployment has no container named 'sandbox' (containers: %s)" % names,
+          file=sys.stderr)
+    sys.exit(3)
+
+# a present-but-empty `args: []` runs the bare ENTRYPOINT, which is the failure being guarded
+# against, so emptiness counts as absence.
+for key in ("command", "args"):
+    value = container.get(key)
+    if isinstance(value, (list, tuple)) and any(str(v).strip() for v in value):
+        sys.exit(0)
+    if isinstance(value, str) and value.strip():
+        sys.exit(0)
+print("the sandbox container declares no non-empty command/args", file=sys.stderr)
+sys.exit(4)
+PY
+  ) || SANDBOX_ARGV_RC=$?
+  if [ "${SANDBOX_ARGV_RC}" != "0" ]; then
+    case "${SANDBOX_ARGV_RC}" in
+      3) echo "ERROR: k8s/deployments/sandbox.yaml no longer describes the workload this gate checks" ;;
+      4) echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml's sandbox container"
+         echo "       declares no command/args." ;;
+      *) echo "ERROR: could not determine what k8s/deployments/sandbox.yaml's sandbox container runs" ;;
+    esac
+    echo "       cause: ${SANDBOX_ARGV_ERR:-(no detail)}"
+    echo "       The check is scoped to the container named 'sandbox' in the Deployment named"
+    echo "       'sandbox', and refuses when it cannot tell."
+    echo "       The image's ENTRYPOINT is the bare interpreter and it ships no CMD, so a pod with"
+    echo "       no command/args starts python3 with no script and CrashLoopBackOffs while the"
+    echo "       deploy reports success — nothing here waits on that rollout. Restore"
+    echo "       'args: [\"/genetics/supervisor.py\"]' on the sandbox container, or set"
+    echo "       sandbox_pool_enabled = false."
     exit 1
   fi
 fi
@@ -125,6 +199,55 @@ DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
 TF_REGISTRY=$(terraform output -raw registry)
 resolve_registry "${TF_REGISTRY}"
+
+# THE SANDBOX IMAGE MUST EXIST BEFORE THE MANIFEST IS APPLIED. scripts/build-all.sh SKIPS the
+# sandbox image non-fatally when the resolved genetics-mcp-server branch has no SDK or when the
+# schema docs fail to verify — a warning in the middle of a long build log, after which the build
+# still exits 0. While the supervisor refusal above was unclearable that could not reach the
+# cluster; now that the manifest carries args:, an omitted image becomes a sandbox Deployment
+# pointing at a tag nobody pushed — ImagePullBackOff behind a `kubectl apply` that returned 0,
+# with nothing rollout-statusing it. Same silent success, different route, so it is refused the
+# same way. Not in the preflight above only because REGISTRY is not resolved until here.
+# gcloud being unable to ANSWER (not installed, no artifactregistry.reader, no credentials) is
+# not evidence of absence and must not block a deploy, so those cases warn; only a definite
+# NOT_FOUND is fatal. THE THREE CASES ARE KEPT GENUINELY DISTINCT, because they were not:
+# with gcloud off PATH the shell's own "gcloud: command not found" matched a bare `not found`
+# substring and the deploy died claiming THE IMAGE was missing, the exact opposite of what this
+# comment promises. So the absence of the tool is asked first, and the fatal test is anchored to
+# gcloud's own error shape (`ERROR: (gcloud.<command>) ...`, or an explicit NOT_FOUND status)
+# rather than to a phrase any program on the system can emit.
+if [ "${ENABLE_SANDBOX}" = "true" ]; then
+  SANDBOX_IMAGE="${REGISTRY}/sandbox:${TAG}"
+  if ! command -v gcloud >/dev/null 2>&1; then
+    echo "WARNING: gcloud is not on PATH, so ${SANDBOX_IMAGE} could not be checked."
+    echo "         Proceeding; if the image was never pushed the sandbox pod ImagePullBackOffs."
+  elif ! AR_ERR=$(gcloud artifacts docker images describe "${SANDBOX_IMAGE}" 2>&1 >/dev/null); then
+    if printf '%s' "${AR_ERR}" | grep -qE 'NOT_FOUND' ||
+       printf '%s' "${AR_ERR}" | grep -qE '^ERROR: \(gcloud\.[^)]*\).*([Nn]ot found|does not exist)'; then
+      echo "ERROR: ENABLE_SANDBOX=true but ${SANDBOX_IMAGE} is not in the registry."
+      echo "       scripts/build-all.sh skips the sandbox image non-fatally (no SDK on the"
+      echo "       resolved genetics-mcp-server branch, or the schema-doc check failed) and still"
+      echo "       exits 0 — re-read the build log for a 'SKIPPING sandbox' line. Applying"
+      echo "       sandbox.yaml now would leave an ImagePullBackOff pod nothing waits on."
+      echo "       Build it with scripts/build.sh sandbox (which fails hard instead of skipping)."
+      exit 1
+    fi
+    # unanswerable, not absent. Name the likely reason rather than just the query's output: the
+    # operator has to decide whether to trust this warning, and "PERMISSION_DENIED" and "could
+    # not reach the API" call for different responses.
+    case "${AR_ERR}" in
+      *PERMISSION_DENIED*|*"does not have permission"*|*Forbidden*)
+        AR_WHY="the caller lacks artifactregistry.reader on ${REGISTRY}" ;;
+      *UNAUTHENTICATED*|*"gcloud auth"*|*credentials*)
+        AR_WHY="gcloud has no usable credentials (try: gcloud auth login)" ;;
+      *)
+        AR_WHY="the query failed for a reason that is not an absent image" ;;
+    esac
+    echo "WARNING: could not verify ${SANDBOX_IMAGE} exists — ${AR_WHY}."
+    echo "         gcloud said: ${AR_ERR%%$'\n'*}"
+    echo "         Proceeding; if the image was never pushed the sandbox pod ImagePullBackOffs."
+  fi
+fi
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
 export BQ_DATASET="${BQ_DATASET:-genetics_results}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
