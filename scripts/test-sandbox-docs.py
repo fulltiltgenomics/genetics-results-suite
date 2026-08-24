@@ -2,6 +2,8 @@
 """Offline assertions about scripts/gen-sandbox-docs.py and what it produces.
 
 Run: python3 scripts/test-sandbox-docs.py [--sdk-src DIR]
+     (--sdk-src defaults to whatever gen-sandbox-docs.py resolves — never the
+      staged sandbox/.sdk-src)
 Exit 0 = pass, 1 = a property is broken, 2 = the harness could not run.
 
 The property under test is not "the generator runs" — it is that the sandbox image's
@@ -31,6 +33,7 @@ import ast
 import copy
 import importlib.util
 import os
+import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -226,8 +229,7 @@ def check(name):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sdk-src", default=os.environ.get("GENETICS_SDK_SRC")
-                        or os.path.join(ROOT, "sandbox", ".sdk-src"))
+    parser.add_argument("--sdk-src", default=None)
     args = parser.parse_args(argv)
 
     gen = _load_generator()
@@ -245,19 +247,20 @@ def main(argv=None):
         print("sandbox docs checks: 1 failure(s)")
         return 1
 
-    sdk_dir = os.path.join(args.sdk_src, "src", "genetics_mcp_server", "sdk")
-    if not os.path.isdir(sdk_dir):
+    # resolved by the generator, so the harness and the thing it tests can never read
+    # different SDKs — and neither falls back to the stale sandbox/.sdk-src a build left
+    # behind (genetics-results-suite-4h6.60)
+    sdk_src = gen.resolve_sdk_src(args.sdk_src)
+    sdk_dir = sdk_src and gen.sdk_dir_for(sdk_src)
+    if not sdk_dir or not os.path.isdir(sdk_dir):
         # exit 2, not a skip: four of the thirteen checks — including the only one that can
         # catch a stub documenting a function the SDK does not export — need the source, and
         # a green run that quietly covered nine of thirteen is how that gap ships. Same
         # convention as gen-sandbox-docs.py and scripts/test-network-policies.py.
-        print(
-            f"harness cannot run: no genetics SDK source at {sdk_dir}.\n"
-            "Stage a genetics-mcp-server checkout there (scripts/build.sh and "
-            "scripts/build-all.sh do this), pass --sdk-src, or set GENETICS_SDK_SRC.",
-            file=sys.stderr,
-        )
+        print(f"harness cannot run: {gen.sdk_src_error(sdk_src)}", file=sys.stderr)
         return 2
+    if not args.sdk_src:
+        print(f"SDK source: {sdk_src}", file=sys.stderr)
 
     @check("every view in datasets.yaml produces a schema file")
     def _coverage():
@@ -555,6 +558,31 @@ def main(argv=None):
             assert open(path).read() == content, (
                 f"{name} differs from a fresh generation — run scripts/gen-sandbox-docs.py"
             )
+
+    @check("the SDK source is never resolved to the staged sandbox/.sdk-src")
+    def _never_the_staged_copy():
+        """genetics-results-suite-4h6.60. build.sh stages sandbox/.sdk-src and deletes it on
+        an EXIT trap, so a copy found on disk means an interrupted build — the old default
+        was reachable only when it was already stale, and regenerating from it rewrites
+        stubs that ship inside the image. Simulate a leftover and assert it is not chosen."""
+        staged = gen.STAGED_SDK_SRC
+        planted = os.path.join(staged, "src", "genetics_mcp_server", "sdk")
+        pre_existing = os.path.isdir(staged)
+        if not pre_existing:
+            os.makedirs(planted, exist_ok=True)
+        try:
+            env = {k: os.environ.pop(k) for k in ("GENETICS_SDK_SRC", "MCP_SERVER_DIR")
+                   if k in os.environ}
+            try:
+                resolved = gen.resolve_sdk_src(None)
+            finally:
+                os.environ.update(env)
+            assert resolved is None or os.path.abspath(resolved) != os.path.abspath(staged), (
+                f"resolve_sdk_src fell back to the staged copy {staged}"
+            )
+        finally:
+            if not pre_existing:
+                shutil.rmtree(staged, ignore_errors=True)
 
     print(f"sandbox docs checks: {len(failures)} failure(s)")
     return 1 if failures else 0

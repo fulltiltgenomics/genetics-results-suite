@@ -453,7 +453,11 @@ signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 copies are current, that every view and column reaches a file **with its BigQuery type**,
 and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
-Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
+Exit 1 = a property broke, 2 = the harness could not run (no SDK source). Run either script
+by hand with no `--sdk-src` and it resolves `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the
+live sibling genetics-mcp-server checkout, and prints which one it used — it never falls back to
+the gitignored `sandbox/.sdk-src`, which only exists after an *interrupted* build and would
+silently regenerate the shipped stubs from an old SDK (`genetics-results-suite-4h6.60`).
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
 
 `./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
