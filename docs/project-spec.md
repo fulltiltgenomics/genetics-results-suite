@@ -951,8 +951,8 @@ Security-relevant fields, and what each one is for:
 | `dnsPolicy` / `dnsConfig` | `None`, nameserver `127.0.0.1`, `ndots:1 timeout:1 attempts:1` | The egress policy permits no 53/UDP. Left at `ClusterFirst` a lookup that escapes `/etc/hosts` stalls through the whole resolver timeout budget against dropped packets — a hang inside the wall clock, unrepairable under `readOnlyRootFilesystem`. Against loopback it fails in microseconds instead. Depends on the image's `/etc/nsswitch.conf` listing `files` before `dns` (asserted at build time). |
 | `hostAliases` | db-api and results-api ClusterIPs, **all four name forms each** | Replaces DNS. glibc's `files` module does no search-domain expansion, so the bare name does not answer a lookup for the FQDN the rest of the suite uses. deploy.sh resolves both IPs from the live cluster and substitutes `${DB_API_CLUSTER_IP}` / `${RESULTS_API_CLUSTER_IP}`; deleting and recreating either Service requires re-rendering and rolling this Deployment. |
 | pod `securityContext` | `runAsNonRoot`, uid/gid 65532, `fsGroup: 65532` (`OnRootMismatch`), `RuntimeDefault` seccomp | 65532 is the distroless `nonroot` identity and deliberately none of the suite's other uids. The uid choice the design left open is **decided here as option (b), one shared uid** (`docs/code-execution-security.md` → "The uid choice"): option (a)'s distinct child uid needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` to `setuid` and to `chown` `/scratch/<id>` and the token file, and this container drops all capabilities with `allowPrivilegeEscalation: false`, so both calls return `EPERM`. The costs are real and the supervisor beads inherit them — `RLIMIT_NPROC` stops being a per-execution control (`4h6.41`: the supervisor must police the child's process group instead) and the token file sits within the child's same-uid reach, which read-once-and-unlink (`4h6.43`/`4h6.44`) does **not** bound — `4h6.55` measured a detached grandchild of an earlier execution reading a live token file from inside the read-once window, and recovered tokens from a completed execution by scanning `/proc/self/mem`. The **memory** half is closed by `4h6.55`'s fork server (option (b): the process that forks the child has never held a token); the **same-uid resident** half (`genetics-results-suite-4h6.83`) is closed only for a resident of an *earlier* execution, which the fork server's `PR_SET_CHILD_SUBREAPER` sweep kills at the end of the execution that forked it — a resident of the *same* execution is unbounded, and the sweep is unverified under gVisor (`4h6.51`) — and `4h6.39` must not assume it can drop privileges. `fsGroup` is therefore simply the pod's single gid, and is what makes the `emptyDir` writable by a non-root uid deterministically. |
-| container `securityContext` | `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, non-root 65532, `RuntimeDefault` | Exceeds the suite baseline. Bytecode and the matplotlib font cache are baked at build time, so nothing needs to write outside `/scratch`. `procMount` is left at its default: `Unmasked` would weaken the container, and anything hiding `/proc/self/fd` would break `read_artifact`, which verifies the artifacts directory **by descriptor** through `/proc/self/fd/<dirfd>`. |
-| volumes | exactly one `emptyDir` at `/scratch`, `sizeLimit: 512Mi` | No PVC ever (`chat-data` holds every conversation), no ConfigMap, no Secret, no pod-level `/tmp`. `/scratch` is where the mount must be: `read_artifact` refuses any `SANDBOX_ARTIFACTS_DIR` whose resolved path is not under a hardcoded `/scratch/` prefix, and refuses a symlinked one. Exceeding `sizeLimit` **evicts the pod**, so the supervisor's sub-quotas must fire first. |
+| container `securityContext` | `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, non-root 65532, `RuntimeDefault` | Exceeds the suite baseline. Bytecode and the matplotlib font cache are baked at build time, so nothing needs to write outside `/scratch`. `procMount` is left at its default: `Unmasked` would weaken the container. |
+| volumes | exactly one `emptyDir` at `/scratch`, `sizeLimit: 512Mi` | No PVC ever (`chat-data` holds every conversation), no ConfigMap, no Secret, no pod-level `/tmp`. `/scratch` is where the mount must be: it is the supervisor's scratch root (`SANDBOX_SCRATCH_ROOT` overrides it for tests only), the single directory every per-execution tree and every artifact read is resolved under. Exceeding `sizeLimit` **evicts the pod**, so the supervisor's sub-quotas must fire first. |
 | env | `GENETICS_API_URL`, `BIGQUERY_API_URL` only | **No credentials, and none may be added** — not `INTERNAL_API_SECRET`, not `SANDBOX_TOKEN_SIGNING_KEY`. Per-execution tokens arrive in the body of chat-backend's POST and live 300s; a pod-spec value would make them static pod-lifetime credentials. `SANDBOX_ARTIFACTS_DIR` is likewise **not** set here: it is per-execution (`/scratch/<execution-id>/artifacts`) and a fixed pod-wide value would be exactly the cross-execution shared directory that removing `/tmp` prevented. |
 | resources | requests 500m / 1Gi / 1Gi ephemeral, limits 1500m / 3Gi / 2Gi ephemeral | As in "The sandbox pool" above and `docs/code-execution-security.md` § 2. The memory limit is the cgroup the runsc sentry is charged against too. |
 | probes | readiness on `/health`, **no liveness probe** | The supervisor enforces its own wall clock; a liveness probe racing a legitimate 120s execution would restart the pod and destroy it for nothing. Kubelet probes are exempt from NetworkPolicy on this dataplane, which is why `sandbox-policy.yaml` carries no probe rule. With no liveness probe, **readiness is the only lever the pod has**, so `/health` must report every unrecoverable state and not just startup and drain: a dead or poisoned fork server answers `503 forkserver-down`, which de-endpoints the pod. It is deliberately not restarted in process — see `docs/code-execution-security.md` → "When the fork server fails". |
@@ -980,14 +980,18 @@ cannot import one definition. Do not restate it here; the essentials only:
   reads, one execute endpoint, and one artifact-read endpoint, plain HTTP/1.1 JSON. No
   HTTP-layer authentication — the sandbox holds no credential to verify against, so the
   ingress allow-list is the authentication.
-- **Artifacts come back out only as images, and only automatically** (`GET /artifact`,
-  `genetics-results-suite-8z1`). A script that saves a figure has it shown to the user:
-  chat-backend fetches image artifacts of a completed run itself, streams them as `image` SSE
-  chunks, and strips the base64 before the tool result reaches the model. The unguessable
-  per-execution `execution_id` — never rendered to the model — is the authorisation, and only
-  **retained** (completed) executions are served. Nothing the model calls reaches the route,
-  and no other artifact type is retrievable; general artifact reads and the sid-scoped
-  resolution remain `genetics-results-suite-4h6.52`.
+- **Artifacts come back out through one route** (`GET /artifact`,
+  `genetics-results-suite-8z1`), with two callers since `genetics-results-suite-4h6.52`.
+  Images are automatic: a script that saves a figure has it shown to the user — chat-backend
+  fetches image artifacts of a completed run itself, streams them as `image` SSE chunks, and
+  strips the base64 before the tool result reaches the model. Everything else is read by
+  **name** with `read_artifact`, which chat-backend resolves server-side against the
+  executions it recorded for the requesting chat session; another session's name is a `404`
+  indistinguishable from one that never existed, and the map expires with the supervisor's
+  300-second retention. On the route itself the unguessable per-execution `execution_id` —
+  never rendered to the model — plus the ingress allow-list is the authorisation, and only
+  **retained** (completed) executions are served. No model-supplied value ever becomes that
+  `execution_id`.
 - **Nothing in the request or response depends on Kubernetes**, so the local Docker backend
   (`4h6.40`) speaks the identical contract; the client holds one base URL. What differs
   (gVisor, NetworkPolicy, `hostAliases`, `emptyDir`) is deployment only.
@@ -1368,9 +1372,7 @@ instead — `args: ["/genetics/supervisor.py"]` on the sandbox container
 - **Three environment differences are what "not the image" looks like**, each warned about
   loudly at startup rather than silently changed: `GENETICS_PREWARM` unset skips `prewarm()`,
   `GENETICS_MPLCACHE` unset leaves the font cache to be rebuilt, and `SANDBOX_SCRATCH_ROOT`
-  moves the scratch root for tests — which makes artifacts unretrievable, since
-  `read_artifact` hardcodes the `/scratch/` prefix. The image sets the first two and never
-  sets the third.
+  moves the scratch root for tests. The image sets the first two and never sets the third.
 
 ## Monitoring
 

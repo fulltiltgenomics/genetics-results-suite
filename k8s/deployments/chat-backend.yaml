@@ -4,6 +4,13 @@ metadata:
   name: chat-backend
   namespace: genetics
 spec:
+  # load-bearing for read_artifact, not just for cost: chat-backend resolves an artifact name
+  # to an execution id through _ArtifactManifests, a process-wide in-memory map keyed by chat
+  # session (tools/executor.py in genetics-mcp-server). N replicas mean a read routed to a
+  # replica that did not run the analysis resolves nothing and returns "not found" for an
+  # artifact that exists. Scaling up — or adding an HPA — requires moving that map to shared
+  # state first, or sticky sessions. Same premise as db-api's per-execution byte counter and
+  # results-api's sandbox budget. See docs/code-execution-security.md § 6.
   replicas: 1
   strategy:
     type: Recreate

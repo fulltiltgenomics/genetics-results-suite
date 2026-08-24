@@ -1276,6 +1276,189 @@ def test_artifact_scoping(tmp):
                          lambda: s.read_artifact(eid, "../plot.png"), 400, "InvalidRequest")
 
 
+def test_artifact_fifo_does_not_block(tmp):
+    """genetics-results-suite-4h6.52: a listed name replaced by a FIFO must not hang the read.
+
+    THE HAZARD IS A REPLACEMENT DURING RETENTION, not a plant. A planted fifo is not in the
+    digest map and is refused before it is opened; build_manifest lists regular files only. But
+    a same-uid peer can `unlink` a name the manifest DID list and `mkfifo` it back, and
+    `O_RDONLY` on a fifo with no writer blocks IN THE KERNEL — before the `S_ISREG` that would
+    refuse it ever runs. That thread then never returns, and the chat turn waiting on the read
+    never gets an answer. It is a one-line denial of service from inside the sandbox.
+
+    This became the ONLY read path when read_artifact stopped reading chat-backend's own
+    filesystem: the local reader carried O_NONBLOCK from the start, so before the convergence
+    the flag existed somewhere. Now it has to exist here.
+
+    THE READ RUNS ON ITS OWN THREAD WITH A DEADLINE, because the failure mode under test is a
+    hang: asserting the return value alone would leave a regression wedging the whole harness
+    rather than failing it.
+    """
+    root = os.path.join(tmp, "fifo")
+    os.makedirs(root)
+    eid = "44444444-4444-4444-8444-444444444444"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    with open(os.path.join(dirs.artifacts, "results.tsv"), "wb") as fh:
+        fh.write(b"rsid\tpval\n")
+
+    s = sup.Supervisor(root, ready=True)
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, sup.build_manifest(dirs.artifacts)[2])
+    s._retained_ids.add(eid)
+    data, _ = s.read_artifact(eid, "results.tsv")
+    check("artifact fifo: the regular file it replaces is served normally",
+          data == b"rsid\tpval\n", f"got {data!r}")
+
+    os.unlink(os.path.join(dirs.artifacts, "results.tsv"))
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+
+    outcome = {}
+
+    def read():
+        try:
+            outcome["data"] = s.read_artifact(eid, "results.tsv")
+        except BaseException as exc:
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=read, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(10)
+    elapsed = time.monotonic() - started
+    check("artifact fifo: a listed name replaced by a FIFO does not block the read",
+          not thread.is_alive(), f"still running after {elapsed:.1f}s")
+    if thread.is_alive():
+        return
+    exc = outcome.get("exc")
+    check("artifact fifo: it is refused as not-found, the same answer every other "
+          "non-regular file gets",
+          isinstance(exc, sup.RequestError) and exc.status == 404,
+          f"got {outcome!r}")
+    check("artifact fifo: and it is refused in well under a second, not at some timeout",
+          elapsed < 1.0, f"took {elapsed:.1f}s")
+
+    # _artifact_digest carries the same flag for the same reason: build_manifest stats an entry
+    # and finds a regular file, and the replacement can land before the digest's own open.
+    dfd = os.open(dirs.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        digest = {}
+
+        def hash_it():
+            digest["value"] = sup._artifact_digest(dfd, "results.tsv")
+
+        thread = threading.Thread(target=hash_it, daemon=True)
+        thread.start()
+        thread.join(10)
+        # It RETURNS A DIGEST rather than None: a non-blocking read of a writerless fifo gives
+        # EOF, not EAGAIN, so the hash is over zero bytes. Do not read that as harmless in
+        # general — if the peer swaps the fifo for an EMPTY REGULAR FILE before the read, the
+        # empty hash MATCHES and read_artifact_bytes serves it as digest-verified. What makes
+        # it moot is narrower: build_manifest's `sealed is None` branch, the only caller of
+        # _artifact_digest, has no production caller of its own (_execute_inner always passes a
+        # sealed map), so this function runs only here. What matters in this check is only that
+        # the manifest build cannot be wedged by a fifo.
+        check("artifact fifo: hashing one for the manifest does not block either",
+              not thread.is_alive(), f"alive={thread.is_alive()} digest={digest!r}")
+    finally:
+        os.close(dfd)
+
+
+def test_seal_fifo_does_not_block(tmp):
+    """genetics-results-suite-4h6.52: the seal pass must not hang on a FIFO either.
+
+    THIS IS THE SITE PRODUCTION ACTUALLY REACHES. `_artifact_digest` only runs in
+    `build_manifest`'s `sealed is None` branch, which `_execute_inner` never takes; the open
+    that runs on every completed execution is `seal_artifact`'s. `seal_retained_artifacts`
+    lstats the entry, checks `S_ISREG` and `st_nlink == 1`, and THEN opens it by name — the
+    identical check-then-open window. A same-uid peer that unlinks a listed regular file and
+    `mkfifo`s it back inside that window would block `O_RDONLY` in the kernel forever, on the
+    completion path, holding the execution slot with no timeout above it.
+
+    ON A THREAD WITH A DEADLINE, because the failure mode is a hang: without O_NONBLOCK in
+    `seal_artifact` this check fails on the deadline instead of wedging the whole harness.
+    """
+    root = os.path.join(tmp, "sealfifo")
+    os.makedirs(root)
+    eid = "45454545-4545-4545-8545-454545454545"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    with open(os.path.join(dirs.artifacts, "keep.tsv"), "wb") as fh:
+        fh.write(b"rsid\tpval\n")
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+
+    key = bytearray(os.urandom(sup.ARTIFACT_KEY_BYTES))
+    outcome = {}
+
+    def seal():
+        try:
+            outcome["value"] = sup.seal_retained_artifacts(dirs.artifacts, eid, key)
+        except BaseException as exc:  # noqa: BLE001 - reported through the check below
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=seal, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(10)
+    elapsed = time.monotonic() - started
+    check("seal fifo: a listed name replaced by a FIFO does not block the seal pass",
+          not thread.is_alive(), f"still running after {elapsed:.1f}s")
+    if thread.is_alive():
+        return
+    check("seal fifo: and it returns in well under a second, not at some timeout",
+          elapsed < 1.0, f"took {elapsed:.1f}s")
+    check("seal fifo: the pass completed rather than raising",
+          "exc" not in outcome, f"raised {outcome.get('exc')!r}")
+    if "exc" in outcome:
+        return
+    sealed, _purged, _growth, stranded = outcome["value"]
+    # seal_retained_artifacts stats BEFORE the open, so in this test the fifo is rejected at
+    # S_ISREG and never reaches seal_artifact. The point of the check is the deadline: the
+    # window the flag closes is not reproducible from outside the pass, so the open itself is
+    # driven directly below.
+    check("seal fifo: the real artifact still sealed",
+          "keep.tsv" in sealed and stranded == 0, f"got {sealed!r} stranded={stranded}")
+
+    # THE WINDOW ITSELF: seal_artifact called on a name that is a fifo, which is exactly what
+    # seal_retained_artifacts holds after a peer swaps the file between its stat and this open.
+    # Re-made here because the pass above already purged the first one at its S_ISREG check.
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+    dfd = os.open(dirs.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        direct = {}
+
+        def seal_one():
+            try:
+                direct["value"] = sup.seal_artifact(dfd, "results.tsv", key,
+                                                    sup.artifact_aad(eid, "results.tsv"))
+            except BaseException as exc:  # noqa: BLE001 - reported through the check below
+                direct["exc"] = exc
+
+        thread = threading.Thread(target=seal_one, daemon=True)
+        started = time.monotonic()
+        thread.start()
+        thread.join(10)
+        elapsed = time.monotonic() - started
+        check("seal fifo: seal_artifact itself does not block on a FIFO in that window",
+              not thread.is_alive(), f"still running after {elapsed:.1f}s")
+        if thread.is_alive():
+            return
+        check("seal fifo: it returns in well under a second",
+              elapsed < 1.0, f"took {elapsed:.1f}s")
+        # EOF on the first read, so what is renamed over the name is an empty sealed regular
+        # file. That is the intended outcome, not a hole: a peer able to swap the name could
+        # have truncated the file anyway, and the digest recorded is the digest of what will
+        # actually be served.
+        check("seal fifo: the fifo is replaced by an empty sealed regular file",
+              direct.get("value") == (0, hashlib.sha256(b"").hexdigest()),
+              f"got {direct!r}")
+        st = os.stat("results.tsv", dir_fd=dfd, follow_symlinks=False)
+        check("seal fifo: and the name is no longer a fifo",
+              sup.stat.S_ISREG(st.st_mode), f"mode={st.st_mode:o}")
+    finally:
+        os.close(dfd)
+
+
 # --------------------------------------------------------------------------------------
 # 5. end to end over HTTP, with real forks
 # --------------------------------------------------------------------------------------
@@ -6029,6 +6212,8 @@ def run_in_process():
         print("artifact manifest and retrieval")
         test_manifest(tmp)
         test_artifact_scoping(tmp)
+        test_artifact_fifo_does_not_block(tmp)
+        test_seal_fifo_does_not_block(tmp)
         test_artifact_integrity(tmp)
         test_artifact_encryption(tmp)
         print("startup wipe")
