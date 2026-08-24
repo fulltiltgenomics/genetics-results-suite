@@ -33,7 +33,12 @@
 #                        (default: <sibling root>/genetics-mcp-server/.env). It is
 #                        gitignored and exists ONLY in the main checkout, so a worktree run
 #                        reads the main checkout's copy rather than getting a copy of the
-#                        secrets. Nothing here prints or copies its contents.
+#                        secrets. Nothing here prints or copies its contents. chat-api sources
+#                        it with `set -a` AFTER the exports below, so if it happens to set
+#                        SANDBOX_TOKEN_SIGNING_KEY or INTERNAL_API_SECRET those values win
+#                        for chat-api only, disagreeing with the generated value db-api and
+#                        results-api keep — `up` warns loudly if it finds either name in
+#                        the file rather than silently accepting the override.
 #   PROJECT_ID           GCP project for db-api (default: $GCP_PROJECT, else phewas-development)
 #   SANDBOX_TOKEN_SIGNING_KEY, INTERNAL_API_SECRET, SANDBOX_ENABLED
 #                        the sandbox's per-execution credential configuration. Generated
@@ -193,8 +198,17 @@ dev_secret() {
     local name="$1"
     local path="$RUN_DIR/$name"
     if [ ! -s "$path" ]; then
+        # mkdir is outside the umask subshell below (0775 dir; the FILES it holds are what
+        # matters and those stay 0600 — defence-in-depth only, not a second guard)
         mkdir -p "$RUN_DIR"
-        ( umask 077; python3 -c 'import secrets;print(secrets.token_urlsafe(32))' >"$path" )
+        # flock so two concurrent `dev-stack.sh up` runs can't race the write — without it
+        # the loser could read a truncated file mid-write instead of the finished secret
+        (
+            umask 077
+            exec 9>"$RUN_DIR/.dev-secret.lock"
+            flock 9
+            [ -s "$path" ] || python3 -c 'import secrets;print(secrets.token_urlsafe(32))' >"$path"
+        )
     fi
     cat "$path"
 }
@@ -223,6 +237,19 @@ case "$COMMAND" in
     up | down | status)
         command -v ss >/dev/null 2>&1 || {
             echo "ERROR: 'ss' not found (iproute2) — without it every port looks free" >&2; exit 1; }
+        ;;
+esac
+
+# dev_secret's flock call is inside a `${VAR:-$(...)}` default, where errexit does not
+# propagate out of the command substitution — a missing flock would fail silently there
+# and hand every service an empty signing key while `up` carries on (fail-open). Catching
+# it here, before dev_secret ever runs, turns that into a loud exit instead. `ss` already
+# makes this script Linux-only, and flock (util-linux) ships on every such box, so this
+# adds no real portability constraint.
+case "$COMMAND" in
+    up)
+        command -v flock >/dev/null 2>&1 || {
+            echo "ERROR: 'flock' not found (util-linux) — dev_secret needs it to serialize concurrent 'up' runs; without it a race can hand out an empty signing key" >&2; exit 1; }
         ;;
 esac
 
@@ -391,7 +418,20 @@ preflight_svc() {
         db-api | results-api)
             [ -f "$dir/configs/datasets.yaml" ] || echo "  WARN: $dir/configs/datasets.yaml missing — run scripts/sync-datasets.sh" >&2 ;;
         chat-api)
-            [ -f "$MCP_ENV_FILE" ] || echo "  WARN: $MCP_ENV_FILE not found — chat will start and then fail on the first message (no ANTHROPIC_API_KEY)" >&2 ;;
+            if [ -f "$MCP_ENV_FILE" ]; then
+                # sourced AFTER SANDBOX_TOKEN_SIGNING_KEY/INTERNAL_API_SECRET are already
+                # exported in `up`, so either name here silently wins for chat-api only —
+                # the minter would sign with a key the verifiers (db-api, results-api)
+                # never see, and every execution 401s in a way that reads like a token
+                # bug, not this. Warn here (preflight_svc), not inside start_chat_api's
+                # subshell — that subshell's stderr is redirected into chat-api.log, so a
+                # warning there never reaches the terminal (genetics-results-suite-4h6.67).
+                if grep -qE '^[[:space:]]*(export[[:space:]]+)?(SANDBOX_TOKEN_SIGNING_KEY|INTERNAL_API_SECRET)=' "$MCP_ENV_FILE"; then
+                    echo "  WARN: $MCP_ENV_FILE sets SANDBOX_TOKEN_SIGNING_KEY and/or INTERNAL_API_SECRET — sourced after the generated value, so it wins for chat-api (the minter) only, while db-api/results-api (the verifiers) keep the generated one. Every sandboxed execution will 401 until you remove it from $MCP_ENV_FILE or export the same value before running this script." >&2
+                fi
+            else
+                echo "  WARN: $MCP_ENV_FILE not found — chat will start and then fail on the first message (no ANTHROPIC_API_KEY)" >&2
+            fi ;;
     esac
     return 0
 }
@@ -428,7 +468,15 @@ start_chat_api() {
         cd "$dir"
         # the secrets enter as exported variables of this subshell only: never on a
         # command line (ps), never in the log, never copied into the worktree
-        if [ -f "$MCP_ENV_FILE" ]; then set -a; . "$MCP_ENV_FILE"; set +a; fi
+        if [ -f "$MCP_ENV_FILE" ]; then
+            # sourced AFTER SANDBOX_TOKEN_SIGNING_KEY/INTERNAL_API_SECRET are already
+            # exported above, so either name here silently wins for chat-api only — the
+            # minter would sign with a key the verifiers (db-api, results-api) never see,
+            # and every execution 401s in a way that reads like a token bug, not this.
+            # preflight_svc already warned on the terminal if the file sets either name —
+            # this subshell's stderr goes to chat-api.log, not the terminal.
+            set -a; . "$MCP_ENV_FILE"; set +a
+        fi
         export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
         export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
         export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-5}"

@@ -80,7 +80,10 @@ import time
 import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_RUN_DIR = os.path.join(os.path.expanduser("~"), ".cache", "genetics-dev-stack")
+# must match dev-stack.sh's own default (RUN_DIR="${DEV_STACK_RUN_DIR:-$HOME/.cache/genetics-dev-stack}")
+# so a developer who sets DEV_STACK_RUN_DIR doesn't also have to remember --run-dir here
+DEFAULT_RUN_DIR = os.environ.get("DEV_STACK_RUN_DIR") or os.path.join(
+    os.path.expanduser("~"), ".cache", "genetics-dev-stack")
 
 FAILURES = []
 SKIPPED = []
