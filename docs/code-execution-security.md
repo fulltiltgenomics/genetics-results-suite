@@ -3413,15 +3413,30 @@ change.** Each one made the local run *look* fine while proving less:
 3. `SANDBOX_RETENTION_S` had no way through `run-sandbox-local.sh`, so the retention deadline
    was unobservable in container mode. It is now passed through.
 
-**Two findings on results-api, filed rather than worked around:**
+**Two findings on results-api, filed rather than worked around — both FIXED by
+`genetics-results-suite-4h6.65`:**
 
-* Its JSON log formatter carries `sid` and `jti` out of `log_rejection`'s `extra` and **drops
+* Its JSON log formatter carried `sid` and `jti` out of `log_rejection`'s `extra` and **dropped
   `code`, `limit` and `observed`** — so `Rejection.code`, whose whole purpose is to make a 429
-  actionable in a log, never reaches an operator. The code *is* on the wire in the 429 body,
-  and the harness reads it there.
-* `endpoint_access` records `user_email: null` for a sandbox principal even though `sid` and
-  `jti` are stamped, so the authenticated user is not attributable from results-api's log
-  alone. db-api's record and the audit stream both carry `sub`.
+  actionable in a log, never reached an operator, and the harness read the code off the 429
+  body instead. **Fixed at the mechanism, not at the three names**: `GCPJsonFormatter` no
+  longer consults an `EXTRA_LOG_FIELDS` allow-list (see the allow-list note below), so every
+  `extra=` key reaches `jsonPayload`. `tests/test_log_formatter_extras.py` pins the rejection
+  line's `code`/`limit`/`observed` and the general property.
+* `endpoint_access` recorded `user_email: null` for a sandbox principal even though `sid` and
+  `jti` were stamped, so the authenticated user was not attributable from results-api's log
+  alone. **Where that was actually reachable matters**: with the shipped config
+  (`k8s/deployments/results-api.yaml` sets `REQUIRE_AUTH=true` and
+  `ANONYMOUS_SURFACE_MINIMAL=true`) an auth dependency has already run, `get_verified_user`
+  returned `SandboxPrincipal.identity`, and the middleware's existing
+  `state["authenticated_user"]` fallback had populated the column — so the null appears only
+  where no dependency ran: on an `@is_public` route with the minimal anonymous surface off, or
+  with `REQUIRE_AUTH=false`, which is the local e2e harness this was observed in. **Fixed**:
+  `app/middleware_usage_logging.py` stamps `principal.identity` — `sandbox:<sub>`, the same
+  string the auth path stores, **never the bare address** (see rule 5 below, which the bare
+  address would have falsified in production by making a sandbox row and a human row for the
+  same person identical in the one column the BigQuery sink admits). db-api's record and the
+  audit stream carry `sub` as before; the join no longer *needs* a second source.
 
 **Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCED here,
 and the measurement below PREDATES the subreaper sweep.** In this configuration — plain Docker,
@@ -4648,7 +4663,9 @@ unlinks it — and nothing should be designed as if the mode were doing work.
    `endpoint_access` log. Returning the bare email would make a sandbox request
    indistinguishable from a verified human, which is exactly the distinction `4h6.28`'s relax
    condition needs. The `sid` and `jti` are added to the `endpoint_access` line from
-   `request.state.sandbox_principal`.
+   `request.state.sandbox_principal`, and so is `user_email` when no auth dependency ran — from
+   the same `identity`, so the prefix holds on every route rather than only on authenticated
+   ones.
 6. **db-api's `require_auth` no longer early-returns on `/health` *before* clearing state.**
    It sets `request.state.principal = None` first, so no handler can read a stale principal.
 7. **Minter invariants are asserted by the verifiers, not assumed.** `options={"require": …}`
@@ -4661,11 +4678,31 @@ unlinks it — and nothing should be designed as if the mode were doing work.
    cover — see "Clock skew" above. The `MAX_TOKEN_AGE_SECONDS` check is unaffected.
 9. **Rule 5's logging works differently on the two services.** db-api logs a *dict* message,
    which its formatter merges into `jsonPayload` verbatim. results-api's `GCPJsonFormatter`
-   copies `extra=` fields only for names on the `EXTRA_LOG_FIELDS` allow-list when the message
-   is a string, so `sub`, `sid` and `jti` were added to that list — without them the
-   "sandbox request authorized" line reached the sink with no attribution at all. The
-   `endpoint_access` line's `sid`/`jti` come from `request.state` on the middleware's dict
-   path and were never affected.
+   copies `extra=` fields when the message is a string, which originally meant *only* the names
+   on an `EXTRA_LOG_FIELDS` allow-list; `sub`, `sid` and `jti` were added to that list here,
+   because without them the "sandbox request authorized" line reached the sink with no
+   attribution at all. **`genetics-results-suite-4h6.65` deleted the list** after it silently
+   ate `log_rejection`'s `code`/`limit`/`observed` (above): the formatter now copies every
+   record attribute that is not one `LogRecord` itself owns, the reserved set being derived
+   from a probe record rather than typed out. Two guards ride with the inversion, because an
+   unconditional copy has failure modes the allow-list did not: extras are merged so they can
+   never displace the line's own output keys or the names Cloud Logging reserves in a
+   structured stdout line (`severity`, `timestamp`, `message`, `logger`, `trace`, `labels`,
+   `httpRequest`, `logging.googleapis.com/*`) — a colliding extra is **re-keyed** to
+   `extra_<name>` rather than dropped, since a silently missing field is the failure this
+   whole change is about, and without it `extra={"severity": "DEBUG"}` on a `logger.warning()`
+   would file the line below an alerting threshold; and `format()` no longer raises, since
+   `default=str` does not cover a circular reference, a non-`str` dict key or a `__str__` that
+   raises — those propagate into `Handler.handleError`, which loses the record and prints an
+   unstructured traceback on stderr that GKE ingests anyway, so a degraded line carrying
+   `log_format_error` is emitted instead. **The direction of the default is the whole
+   point** — an allow-list makes forgetting an entry a no-op, so the log arrives short and
+   nothing fails; a deny-list of names that already mean something makes the omission
+   impossible rather than merely discouraged. The same shape one layer out — genetics-mcp-server
+   `tools/executor.py`'s whitelist of sandbox response fields — is `genetics-results-suite-4h6.97`
+   and is **not** fixed by this; the reasoning above is the answer that bead should apply. The
+   `endpoint_access` line's `sid`/`jti` come from `request.state` on the middleware's dict path
+   and were never affected by either.
 
 **Where the token sits in each validator's precedence.**
 
