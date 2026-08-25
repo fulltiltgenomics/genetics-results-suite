@@ -4911,11 +4911,18 @@ Two further hazards for `4h6.16`:
 
 - There is **no `code` profile today**. It is created by this work; nothing about it can be
   cited as an existing control.
-- `TOOL_PROFILES.get(profile, {"general"})` **silently degrades an unknown profile name**
-  to the default set rather than raising. A typo at any call site — `"code "`, `"codes"`,
-  a renamed constant — produces a running server with a quietly different tool set and no
-  error anywhere. If profile selection is ever load-bearing for a security property, that
-  `.get` default must become a raise first.
+- **An unknown profile name still degrades to the default set rather than raising.** A typo
+  at any call site — `"code "`, `"codes"`, a renamed constant — produces a running server
+  with a quietly different tool set. What changed with `genetics-results-suite-4h6.74` is
+  that the degrade is no longer *silent*, and the distinction matters here: the lookup is
+  now `TOOL_PROFILES.get(profile)` followed by an explicit `None` branch that calls
+  `_warn_unknown_profile` (`definitions.py`), which logs one WARNING per **distinct**
+  unknown value — capped at 64 distinct values, because the value is re-sent on every turn
+  of a session that stored it — and `GET /chat/v1/tools/resolved` answers
+  `known_profile: false` for the same input. Both are **observability, not enforcement**:
+  neither refuses the request, and the resolved tool set is byte-identical either way. If
+  profile selection is ever load-bearing for a security property, that `None` branch must
+  become a raise first. Per-profile behaviour is in `docs/chat-tool-reference.md` § 3.
 
 ### Layer 2 — NetworkPolicy (`4h6.8`)
 

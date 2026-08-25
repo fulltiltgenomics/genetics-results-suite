@@ -154,6 +154,7 @@ TOOL_PROFILES: dict[str, set[str]] = {
     "api": {"general", "api", "orchestration"},
     "bigquery": {"general", "bigquery", "orchestration"},
     "rag": {"general"},
+    "nocode": {"general", "api", "bigquery"},
 }
 
 TOOL_PROFILE_TOOLS: dict[str, set[str]] = {
@@ -181,11 +182,45 @@ existing profile's resolved set changed when `code` landed;
 Selection: `POST /chat/v1/chat` field `tool_profile` (`chat_api.py:284`), persisted per
 message in `chat_messages.tool_profile`, defaulted per user from the `chat_tool_profile`
 key of `user_settings`. It is also selectable from the browser: genetics-results-browser's
-**Tools** control offers All / API / Database / **Code execution**, `rag` being the one
-profile deliberately kept out of the UI. Note the two ends disagree about an unknown
-string — the browser resolves it to `null`, which is the **full** surface, where the server
-degrades to general-only; both refuse to raise because the value is read back from stored
-rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
+**Tools** control offers All / API / Database / **Code execution**.
+
+**The two lists are not the same list, and that is deliberate.** This server knows **five**
+profiles — `api`, `bigquery`, `rag`, `nocode`, `code`. genetics-results-browser's own
+`TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names **four** — `api`, `bigquery`,
+`rag`, `code` — of which `rag` carries a `null` in `TOOL_PROFILE_LABELS` (`LLMChat.tsx`) and
+so is resolvable but never rendered as a radio. `nocode` is absent from the browser
+altogether **on purpose**: it is the comparator arm for `genetics-results-suite-4h6.23` and
+must not be an option a user can pick. Neither omission is an oversight, and neither list
+should be described as mirroring the other.
+
+Since `genetics-results-suite-4h6.74` the two are pinned against each other, once per
+direction:
+
+- **server → browser, at runtime.** A stored `chat_tool_profile` the browser does not
+  enumerate used to be narrowed to `null` — which is *no filtering*, the full surface, so
+  the user's narrower stored choice silently became the widest one. The browser now probes
+  `GET /chat/v1/tools/resolved?tool_profile=<v>` and, on `known_profile: true`, keeps the
+  value, labels it from the raw key and sends it (`adoptServerKnownProfile` in
+  `useChatOptions.ts`). This is what lets an already-stored `nocode` behave correctly
+  without advertising it. The value must first look like a profile name at all —
+  non-empty, ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel
+  (`isPlausibleToolProfile` in `chatOptionsApi.ts`) — or it never reaches the URL.
+- **browser → server, at runtime.** The same endpoint is called when a profile is selected
+  and when one is restored at page load; an explicit `known_profile: false` puts an amber
+  "not recognised by the server" beside the **Tools** control. **A failed or unanswerable
+  probe shows nothing** — offline, 5xx, or a backend predating the endpoint is not evidence
+  of drift, so only an explicit `false` is a signal.
+- **browser → server, at build time.** `tests/test_unknown_profile_warning.py::
+  test_the_profile_key_set_is_pinned_against_the_browsers_copy` asserts
+  `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
+  literal and names the browser file in its failure guidance, so adding or renaming a
+  profile here fails a test until the browser is dealt with. It also asserts the two dicts
+  stay disjoint, since `TOOL_PROFILE_TOOLS` wins where they overlap.
+
+The two ends still disagree about a genuinely unknown string, and that stays deliberate:
+the browser resolves it to `null`, the **full** surface; the server degrades to
+general-only. Neither may raise, because the value is read back from stored rows. See
+`docs/project-spec.md` § "Selecting a profile from the browser".
 
 | `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
 |---|---|---|---|---|---|
@@ -195,7 +230,7 @@ rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
 | `"rag"` | categories: general only | 18 | 18 | **no** | yes |
 | `"nocode"` | categories: general + api + bigquery | 64 | 62 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
-| any other string | `TOOL_PROFILES.get(profile, {"general"})` → general only | 18 | 18 | yes | no |
+| any other string | not in either dict → general only, plus a warn-once (below) | 18 | 18 | yes | no |
 
 `"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
@@ -217,13 +252,22 @@ Three behaviours worth stating plainly:
   `if tool_profile is not None` guard at `definitions.py:1777` is skipped entirely, so the
   default surface is every definition in all three lists. `code` **ships dark**: it changes
   no default, and rolling it back is deleting one dict entry.
-- **An unknown profile name silently degrades to `general` only** rather than raising
-  (`definitions.py:1782`). A typo in `tool_profile` costs the model 47 tools with no error.
-  This was kept deliberately when `code` landed — the value is read back from
-  `chat_messages` rows written by older clients, so raising would turn a stale row into a
-  500 — and is pinned by `test_unknown_profile_still_degrades_silently_to_general`.
-  Note the asymmetry in the last row: an unknown name is not `"rag"`, so it still gets
-  external tools but not RAG tools.
+- **An unknown profile name degrades to `general` only** rather than raising. A typo in
+  `tool_profile` costs the model 47 tools and the request still succeeds. The degrade was
+  kept deliberately when `code` landed — the value is read back from `chat_messages` rows
+  written by older clients, so raising would turn a stale row into a 500 — and is pinned by
+  `test_unknown_profile_still_degrades_silently_to_general` (`tests/test_tools.py`) and by
+  `test_the_degrade_itself_is_unchanged` (`tests/test_unknown_profile_warning.py`).
+  It is **no longer silent to an operator**: `genetics-results-suite-4h6.74` split the
+  lookup into `TOOL_PROFILES.get(profile)` plus an explicit `None` branch that calls
+  `_warn_unknown_profile`, logging one WARNING naming the value and the known set — once
+  per **distinct** value, not once per request, because a stored profile is re-sent on
+  every turn of the session that holds it, and bounded at 64 distinct values so a client
+  inventing one per request floods neither the log nor the memo set. It stays silent to
+  the model and to the request itself. The caller-side half of the same signal is
+  `GET /chat/v1/tools/resolved`'s `known_profile: false`.
+  Note the asymmetry in the last table row: an unknown name is not `"rag"`, so it still
+  gets external tools but not RAG tools.
 - **`disabled_tools` is applied *before* the profile filter**, so the three feature flags
   and the env-driven disable list subtract from an explicit profile too. Only
   `launch_subagents` of the three is in a category profile other than `api`, which is why
@@ -2189,7 +2233,9 @@ unreachable over `/mcp` no matter what `disabled_tools` says — today that is
 Counts to re-check whenever `definitions.py` changes: the four category totals, the
 per-profile totals in section 3 (both `TOOL_PROFILES` and `TOOL_PROFILE_TOOLS` — a new tool
 in an existing category silently joins the category profiles but never an explicit one), the
-66 MCP handlers, and the effective `/mcp` count of 54.
+66 MCP handlers, and the effective `/mcp` count of 54. The profile **key set** does not need
+re-deriving by hand: `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+fails on any addition or rename, and section 3 says what to update when it does.
 
 ## Documentation ownership
 

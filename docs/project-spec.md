@@ -2339,9 +2339,12 @@ The **Tools** option above is the `tool_profile` field, and it is resolved by **
 `genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
 to whole tool **categories** (`api`, `bigquery`, `rag`, `nocode`); `TOOL_PROFILE_TOOLS` maps a
 profile to an explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
-filtering at all*, not a union of the profiles, and an unrecognised string degrades silently to
+filtering at all*, not a union of the profiles, and an unrecognised string degrades to
 general-only rather than raising, because the value is read back from `chat_messages` rows written
-by older clients.
+by older clients. The degrade is unchanged but no longer silent to an operator: since
+`genetics-results-suite-4h6.74` the `None` branch logs one WARNING per **distinct** unknown value
+(bounded at 64, because a stored profile is re-sent on every turn), and
+`GET /chat/v1/tools/resolved?tool_profile=<v>` answers `known_profile: false` for the same input.
 
 The second mechanism exists for `code`, the minimal code-execution surface: `run_analysis`,
 `list_capabilities`, `read_artifact`, `search_genes`, `search_phenotypes`,
@@ -2362,7 +2365,11 @@ in `docs/chat-tool-reference.md` § 3.
 
 `nocode` is the fourth category-union profile, added for the genetics-results-suite-4h6.23 A/B and,
 like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
-offer it, so nothing stores it and the browser's unknown→`null` narrowing is never exercised by it.
+offer it, and its own list does not even contain the name. That is not an oversight to be corrected:
+it is the comparator arm, and a user must not be able to pick it. A value already sitting in
+`user_settings` (written by a benchmark harness or by hand) is no longer discarded, though — the
+browser probes the server for it and keeps it if the server confirms it, which is what makes a
+stored `nocode` behave as stored without ever being advertised (see below).
 It resolves to `{general, api, bigquery}`: `null` minus exactly `run_analysis`,
 `list_capabilities` and `read_artifact` under the deployed flags (65 → 62, measured 2026-08-19).
 It exists because `null` **is not** a pre-code-execution baseline — `null` contains `run_analysis`,
@@ -2374,8 +2381,10 @@ and `nocode` is no longer "the old surface".
 #### Selecting a profile from the browser
 
 The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
-execution** (`code`); `rag` is a real server-side profile that has deliberately never been
-user-facing. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
+execution** (`code`). The server knows **five** profiles and the browser's own list names **four**:
+`rag` is in the browser's list but carries a `null` label, so it is resolvable and never rendered;
+`nocode` is not in the browser's list at all. Both omissions are deliberate — do not read the two
+lists as copies of each other. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
 rode along with every request while nothing could change it — which is why the row above described
 a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
 A/B'd against the full one. The default is unchanged: **All**.
@@ -2383,16 +2392,43 @@ A/B'd against the full one. The default is unchanged: **All**.
 The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
 backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
 an **unrecognised** profile to `null`, and `null` is the **largest** surface, not the smallest. So a
-list left behind by a new profile does not fail, it silently runs the maximal arm; a benchmark
-driven through the browser would be invalid with no visible symptom. The server makes the opposite
+list left behind by a new server-side profile does not fail, it runs the maximal arm — a benchmark
+driven through the browser would be invalid with no visible symptom — unless the adoption path
+below rescues the value first, which it can only do when the server answers. The server makes the opposite
 call for the same input (unknown → general-only). Both are deliberate — the value comes back from
-`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise —
-and the inconsistency is recorded rather than resolved. What keeps it safe is that `TOOL_PROFILES`
+`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise.
+
+`genetics-results-suite-4h6.74` pins the two lists together rather than leaving the drift merely
+recorded. Three mechanisms, and it is worth knowing which one catches which direction:
+
+- **A profile the server added that this browser build predates** is caught at runtime, on the
+  browser side. `getStoredChatOptions` keeps the raw value as `unknownToolProfile` when
+  `coerceToolProfile` rejects it, and `adoptServerKnownProfile` (`useChatOptions.ts`) asks
+  `GET /chat/v1/tools/resolved?tool_profile=<v>`. Only `known_profile: true` changes anything: the
+  value is kept, labelled from the raw key by `toolProfileLabel` (`LLMChat.tsx`), offered as an
+  extra radio and sent on the next message. Nothing is persisted — the settings row already holds
+  it. The value must first pass `isPlausibleToolProfile` (non-empty, ≤ 32 chars,
+  `^[a-z][a-z0-9_-]*$`, not the `all` sentinel) or it is never asked about and never rendered;
+  corruption in a settings row is not drift.
+- **A profile this browser offers that the server no longer knows** is caught at runtime too, by
+  the same endpoint, called whenever a profile is selected and whenever one is restored at load.
+  An explicit `known_profile: false` puts an amber "not recognised by the server" beside the
+  **Tools** control; `true` shows the resolved local-tool count. **A failed or unanswerable probe
+  shows nothing at all** — offline, a 5xx, or a backend predating the endpoint is not evidence of
+  drift, so the check is fire-and-forget, never gates sending, and is left out of the store rather
+  than recorded as "unknown".
+- **A profile added or renamed on the server** is caught at build time, on the server side, by
+  `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`,
+  which asserts `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
+  literal and names the browser file to update. The two repos cannot import each other, so a literal
+  on each side is the only thing that can pin them.
+
+What keeps the browser side safe underneath all of that is unchanged: `TOOL_PROFILES`
 in `src/features/chat/chat.types.ts` is the single list every narrower reads, `TOOL_PROFILE_LABELS`
 in `LLMChat.tsx` is a `Record<ToolProfile, …>` so a new profile is a **type error** until the UI has
 decided about it (`null` there means "deliberately not offered", which is `rag`), and
-`useChatOptions.test.ts` / `LLMChat.options.test.tsx` drive their cases off that list and pin the
-unknown-value behaviour explicitly.
+`useChatOptions.test.ts` / `LLMChat.options.test.tsx` / `useChatOptions.profileCheck.test.ts` drive
+their cases off that list and pin the unknown-value and probe behaviour explicitly.
 
 **Hazard, unresolved** (`genetics-results-suite-4h6.56`): `run_analysis` is the primary tool of the
 `code` profile and has no feature flag, so on any cluster **without a deployed sandbox** a user can
