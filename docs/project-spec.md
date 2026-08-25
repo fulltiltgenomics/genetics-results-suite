@@ -2407,7 +2407,13 @@ recorded. Three mechanisms, and it is worth knowing which one catches which dire
   `GET /chat/v1/tools/resolved?tool_profile=<v>`. Only `known_profile: true` changes anything: the
   value is kept, labelled from the raw key by `toolProfileLabel` (`LLMChat.tsx`), offered as an
   extra radio and sent on the next message. Nothing is persisted — the settings row already holds
-  it. The value must first pass `isPlausibleToolProfile` (non-empty, ≤ 32 chars,
+  it. The stored setting is not the only place such a name arrives from: `tool_profile` is
+  persisted **per message**, so reopening a conversation that ran under a server-only profile
+  narrowed it the same way, and that is the likelier path — `applyFromConversation` probes it too.
+  The answer stays in the layer it came from: a conversation's name is adopted into the control
+  only while that conversation is the one on screen, and never becomes the user's default for new
+  chats. One probe per name per page either way — a settled answer is re-applied from the store's
+  cache, so reopening the same conversation does not re-ask. The value must first pass `isPlausibleToolProfile` (non-empty, ≤ 32 chars,
   `^[a-z][a-z0-9_-]*$`, not the `all` sentinel) or it is never asked about and never rendered;
   corruption in a settings row is not drift.
 - **A profile this browser offers that the server no longer knows** is caught at runtime too, by
