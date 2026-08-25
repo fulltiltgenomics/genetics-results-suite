@@ -204,7 +204,12 @@ direction:
   `useChatOptions.ts`). This is what lets an already-stored `nocode` behave correctly
   without advertising it. The value must first look like a profile name at all —
   non-empty, ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel
-  (`isPlausibleToolProfile` in `chatOptionsApi.ts`) — or it never reaches the URL.
+  (`isPlausibleToolProfile` in `chatOptionsApi.ts`) — or it never reaches the URL. The stored
+  setting is not the only source: `tool_profile` is persisted per message, so **reopening a
+  conversation** that ran under a server-only profile narrowed it to `null` too, and
+  `applyFromConversation` probes that value as well. A conversation's name is adopted only while
+  that conversation is on screen and never becomes the user's default; a settled answer is cached,
+  so reopening the same conversation does not re-ask.
 - **browser → server, at runtime.** The same endpoint is called when a profile is selected
   and when one is restored at page load; an explicit `known_profile: false` puts an amber
   "not recognised by the server" beside the **Tools** control. **A failed or unanswerable
