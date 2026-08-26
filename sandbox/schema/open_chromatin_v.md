@@ -15,7 +15,7 @@ against peak_start/peak_end. Always filter by resource, not dataset.
 | `chr` | `INT64` | Chromosome number (GRCh38; X=23, Y=24, M=25) |
 | `peak_start` | `INT64` | Peak interval start (GRCh38) |
 | `peak_end` | `INT64` | Peak interval end (GRCh38) |
-| `peak_id` | `STRING` | Peak identifier as chr-start-end |
+| `peak_id` | `STRING` | Peak identifier as chr-start-end with a BARE numeric chromosome, e.g. 22-20750312-20751112 (X=23). Distinct id space from peak_to_gene_v.peak_id, which is chr-prefixed: the two DO NOT JOIN on peak_id. Relate the two tables by overlapping peak_start/peak_end instead. |
 | `dataset` | `STRING` | Source dataset identifier |
 | `cell_type` | `STRING` | Verbatim source cell-type/context label |
 | `tissue` | `STRING` | Harmonized tissue (e.g. brain, heart, immune) |

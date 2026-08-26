@@ -22,7 +22,7 @@ an order of magnitude.
 | `chr` | `INT64` | Chromosome number (GRCh38; X=23) |
 | `peak_start` | `INT64` | Peak interval start (GRCh38) |
 | `peak_end` | `INT64` | Peak interval end (GRCh38) |
-| `peak_id` | `STRING` | Peak identifier as chr-start-end; join to credible_sets_v.trait for caQTL rows |
+| `peak_id` | `STRING` | Peak identifier as chr-start-end, chr-PREFIXED verbatim from Open4Gene, e.g. chr5-35482826-35484273; join to credible_sets_v.trait for caQTL rows. Distinct id space from open_chromatin_v.peak_id, which is bare numeric (e.g. 22-20750312-20751112): the two DO NOT JOIN on peak_id. |
 | `gene_id` | `STRING` | Linked gene Ensembl ID (no version suffix) |
 | `symbol` | `STRING` | Linked gene symbol |
 | `cell_type` | `STRING` | Cell type the link was found in (e.g. l1.CD4_T); joins credible_sets_v.cell_type |

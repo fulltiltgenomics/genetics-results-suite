@@ -889,7 +889,11 @@ tables:
       chr: "Chromosome number (GRCh38; X=23, Y=24, M=25)"
       peak_start: "Peak interval start (GRCh38)"
       peak_end: "Peak interval end (GRCh38)"
-      peak_id: "Peak identifier as chr-start-end"
+      peak_id: >-
+        Peak identifier as chr-start-end with a BARE numeric chromosome,
+        e.g. 22-20750312-20751112 (X=23). Distinct id space from
+        peak_to_gene_v.peak_id, which is chr-prefixed: the two DO NOT JOIN on
+        peak_id. Relate the two tables by overlapping peak_start/peak_end instead.
       dataset: "Source dataset identifier"
       cell_type: "Verbatim source cell-type/context label"
       tissue: "Harmonized tissue (e.g. brain, heart, immune)"
@@ -1429,7 +1433,11 @@ tables:
       chr: "Chromosome number (GRCh38; X=23)"
       peak_start: "Peak interval start (GRCh38)"
       peak_end: "Peak interval end (GRCh38)"
-      peak_id: "Peak identifier as chr-start-end; join to credible_sets_v.trait for caQTL rows"
+      peak_id: >-
+        Peak identifier as chr-start-end, chr-PREFIXED verbatim from Open4Gene,
+        e.g. chr5-35482826-35484273; join to credible_sets_v.trait for caQTL rows.
+        Distinct id space from open_chromatin_v.peak_id, which is bare numeric
+        (e.g. 22-20750312-20751112): the two DO NOT JOIN on peak_id.
       gene_id: "Linked gene Ensembl ID (no version suffix)"
       symbol: "Linked gene symbol"
       cell_type: "Cell type the link was found in (e.g. l1.CD4_T); joins credible_sets_v.cell_type"

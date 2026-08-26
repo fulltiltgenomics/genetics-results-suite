@@ -1476,12 +1476,12 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a 
 Description as sent to the model:
 
 ```text
-Get one open-chromatin atlas peak by its peak id (chr-start-end), returning every cell_type/tissue/condition row recorded for it. Use this to follow up a peak id returned by get_open_chromatin_by_variant/_by_region or by a caQTL credible set, when you want that peak's full annotation rather than everything overlapping a position.
+Get one open-chromatin atlas peak by its peak id, returning every cell_type/tissue/condition row recorded for it. Use this to follow up a peak id returned by get_open_chromatin_by_variant/_by_region when you want that peak's full annotation rather than everything overlapping a position. Atlas peak ids are a SEPARATE id space from caQTL/Open4Gene peak ids (credible_sets trait, get_peak_to_genes): those will not be found here, so reach the atlas from a caQTL peak by region overlap (get_open_chromatin_by_region) instead.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `peak_id` | `string` | yes | — | — | Peak ID as chr-start-end (e.g. 'chr5-35482826-35484273') |
+| `peak_id` | `string` | yes | — | — | Atlas peak ID as chr-start-end with a bare numeric chromosome (e.g. '22-20750312-20751112'; X=23). This endpoint also tolerates a 'chr' prefix, but the open_chromatin_v BigQuery view does not — SQL must use the bare form. |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein', 'li_brain_atac', 'catlas', 'epimap', 'calderon_immune', 'rosmap_brain'. Omit to search all. |
 
 `required`: ['peak_id']
