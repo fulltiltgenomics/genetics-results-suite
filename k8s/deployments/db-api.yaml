@@ -4,10 +4,17 @@ metadata:
   name: db-api
   namespace: genetics
 spec:
-  # load-bearing for the sandbox aggregate byte budget, not just for cost: db-api keeps the
-  # per-execution BigQuery counter in process memory (api/main.py `_jti_bytes`), so N replicas
-  # give one execution N x SANDBOX_AGGREGATE_BYTES_BUDGET. Scaling up — or adding an HPA —
-  # requires moving that counter to shared state first. See docs/code-execution-security.md § 4.
+  # load-bearing for every per-execution limit db-api enforces, not just for cost. THREE
+  # pieces of state are in process memory, and all of them must move to shared state before
+  # this can be raised (or an HPA added) — moving any one alone still multiplies the others:
+  #   - the per-execution BigQuery byte counter (api/main.py `_jti_bytes`): N replicas give
+  #     one execution N x SANDBOX_AGGREGATE_BYTES_BUDGET;
+  #   - the per-execution request-count and concurrency map (api/sandbox_budget.py
+  #     `_executions`): likewise N x SANDBOX_MAX_REQUESTS_PER_EXECUTION and N x
+  #     SANDBOX_MAX_CONCURRENT_REQUESTS;
+  #   - the pod-wide in-flight counter (api/sandbox_budget.py `_in_flight_total`), which is
+  #     per-pod by construction, so N replicas admit N x SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL.
+  # See docs/code-execution-security.md § 4.
   replicas: 1
   selector:
     matchLabels:
@@ -52,6 +59,21 @@ spec:
         # otherwise be served by simply omitting the Authorization header.
         - name: SANDBOX_ENABLED
           value: "false"
+        # per-execution (`jti`) request-count and concurrency limits, all at their in-code
+        # defaults (api/sandbox_budget.py). Declared here so an operator can widen or tighten
+        # them without a rebuild, which is the only reason they are env vars — "env-configurable"
+        # is false in practice while the manifest names none of them. Each is a ceiling compared
+        # with >=, so db-api refuses to start on a value below 1, and on TOTAL below the
+        # per-execution bound. Raising the concurrency pair raises this pod's peak in-memory
+        # BigQuery result sets against its 512Mi limit; see docs/code-execution-security.md § 4.
+        - name: SANDBOX_MAX_REQUESTS_PER_EXECUTION
+          value: "1000"
+        - name: SANDBOX_MAX_CONCURRENT_REQUESTS
+          value: "4"
+        - name: SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL
+          value: "8"
+        - name: SANDBOX_MAX_TRACKED_EXECUTIONS
+          value: "4096"
         volumeMounts:
         - name: datasets-config
           mountPath: /app/configs/datasets.yaml

@@ -373,9 +373,8 @@ def sql(query: str, *, max_rows: int = 100000) -> pl.DataFrame:
     `max_rows`:
 
       rows  — db-api caps a sandbox execution at 25,000 returned rows regardless of
-              `max_rows`, and reports the cut, which becomes a GeneticsError. (The
-              error text names no number, so there is nothing in it to tell you which
-              ceiling you hit — assume 25,000.)
+              `max_rows`, and reports both the cut and the cap it applied, so the
+              GeneticsError names the ceiling you actually hit.
       bytes — 50 GB scanned per query and 200 GB across one execution; over either is a
               GeneticsError too, not a short result.
 
