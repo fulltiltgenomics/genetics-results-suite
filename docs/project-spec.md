@@ -990,9 +990,13 @@ cannot import one definition. Do not restate it here; the essentials only:
   fetches image artifacts of a completed run itself, streams them as `image` SSE chunks, and
   strips the base64 before the tool result reaches the model. Everything else is read by
   **name** with `read_artifact`, which chat-backend resolves server-side against the
-  executions it recorded for the requesting chat session; another session's name is a `404`
-  indistinguishable from one that never existed, and the map expires with the supervisor's
-  300-second retention. On the route itself the unguessable per-execution `execution_id` —
+  executions it recorded for the requesting **user and** chat session — the `(sub, sid)` pair,
+  because `session_id` arrives in the `/v1/chat` body and authorizes nothing on its own
+  (`genetics-results-suite-dh3`), and which rests in turn on `read_artifact` carrying
+  `run_analysis`'s gateway-asserted gate, without which `sub` would be as forgeable as `sid` to
+  any holder of `INTERNAL_API_SECRET`; another user's or another session's name is a `404`
+  indistinguishable from one that never existed, a call missing or malforming either half of the
+  key reads nothing, and the map expires with the supervisor's 300-second retention. On the route itself the unguessable per-execution `execution_id` —
   never rendered to the model — plus the ingress allow-list is the authorisation, and only
   **retained** (completed) executions are served. No model-supplied value ever becomes that
   `execution_id`.
