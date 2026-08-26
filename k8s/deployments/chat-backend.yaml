@@ -96,6 +96,14 @@ spec:
         # that creates the sandbox Deployment (4h6.50), never on its own.
         - name: SANDBOX_ENABLED
           value: "false"
+        # the sandbox supervisor's in-cluster Service (k8s/deployments/sandbox.yaml: Service
+        # `sandbox` in namespace `genetics`, port 8080). NOT optional and there is no client
+        # default any more: an unset SANDBOX_URL raises SandboxNotConfigured when the client
+        # is built (genetics-results-suite-6um), so this line is what the first
+        # SANDBOX_ENABLED="true" deploy depends on. Set even while the flag is false, so
+        # flipping the flag is the only change that deploy has to make.
+        - name: SANDBOX_URL
+          value: "http://sandbox.genetics.svc.cluster.local:8080"
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:

@@ -243,8 +243,8 @@ cat <<EOF
   tests    python3 scripts/test-supervisor.py --container ${BASE_URL} --container-name ${NAME}
   stop     scripts/run-sandbox-local.sh --stop
 
-  chat-backend's client needs SANDBOX_URL=${BASE_URL} (it defaults to
-  http://127.0.0.1:8080, which is the local db-api's port).
+  chat-backend's client needs SANDBOX_URL=${BASE_URL} (there is no default: it refuses to
+  build without one, genetics-results-suite-6um).
 
 WHAT THIS RUN DOES NOT REPRODUCE — every control whose ONLY enforcement is one of these is
 unexercised here and must be verified at deploy time:

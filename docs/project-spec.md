@@ -965,7 +965,10 @@ Security-relevant fields, and what each one is for:
 user-gated step that turns the feature on — chat-backend is not a verifier, but leaving it
 `"false"` withholds `run_analysis` from every tool list with no signal anywhere — and
 `scripts/test-network-policies.py` enforces the pairing across all three whenever a sandbox
-workload is discoverable.
+workload is discoverable. The flip is now the **only** change that deploy makes: chat-backend
+already ships `SANDBOX_URL=http://sandbox.genetics.svc.cluster.local:8080` in its manifest
+(`genetics-results-suite-6um` removed the client's default, so the address has to be there
+either way), and nothing else waits on the switch.
 
 ### The sandbox HTTP contract (summary — the definition lives elsewhere)
 
@@ -1668,8 +1671,11 @@ What is load-bearing about it:
   chat-backend subshell, so no secret reaches a worktree, a command line or a log. The
   frontend's `VITE_*` values are passed as environment variables — vite merges prefixed
   `process.env` over its `.env` files — so a worktree needs no `.env.local` either.
-- **`SANDBOX_URL` is set explicitly to `http://127.0.0.1:8081`.** The client's default is
-  `127.0.0.1:8080`, which locally is db-api, not the sandbox (`genetics-results-suite-6um`).
+- **`SANDBOX_URL` is set explicitly to `http://127.0.0.1:8081`**, what
+  `scripts/run-sandbox-local.sh` publishes. The client has **no default** — it raises
+  `SandboxNotConfigured` when the variable is unset (`genetics-results-suite-6um`), because
+  the default it used to carry was `127.0.0.1:8080`, which locally is db-api rather than the
+  sandbox. In the cluster the value comes from `k8s/deployments/chat-backend.yaml`.
 - **It provisions the sandbox's per-execution credentials** (`genetics-results-suite-4h6.49`):
   `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are generated once into
   `DEV_STACK_RUN_DIR` — stable across restarts, outside every repo, never in a working tree —
