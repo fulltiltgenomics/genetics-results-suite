@@ -1417,7 +1417,8 @@ actually consume** (`4h6.15`, `ToolExecutor.read_artifact` in
 `genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`). That function takes a
 **bare name** and nothing else: it rejects separators, backslashes, `.`/`..`, absolute
 paths, NUL and anything where `Path(name).name != name`, then resolves the name against the
-session's recorded manifests to get an `execution_id` and asks the sandbox for it over HTTP.
+manifests recorded for the requesting **user and** session (`(sub, sid)`) to get an
+`execution_id` and asks the sandbox for it over HTTP.
 Since `4h6.52` it performs **no local filesystem access at all** — the descriptor checks
 (`O_NOFOLLOW` on the artifacts directory, the file opened *relative to that descriptor* with
 `O_NOFOLLOW|O_NONBLOCK`, `S_ISREG`, `st_nlink == 1`) run inside the sandbox in
@@ -1475,14 +1476,16 @@ event. It is noted here only so nobody adds that assertion later and gets a flak
 
 `/scratch/<execution-id>/artifacts` is retained 5 minutes after completion and everything
 else under the directory goes immediately (section 6). The manifest is what chat-backend
-records against the `jti` and `sid` so that `read_artifact` resolves a name server-side.
+records against the `jti` under the requesting `(sub, sid)` pair, so that `read_artifact`
+resolves a name server-side for that user's session and nobody else's.
 
 #### `GET /artifact` — one file back out
 
 The third route, added by `genetics-results-suite-8z1` for the automatic image fetch and made
 the **only** artifact read path by `4h6.52`, which moved `read_artifact` onto it. Two callers
 now: `_fetch_analysis_images`, which resolves the `execution_id` from the run it just
-performed, and `read_artifact`, which resolves it from the session's recorded manifests. The
+performed, and `read_artifact`, which resolves it from the manifests recorded for the
+requesting user's session (`(sub, sid)`). The
 model supplies a **name** to the second and nothing at all to the first; no model-supplied
 value reaches this route's `execution_id`.
 
@@ -5488,8 +5491,8 @@ property that 6.1 and 6.4 assert. The rule:
 - Retention does not survive a pod restart, and the supervisor wipes unrecognised
   `/scratch` entries at startup (section 2, Writable paths).
 - So "nothing persists" is now precise: **nothing persists beyond 5 minutes, and nothing
-  is ever readable by a different chat session** (next point). Sections 6.1 and 6.4 are
-  worded against that.
+  is ever readable by a different user or a different chat session** (next point). Sections
+  6.1 and 6.4 are worded against that.
 
 **Authorization — the execution id is not a secret.** 6.2 asserts artifacts are retrievable
 "by the same authenticated session that submitted the script" and an earlier draft gave no
@@ -5501,10 +5504,42 @@ of the id must therefore confer nothing. The mechanism:
 - `read_artifact` takes an artifact **name** (e.g. `"manhattan.png"`), never a path and
   never an execution id supplied by the model or the operator.
 - chat-backend resolves that name **server-side**, against the set of executions it recorded
-  as belonging to the **requesting chat session** — the `sid` it minted the token with, taken
-  from the authenticated request, not from any tool argument.
-- An artifact belonging to another session is `404`, indistinguishable from a name that does
-  not exist.
+  as belonging to the **requesting user AND chat session** — the `(sub, sid)` pair it minted
+  the token with, not any tool argument.
+- **The user term is the authorization; the session term alone is not**
+  (`genetics-results-suite-dh3`). An earlier version of this bullet said the `sid` was "taken
+  from the authenticated request", and that was false: `session_id` arrives in the `/v1/chat`
+  request **body**, no code checks it against the caller or against the sessions table, and it
+  becomes the token's `sid` verbatim. Keying the manifest on it alone therefore meant user B
+  could put user A's session id in B's own request and have B's model `read_artifact` A's
+  bytes. `sub` is the half that is not the caller's to choose — **but only because both tools
+  that touch the manifest require the auth-gateway provenance assertion**. That is a real
+  qualification, not a hedge: `get_authenticated_user` honours the proxy identity header from
+  *any* caller presenting `INTERNAL_API_SECRET` (mcp-server and results-api hold it by design,
+  and the NetworkPolicy admits mcp-server to chat-backend:8000), so to a marker holder `sub` is
+  exactly as forgeable as `sid`. `run_analysis` has required `gateway_asserted` since
+  `4h6.84`; `read_artifact` did **not** when the `(sub, sid)` key first shipped, so the write
+  path was gated by provenance and the read path was not, and a marker holder could name the
+  victim as `user` and read the victim's artifacts — measured, and fixed under the same bead by
+  giving `read_artifact` the identical gate. With the gate on both, the manifest key carries two
+  terms the caller cannot supply, and a stolen or guessed `sid` resolves to nothing for anyone
+  but its owner. It was never exploitable in production
+  (`SANDBOX_ENABLED` was `false` everywhere, so no artifact was ever recorded), which is why it
+  was fixed before the flag was flipped rather than after.
+- **Both halves fail closed, and totally.** A `read_artifact` call missing `user` or
+  `session_id` — or carrying a non-string one — reads nothing rather than falling back to the
+  half it has, and a `record` missing or malforming either stores nothing. Half a key is not a
+  weaker authorization, it is none; and a non-string identity is unhashable, so without the type
+  check it would raise out of the tuple lookup and answer in a shape distinct from
+  `ArtifactNotFound`. Nothing produces one today (`get_authenticated_user` returns `str | None`)
+  — the guard is written to hold regardless. This is the shape the MCP
+  registration wrapper (which holds neither) and any future internal-only caller meet.
+- An artifact belonging to another user or another session is `404`, indistinguishable from a
+  name that does not exist.
+- **The supervisor is deliberately not part of this check.** `GET /artifact` authorizes the
+  execution id and the digest map, not the session or the subject: chat-backend is the only
+  side that knows which session owns which execution, so the whole ownership question is
+  asked there and nowhere else.
 
 **`run_analysis`'s response contract, because the resolution above depends on it.**
 chat-backend can only resolve a name against "executions it recorded" if the execution told
@@ -5512,8 +5547,8 @@ it what it produced. So `run_analysis`'s response is specified here rather than 
 the task that implements the tool (`4h6.48`), and it is **not** implemented anywhere today:
 alongside the 64 KiB stdout/stderr and the exit status it returns an **artifact
 manifest** — for each file under `/scratch/<id>/artifacts`, its `name`, `size` in bytes, and
-`content_type`. chat-backend records that manifest against the execution's `jti` and `sid`
-and serves `read_artifact` from it; the model sees the manifest and so knows what names are
+`content_type`. chat-backend records that manifest against the execution's `jti` under the
+`(sub, sid)` key and serves `read_artifact` from it; the model sees the manifest and so knows what names are
 retrievable without guessing. The manifest carries **no paths and no execution id** — the
 same reason `read_artifact` takes a name.
 
@@ -5541,10 +5576,10 @@ exactly this many". Nothing here is a budget violation — the
 retained tree ends up under the quota either way — so it is a behaviour to describe, not a bug
 to fix.
 
-**Name collisions across executions in one `sid`: most recent wins.** Two executions in the
-same session can both write `manhattan.png`, and the resolution rule above ("executions
-belonging to this `sid`") is ambiguous without a tiebreak. The rule: `read_artifact`
-resolves a name to the artifact from the **most recently completed execution in that `sid`
+**Name collisions across executions in one `(sub, sid)`: most recent wins.** Two executions in
+the same session can both write `manhattan.png`, and the resolution rule above ("executions
+belonging to this `(sub, sid)`") is ambiguous without a tiebreak. The rule: `read_artifact`
+resolves a name to the artifact from the **most recently completed execution under that key
 that produced it and is still within its 5-minute retention window**. Rationale — the model
 asks for an artifact it has just been told about, and the freshest is what it means; a
 stale-first rule would silently return a previous turn's plot for the same name, which is a
@@ -5570,7 +5605,7 @@ hands the model a read primitive over **every conversation in the deployment**. 
   `ENABLE_SCRIPT_EXECUTION` stays `false` (section 1), which is what makes that variable
   inert today; `read_artifact` must not be the thing that makes it live again.
 
-### As built (`4h6.15`, `4h6.52`) — the read proxies over HTTP, the checks run in the sandbox, and the name is resolved against the `sid`
+### As built (`4h6.15`, `4h6.52`, `dh3`) — the read proxies over HTTP, the checks run in the sandbox, and the name is resolved against the `(sub, sid)` pair
 
 Everything specified above this subsection is now implemented. `4h6.15` built the tool with a
 descriptor-based read of chat-backend's **own** filesystem, a deliberate deviation recorded
@@ -5664,7 +5699,7 @@ db-api's per-execution byte counter and results-api's sandbox budget already run
 (`k8s/deployments/chat-backend.yaml` carries the comment).
 
 **The two readers are one reader.** `_fetch_analysis_images` (automatic, image-only, at most
-four) and `read_artifact` (by name, session-scoped) both go through
+four) and `read_artifact` (by name, scoped to the requesting `(sub, sid)`) both go through
 `SandboxClient.get_artifact`. Before `4h6.52` they disagreed: 4 MiB against 512 KiB, and text
 truncation on the local path only. Two user-visible decisions were taken rather than inherited:
 
@@ -5773,8 +5808,9 @@ The controls, all of which work regardless of what the model was persuaded to wr
    volume is ever re-added as the recorded degradation section 2 describes, the supervisor
    wipes it completely before every fork. There is nothing to wipe in the shipping design;
    the wipe is the obligation attached to the degradation, not a standing control. And
-   `/scratch/<id>/artifacts` survives completion only for 5 minutes and only for the
-   originating chat session (see the `read_artifact` subsection). `GET /artifact` does not
+   `/scratch/<id>/artifacts` survives completion only for 5 minutes and, through
+   `read_artifact`, only for the **user** whose gateway-asserted session originated it — the
+   `(sub, sid)` manifest key, not the session id alone (see the `read_artifact` subsection). `GET /artifact` does not
    widen this: it is addressable only with the `execution_id` chat-backend minted, that id
    is never shown to the model or to a script, and only chat-backend's automatic image fetch
    for the run it just performed ever calls it — an injected script cannot ask for another
@@ -5918,7 +5954,7 @@ closed and **did** ship the SDK — nothing else. Where it was cited as the owne
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
 | `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
-| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
+| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting **user and** chat session — the `(sub, sid)` pair, since `sid` arrives in the request body and authorizes nothing on its own (`genetics-results-suite-dh3`) — and `404` otherwise. The tool carries `run_analysis`'s gateway-asserted gate (`4h6.84`), without which `sub` would be as forgeable as `sid` to any holder of `INTERNAL_API_SECRET`. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti` under the requesting `(sub, sid)` pair; **name collisions within one `(sub, sid)` key resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the tests must enumerate the live tool list rather than the constant. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. Two things the row previously got wrong, both corrected in section 5: `run_analysis`'s exclusion landed with **`4h6.48`**, not `4h6.16`; and the registration layer has **two** controls, since `run_analysis` has no `@mcp.tool()` block at all and `disabled_tools` can only subtract. The asked-for "no HTTP route reaches the sandbox client" assertion ships as an **import-graph** assertion on `genetics_mcp_server.mcp_server` — equivalent while `chat_api` is a separate app that is never mounted, and it must be rewritten as route enumeration if that ever changes. |
 
 **One finding outside this document's scope that other tasks need.** Five executor methods
