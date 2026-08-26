@@ -165,9 +165,12 @@ in both the `api` and `bigquery` profiles. The same `disabled` set is reused in 
 
 ## 3. Tool profiles
 
-There are **two** profile mechanisms. `TOOL_PROFILES` (`definitions.py:1713-1717`) names
-whole *categories*; `TOOL_PROFILE_TOOLS` (`definitions.py:1735-1745`) names individual
-*tools* and takes precedence over it. Verbatim:
+There are **two** profile mechanisms, both in genetics-mcp-server's `tools/definitions.py`. `TOOL_PROFILES` names
+whole *categories*; `TOOL_PROFILE_TOOLS` names individual *tools* and takes precedence over
+it. Both live in the **genetics-mcp-server** repo; locate them from that repo's root with
+`grep -n '^TOOL_PROFILE' src/genetics_mcp_server/tools/definitions.py` rather than by line
+number — the numbers quoted here have now drifted twice, since both dicts sit under a long
+comment block that grows every time the reasoning is revised. Verbatim:
 
 ```python
 TOOL_PROFILES: dict[str, set[str]] = {
