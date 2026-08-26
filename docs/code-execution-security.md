@@ -909,13 +909,45 @@ the generated stubs say so in their own header.
 **Neither tree names the BigQuery dataset any more (`bee`).** The worked example SQL and
 the `sql()` docstring used to be written `FROM genetics_results.<view>`, so both shipped
 directories carried the production dataset name into the image. They now name views bare
-(`FROM <view>`) because db-api rewrites a bare name in a table position to its own
-`DATASET_ID` before `authorize_query` sees it. The security consequence is small but real
-and runs one way only: the image no longer discloses which dataset backs the views, while
-the allow-list check is unchanged — it still compares fully-qualified ids, after the
-rewrite, so a script that qualifies a table itself is still refused. View *names* remain
-disclosed, as they always were, and are separately obtainable through
-`get_database_schema`.
+(`FROM <view>`) because a bare name in a table position resolves against db-api's own
+`DATASET_ID`. **The mechanism changed under this paragraph and the earlier description of
+it is wrong:** db-api no longer rewrites anything. `4h6.53` deleted `_qualify_tables` and
+its helpers and set `default_dataset` on *both* job configs instead — the dry run's and the
+execution's, deliberately identical, so the statement the dry run parses is the one that
+runs — and BigQuery does the resolution itself. The conclusion is unaffected by the swap:
+BigQuery reports `referencedTables` fully qualified whichever way the name was written, so
+`authorize_query` compares fully-qualified ids either way and a script that qualifies a
+table itself is held to exactly the same allow-list: qualified *correctly* it is served,
+and only a name carrying the wrong project or dataset is refused. The reason not to write
+examples that way is therefore not that they would be rejected — it is that
+self-qualification **pins** the example to one project and dataset, so it breaks the moment
+either changes, while a bare name follows whatever `default_dataset` the deployment sets. View *names* remain disclosed, as they always were, and are
+separately obtainable through `get_database_schema`.
+
+**What this does *not* buy is secrecy of the dataset name, and an earlier version of this
+paragraph claimed it did.** Keeping the name out of the image is worth doing — an image
+layer is copied, scanned and shipped, and a name that is not in it cannot leak from it —
+but it does not make the name unobtainable to a running script, and the doc must not be
+read as saying so. `authorize_query`'s `NotFound`/`BadRequest` branch returns BigQuery's
+`e.message` verbatim in a 400, so one query naming a table that does not exist answers with
+`Not found: Table <project>:<dataset>.foo was not found` — `PROJECT_ID` and `DATASET_ID`, to
+any caller, in one round trip. The allow-list 403 discloses the same class of information
+independently, by echoing the resolved fully-qualified `disallowed` ids back.
+
+**This is accepted, not deferred, and db-api's 400/403 text is deliberately left alone.**
+The sandboxed script already reads those views through the SDK and the allow-list bounds
+its reach regardless of what it knows, so the dataset name buys an attacker nothing it did
+not already have; and that 400 is the actionable error a human writing SQL against `/query`
+depends on, which is a live requirement of `3za`, not an oversight. Note what muting the
+text would *not* achieve, because that argument has been made here before and is false:
+**the status code alone is an existence oracle.** A table that does not exist is a 400; one
+that exists but is not allow-listed is a 403; one that exists but the service account
+cannot read is also a 403. So "does this table exist" is answerable whatever any message
+says, and no amount of message-muting closes it. The service account holds *project-level*
+`bigquery.dataViewer`, so within the project nearly every not-allow-listed table lands in
+the second case rather than the third. If the oracle itself is ever judged to matter, that
+is a change to db-api's status codes with a compatibility story for `/query`'s human
+callers, and it needs its own bead.
 
 Both trees are *generated, never transcribed*. The schema markdown is rendered from this
 repo's canonical `configs/datasets.yaml` — one file per entry under `tables:`, carrying its
@@ -3737,6 +3769,65 @@ bytes", and section 6.2 control #1 and section 6.4 control #2 must both be rewri
 because with DNS allowed there *is* a sink and the classic payload *does* have somewhere to
 go. Reverting is a decision about accepting bulk exfiltration, not a convenience tweak.
 
+### Egress that does not originate in the pod: BigQuery remote functions (`4h6.35`)
+
+Everything above reasons about traffic leaving the sandbox pod, and so does the
+NetworkPolicy. A **BigQuery remote function** is neither. It is a UDF backed by a Cloud
+Run or Cloud Functions endpoint: BigQuery itself calls that endpoint with the row values
+while executing the query, from Google's infrastructure, on a connection the sandbox never
+opens. Invoked inside an otherwise-legitimate `SELECT` it passes **both** gates db-api
+applies — the statement really is a `SELECT`, and **routines do not appear in
+`referencedTables`**, which is the only thing the allow-list is compared against. Creating
+one is DDL and is therefore blocked by the same `statement_type` gate, so this only ever
+mattered if a remote function *already existed* in the project.
+
+**Closed by observation for `phewas-development`, and for that project only.** Measured
+2026-08-26 with an owner-level human account: the project has four datasets
+(`genetics_api_logs`, `genetics_chat_logs`, `genetics_dev`, `genetics_results`, all
+`europe-west1`), and `bq ls --routines` returns an empty list for every one of them. The
+stronger half of the result is the connection: `bq ls --connection` fails with *"BigQuery
+Connection API has not been used in project phewas-development before or it is disabled"*,
+and `gcloud services list --enabled` shows only `bigquery.googleapis.com` and
+`bigquerystorage.googleapis.com` — `bigqueryconnection.googleapis.com` is absent. A remote
+function requires a connection and a connection cannot be created while that API is
+disabled, so this is not "none exist today" but **none can exist** until someone enables an
+API, which is an auditable act.
+
+**Why the empty result is evidence and not merely an absence of it.** `bq ls` **at project
+scope** fails *silently* — empty output, exit 0 — when the caller cannot see the project,
+which is byte-identical to a genuinely empty list; a bare empty project-scope listing must
+never be written down as a finding. A **dataset-scoped** `bq ls --routines` does not behave
+that way: where it is not permitted it denies loudly with exit 1 and
+`bigquery.routines.list denied`. Because the denial mode is distinguishable from the empty
+mode, the four exit-0 empties above are real empty sets. Anyone re-checking this should use
+the dataset-scoped form for the same reason.
+
+**Not established for `daly-finngenie`, and the terraform argument does not close the gap.**
+Every probe against that project from this machine was an IAM denial — `projects describe`,
+`bq ls --routines`, `bq ls --connection`, `services list` — so whether its Connection API is
+enabled is simply unknown; note the connection probe there denied on IAM rather than
+returning the "API not enabled" message, so the two projects' results are not comparable.
+It is tempting to argue from `terraform/`: no `.tf` file mentions a connection or a routine,
+and the suite workload GSA holds only `bigquery.dataViewer` + `bigquery.jobUser` (plus
+`artifactregistry.reader`, storage and logging), neither of which can create a routine or
+use a connection. That argument is sound but answers a different question — it shows the
+**suite's own service account** cannot create one, not that no other principal in that
+project has. This repo's own terraform holds a concrete instance of exactly that gap:
+`terraform/logging.tf` grants `roles/bigquery.dataEditor` to each log sink's
+`writer_identity` (the `endpoint_access` and `chat_backend` sinks), and `dataEditor`
+carries `bigquery.routines.create`. Those grants are dataset-scoped to the two log datasets
+rather than to `genetics_results`, so they do not reach the data the sandbox reads — but
+they are non-suite principals that hold routine-create in the project, which is the whole
+point: the terraform argument bounds one service account, not the project. Do not promote
+it into a suite-wide claim. A suite-wide claim requires someone
+with `daly-finngenie` access to run the same four commands there. The `daly-staging` profile
+names no project id in this repo at all (tfvars are gitignored by design), so there is
+nothing to check here for it.
+
+**If a routine ever does exist**, the follow-on question is whether the dry run even exposes
+referenced routines in its metadata — check that it is detectable before designing an
+allow-list around it.
+
 ---
 
 ## 4. Credentials
@@ -4876,12 +4967,13 @@ review. Follow the existing pattern including the explanatory comment: the curre
 distinguishes technical limits ("uses Perplexity API") from product decisions; this one is
 a security control and should say so.
 
-**Half of this has landed.** `4h6.15` added `read_artifact` to the literal set in the same
+**Both halves have landed.** `4h6.15` added `read_artifact` to the literal set in the same
 change that defined the tool. That was not eagerness about a `4h6.16` deliverable: a tool is
 registered on `/mcp` from the moment its definition exists unless it is excluded, so
 deferring the exclusion would have shipped a window in which the tool was live over MCP.
-`run_analysis` joins it with `4h6.16`. The `code` `TOOL_PROFILE` and the route-level
-assertion below remain `4h6.16`'s.
+`run_analysis` joined it with **`4h6.48`**, the task that defined the tool — earlier
+versions of this sentence and of the handoff row said `4h6.16`, which is wrong. The `code`
+`TOOL_PROFILE` and the route-level assertion below remain `4h6.16`'s.
 
 **`list_capabilities` is deliberately *not* excluded, and the reason is not that it
 discloses nothing.** Keeping it out of the set is still the right call — an exclusion set
@@ -4921,9 +5013,48 @@ control. The opposite is true. In
 treats `tool_profile=None` as **no filtering — every tool**, and `mcp_server.py` calls
 `register_mcp_tools(mcp, executor, disabled_tools=_mcp_disabled)` with no profile argument
 at all. So "the MCP server does not select the `code` profile" is *precisely the condition
-under which `run_analysis` would be registered*. Membership of `_mcp_disabled` is the
-**sole** registration-layer control, not one of two — which is why layers 2 and 3 are not
-optional.
+under which `run_analysis` would be registered* — were `_mcp_disabled` the only thing
+standing in the way.
+
+**There are two registration-layer controls, not one, and this section used to claim
+otherwise.** The correction runs in the safe direction, which is why it is worth making:
+the argument below assumes layer 1 is defeatable and asks layers 2 and 3 to hold without
+it, and that assumption is *weaker than the position actually held*.
+
+1. **Membership of `_mcp_disabled`** — the named, greppable control, assembled at runtime
+   from an env-driven half and a hardcoded half, and therefore the changeable one.
+2. **`run_analysis` has no `@mcp.tool()` block at all.** `register_mcp_tools` in
+   `tools/definitions.py` is a hand-written sequence of `@mcp.tool()` blocks wrapping
+   decorated closures, the large majority of them **unconditional** — only a small minority
+   sit behind an `if "<name>" not in _disabled:` guard at all — and it never iterates
+   `TOOL_DEFINITIONS`. A tool is on `/mcp` because someone wrote its block, not because a
+   definition exists. `read_artifact`
+   has a block and is excluded by name; `run_analysis` has none, and `disabled_tools` can
+   only **subtract**. So no value of `MCP_DISABLED_TOOLS`, no profile, no category and no
+   empty disabled set registers it — the tool cannot be turned on by configuration, only by
+   someone writing a new block. The omission also matches what the tool needs: its handler
+   is handed the authenticated user and the chat session id by its caller, and an MCP
+   session has neither, so a registered wrapper could only ever pass identity it does not
+   hold.
+
+Keep the `_mcp_disabled` entry regardless. It costs nothing, it is what an operator greps
+for, and it is what catches a `@mcp.tool()` block added later by someone who did not read
+the comment sitting where the block would go.
+
+**An adversarial review could not find a configuration that puts `run_analysis` on `/mcp`** —
+not by env var, not by an empty disabled set, not by category, profile or any dynamic
+registration path. That is the strongest single piece of evidence the boundary holds, and it
+is a property of control 2 rather than of control 1. The only route back on is a hand-added
+`@mcp.tool()` block, which control 1 and the layer-3 tests would both catch.
+
+**One residual, stated rather than fixed: `mcp_proxy.register_proxy_tools` registers
+*external* MCP servers' tools consulting only `EXTERNAL_MCP_EXCLUDE_TOOLS`, never
+`_mcp_disabled`.** An external server can therefore put a tool literally named
+`run_analysis` on `/mcp`. It is **not** a code-execution bypass — the call proxies to that
+external server and cannot reach our sandbox — but it defeats enumeration by name, so a
+reviewer who greps the live tool list for `run_analysis` can get a hit that means something
+else entirely. Pre-existing and deliberately left alone; the fix, if wanted, is to union
+`_mcp_disabled` into `exclude_tools`, and that is a separate decision.
 
 Two further hazards for `4h6.16`:
 
@@ -5070,22 +5201,41 @@ gateway secret unprovisioned and requires refusal. Negative control, run: revert
 `is_gateway_caller` to the header-name comparison fails three of them — both bypass probes
 and the control.
 
-### Layer 3 — a test (`4h6.16`)
+### Layer 3 — tests (`4h6.16`)
 
 `tests/test_mcp_server.py` asserts that `run_analysis` and `read_artifact` are absent from
 the **actual `/mcp` tool list** — enumerated from the live `FastMCP` instance, not by
 inspecting the `_mcp_disabled` constant. Asserting on the constant tests that someone typed
 the name; asserting on the tool list tests that the registration path honoured it, which is
-the property that matters. The test must also fail if the tools appear via
-`register_proxy_tools` from an external MCP server.
+the property that matters. That enumeration covers the tools this server registers itself
+and **deliberately does not extend to `register_proxy_tools`**: a tool an external MCP
+server contributes under the name `run_analysis` routes to that external server and cannot
+reach our sandbox client, so it defeats enumeration by name without being a code-execution
+bypass. It is recorded as an accepted residual under layer 1 above rather than asserted
+against here, and no test covers the proxy path.
 
-The same test module must additionally assert that **mcp-server's HTTP application exposes
-no route that reaches the sandbox client**. The MCP tool list is not the only surface:
-`chat_api.py` and `routers/` ship inside the same image and are mounted on the same app, so
-a sandbox client imported for one entry point is reachable from all of them. Enumerate the
-app's routes and assert that none of them dispatches to the sandbox client — by import
-graph if a route-level assertion is impractical. A tool excluded from `/mcp` but reachable
-at `POST /chat` is the same failure with a different URL.
+Two further assertions landed alongside the second registration-layer control described in
+layer 1: that registering with the **empty** disabled set still does not produce
+`run_analysis` (the property configuration cannot undo), and, belt and braces, that the name
+is present in `_mcp_disabled` (the property an operator greps for and the one that catches a
+`@mcp.tool()` block added later).
+
+**The route assertion is satisfied by an import-graph assertion, and that is a deliberate
+substitution rather than a skipped deliverable.** What `4h6.16` asked for was an enumeration
+of the app's routes showing that none dispatches to the sandbox client — the MCP tool list is
+not the only surface, and a tool excluded from `/mcp` but reachable at `POST /chat` is the
+same failure with a different URL. What ships is
+`test_the_mcp_app_has_no_route_that_reaches_the_sandbox`, which imports
+`genetics_mcp_server.mcp_server` in a subprocess and asserts
+`genetics_mcp_server.sandbox_client` is **not** in `sys.modules` afterwards. This is the
+stronger form for the shape the code actually has: `mcp_server` builds the FastMCP app
+alone, `chat_api.py` is a separate ASGI app that is never mounted onto it, and
+`k8s/deployments/mcp-server.yaml` runs `python -m genetics_mcp_server.mcp_server` — so
+"enumerate this app's routes" would enumerate an app that has no route to the sandbox
+because it has no sandbox import to route to. Asserting the import graph fails earlier and
+catches the transitive case a route enumeration would miss. If mcp-server ever mounts
+`chat_api` or `routers/` onto the same app, this substitution stops being equivalent and the
+route-level enumeration has to be written.
 
 ### Why layer 1 alone is insufficient
 
@@ -5769,7 +5919,7 @@ closed and **did** ship the SDK — nothing else. Where it was cited as the owne
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
 | `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
 | `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting chat session (`sid`), `404` otherwise. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti`/`sid`; **name collisions within a `sid` resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
-| `4h6.16` (MCP exclusion) | Three independent layers, and the test must enumerate the live tool list rather than the constant — plus assert that no HTTP route on mcp-server's app (`chat_api.py`, `routers/`) reaches the sandbox client. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. |
+| `4h6.16` (MCP exclusion) | Three independent layers, and the tests must enumerate the live tool list rather than the constant. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. Two things the row previously got wrong, both corrected in section 5: `run_analysis`'s exclusion landed with **`4h6.48`**, not `4h6.16`; and the registration layer has **two** controls, since `run_analysis` has no `@mcp.tool()` block at all and `disabled_tools` can only subtract. The asked-for "no HTTP route reaches the sandbox client" assertion ships as an **import-graph** assertion on `genetics_mcp_server.mcp_server` — equivalent while `chat_api` is a separate app that is never mounted, and it must be rewritten as route enumeration if that ever changes. |
 
 **One finding outside this document's scope that other tasks need.** Five executor methods
 build BigQuery SQL by interpolation, because db-api's `/query` takes a SQL string with no

@@ -50,6 +50,8 @@ repairs it anyway rather than trusting that.
 | `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh`, `scripts/lib/**` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
+| `scripts/run-sandbox-local.sh` | `docs/project-spec.md`, `README.md` | how the sandbox image is built and staged locally, what the local supervisor run does and does not reproduce |
+| `scripts/dev-stack.sh` | `docs/local-dev-vm.md`, `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
 | `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
 | `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
