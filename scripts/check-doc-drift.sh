@@ -61,8 +61,29 @@ check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 
+# named literally rather than folded into the glob above: broadening `build*.sh` to reach
+# these would also catch unrelated scripts, and a rule that fires where it cannot apply is
+# how this check becomes wallpaper (see the note on the 4th argument above).
+check '^scripts/run-sandbox-local\.sh$' "$DOCS_SPEC" \
+    'scripts/run-sandbox-local.sh -> docs/project-spec.md + README.md (local sandbox image build, SDK staging, what the plain-Docker run does not reproduce)'
+
+# dev-stack.sh is a credential-provisioning script, not only a launcher: it generates and
+# persists SANDBOX_TOKEN_SIGNING_KEY and INTERNAL_API_SECRET into DEV_STACK_RUN_DIR, and
+# with those set db-api stops failing open — which is what both named docs describe.
+check '^scripts/dev-stack\.sh$' '^docs/(local-dev-vm|code-execution-security)\.md$' \
+    'scripts/dev-stack.sh -> docs/local-dev-vm.md (run dir, generated secrets, what the stack starts) or docs/code-execution-security.md (locally minted sandbox tokens, what an unauthenticated local caller can reach)'
+
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
+
+# NOT EXPRESSIBLE HERE, recorded so the next reader does not look for it: the genetics SDK
+# source that sandbox/stubs/*.pyi is generated FROM lives in a different repository
+# (genetics-mcp-server/src/genetics_mcp_server/sdk/). This script reads `git diff --cached`
+# of THIS repo, so an SDK docstring edit that leaves the staged stubs stale never appears in
+# `staged` and no rule here can fire on it — genetics-results-suite-4h6.32 hit exactly that.
+# What does catch it is `gen-sandbox-docs.py --check`, which build.sh, build-all.sh and
+# run-sandbox-local.sh already run against a staged SDK copy; the gap is that nothing runs it
+# at commit time. Closing it needs a cross-repo mechanism, which is a separate decision.
 
 # the CLAUDE.md sandbox row owns two docs, and satisfying one does not satisfy the
 # other — so they are two checks, not one alternation

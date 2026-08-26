@@ -79,18 +79,21 @@ tables:
 
 ### Field details for `tables.<table>.examples`
 
-`sql:` must name every view by its **bare** name — `FROM credible_sets_v`, never
-`FROM genetics_results.credible_sets_v` and never `` FROM `credible_sets_v` ``
-(`genetics-results-suite-bee`). These examples are copied verbatim into
-`sandbox/schema/<view>.md` and are what a sandboxed agent imitates, so the convention here
-becomes the convention in generated queries. db-api's `_qualify_tables` rewrites a bare
-name in a table position to `` `{PROJECT_ID}.{DATASET_ID}.{view}` `` before its allow-list
-check, which is what lets one binary serve `genetics_dev` and `genetics_results` with no
-change to the SQL. Two ways to get this wrong, both silent here and loud at query time:
-qualifying the name yourself pins the example to one dataset, and **backticking it without
-qualifying it** defeats the rewrite entirely — the regex is `\b(FROM|JOIN)\s+<name>\b` and
-does not match a backtick after the whitespace, so the name reaches BigQuery unqualified
-and fails to resolve.
+`sql:` must name every view by its **bare**, unbackticked name — `FROM credible_sets_v`,
+never `FROM genetics_results.credible_sets_v` (`genetics-results-suite-bee`). These examples
+are copied verbatim into `sandbox/schema/<view>.md` and are what a sandboxed agent imitates,
+so the convention here becomes the convention in generated queries. db-api sets
+`default_dataset` on the job configs it submits, so **BigQuery** resolves a bare name against
+whichever dataset that binary serves, which is what lets one binary serve `genetics_dev` and
+`genetics_results` with no change to the SQL. `genetics-results-suite-4h6.53` replaced an
+earlier `_qualify_tables` regex rewrite in db-api with this; **the failure mode that
+description carried no longer exists** — backticking a bare name used to defeat the rewrite
+and reach BigQuery unqualified, whereas BigQuery resolves `` `credible_sets_v` `` against the
+default dataset like any other identifier. Backticks stay out of the examples for
+consistency, not for correctness. The one way still to get this wrong is silent here and
+loud later: **qualifying the name yourself pins the example to one dataset**, and the
+allow-list compares fully-qualified ids, so an example carrying the wrong project or dataset
+is refused rather than quietly reading the wrong table.
 
 ### Field details for `tables.<table>.column_types`
 
