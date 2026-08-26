@@ -71,10 +71,12 @@ What the script is doing on your behalf, and why each piece matters:
   echoed. The frontend's three `VITE_*` values are passed as environment variables instead
   of a file, because vite merges prefixed `process.env` over whatever `.env` files it
   loaded; a worktree therefore needs no `.env.local` of its own.
-- **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly.** The client's own default is
-  `127.0.0.1:8080`, which on this machine is **db-api** — chat-backend would post code
-  executions at the BigQuery proxy (`genetics-results-suite-6um`). 8081 is what
-  `scripts/run-sandbox-local.sh` publishes.
+- **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly**, which is what
+  `scripts/run-sandbox-local.sh` publishes. The client has **no default**: building a
+  `SandboxClient` with `SANDBOX_URL` unset raises `SandboxNotConfigured`
+  (`genetics-results-suite-6um`). It used to default to `127.0.0.1:8080`, which on this
+  machine is **db-api**, so chat-backend posted code executions at the BigQuery proxy and
+  got answers that classified as confusing sandbox errors.
 - **`status` reads `DATASET_ID` out of `/proc/<pid>/environ`**, because `/health` does not
   report it and an **unset** `DATASET_ID` silently means production (`api/main.py` defaults
   it to `genetics_results`). That default is the failure the dev dataset exists to remove,
@@ -358,8 +360,9 @@ export BIGQUERY_API_URL=http://localhost:8080
 export DEFAULT_MODEL=claude-opus-5
 export EXTERNAL_MCP_SERVERS=https://mcp.platform.opentargets.org
 export REQUIRE_AUTH=false                     # no oauth2-proxy locally
-# the client's default is 127.0.0.1:8080, which is db-api here — always set this
-# explicitly if you run the sandbox (scripts/run-sandbox-local.sh publishes 8081):
+# no default: SandboxClient refuses to guess an address and raises SandboxNotConfigured
+# if this is unset (the old default was 127.0.0.1:8080, which is db-api here).
+# scripts/run-sandbox-local.sh publishes 8081:
 export SANDBOX_URL=http://127.0.0.1:8081
 # defaults point at /mnt/disks/data, which a fresh VM does not have:
 export CHAT_HISTORY_DB=$HOME/data/chat_history.db
@@ -522,7 +525,7 @@ Two things look testable here and are not. Do not record either as verified from
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
 | Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
 | Every by-gene query returns zero rows | Not the dataset: `genetics_dev` has been full-size since 2026-08-18, so a common gene returning nothing is a real fault. Confirm the dataset with `dev-stack.sh status`, then look at db-api itself |
-| Code execution posts at db-api, or "sandbox" answers look like SQL errors | `SANDBOX_URL` is unset and its default is `127.0.0.1:8080`, which is db-api here; set `http://127.0.0.1:8081` (`genetics-results-suite-6um`) |
+| `SandboxNotConfigured: SANDBOX_URL is not set` | Nothing set the variable — the client has no default any more, deliberately (`genetics-results-suite-6um`); set `http://127.0.0.1:8081`, what `run-sandbox-local.sh` publishes |
 | An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names — `genetics-results-suite-94c`'s expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |

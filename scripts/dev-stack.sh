@@ -53,9 +53,10 @@
 #                        Start one with scripts/run-sandbox-local.sh and set
 #                        SANDBOX_ENABLED=true yourself to exercise the sandboxed path.
 #   SANDBOX_URL          code-execution sandbox (default: http://127.0.0.1:8081, what
-#                        scripts/run-sandbox-local.sh publishes). MUST be set explicitly:
-#                        the client's own default is 127.0.0.1:8080, which is db-api here
-#                        (genetics-results-suite-6um).
+#                        scripts/run-sandbox-local.sh publishes). The client itself has NO
+#                        default and raises SandboxNotConfigured when this is unset
+#                        (genetics-results-suite-6um), so this line is what makes the local
+#                        stack work at all.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
