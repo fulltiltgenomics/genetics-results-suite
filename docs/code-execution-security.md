@@ -3002,21 +3002,33 @@ at both services, and resolves no principal at all.
 **The two upstreams do not meter the same way, and the asymmetry is not "one meters and one
 does not".** Re-derive rather than trusting this:
 
-| | results-api (`app/core/sandbox_budget.py`) | db-api (`api/main.py`) |
+| | results-api (`app/core/sandbox_budget.py`) | db-api (`api/sandbox_budget.py`, `api/main.py`) |
 |---|---|---|
-| per-`jti` request count | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) | **none** |
-| per-`jti` concurrency | **4**, and **8** pod-wide | **none** |
+| per-`jti` request count | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) |
+| per-`jti` concurrency | **4**, and **8** pod-wide | **4**, and **8** pod-wide |
 | per-`jti` aggregate bytes | **1 GiB** response bytes | **200 GB** BigQuery bytes processed |
-| where it is enforced | `SandboxResponseCapMiddleware`, **before routing** — an unmatched path is admitted and counted like any other | in the handlers, on the four BigQuery paths only |
+| where it is enforced | `SandboxResponseCapMiddleware`, **before routing** — an unmatched path is admitted and counted like any other | the count and the concurrency in `SandboxBudgetMiddleware`, **before routing**; the byte budget still in the handlers, on the four BigQuery paths only |
 
-So `genetics.sql()` — the most expensive surface the sandbox reaches — is **bounded by spend
-and attributable per execution, but not bounded by request count or by concurrency**: a script
-can issue unlimited db-api requests at unlimited concurrency as long as each stays inside the
-200 GB aggregate, and db-api's cheap paths (`/health`, the cached `/schema` hits) are not
-counted at all. That is a deliberate difference in kind — db-api's cost is BigQuery bytes and
-results-api's is egress and pod memory — not an oversight, but it does mean "the per-execution
-counters now apply" is true of results-api's four counters and of db-api's byte budget, and is
-**not** a statement that db-api counts requests. It does not.
+**As measured for `4h6.49`, db-api had neither of the first two rows, and that is what
+`4h6.61` closed.** The paragraph below is what the measurement said at the time; it is kept
+because the reasoning is what decided the fix, not because it still describes the code.
+
+> So `genetics.sql()` — the most expensive surface the sandbox reaches — is **bounded by spend
+> and attributable per execution, but not bounded by request count or by concurrency**: a script
+> can issue unlimited db-api requests at unlimited concurrency as long as each stays inside the
+> 200 GB aggregate, and db-api's cheap paths (`/health`, the cached `/schema` hits) are not
+> counted at all.
+
+The candidate reading that this asymmetry was *correct* — db-api meters BigQuery spend,
+results-api meters egress and pod memory — was rejected on one measured fact: db-api is
+`replicas: 1` at `cpu: 500m` / `memory: 512Mi` (`k8s/deployments/db-api.yaml`) and is called by
+chat-backend and mcp-server as well as by the sandbox, so the load a script can put on it is
+**not** self-limiting the way a spend budget is. Its zero-BigQuery paths — `/health`, `/docs`,
+`/redoc`, `/openapi.json`, an unmatched path, `/schema` on a categorical-value cache hit,
+`/stats`' `get_table` metadata loop — charge the byte budget nothing and were reachable in a
+loop at unbounded concurrency for the whole 60-120 second wall clock. The failure mode was a
+degraded **browser chat path**, i.e. an outage of something the sandbox does not own, which is
+availability rather than spend and is exactly the thing a byte budget cannot bound.
 
 #### `4h6.45` — the audit stream: read, capped, re-framed, stamped, forwarded
 
@@ -3981,14 +3993,20 @@ has 120 seconds in which to loop. For the sandbox audience:
 | Response rows | 25 000 | **db-api only.** A quarter of the existing default, and well above what any legitimate aggregation returns *to a script* — the script aggregates in-pod and returns 64 KiB to the model regardless (section 2). results-api carries **no** row cap; see "As shipped" below for why counting rows there cost more than it bought. |
 | Response bytes per request | 16 MiB | **results-api only** (`SANDBOX_MAX_RESPONSE_BYTES`). Bounds one response, of **any** status — a non-2xx body is caller-controlled too, since FastAPI's 422 handler echoes the offending input. Which is the point of the next four rows. |
 | Aggregate response bytes per `jti` | 1 GiB | **results-api only** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`). 64 responses at the per-response cap, or ~8.5 MB/s sustained across the whole 120 second wall clock. Charged from bytes actually **sent**, so it agrees with the per-response cap's own buffer rather than re-measuring — and charged for every status, not only 2xx. |
-| Requests per `jti` | 1000 | **results-api only** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses, and every request costs a tabix seek or a GCS range read whatever its size. ~8 rps over 120 seconds. |
-| Concurrent requests per `jti` | 4 | **results-api only** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). The one limit here with a **memory** failure mode rather than a cost one: each in-flight capped request buffers up to 16 MiB. 4 × 16 MiB = 64 MiB. |
-| Concurrent sandbox requests per pod | 8 | **results-api only** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply this pod's peak buffer against its 8Gi limit. |
+| Requests per `jti` | 1000 | **both** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses on results-api, nor a loop of *zero-BigQuery* requests on db-api, and every request costs the pod a tabix seek, a GCS range read or a request slot whatever its size. ~8 rps over 120 seconds. db-api gained it in `4h6.61`; see the `4h6.49` comparison above for the measurement that decided it. |
+| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
+| Concurrent sandbox requests per pod | 8 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply either pod's peak load. Refused at import if it is set below the per-`jti` value, on both services. |
+| Tracked executions per pod | 4096 | **both** (`SANDBOX_MAX_TRACKED_EXECUTIONS`). A bound on the counter map itself, not on any execution, so a flood of distinct `jti`s cannot grow it without limit; a full map refuses a **new** execution rather than evicting a live one, because an evicted counter is a reset budget. Entries are swept once the token can no longer authenticate **and** nothing is in flight under it. Note this is a *different* eviction policy from db-api's older `_jti_bytes` byte-budget map, which is still a 1024-entry LRU. |
+| Applied row cap, reported | — | **db-api only** (`max_rows_applied` on the `/query` response). Not a limit: the row cap above is invisible in a truncated result, and the two candidate ceilings differ by 4× (25 000 vs the relaxed 100 000), so `/query` reports the ceiling it actually ran under and the SDK's truncation error quotes that number instead of hardcoding one (`4h6.32`). |
 
 All are enforced server-side from the token, never requested by the caller, and a
-script cannot widen them by asking. The db-api values are module constants; the results-api ones
-are env-configurable, because results-api payload sizes vary by dataset and format in a way
-BigQuery byte counts do not and an operator has to be able to move them without a rebuild.
+script cannot widen them by asking. db-api's BigQuery byte and row caps are module constants;
+the request-count and concurrency limits are env-configurable on **both** services, because
+neither the payload sizes results-api serves nor the load db-api can absorb is a number an
+operator should have to rebuild an image to move — and on both they are declared at their
+in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, five;
+`k8s/deployments/db-api.yaml`, four), since a knob no manifest names is env-configurable in the
+code and code-default-only in practice.
 
 **What the aggregate budget actually bounds — stated rather than left to be inferred.**
 `jti` is the **execution** id, so 200 GB is a per-*execution* budget, not per session and
@@ -5136,7 +5154,9 @@ What *is* preventable is data leaving the user's own conversation. The controls:
    (section 3, "On DNS"). If DNS is ever restored, this control is downgraded from "no
    sink" to "a bandwidth-limited sink", and must be reworded here.
 2. **Byte and row caps** (section 4): on db-api, 50 GB per query, **200 GB aggregate per
-   `jti`** across all four of its BigQuery paths, and 25 000 response rows; on results-api, a
+   `jti`** across all four of its BigQuery paths, 25 000 response rows, and — since `4h6.61` —
+   a per-`jti` request count (1000) and concurrency (4, and 8 pod-wide) enforced before
+   routing, so its zero-BigQuery paths are counted too; on results-api, a
    16 MiB response-byte cap, no row cap, and per-`jti` aggregate bytes (1 GiB), request count
    (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
    full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
