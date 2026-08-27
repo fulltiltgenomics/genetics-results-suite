@@ -33,3 +33,10 @@ __pycache__/
 .dolt/
 *.db
 .beads-credential-key
+
+# Editor autosaves whose names start with '#' (emacs writes #file#). Escaped, because
+# an unescaped '#' would start a comment. These hold a verbatim copy of a file that may
+# itself be ignored — an autosave of .env.<env> carries the same secrets — so the ignore
+# has to cover the autosave, not just the original. Emacs LOCK files are named .#file and
+# start with a dot, so this pattern does not match them.
+\#*
