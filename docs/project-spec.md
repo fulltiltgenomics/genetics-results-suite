@@ -710,13 +710,14 @@ new pool plus cordon/drain migration, not a tfvars edit. The same applies to
 ### The sandbox pool
 
 `google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`: `<cluster>-sandbox-pool`,
-`e2-standard-2` (`var.sandbox_machine_type`), `sandbox_config { type = "gvisor" }`,
+`e2-standard-2` (`var.sandbox_machine_type`), `sandbox_config { type = "GVISOR" }`,
 `min_node_count == max_node_count == 1`. It hosts only the code-execution sandbox
 (`docs/code-execution-security.md`). It is created **only when `sandbox_pool_enabled = true`**
-(`count`); the default is `false`. Note also that `type = "gvisor"` is lowercase while the GKE
-REST enum is `GVISOR` and the provider does no normalization — whether the API accepts the
-lowercase form is unverified until the first real apply; if rejected the value becomes
-`"GVISOR"` here, in `terraform/gke.tf` and in `docs/code-execution-security.md`.
+(`count`); the default is `false`. The case question these docs carried as open is **settled by
+the first real apply** (`daly-staging`, 2026-08-26): the value is the uppercase REST enum
+`"GVISOR"`, and the created pool reports `sandboxConfig.type: GVISOR`. The pool also proved that
+`e2-standard-2` satisfies GKE Sandbox's machine-type constraint on this cluster — enforced at
+pool creation, not at plan, and previously recorded as unverifiable read-only (`5r2`).
 
 **Why a second pool at all.** Not capacity — isolation. GKE Sandbox is a per-pool property, so
 gVisor's userspace syscall boundary around untrusted LLM-authored code can only be bought by
@@ -929,6 +930,19 @@ exactly when the sandbox is about to be deployed.
 Turning the sandbox on is therefore a deliberate two-step: set `sandbox_pool_enabled = true`
 (plus `sandbox_node_service_account`) in the **main checkout's** gitignored `terraform.tfvars`,
 then deploy.
+
+**One thing a fresh environment hits that neither step names**, measured on the
+`daly-staging` bring-up (2026-08-26):
+
+- **The pool is created at size 0 and does not scale itself to its own minimum.**
+  `terraform/gke.tf` declares `autoscaling { min_node_count = 1, max_node_count = 1 }` and no
+  `initial_node_count`, so GKE creates the pool empty and the autoscaler reports
+  `cloudProviderTarget: 0` against `minSize: 1` with `scaleUp.lastProbeTime: null` — it never
+  evaluates the group, because `minNodeCount` governs scale-*down* and no pod is pending. That
+  deadlocks against deploy.sh's preflight, which refuses while no node carries
+  `workload=sandbox`, so nothing can ever become pending. Break it once with
+  `gcloud container clusters resize <cluster> --node-pool=<cluster>-sandbox-pool --num-nodes=1`;
+  a current size of 1 is the declared steady state, so terraform sees no drift.
 
 **The manifest supplies the supervisor as `args: ["/genetics/supervisor.py"]`, and the image
 still ships no `CMD`.** The image's ENTRYPOINT is the bare interpreter, so the pod runs

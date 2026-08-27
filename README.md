@@ -189,6 +189,17 @@ unconditionally, which is why `google_container_cluster.primary`'s `workload_ide
 is also unconditional — GKE rejects the former without the latter **at apply, not at plan**.
 See "The sandbox pool" in `docs/project-spec.md` before changing either.
 
+**One step the flag does not do for you**, hit on the first `daly-staging` bring-up: **the pool
+comes up with zero nodes.** It is declared `min == max == 1` with no `initial_node_count`, so GKE
+creates it empty and the autoscaler never scales it to its own minimum — nothing is pending on it,
+because `scripts/deploy.sh` refuses to apply `sandbox.yaml` until a node carries
+`workload=sandbox`. Break the deadlock once:
+
+```bash
+gcloud container clusters resize "$CLUSTER" \
+  --node-pool="${CLUSTER}-sandbox-pool" --num-nodes=1 --zone="$ZONE"
+```
+
 > **What the next apply does whether or not you enable the pool.** `workload_identity_config`
 > on the cluster is unconditional now, and the live cluster currently has an **empty**
 > `workloadPool` (verified with `gcloud container clusters list`) because `manage_iam = false`.

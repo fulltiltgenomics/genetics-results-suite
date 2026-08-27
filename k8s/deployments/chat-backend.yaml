@@ -95,7 +95,7 @@ spec:
         # same-named flag on db-api and results-api — flipped to "true" only by the deploy
         # that creates the sandbox Deployment (4h6.50), never on its own.
         - name: SANDBOX_ENABLED
-          value: "false"
+          value: "true"
         # the sandbox supervisor's in-cluster Service (k8s/deployments/sandbox.yaml: Service
         # `sandbox` in namespace `genetics`, port 8080). NOT optional and there is no client
         # default any more: an unset SANDBOX_URL raises SandboxNotConfigured when the client

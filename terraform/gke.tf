@@ -149,7 +149,7 @@ resource "google_container_node_pool" "sandbox_nodes" {
     # it is rejected, the fix is type = "GVISOR", and docs/project-spec.md ("The sandbox
     # pool") and docs/code-execution-security.md both quote this value and need updating too.
     sandbox_config {
-      type = "gvisor"
+      type = "GVISOR"
     }
 
     # THE central isolation control, and unconditional on purpose. Unset means GCE_METADATA,
