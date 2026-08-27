@@ -1,7 +1,7 @@
 # GCP service account for workload identity (read-only access)
 resource "google_service_account" "genetics_suite" {
   count        = var.manage_iam ? 1 : 0
-  account_id   = "genetics-suite-gke"
+  account_id   = "genetics-suite-gke${local.name_suffix}"
   display_name = "Genetics Suite GKE Workload Identity"
   description  = "Read-only access to BigQuery and GCS for the genetics results suite"
 }

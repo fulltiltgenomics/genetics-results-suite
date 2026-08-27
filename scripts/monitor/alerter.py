@@ -43,6 +43,17 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("oauth2-proxy", re.compile(r"Invalid redirect provided")),
     ("oauth2-proxy", re.compile(r"Invalid redirect generated")),
     ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 state")),  # stale/bot callbacks
+    # the IdP put ?error=... on the callback: crawlers mangling the authorize URL
+    # (invalid_scope), scanners injecting into it (unsupported_response_type), or a login
+    # page left open past the Keycloak auth session (temporarily_unavailable). All are
+    # client-side and unactionable; a real scope misconfiguration shows up as nobody
+    # being able to sign in, not as a log line worth paging on.
+    ("oauth2-proxy", re.compile(r"Error while parsing OAuth2 callback")),
+    # mcp-server's streamable-HTTP SSE streams are long-lived, so every pod restart kills
+    # the open ones mid-response and nginx logs one line per connection. Scoped to /mcp:
+    # a premature close on any other route still alerts, and a genuinely crash-looping
+    # mcp-server is caught by the /healthz check rather than by these lines.
+    ("nginx", re.compile(r'upstream prematurely closed connection.*request: "[A-Z]+ /mcp')),
 ]
 
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
@@ -114,7 +125,12 @@ class LogAlerter:
     def __init__(self):
         self.project = os.environ["GCP_PROJECT"]
         self.namespace = os.environ.get("K8S_NAMESPACE", "genetics")
-        self.lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "8"))
+        # a GCP project can host more than one cluster running this suite (prod + staging), and
+        # both use the `genetics` namespace — without this each would alert on the other's logs
+        self.cluster = os.environ.get("K8S_CLUSTER", "")
+        # default matches the CronJob's daily schedule, so a deployment that omits the env var
+        # still covers the whole interval rather than silently skipping 16h of logs
+        self.lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "24"))
         self.dedup_ttl_hours = int(os.environ.get("ALERT_DEDUP_TTL_HOURS", "24"))
         self.db_path = os.environ.get("MONITOR_DB_PATH", "/tmp/monitor.db")
 
@@ -157,9 +173,13 @@ class LogAlerter:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
         timestamp_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        cluster_clause = (
+            f' AND resource.labels.cluster_name="{self.cluster}"' if self.cluster else ""
+        )
         log_filter = (
             f'resource.type="k8s_container"'
             f' AND resource.labels.namespace_name="{self.namespace}"'
+            f'{cluster_clause}'
             f' AND severity >= "WARNING"'
             f' AND timestamp >= "{timestamp_str}"'
         )

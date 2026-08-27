@@ -39,15 +39,28 @@ spec:
                   key: db-password
             - name: BACKUP_BUCKET
               value: "${KEYCLOAK_BACKUP_BUCKET}"
+            # without this debconf probes for a Dialog/Readline frontend it cannot have in a
+            # TTY-less container and warns on stderr, which GKE's logging agent tags
+            # severity=ERROR and the monitor then forwards to Slack as a fake backup failure
+            - name: DEBIAN_FRONTEND
+              value: noninteractive
             command:
             - /bin/bash
             - -c
             - |
               set -euo pipefail
-              apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null
+              # apt is chatty on stderr even when it succeeds, so buffer its output and
+              # replay it only on failure: silence on a good run, full diagnostics on a bad one
+              apt_log="$(mktemp)"
+              if ! { apt-get update -qq && apt-get install -y -qq postgresql-client ; } \
+                   >"$apt_log" 2>&1; then
+                echo "postgresql-client install failed:" >&2
+                cat "$apt_log" >&2
+                exit 1
+              fi
               ts="$(date -u +%Y%m%dT%H%M%SZ)"
               pg_dump -d keycloak | gzip | \
-                gsutil cp - "gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
+                gsutil -q cp - "gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
               echo "backup uploaded: gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
             resources:
               requests:

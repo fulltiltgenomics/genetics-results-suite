@@ -6,28 +6,33 @@ set -euo pipefail
 
 SERVICE="${1:?Usage: build.sh <service-name>}"
 
-if [ -z "${REGISTRY:-}" ]; then
-  echo "ERROR: REGISTRY must be set (e.g. \$GCP_REGION-docker.pkg.dev/\$GCP_PROJECT/genetics-results)"
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# resolve the target deployment (DEPLOY_ENV) and load its .env — that is where per-deployment
+# branch overrides (e.g. FRONTEND_BRANCH=staging) live
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
+
+# registry: derived from the resolved tfvars. A REGISTRY inherited from the shell must agree
+# with DEPLOY_ENV, or the run stops — see resolve_registry in lib/env.sh.
+resolve_registry
 
 GITHUB_ORG="${GITHUB_ORG:-https://github.com/fulltiltgenomics}"
 RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# APP_NAME below is read from terraform.tfvars, which exists only in the main checkout
+# APP_NAME below is read from the deployment's tfvars, which exists only in the main checkout
 # — warn before the fallback to FinnGenie happens silently (same preflight as build-all.sh)
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
-# product/brand name: explicit APP_NAME env > app_name in terraform.tfvars > FinnGenie
-# the `|| true` is load-bearing: tfvars is gitignored and main-checkout-only, so in a worktree
-# grep exits 2, pipefail propagates it and `set -e` killed the whole build with no output
-# before the FinnGenie fallback below was ever reached (genetics-results-suite-1xp)
-# POSIX [[:space:]], not GNU-only \s: BSD/macOS sed does not know \s, so the substitution
-# would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
-APP_NAME="${APP_NAME:-$(grep -E '^[[:space:]]*app_name[[:space:]]*=' "${SCRIPT_DIR}/../terraform/terraform.tfvars" 2>/dev/null | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)}"
+# product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
+# tfvar() swallows a missing file and a missing key (it is gitignored and main-checkout-only,
+# so in a worktree grep exits 2 — pipefail would otherwise kill the build with no output before
+# the FinnGenie fallback below was ever reached, genetics-results-suite-1xp)
+APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
+
+echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
 # sandbox: a local build context in this repo (like monitor and keycloak in
 # build-all.sh), but one that still needs a clone — the genetics SDK lives in

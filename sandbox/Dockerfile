@@ -107,10 +107,12 @@ COPY --from=builder /out/group /etc/group
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /out/mplcache /genetics/mplcache
 COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
-# The supervisor (genetics-results-suite-4h6.39). Shipping it does NOT make the image
-# start one: there is still no CMD, and k8s/deployments/sandbox.yaml still declares no
-# command/args, which is what scripts/deploy.sh refuses to apply until 4h6.50 wires it.
-# It is here so the image can be run as a supervisor at all — `docker run <img>
+# The supervisor (genetics-results-suite-4h6.39). Shipping it does NOT make the image start
+# one: there is still no CMD. k8s/deployments/sandbox.yaml names it instead
+# (`args: ["/genetics/supervisor.py"]`, genetics-results-suite-4h6.50), which keeps a manifest
+# that has lost its args: a loud CrashLoopBackOff rather than a silently defaulted process —
+# the property scripts/deploy.sh's container-level command:/args: refusal depends on. The file
+# is here so the image can be run as a supervisor at all — `docker run <img>
 # /genetics/supervisor.py` — which is what genetics-results-suite-4h6.40 needs.
 COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
 COPY --chown=65532:65532 schema/ /genetics/schema/
@@ -153,8 +155,9 @@ USER 65532:65532
 WORKDIR /genetics
 
 # ENTRYPOINT is the bare interpreter so the image is inspectable (`docker run <img> -c
-# ...`) and so the supervisor can be supplied as the command without rebuilding
-# (genetics-results-suite-4h6.50 wires it into k8s/deployments/sandbox.yaml).
-# There is no CMD: the supervisor module is genetics-results-suite-4h6.39's to add, and
-# a placeholder default here would be indistinguishable from a real one at runtime.
+# ...`) and so the supervisor can be supplied as the command without rebuilding —
+# k8s/deployments/sandbox.yaml passes `args: ["/genetics/supervisor.py"]`
+# (genetics-results-suite-4h6.50) and scripts/run-sandbox-local.sh passes the same argv.
+# There is still deliberately no CMD: a default here would start SOMETHING for a manifest
+# that has lost its args:, where the intended failure is a loud CrashLoopBackOff.
 ENTRYPOINT ["/usr/bin/python3"]

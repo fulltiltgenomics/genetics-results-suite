@@ -8,18 +8,19 @@
 # applying it without the pool yields a Pending pod forever — see the sandbox preflight near the
 # top of deploy.sh, which refuses before anything is applied rather than creating one.
 #
-# NO COMMAND / ARGS, DELIBERATELY. The image's ENTRYPOINT is the bare interpreter and it
-# ships no CMD (sandbox/Dockerfile): the supervisor module is genetics-results-suite-4h6.39's
-# to write, and a placeholder here would be indistinguishable from a real one at runtime —
-# the same reasoning that kept CMD out of the image. Until it lands, this pod would
-# start python3 with no script and CrashLoopBackOff — it SCHEDULES, so "Pending forever" is only
-# the no-pool case, and `kubectl apply` plus a deploy that never waits on this rollout would report
-# success over a pod that can never serve. So deploy.sh refuses to apply this file at all while it
-# declares neither `command:` nor `args:`, naming 4h6.39 as the missing piece. That refusal
-# disappears by itself the moment 4h6.50 adds `args:` here — 4h6.50 is the last bead of the
-# supervisor chain and the only one that may touch this file; 4h6.39 deliberately does not.
-# The check is keyed on this manifest, not on a
-# ticket number a human has to remember to clear.
+# THE SUPERVISOR IS SUPPLIED AS `args:`, NOT BAKED INTO THE IMAGE. The image's ENTRYPOINT is
+# the bare interpreter and it ships no CMD (sandbox/Dockerfile), so the pod runs
+# `/usr/bin/python3 /genetics/supervisor.py`. Keeping the default out of the image is what
+# stops a future image without a working supervisor from starting one anyway: with no CMD, a
+# manifest that forgets `args:` starts python3 with no script and CrashLoopBackOffs, and this
+# pod SCHEDULES (so "Pending forever" is only the no-pool case) behind a `kubectl apply` that
+# returned 0 with nothing waiting on its rollout. scripts/deploy.sh therefore refuses to apply
+# this file at all unless THE CONTAINER NAMED `sandbox`, in the Deployment named `sandbox`,
+# declares a non-empty `command:`/`args:`. It parses this file rather than grepping it, so a
+# `command:` on an initContainer, on another container, or in another document here cannot
+# clear the refusal, a probe's nested `exec.command` cannot either, and reformatting this file
+# cannot trip it; an unparseable file fails the deploy closed. Keep the `args:` line below on
+# the sandbox container — where it lives is what the check reads, not what column it sits in.
 #
 # The label contract (`app: sandbox`, container port 8080/TCP, Service `sandbox` on
 # 8080 -> 8080) is dictated by k8s/network-policies/sandbox-policy.yaml. Every rule there
@@ -162,6 +163,13 @@ spec:
       containers:
       - name: sandbox
         image: ${REGISTRY}/sandbox:latest
+        # The supervisor module, appended to the image's bare-interpreter ENTRYPOINT. Absolute
+        # path rather than `-m supervisor` because it does not depend on the cwd the container
+        # starts in — NOT because the module would fail to resolve: measured in the image,
+        # CPython prepends the cwd to sys.path for `-m` whatever PYTHONPATH says, and WORKDIR is
+        # /genetics, so `-m supervisor` resolves today. This is the same argv
+        # scripts/run-sandbox-local.sh passes, which is what the local supervisor tests exercise.
+        args: ["/genetics/supervisor.py"]
         ports:
         - name: http
           containerPort: 8080

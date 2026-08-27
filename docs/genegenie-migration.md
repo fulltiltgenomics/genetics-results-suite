@@ -14,7 +14,7 @@ variable; they default to `""`).
 
 | Piece | Where |
 | --- | --- |
-| `redirect_from_host` / `redirect_to_host` | `terraform/variables.tf`, exposed in `terraform/outputs.tf`; set to finngenie/genegenie in the daly `terraform.tfvars` |
+| `redirect_from_host` / `redirect_to_host` | `terraform/variables.tf`, exposed in `terraform/outputs.tf`; set to finngenie/genegenie in `terraform/terraform.tfvars.daly` |
 | `LEGACY_REDIRECT` nginx snippet | rendered by `scripts/deploy.sh` from those two outputs (empty when unset) |
 | `${LEGACY_REDIRECT}` placeholder | `k8s/deployments/auth-gateway.yaml`, inside `server { listen 8080; }` |
 

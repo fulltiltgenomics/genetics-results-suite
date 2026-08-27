@@ -98,3 +98,13 @@ output "registry" {
   description = "Artifact Registry URL for docker images"
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker.repository_id}"
 }
+
+output "resource_suffix" {
+  description = "Suffix applied to project-scoped resource names (empty for the original deployment in a project)"
+  value       = var.resource_suffix
+}
+
+output "environment" {
+  description = "Environment label applied to GKE nodes"
+  value       = var.environment
+}

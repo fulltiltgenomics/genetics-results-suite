@@ -456,9 +456,15 @@ def _is_on(value):
 
 
 def sandbox_enabled_values():
-    """The literal SANDBOX_ENABLED values each verifier's Deployment declares, per file."""
+    """The literal SANDBOX_ENABLED values each verifier's Deployment declares, per file.
+
+    chat-backend is not a verifier — it mints tokens and gates the run_analysis tool rather
+    than authorizing requests — but it must track the other two once the sandbox exists:
+    left "false" while db-api/results-api flip true, the sandbox deploys and run_analysis
+    stays withheld from every tool list with no signal anywhere (genetics-results-suite-4h6.85).
+    """
     values = {}
-    for fname in ("db-api.yaml", "results-api.yaml"):
+    for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
         path = os.path.join(DEPLOY_DIR, fname)
         found = []
         if os.path.exists(path):
@@ -803,15 +809,18 @@ def _():
     )
 
 
-@check("SANDBOX_ENABLED is true on db-api and results-api once the sandbox exists")
+@check("SANDBOX_ENABLED is true on db-api, results-api and chat-backend once the sandbox exists")
 def _():
     """The fail-closed rules are opt-in until this flag is on.
 
-    Both verifiers key `require_sandbox_config()` on `SANDBOX_ENABLED`, not on the signing key
-    being present, so with the sandbox deployed and the flag still `"false"` the startup
-    assertion never fires — and a script that simply omits `Authorization` lands in db-api's
-    pre-existing unset-`INTERNAL_API_SECRET` fail-open branch, authorized with no `sub`, `sid`
-    or `jti`. docs/code-execution-security.md section 4, rule 6.
+    db-api and results-api are the verifiers: both key `require_sandbox_config()` on
+    `SANDBOX_ENABLED`, not on the signing key being present, so with the sandbox deployed and
+    the flag still `"false"` the startup assertion never fires — and a script that simply omits
+    `Authorization` lands in db-api's pre-existing unset-`INTERNAL_API_SECRET` fail-open branch,
+    authorized with no `sub`, `sid` or `jti`. chat-backend is not a verifier — it mints the
+    sandbox token and reads the same flag only to decide whether `run_analysis` belongs in a
+    tool list — so leaving its copy `"false"` withholds the tool rather than opening a fail-open
+    auth path. docs/code-execution-security.md section 4, rule 6.
     """
     if sandbox_is_deployed() and os.environ.get("ENABLE_SANDBOX", "").strip().lower() != "true":
         # PRESENT IN THE DIRECTORY IS NOT THE SAME AS APPLIED. scripts/deploy.sh skips
@@ -837,7 +846,9 @@ def _():
             "a sandbox Deployment is LIVE in the cluster but ENABLE_SANDBOX is not true. This "
             "deploy would leave db-api/results-api with SANDBOX_ENABLED=\"false\" while the "
             "sandbox serves, so a script that omits Authorization lands in db-api's unset-"
-            "INTERNAL_API_SECRET fail-open branch, authorized with no sub/sid/jti "
+            "INTERNAL_API_SECRET fail-open branch, authorized with no sub/sid/jti; "
+            "chat-backend's copy of the flag would also stay false, withholding run_analysis "
+            "from every tool list even though the sandbox is live "
             "(docs/code-execution-security.md section 4, rule 6). Deploy from a checkout whose "
             "terraform.tfvars sets sandbox_pool_enabled = true, or export ENABLE_SANDBOX=true, "
             "or delete the live sandbox Deployment first. Do not relax this check."
@@ -891,14 +902,17 @@ def _():
             "(genetics-results-suite-4h6.7); the SANDBOX_ENABLED check is inert until one lands"
         )
         return
-    for fname in ("db-api.yaml", "results-api.yaml"):
+    for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
         path = os.path.join(DEPLOY_DIR, fname)
         assert os.path.exists(path), f"{fname} is missing from {DEPLOY_DIR}"
         found = values[fname]
         assert found, (
             f"{fname} declares no SANDBOX_ENABLED env var, but a sandbox workload exists in "
-            "k8s/deployments/. Unset reads as false in both services, so the startup assertion that "
-            "makes the sandbox credential mandatory never fires."
+            "k8s/deployments/. Unset reads as false, so " + (
+                "the startup assertion that makes the sandbox credential mandatory never fires."
+                if fname != "chat-backend.yaml" else
+                "run_analysis is withheld from every tool list."
+            )
         )
         for value in found:
             assert _is_on(value), (

@@ -33,7 +33,7 @@ set -euo pipefail
 #                    and a local :4000 is chat-api. The manifest's values are cluster FQDNs
 #                    pinned by hostAliases and resolve to nothing here.
 #   SANDBOX_RETENTION_S  shorten the artifact retention deadline so a test can watch it
-#                    expire. Unset in a normal run, which leaves the supervisor's 900s.
+#                    expire. Unset in a normal run, which leaves the supervisor's 300s.
 #   SANDBOX_IMAGE    image tag to build/run (default genetics-sandbox:local). Deliberately
 #                    not $REGISTRY/sandbox:latest — nothing here pushes, and a local build
 #                    must not be mistakable for the image the cluster pulls.
@@ -52,7 +52,7 @@ HOST_PORT="${HOST_PORT:-8081}"
 # looks like an auth or a data problem (measured 2026-08-17, genetics-results-suite-4h6.49).
 GENETICS_API_URL="${GENETICS_API_URL:-http://host.docker.internal:2000/api}"
 BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://host.docker.internal:8080}"
-# Empty by default, i.e. the supervisor's own 900s. Set only to make the retention deadline
+# Empty by default, i.e. the supervisor's own 300s. Set only to make the retention deadline
 # observable in a test run; scripts/test-e2e-local.py --retention-s must be given the same
 # number, because nothing on the wire exposes it.
 SANDBOX_RETENTION_S="${SANDBOX_RETENTION_S:-}"
@@ -188,11 +188,12 @@ fi
 
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
-# NO CMD IN THE IMAGE AND NO command:/args: IN THE MANIFEST. The image's ENTRYPOINT is the
-# bare interpreter and the supervisor is supplied HERE, at run time. Baking it in would also
-# clear the refusal in scripts/deploy.sh that is currently the only thing keeping a
-# Deployment with no working supervisor from scheduling behind a `kubectl apply` that
-# returned 0 — that is genetics-results-suite-4h6.50's to clear, deliberately last.
+# NO CMD IN THE IMAGE. The ENTRYPOINT is the bare interpreter and the supervisor is supplied
+# HERE, at run time — the same argv k8s/deployments/sandbox.yaml now passes as
+# `args: ["/genetics/supervisor.py"]` (genetics-results-suite-4h6.50), so this run exercises
+# the deployed invocation. Baking a CMD into the image instead would make a manifest that has
+# lost its args: start a supervisor anyway, which is what deploy.sh's container-level
+# command:/args: refusal relies on being loud.
 docker run -d --name "${NAME}" \
   --read-only \
   --cap-drop ALL \
@@ -242,8 +243,8 @@ cat <<EOF
   tests    python3 scripts/test-supervisor.py --container ${BASE_URL} --container-name ${NAME}
   stop     scripts/run-sandbox-local.sh --stop
 
-  chat-backend's client needs SANDBOX_URL=${BASE_URL} (it defaults to
-  http://127.0.0.1:8080, which is the local db-api's port).
+  chat-backend's client needs SANDBOX_URL=${BASE_URL} (there is no default: it refuses to
+  build without one, genetics-results-suite-6um).
 
 WHAT THIS RUN DOES NOT REPRODUCE — every control whose ONLY enforcement is one of these is
 unexercised here and must be verified at deploy time:

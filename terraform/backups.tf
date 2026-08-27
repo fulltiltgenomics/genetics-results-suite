@@ -1,5 +1,5 @@
 locals {
-  keycloak_backup_bucket = var.keycloak_backup_bucket_name != "" ? var.keycloak_backup_bucket_name : "${var.project_id}-keycloak-backups"
+  keycloak_backup_bucket = var.keycloak_backup_bucket_name != "" ? var.keycloak_backup_bucket_name : "${var.project_id}-keycloak-backups${local.name_suffix}"
 }
 
 # GCS bucket for Keycloak Postgres logical backups (pg_dump from the backup CronJob).
@@ -37,7 +37,7 @@ resource "google_storage_bucket_iam_member" "keycloak_backups_writer" {
 
 # daily snapshot schedule for the chat-backend PVC disk
 resource "google_compute_resource_policy" "chat_data_snapshots" {
-  name    = "chat-data-daily-snapshot"
+  name    = "chat-data-daily-snapshot${local.name_suffix}"
   region  = var.region
   project = var.project_id
 

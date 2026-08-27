@@ -71,10 +71,12 @@ What the script is doing on your behalf, and why each piece matters:
   echoed. The frontend's three `VITE_*` values are passed as environment variables instead
   of a file, because vite merges prefixed `process.env` over whatever `.env` files it
   loaded; a worktree therefore needs no `.env.local` of its own.
-- **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly.** The client's own default is
-  `127.0.0.1:8080`, which on this machine is **db-api** — chat-backend would post code
-  executions at the BigQuery proxy (`genetics-results-suite-6um`). 8081 is what
-  `scripts/run-sandbox-local.sh` publishes.
+- **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly**, which is what
+  `scripts/run-sandbox-local.sh` publishes. The client has **no default**: building a
+  `SandboxClient` with `SANDBOX_URL` unset raises `SandboxNotConfigured`
+  (`genetics-results-suite-6um`). It used to default to `127.0.0.1:8080`, which on this
+  machine is **db-api**, so chat-backend posted code executions at the BigQuery proxy and
+  got answers that classified as confusing sandbox errors.
 - **`status` reads `DATASET_ID` out of `/proc/<pid>/environ`**, because `/health` does not
   report it and an **unset** `DATASET_ID` silently means production (`api/main.py` defaults
   it to `genetics_results`). That default is the failure the dev dataset exists to remove,
@@ -96,12 +98,31 @@ the script does not name is passed through untouched. Put these there rather tha
 
 `SANDBOX_TOKEN_SIGNING_KEY` and `INTERNAL_API_SECRET` are the exception to "put it in the
 `.env`": the script **generates** them once into `DEV_STACK_RUN_DIR`
-(`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend
-together with `SANDBOX_ENABLED=true`, so the minter and both verifiers agree. They have to be
+(`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend —
+unconditionally, whatever `SANDBOX_ENABLED` is set to — so the minter and both verifiers agree.
+Without them both verifiers resolve **no sandbox principal at all** and serve the SDK with no
+per-execution accounting (`genetics-results-suite-0lf`): that follows from the two credentials
+and from nothing else, since neither verifier reads `SANDBOX_ENABLED`. They have to be
 stable across restarts — rotating the key invalidates a token minted seconds earlier — and they
-must not land in a repo. Setting either variable yourself still wins.
+must not land in a repo. Setting either variable yourself still wins — **but be careful where**:
+exporting it before `dev-stack.sh up` wins everywhere, while putting it in `MCP_ENV_FILE` wins
+for chat-backend **only**, because that file is sourced (`set -a`) after the generated value is
+already exported and only chat-backend's subshell reads it. The minter then signs with a
+different key than the verifiers hold, and every sandboxed execution 401s from both backends —
+indistinguishable at a glance from a broken token, not a config-precedence mismatch. `up` checks
+`MCP_ENV_FILE` for either name before sourcing it and warns loudly (non-blocking, so a
+deliberate override still works) if it finds one.
 
-**This changes what an unauthenticated local request can do, and it is not a subtlety.**
+`SANDBOX_ENABLED` itself defaults to **`false`**: `dev-stack.sh` starts no sandbox
+supervisor, so a `true` default would offer `run_analysis` with nothing behind it and its
+failure would misreport as a transient `SandboxUnavailable`
+(genetics-results-suite-4h6.86). Start a supervisor with `scripts/run-sandbox-local.sh`
+and set `SANDBOX_ENABLED=true` yourself (in the environment or in `MCP_ENV_FILE`) to
+exercise the sandboxed path locally; if you do, `dev-stack.sh up` probes `SANDBOX_URL/health`
+once and warns loudly if nothing answers `"status": "ok"` there.
+
+**Provisioning `INTERNAL_API_SECRET` — not the `SANDBOX_ENABLED` default above — changes
+what an unauthenticated local request can do, and it is not a subtlety.**
 db-api's auth middleware is fail-open on an **empty** `INTERNAL_API_SECRET` (`api/main.py`
 warns `every endpoint is reachable without authentication` and lets everything through), so
 simply having the variable set flips it to **enforcing**. Measured 2026-08-17 against the local
@@ -339,8 +360,9 @@ export BIGQUERY_API_URL=http://localhost:8080
 export DEFAULT_MODEL=claude-opus-5
 export EXTERNAL_MCP_SERVERS=https://mcp.platform.opentargets.org
 export REQUIRE_AUTH=false                     # no oauth2-proxy locally
-# the client's default is 127.0.0.1:8080, which is db-api here — always set this
-# explicitly if you run the sandbox (scripts/run-sandbox-local.sh publishes 8081):
+# no default: SandboxClient refuses to guess an address and raises SandboxNotConfigured
+# if this is unset (the old default was 127.0.0.1:8080, which is db-api here).
+# scripts/run-sandbox-local.sh publishes 8081:
 export SANDBOX_URL=http://127.0.0.1:8081
 # defaults point at /mnt/disks/data, which a fresh VM does not have:
 export CHAT_HISTORY_DB=$HOME/data/chat_history.db
@@ -503,7 +525,7 @@ Two things look testable here and are not. Do not record either as verified from
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
 | Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
 | Every by-gene query returns zero rows | Not the dataset: `genetics_dev` has been full-size since 2026-08-18, so a common gene returning nothing is a real fault. Confirm the dataset with `dev-stack.sh status`, then look at db-api itself |
-| Code execution posts at db-api, or "sandbox" answers look like SQL errors | `SANDBOX_URL` is unset and its default is `127.0.0.1:8080`, which is db-api here; set `http://127.0.0.1:8081` (`genetics-results-suite-6um`) |
+| `SandboxNotConfigured: SANDBOX_URL is not set` | Nothing set the variable — the client has no default any more, deliberately (`genetics-results-suite-6um`); set `http://127.0.0.1:8081`, what `run-sandbox-local.sh` publishes |
 | An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names — `genetics-results-suite-94c`'s expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |

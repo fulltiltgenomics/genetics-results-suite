@@ -29,6 +29,11 @@ spec:
         # upstream API base already includes the /api segment (matches the dev contract)
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"
+        # LD API proxied by GET /api/v1/ld: the frontend CSP is `connect-src 'self'`, so the browser
+        # cannot call this external host itself. Matches the in-code default; set here to make the
+        # dependency visible and swappable without a rebuild.
+        - name: LD_API_URL
+          value: "https://api.finngen.fi/api/ld"
         # shared internal secret -> sent as Authorization: Bearer on the BFF's calls to results-api
         - name: GENETICS_API_TOKEN
           valueFrom:

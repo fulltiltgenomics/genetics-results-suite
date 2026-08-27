@@ -247,6 +247,35 @@ Previews in `--tools` are elided and mark it with `…`; the report always holds
 value. Tool *results* are deliberately not recorded — a single call can return thousands of
 rows, and the question this answers is what the model **asked for**.
 
+#### Reading the two arms against each other
+
+`--tools` lists one arm and then the other. `--transcript` puts them in two columns, aligned
+turn by turn, with the timing that explains each turn above its calls — which is what you
+want when the scorecard says an arm was slower and you need to know where the time went.
+
+```bash
+.venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json \
+  --transcript --case local-10-caqtl-peaks --width 200 --arg-lines 6
+```
+
+Each turn shows, per arm: wall clock, iteration count, call count, model time vs summed tool
+phases, the slowest iteration, script attempts and failures by shape, and **retry loops** —
+the extra roundtrips bought by a script that failed. `[iN]` marks the iteration a call
+belongs to, so six calls in one parallel roundtrip are distinguishable from six roundtrips of
+one call each.
+
+**What is not measured.** Only `run_analysis` reports a per-call duration (the sandbox's own
+wall clock, shown as `sandbox 1.4s`). No other tool is timed on the wire: an iteration's
+calls are dispatched with `asyncio.gather`, so its tool phase is roughly the slowest call
+plus overhead, **not** the sum of its calls. `tool phases` sums those phases across
+iterations; a `+` after it means some iteration's phase was never measured.
+
+`[iN]` and the sandbox durations come from the *stream's* ordering, not from the `done`
+chunk, which flattens every iteration's blocks into one list with no boundary. A report
+replayed before that capture existed shows neither and says so instead of printing a number
+nobody measured. Arguments still come from the `done` chunk — `llm_service` rewrites the copy
+it streams, so only the id is taken from there.
+
 Note `secret=true` does not redact these. `llm_service` omits tool input from its log line,
 not from the `done` chunk, so a replayed question's arguments do land in the report.
 

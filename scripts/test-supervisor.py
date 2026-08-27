@@ -33,6 +33,79 @@ consistency rules, which names reach the manifest, and the Retry-After the clien
 policy reads off a 429. A wire shape that is merely plausible is the failure mode this file
 exists to catch.
 
+CROSS-EXECUTION MEMORY ISOLATION (4h6.55, option (b)) IS TESTED AS THE PROPERTY, NOT THE
+PLUMBING. The `isolation` group is the bead's own probe, run as a real execution in a real
+forked child: it hunts one victim's token, source code and session id after that execution has
+COMPLETED AND BEEN RELEASED, and a second victim's while that request is QUEUED behind the
+probe, by all four demonstrated routes — module global, frame walk, gc, and a raw
+/proc/self/mem scan. A clean result means nothing without a positive control, so the group
+carries two and fails loudly if the primary one goes quiet. A test that the fork server starts
+would prove none of this and is not what is here.
+
+THE SAME PROBE, ONE LAYER LOWER (4h6.87), is `test_pre_ready_body_bytes`: a POST /execute whose
+head and body share one TCP segment, refused 503 while the supervisor is still starting, with
+ForkServer.start() gated to run milliseconds later — because under a realistic multi-second
+prewarm the same probe recovers nothing and that is arena REUSE, not exclusion. Two details are
+what make it a measurement rather than a ritual. The sender is a SUBPROCESS: the harness process
+is the supervisor process, so a body built here with make_body() is in the fork snapshot however
+the socket behaves, and the first version of this test failed for that reason with a correct fix
+in place. And the three needles are asserted absent INDEPENDENTLY and UNCONDITIONALLY, with the
+pre-fix rfile restorable by SUPERVISOR_TEST_BUFFERED_RFILE=1 as a negative control that is run,
+not described. test_header_reader_units is the mechanics half and makes NO leak claim, so it may
+build heads in-process; it carries two controls of its own. SUPERVISOR_TEST_DROP_LF_CRLF=1 drops
+b"\n\r\n" from the terminator set and turns the \n\r\n case red. SUPERVISOR_TEST_STATIC_SEAM=1
+restores the per-round seam window, which turns the one-byte-drip case red and takes the
+terminator/chunk matrix from 28/28 to 26/28 — the same fail-open hang reached through peek size
+rather than terminator shape.
+
+WHAT REPARENTS PAST THE FORK SERVER, AND WHAT WRITES WITHOUT PAUSING (4h6.68, 4h6.62) are one
+root cause seen from two sides, and both are driven as the failure. test_orphan_reaper forks real
+unwaited children — the same relationship a reparented orphan has to PID 1, which this harness
+cannot become — asserts they really are state 'Z' before it reaps, asserts ONE call stops at
+max_rounds, and drives the only collision a supervisor-side reaper has: ForkServer's own pid.
+test_drain_continuous_writer drives a writer that NEVER stops and NEVER closes its write end,
+sampling at the moment the drain lets go that the fd was still ready and the writer still live —
+a writer that stops, or an EOF, is the case the pre-fix code already handled and would leave the
+control green. The reaper's collisions are driven as the failure on BOTH sides: fs.pid, and the
+execution child that stops being a grandchild the moment the fork server dies under it. Seven
+controls: SUPERVISOR_TEST_REAPER_UNBOUNDED=1 removes the round cap,
+SUPERVISOR_TEST_REAPER_NO_FS_SLOT=1 reaps fs.pid and drops the status,
+SUPERVISOR_TEST_REAPER_NO_JOB_SLOT=1 publishes fs.pid but not the stranded execution child,
+SUPERVISOR_TEST_REAPER_LOGS=1 logs from the handler path as note_reaped used to,
+SUPERVISOR_TEST_REAPER_IGNORES_CLOSING=1 reaps while close() owns fs.pid,
+SUPERVISOR_TEST_REAPER_SIG_IGN=1 replaces the handler with signal(SIGCHLD, SIG_IGN) so the
+kernel auto-reaps and nothing of ours runs, SUPERVISOR_TEST_CLOSE_SETS_CLOSING_LAST=1 sets
+close()'s flag last instead of first, and SUPERVISOR_TEST_DRAIN_DEADLINE_IN_READY=1 puts the
+deadline check back inside `if not ready:`. Two more sit on the publisher itself:
+SUPERVISOR_TEST_PUBLISH_KEEPS_PGID=1 clears `pid` but leaves `reaped_pgid` stamped, which is
+what let _kill_survivors killpg a recycled group on the completion path, and
+SUPERVISOR_TEST_PUBLISH_NO_REAPED_GUARD=1 drops `job.reaped` from the match so an
+already-reaped job accepts a foreign status off a recycled pid.
+
+WHAT AN EXECUTION LEAVES BEHIND (4h6.66, 4h6.83) AND WHAT A RETENTION WINDOW SERVES (4h6.82)
+are both tested as the failure, not as the plumbing, and both carry negative controls that are
+run rather than described. `test_survivors` leaves a real process behind a real
+normally-completing execution — once inside the process group and once setsid()'d out of it —
+and asserts it is gone AND REAPED afterwards; then it disables the group kill and the sweep and
+asserts the same probes DO survive, which is the state both beads measured.
+`test_artifact_integrity` overwrites a retained artifact with the same number of bytes and
+plants a second one beside it, asserts both are refused, and then asserts that the same reads
+with the digest binding disabled hand the attacker's content back. Neither group runs in
+container mode and both say so by name.
+
+ARTIFACT ENCRYPTION AT REST (4h6.88) IS `test_artifact_encryption`, and it is written around
+what the bead actually closes. The assertion is that a read of a RETAINED artifact at the
+shared uid — the harness's own uid, which is the threat model and not a shortcut — returns the
+sealed envelope and not the bytes the script wrote. THE LIVE WINDOW IS NOT ASSERTED ABOUT and
+is not closed: the child writes plaintext with a raw open() while it runs. The group also pins
+the two things a reviewer would otherwise have to take on trust — that ARTIFACT_READ_MAX_BYTES
+is charged against the PLAINTEXT, asserted at exactly the cap and one byte over, and that a
+seal which dies partway DESTROYS the artifacts rather than retaining them in the clear or
+letting them vanish behind a 200. Three controls: SUPERVISOR_TEST_NO_SEAL=1 restores the
+pre-4h6.88 completion path, SUPERVISOR_TEST_SEAL_NO_AAD=1 drops the artifact's name from the
+associated data, and SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 removes the fail-closed
+destruction. The wire group carries the same property against a REAL execution.
+
 Two checks are about the fork-without-exec model rather than the wire, because both were
 reachable from a script: a forged status record on fd 3 must not turn exit 0 into
 status "error", and a descendant that setsid()s away with the output pipe must not hold the
@@ -63,18 +136,26 @@ one that writes far above the rate and byte caps.
 
 import ast
 import base64
+import errno
+import gc
+import hashlib
 import http.client
 import io
 import json
+import logging
 import os
 import re
+import select
 import shutil
 import signal
 import socket
+import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
 import time
+import types
 import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -109,15 +190,16 @@ def skip(name, reason):
     print(f"  skip  {name} ({reason})")
 
 
-def expect_request_error(name, fn, status, type_):
+def expect_request_error(name, fn, status, type_, suffix=""):
     try:
         fn()
     except sup.RequestError as exc:
-        check(name, exc.status == status and exc.type == type_, f"got {exc.status} {exc.type}")
+        check(name, exc.status == status and exc.type == type_,
+              f"got {exc.status} {exc.type}" + suffix)
     except Exception as exc:
-        check(name, False, f"raised {type(exc).__name__}: {exc}")
+        check(name, False, f"raised {type(exc).__name__}: {exc}" + suffix)
     else:
-        check(name, False, "no error raised")
+        check(name, False, "no error raised" + suffix)
 
 
 # --------------------------------------------------------------------------------------
@@ -291,10 +373,25 @@ def test_parsing():
 # --------------------------------------------------------------------------------------
 
 
+class _AliveForkServer:
+    """A stand-in for tests that build a Supervisor directly and are not about the fork server.
+
+    health() asks the fork server whether it is alive (a ready supervisor with none is a pod
+    that cannot execute anything and must leave the endpoints), so a bare Supervisor needs one
+    to be asked about."""
+
+    pid = -1
+
+    @staticmethod
+    def alive():
+        return True
+
+
 def test_queue(tmp):
     root = os.path.join(tmp, "queue-root")
     os.makedirs(root)
     s = sup.Supervisor(root, ready=True)
+    s.forkserver = _AliveForkServer()
 
     def job():
         return sup.Job(sup.parse_execute_request(json.dumps(make_body()).encode()), None)
@@ -403,7 +500,7 @@ def test_manifest(tmp):
     os.symlink("/etc/passwd", os.path.join(d, "link.txt"))
     os.link(os.path.join(d, "table.csv"), os.path.join(d, "hardlink.csv"))
 
-    entries, omitted = sup.build_manifest(d)
+    entries, omitted, digests = sup.build_manifest(d)
     names = [e["name"] for e in entries]
     check("manifest: lists plain regular files", names == ["plot.png"], f"got {names}")
     check("manifest: content_type from the name",
@@ -416,7 +513,7 @@ def test_manifest(tmp):
     # Every name build_manifest withheld must also be unreadable, and for the same reason:
     # the two run the same checks so the manifest never advertises what the read refuses,
     # and the read never serves what the manifest hid.
-    data, ctype = sup.read_artifact_bytes(d, "plot.png")
+    data, ctype = sup.read_artifact_bytes(d, "plot.png", expected_digests=None)
     check("artifact read: returns the bytes and the name's content type",
           data == b"\x89PNG" * 4 and ctype == "image/png", f"got {len(data)} {ctype}")
     for name, status in (
@@ -430,15 +527,725 @@ def test_manifest(tmp):
         ("", 400),
     ):
         expect_request_error(f"artifact read: refuses {name!r}",
-                             lambda n=name: sup.read_artifact_bytes(d, n),
+                             lambda n=name: sup.read_artifact_bytes(d, n, expected_digests=None),
                              status, "NotFound" if status == 404 else "InvalidRequest")
+
+    check("manifest: only the listed name is hashed, and it is hashed",
+          set(digests) == {"plot.png"} and digests["plot.png"] ==
+          hashlib.sha256(b"\x89PNG" * 4).hexdigest(), f"got {digests}")
 
     with open(os.path.join(d, "big.bin"), "wb") as fh:
         fh.write(b"x" * 100)
     expect_request_error("artifact read: an oversize artifact is 413, not a truncated body",
-                         lambda: sup.read_artifact_bytes(d, "big.bin", max_bytes=99),
+                         lambda: sup.read_artifact_bytes(d, "big.bin", max_bytes=99,
+                                                        expected_digests=None),
                          413, "ArtifactTooLarge")
+    # Over the REAL read cap, not a test-local one: build_manifest hashes with the default, so
+    # a 100-byte file with max_bytes=99 would not exercise the branch.
+    with open(os.path.join(d, "huge.bin"), "wb") as fh:
+        fh.write(b"x" * (sup.ARTIFACT_READ_MAX_BYTES + 1))
+    over = sup.build_manifest(d, max_entries=10)[2]
+    check("manifest: a file over the read cap is listed but has no digest, because it can "
+          "never be served and a truncation must not make it servable",
+          "huge.bin" in over and over["huge.bin"] is None, f"got {over.get('huge.bin')!r}")
+    expect_request_error(
+        "artifact read: a listed-but-unhashable file is refused, not served",
+        lambda: sup.read_artifact_bytes(d, "big.bin", expected_digests={"big.bin": None}),
+        409, "ArtifactModified")
 
+    # The fail-open case must not be reachable by FORGETTING the argument: a future caller that
+    # omits it would otherwise serve unverified bytes with no log line to show for it.
+    try:
+        sup.read_artifact_bytes(d, "plot.png")
+    except TypeError:
+        omitted_raises = True
+    except Exception as exc:
+        omitted_raises = f"raised {type(exc).__name__}"
+    else:
+        omitted_raises = "served the bytes"
+    check("artifact read: omitting expected_digests raises rather than disabling the integrity "
+          "binding — None disables it and has to be written",
+          omitted_raises is True, f"got {omitted_raises}")
+
+
+def test_artifact_integrity(tmp):
+    """genetics-results-suite-4h6.82: the retention window must not serve bytes that moved.
+
+    THE TAMPERING IS DONE BY THE HARNESS, AT THE HARNESS'S OWN UID, AND THAT IS THE THREAT
+    MODEL RATHER THAN A SHORTCUT. The finding is that /scratch is writable by ANY process at
+    the shared uid 65532 — measured from inside a second execution's child, which listed
+    /scratch, read a previous execution's artifacts/private.csv, overwrote it and planted a new
+    file beside it. Nothing about the primitive depends on the writer being a forked child, and
+    routing the write through one would test the fork rather than the control. What is under
+    test is what the SUPERVISOR does with a directory that has been altered behind it.
+
+    Every assertion here carries its negative control in the same breath: the same read with
+    the binding disabled must SERVE the attacker's bytes. Without that, an accidentally-empty
+    artifacts directory would make the whole group pass.
+    """
+    root = os.path.join(tmp, "integrity")
+    os.makedirs(root)
+    eid = "22222222-2222-4222-8222-222222222222"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    victim = b"SECRET-VICTIM-DATA"
+    with open(os.path.join(dirs.artifacts, "private.csv"), "wb") as fh:
+        fh.write(victim)
+
+    s = sup.Supervisor(root, ready=True)
+    entries, _, digests = sup.build_manifest(dirs.artifacts)
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, digests)
+    s._retained_ids.add(eid)
+
+    data, ctype = s.read_artifact(eid, "private.csv")
+    check("artifact integrity: an untouched artifact is still served",
+          data == victim and ctype == "text/csv", f"got {data!r} {ctype}")
+
+    # SAME LENGTH, so that nothing can pass by comparing sizes: st_size is unchanged and the
+    # manifest chat-backend already holds still says 18 bytes.
+    forged = b"ATTACKER-OWNED-YOU"
+    check("artifact integrity: the probe's overwrite keeps the size identical",
+          len(forged) == len(victim))
+    with open(os.path.join(dirs.artifacts, "private.csv"), "wb") as fh:
+        fh.write(forged)
+    expect_request_error("artifact integrity: an OVERWRITTEN artifact is refused, not served",
+                         lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+    served, _ = sup.read_artifact_bytes(dirs.artifacts, "private.csv", expected_digests=None)
+    check("artifact integrity: NEGATIVE CONTROL — with the binding disabled the same read "
+          "hands back the attacker's bytes",
+          served == forged, f"got {served!r}")
+
+    with open(os.path.join(dirs.artifacts, "planted.csv"), "wb") as fh:
+        fh.write(b"PLANTED")
+    entries_now, _, _ = sup.build_manifest(dirs.artifacts)
+    check("artifact integrity: the planted file really is on disk and would be listed by a "
+          "manifest built now",
+          "planted.csv" in {e["name"] for e in entries_now})
+    expect_request_error("artifact integrity: a PLANTED artifact — one no manifest ever "
+                         "listed — is refused",
+                         lambda: s.read_artifact(eid, "planted.csv"), 404, "NotFound")
+    served, _ = sup.read_artifact_bytes(dirs.artifacts, "planted.csv", expected_digests=None)
+    check("artifact integrity: NEGATIVE CONTROL — with the binding disabled the planted file "
+          "is served",
+          served == b"PLANTED", f"got {served!r}")
+
+    # An execution retained by _register_retention rather than by _retain — an exception before
+    # build_manifest ever ran — advertised nothing, so it serves nothing.
+    other = "33333333-3333-4333-8333-333333333333"
+    odirs = sup.ExecutionDirs(root, other)
+    odirs.create()
+    with open(os.path.join(odirs.artifacts, "orphan.csv"), "wb") as fh:
+        fh.write(b"x")
+    s._register_retention(other, odirs)
+    s._retained_ids.add(other)
+    expect_request_error("artifact integrity: an execution retained without a manifest serves "
+                         "nothing at all",
+                         lambda: s.read_artifact(other, "orphan.csv"), 404, "NotFound")
+    expect_request_error("artifact integrity: and it still answers the name rules first, so "
+                         "the digest map cannot mask a 400",
+                         lambda: s.read_artifact(other, "../orphan.csv"), 400, "InvalidRequest")
+
+    s._forget_retained(eid)
+    check("artifact integrity: forgetting a retained execution drops its digest map too",
+          eid not in s._artifact_digests, f"{sorted(s._artifact_digests)}")
+
+
+ENV_NO_SEAL = "SUPERVISOR_TEST_NO_SEAL"
+ENV_SEAL_NO_AAD = "SUPERVISOR_TEST_SEAL_NO_AAD"
+ENV_SEAL_NO_EID_AAD = "SUPERVISOR_TEST_SEAL_NO_EID_AAD"
+ENV_SEAL_KEEPS_PLAINTEXT = "SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT"
+ENV_SEAL_NO_RELEASE_PURGE = "SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE"
+
+
+def _unsealed_retained(self, job):
+    """_seal_retained as the completion path was BEFORE 4h6.88. The negative control.
+
+    Nothing is encrypted, nothing is purged and no key is kept, and `None` tells build_manifest
+    to hash the directory from disk exactly as it used to. read_artifact then finds no key and
+    reads plaintext — which is the whole pre-fix behaviour, restored in one method.
+
+    `job.sealed` IS STILL SET, because the pre-fix path set no such flag and _release must not
+    react to this control by emptying the directory — that would make the control test
+    _secure_unsealed instead of the seal.
+    """
+    job.sealed = True
+    return None, 0, True
+
+
+def _aad_without_name(execution_id, name):
+    """artifact_aad with the NAME dropped, so every artifact of one execution is sealed under
+    the same associated data and their ciphertexts become interchangeable. The control for the
+    NAME half of the binding, which is what makes a relabel fail rather than succeed."""
+    return execution_id.encode("utf-8")
+
+
+def _aad_without_execution_id(execution_id, name):
+    """artifact_aad with the EXECUTION ID dropped, so the same name in two executions is sealed
+    under the same associated data. The control for the OTHER half.
+
+    IT EXISTS BECAUSE _aad_without_name DOES NOT COVER IT. That control still binds the
+    execution id, so it turns red only on the relabel and the "lifted into another execution"
+    half of the same check went untested — a check asserting name AND execution id had a
+    negative control for one of them. The two are separate env vars rather than one because a
+    control that drops both cannot show which half each assertion rests on.
+    """
+    return name.encode("utf-8")
+
+
+def _purge_that_keeps_plaintext(artifacts_dir):
+    """_purge_artifacts with the deletion removed: it counts what it found and leaves it on
+    disk. The control for the fail-closed arm — with it installed a seal that dies partway
+    leaves the plaintext exactly where the child wrote it.
+
+    It returns `emptied=False` because that is the TRUTH about what it did. The pre-fix
+    _purge_artifacts returned a bare count, which is precisely the defect
+    genetics-results-suite-4h6.88's review found: the caller could not tell "destroyed
+    everything" from "destroyed nothing" and logged the first while the second had happened.
+    A control that lied in the second slot would exercise the log line rather than the
+    plumbing.
+    """
+    return sum(1 for _ in sup._iter_dir_names(artifacts_dir, sup.TRIM_ENTRY_CEILING)), False
+
+
+def _release_without_purge(self, job):
+    """_secure_unsealed with the emptying removed. The control for the structural half of the
+    property: with it installed, an execution that raises before the seal retains its whole
+    directory in the clear for RETENTION_S, which is the original demonstrated attack."""
+    return None
+
+
+def _fake_job(root, execution_id):
+    """What _seal_retained reads off a job: its execution id and its directories."""
+    dirs = sup.ExecutionDirs(root, execution_id)
+    dirs.create()
+    return types.SimpleNamespace(dirs=dirs,
+                                 req=types.SimpleNamespace(execution_id=execution_id))
+
+
+def _write(path, data):
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+def test_artifact_encryption(tmp):
+    """genetics-results-suite-4h6.88: a RETAINED artifact must not be plaintext on disk.
+
+    WHAT THIS PROVES AND WHAT IT CANNOT. The demonstrated attack is a second execution's child
+    doing listdir(/scratch), opening a peer's artifacts/private.csv and reading
+    SECRET-VICTIM-DATA out of it — every file under /scratch is readable at the shared uid
+    65532 and mkdir 0700 protects nothing when there is one uid. What is asserted here is the
+    thing that closes: after the seal pass, the bytes a same-uid reader finds on disk are not
+    the bytes the script wrote. THE LIVE WINDOW IS NOT CLOSED and is not asserted about — the
+    child writes plaintext with a raw open() while it runs, and no test here or elsewhere may
+    be read as covering that.
+
+    The reads are done AT THE HARNESS'S OWN UID for the same reason test_artifact_integrity
+    does its writes there: the threat is any process at the shared uid, and routing it through
+    a forked child would test the fork rather than the control.
+
+    FIVE NEGATIVE CONTROLS, because most of these checks would pass vacuously on an empty or
+    unsealed directory. SUPERVISOR_TEST_NO_SEAL=1 puts the pre-4h6.88 completion path back,
+    SUPERVISOR_TEST_SEAL_NO_AAD=1 drops the NAME from the associated data,
+    SUPERVISOR_TEST_SEAL_NO_EID_AAD=1 drops the EXECUTION ID from it,
+    SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 removes the fail-closed destruction, and
+    SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE=1 removes the emptying of a directory that is
+    retained without ever having been sealed.
+    """
+    no_seal = os.environ.get(ENV_NO_SEAL) == "1"
+    no_aad = os.environ.get(ENV_SEAL_NO_AAD) == "1"
+    no_eid_aad = os.environ.get(ENV_SEAL_NO_EID_AAD) == "1"
+    keeps_plaintext = os.environ.get(ENV_SEAL_KEEPS_PLAINTEXT) == "1"
+    no_release_purge = os.environ.get(ENV_SEAL_NO_RELEASE_PURGE) == "1"
+    seal_suffix = (" (SUPERVISOR_TEST_NO_SEAL=1 is installed: this is the control)"
+                   if no_seal else "")
+    aad_suffix = ((" (SUPERVISOR_TEST_SEAL_NO_AAD=1 is installed: this is the control)"
+                   if no_aad else "")
+                  + (" (SUPERVISOR_TEST_SEAL_NO_EID_AAD=1 is installed: this is the control)"
+                     if no_eid_aad else ""))
+    purge_suffix = (" (SUPERVISOR_TEST_SEAL_KEEPS_PLAINTEXT=1 is installed: this is the "
+                    "control)" if keeps_plaintext else "")
+    release_suffix = (" (SUPERVISOR_TEST_SEAL_NO_RELEASE_PURGE=1 is installed: this is the "
+                      "control)" if no_release_purge else "")
+
+    real_seal_retained = sup.Supervisor._seal_retained
+    real_secure_unsealed = sup.Supervisor._secure_unsealed
+    real_aad = sup.artifact_aad
+    real_purge = sup._purge_artifacts
+    real_seal_artifact = sup.seal_artifact
+    real_seal_retained_artifacts = sup.seal_retained_artifacts
+    if no_seal:
+        sup.Supervisor._seal_retained = _unsealed_retained
+    if no_aad:
+        sup.artifact_aad = _aad_without_name
+    if no_eid_aad:
+        sup.artifact_aad = _aad_without_execution_id
+    if keeps_plaintext:
+        sup._purge_artifacts = _purge_that_keeps_plaintext
+    if no_release_purge:
+        sup.Supervisor._secure_unsealed = _release_without_purge
+    try:
+        root = os.path.join(tmp, "sealed")
+        os.makedirs(root)
+        s = sup.Supervisor(root, ready=True)
+
+        # -- the pass itself, over a directory holding what a real child can leave behind ----
+        eid = "44444444-4444-4444-8444-444444444444"
+        job = _fake_job(root, eid)
+        art = job.dirs.artifacts
+        secret = b"SECRET-VICTIM-DATA,1\n"
+        _write(os.path.join(art, "private.csv"), secret)
+        _write(os.path.join(art, "second.csv"), b"another,2\n")
+        # Four things build_manifest omits and read_artifact can never address, and that are
+        # therefore pure retained plaintext with no reader: a subdirectory's contents, a
+        # symlink, a hard link to a file outside the tree, and a name with a control character.
+        os.makedirs(os.path.join(art, "subdir"))
+        _write(os.path.join(art, "subdir", "hidden.txt"), b"HIDDEN-PLAINTEXT")
+        os.symlink("/etc/passwd", os.path.join(art, "link.txt"))
+        _write(os.path.join(root, "outside.csv"), b"OUTSIDE-PLAINTEXT")
+        os.link(os.path.join(root, "outside.csv"), os.path.join(art, "hardlink.csv"))
+        _write(os.path.join(art, "new\nline.txt"), b"CONTROL-CHAR-PLAINTEXT")
+        # A ZERO-BYTE ARTIFACT is an ordinary output, not an edge case somebody contrived: an
+        # empty result frame from to_csv, a log nothing wrote to. It seals to a bare envelope
+        # and it is the case the read path used to die on.
+        _write(os.path.join(art, "empty.bin"), b"")
+
+        s._retention[eid] = [time.monotonic() + 900, 100]
+        sealed, purged, secured = s._seal_retained(job)
+
+        left = sorted(os.listdir(art))
+        check("artifact seal: what no read path can ever address is deleted rather than "
+              "retained in the clear — a subdirectory, a symlink, a hard link and an "
+              "unretrievable name all go, and are counted into artifacts_omitted",
+              left == ["empty.bin", "private.csv", "second.csv"] and purged == 4,
+              f"left {left}, purged {purged}" + seal_suffix)
+        check("artifact seal: the pass reports that the directory is secured, which is the "
+              "only thing that means 'no plaintext was left behind'",
+              secured is True, f"secured {secured!r}" + seal_suffix)
+
+        with open(os.path.join(art, "private.csv"), "rb") as fh:
+            on_disk = fh.read()
+        check("artifact seal: THE PROPERTY — a same-uid reader of a retained artifact gets "
+              "the sealed envelope, not the bytes the script wrote",
+              secret not in on_disk and on_disk[:len(secret)] != secret,
+              f"read {on_disk[:40]!r} back off disk" + seal_suffix)
+        check("artifact seal: the envelope costs exactly a nonce and a tag",
+              len(on_disk) == len(secret) + sup.ARTIFACT_ENVELOPE_BYTES,
+              f"{len(on_disk)} bytes on disk for {len(secret)} of plaintext" + seal_suffix)
+        check("artifact seal: the pass reports the PLAINTEXT size and the PLAINTEXT digest, "
+              "measured while the plaintext still existed",
+              sealed and sealed.get("private.csv")
+              == (len(secret), hashlib.sha256(secret).hexdigest()),
+              f"got {sealed.get('private.csv') if sealed else sealed!r}" + seal_suffix)
+
+        entries, omitted, digests = sup.build_manifest(art, sealed=sealed)
+        by_name = {e["name"]: e for e in entries}
+        check("artifact seal: the manifest still describes the PLAINTEXT — same size, same "
+              "digest — so nothing downstream changes meaning because the file grew",
+              by_name.get("private.csv", {}).get("size") == len(secret)
+              and digests.get("private.csv") == hashlib.sha256(secret).hexdigest(),
+              f"got {by_name.get('private.csv')} {digests.get('private.csv')!r}")
+
+        s._record_digests(eid, digests)
+        s._retained_ids.add(eid)
+        key = s._artifact_keys.get(eid)
+        check("artifact seal: the key is a MUTABLE buffer, so it can be wiped in place rather "
+              "than rebound",
+              no_seal or (isinstance(key, bytearray) and len(key) == sup.ARTIFACT_KEY_BYTES),
+              f"got {type(key).__name__}" + seal_suffix)
+        # NOT asserted for these files: the cached size is charged in st_blocks, and a
+        # 21-byte artifact and its 49-byte envelope occupy the same block, so the honest
+        # growth here is 0. The check that the correction happens at all is in the read-cap
+        # block below, where the artifact is exactly one page short of the next block.
+
+        data, ctype = s.read_artifact(eid, "private.csv")
+        check("artifact seal: the read path opens it again and hands back the plaintext",
+              data == secret and ctype == "text/csv", f"got {data!r} {ctype}")
+
+        # THE ZERO-BYTE BOUNDARY. The size group below pins ARTIFACT_READ_MAX_BYTES and
+        # ARTIFACT_READ_MAX_BYTES + 1 and never pinned 0, and 0 is where the read broke:
+        # seal_artifact handled it correctly, open_artifact raised ValueError out of the
+        # ctypes layer, and no handler on the way to the socket caught that type.
+        # RECORDED RATHER THAN PASSED VACUOUSLY under the control: these two are statements
+        # about a seal map and a sealed file, and SUPERVISOR_TEST_NO_SEAL=1 produces neither.
+        if no_seal:
+            skip("artifact seal: a ZERO-BYTE artifact seals to a bare envelope and is "
+                 "advertised with the digest of nothing",
+                 "SUPERVISOR_TEST_NO_SEAL=1 builds no seal map")
+            skip("artifact seal: and a zero-byte sealed artifact is exactly the envelope on "
+                 "disk", "SUPERVISOR_TEST_NO_SEAL=1 seals nothing")
+        else:
+            check("artifact seal: a ZERO-BYTE artifact seals to a bare envelope and is "
+                  "advertised with the digest of nothing",
+                  sealed.get("empty.bin") == (0, hashlib.sha256(b"").hexdigest()),
+                  f"got {sealed.get('empty.bin')!r}")
+            check("artifact seal: and a zero-byte sealed artifact is exactly the envelope on "
+                  "disk",
+                  os.path.getsize(os.path.join(art, "empty.bin"))
+                  == sup.ARTIFACT_ENVELOPE_BYTES,
+                  f"{os.path.getsize(os.path.join(art, 'empty.bin'))} bytes")
+        empty_read = None
+        try:
+            empty_read = s.read_artifact(eid, "empty.bin")
+        except Exception as exc:                     # noqa: BLE001 — the point is the TYPE
+            empty_read = exc
+        check("artifact seal: THE 0-BYTE READ — an empty artifact the manifest advertised "
+              "opens and returns b'', rather than raising a type no handler catches and "
+              "killing the connection with no status line",
+              empty_read == (b"", "application/octet-stream"),
+              f"got {empty_read!r}")
+
+        if no_seal:
+            # EVERY check the else branch owns is recorded, not only the first. Four of them
+            # used to simply not execute under this control with nothing in the output to say
+            # so, which is how a mode ends up proving less than its summary line claims.
+            for name, why in (
+                ("artifact seal: a sealed file MOVED to another name inside the same "
+                 "execution is refused", "leaves nothing sealed to move"),
+                ("artifact seal: a sealed artifact does not open under a name, or an "
+                 "execution id, it was not sealed for", "seals nothing to bind an AAD to"),
+                ("artifact seal: another execution's key does not open it",
+                 "mints no key for a wrong one to be substituted for"),
+                ("artifact seal: a file planted AFTER the pass is not in the seal map",
+                 "builds no seal map for a planted file to be absent from"),
+                ("artifact seal: forgetting a retained execution WIPES its key in place",
+                 "keeps no key to wipe"),
+            ):
+                skip(name, f"SUPERVISOR_TEST_NO_SEAL=1 {why}")
+        else:
+            first = os.path.join(art, "private.csv")
+            second = os.path.join(art, "second.csv")
+            with open(first, "rb") as fh:
+                a_bytes = fh.read()
+            with open(second, "rb") as fh:
+                b_bytes = fh.read()
+            _write(first, b_bytes)
+            _write(second, a_bytes)
+            expect_request_error(
+                "artifact seal: a sealed file MOVED to another name inside the same execution "
+                "is refused",
+                lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+            _write(first, a_bytes)
+            _write(second, b_bytes)
+
+            # THE NAME BINDING IS ASSERTED ON THE PRIMITIVE, not through read_artifact, and
+            # the distinction is the whole reason this check is written this way. A swapped
+            # file is refused through read_artifact whether or not the name is in the
+            # associated data, because the PLAINTEXT digest catches it as well — so that
+            # check cannot tell the two apart and must not be read as evidence for either.
+            # What only the AAD catches is a ciphertext opening under a name, or an
+            # execution, it was not sealed for.
+            aad_dir = os.path.join(tmp, "aad")
+            os.makedirs(aad_dir, exist_ok=True)
+            _write(os.path.join(aad_dir, "one.csv"), b"BOUND-TO-ITS-OWN-NAME\n")
+            probe_key = sup.new_artifact_key()
+            adfd = os.open(aad_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                sup.seal_artifact(adfd, "one.csv", probe_key, sup.artifact_aad(eid, "one.csv"))
+            finally:
+                os.close(adfd)
+            with open(os.path.join(aad_dir, "one.csv"), "rb") as fh:
+                one_blob = fh.read()
+            other_eid = "88888888-8888-4888-8888-888888888888"
+            moved = []
+            for label, aad in (("another name", sup.artifact_aad(eid, "two.csv")),
+                               ("another execution",
+                                sup.artifact_aad(other_eid, "one.csv"))):
+                try:
+                    sup.open_artifact(one_blob, probe_key, aad)
+                except sup.ArtifactCryptoError:
+                    continue
+                moved.append(label)
+            sup.wipe_artifact_key(probe_key)
+            check("artifact seal: a sealed artifact does not open under a name, or an "
+                  "execution id, it was not sealed for — both are bound into the associated "
+                  "data, so a ciphertext cannot be relabelled or lifted between executions",
+                  not moved, f"opened under {moved}" + aad_suffix)
+
+            other_key = sup.new_artifact_key()
+            s._artifact_keys[eid] = other_key
+            expect_request_error(
+                "artifact seal: another execution's key does not open it",
+                lambda: s.read_artifact(eid, "private.csv"), 409, "ArtifactModified")
+            sup.wipe_artifact_key(other_key)
+            s._artifact_keys[eid] = key
+
+            planted = os.path.join(art, "planted.csv")
+            _write(planted, b"PLANTED-BY-A-PEER")
+            entries_now, _, _ = sup.build_manifest(art, sealed=sealed)
+            check("artifact seal: a file planted AFTER the pass is not in the seal map, so the "
+                  "manifest omits it rather than listing something it cannot open",
+                  "planted.csv" not in {e["name"] for e in entries_now},
+                  f"got {[e['name'] for e in entries_now]}")
+            os.unlink(planted)
+
+            key_object = key
+            s._forget_retained(eid)
+            check("artifact seal: forgetting a retained execution WIPES its key in place and "
+                  "drops it, so the key never outlives the entry it belongs to",
+                  eid not in s._artifact_keys
+                  and key_object == bytearray(sup.ARTIFACT_KEY_BYTES),
+                  f"{eid in s._artifact_keys}, key {bytes(key_object)!r}")
+
+        # -- the read cap applies to the PLAINTEXT, at the boundary ------------------------
+        cap = sup.ARTIFACT_READ_MAX_BYTES
+        for size, want_status in ((cap, None), (cap + 1, 413)):
+            beid = ("55555555-5555-4555-8555-555555555555" if want_status is None
+                    else "66666666-6666-4666-8666-666666666666")
+            bjob = _fake_job(root, beid)
+            _write(os.path.join(bjob.dirs.artifacts, "big.bin"), b"z" * size)
+            s._retention[beid] = [time.monotonic() + 900, 0]
+            bsealed, _, _ = s._seal_retained(bjob)
+            if want_status is None:
+                check("artifact seal: the envelope growth is added back into the cached "
+                      "retained size, so RETAINED_ARTIFACTS_CEILING is not enforced against "
+                      "a pre-seal number (this artifact is a whole number of blocks, so the "
+                      "envelope really does cost another one)",
+                      no_seal or s._retention[beid][1] > 0,
+                      f"cached size {s._retention[beid][1]}" + seal_suffix)
+            _, _, bdigests = sup.build_manifest(bjob.dirs.artifacts, sealed=bsealed)
+            s._record_digests(beid, bdigests)
+            s._retained_ids.add(beid)
+            if want_status is None:
+                got, _ = s.read_artifact(beid, "big.bin")
+                check("artifact seal: an artifact of EXACTLY ARTIFACT_READ_MAX_BYTES is still "
+                      "served — the cap bounds the response, so it is charged against the "
+                      "plaintext and the envelope does not push it over",
+                      len(got) == cap, f"got {len(got)} bytes for a {size}-byte artifact")
+            else:
+                expect_request_error(
+                    "artifact seal: one byte over the cap is still 413, so sealing did not "
+                    "move the boundary in either direction",
+                    lambda: s.read_artifact(beid, "big.bin"), 413, "ArtifactTooLarge")
+
+        # -- fail closed, LOCALISED: one unsealable file does not destroy the rest ----------
+        # The blast radius is the finding. The pass used to raise on the first file it could
+        # not seal and the caller answered by destroying the execution's WHOLE output —
+        # MEASURED, three readable artifacts vanished behind a 200 because a fourth was
+        # chmod 000. chmod is contrived; ENOSPC is not, and the seal writes a full temporary
+        # copy of every artifact into the same 512Mi emptyDir the retained trees live in.
+        feid = "77777777-7777-4777-8777-777777777777"
+        fjob = _fake_job(root, feid)
+        for n in range(3):
+            _write(os.path.join(fjob.dirs.artifacts, f"f{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[feid] = [time.monotonic() + 900, 0]
+        calls = []
+
+        def failing_seal(dfd, name, key_, aad, chunk_bytes=sup.CRYPT_CHUNK_BYTES):
+            calls.append(name)
+            if len(calls) == 2:
+                raise sup.ArtifactCryptoError("simulated libcrypto failure")
+            return real_seal_artifact(dfd, name, key_, aad, chunk_bytes)
+
+        sup.seal_artifact = failing_seal
+        try:
+            fsealed, fomitted_n, fsecured = s._seal_retained(fjob)
+        finally:
+            sup.seal_artifact = real_seal_artifact
+        victim = calls[1] if len(calls) > 1 else None
+        remaining = sorted(os.listdir(fjob.dirs.artifacts))
+        clear = []
+        for name in remaining:
+            with open(os.path.join(fjob.dirs.artifacts, name), "rb") as fh:
+                if b"PLAINTEXT-" in fh.read():
+                    clear.append(name)
+        check("artifact seal: FAIL CLOSED — a file that could not be sealed leaves no "
+              "plaintext behind, because the alternative is retaining exactly what the seal "
+              "exists to remove",
+              not clear, f"still in the clear: {clear}" + seal_suffix + purge_suffix)
+        localised_name = ("artifact seal: LOCALISED — the one unsealable file is deleted and "
+                          "the execution's OTHER artifacts are sealed and still listed, so a "
+                          "single failure does not destroy an output the caller has already "
+                          "paid for")
+        manifest_name = ("artifact seal: LOCALISED — the manifest advertises the survivors "
+                         "and not the one that went, so no caller is told about an artifact "
+                         "it cannot have")
+        if no_seal:
+            skip(localised_name, "SUPERVISOR_TEST_NO_SEAL=1 seals nothing to survive")
+        else:
+            check(localised_name,
+                  victim is not None and victim not in remaining
+                  and len(remaining) == 2 and set(fsealed) == set(remaining),
+                  f"remaining {remaining}, victim {victim!r}, sealed {sorted(fsealed)}")
+        check("artifact seal: LOCALISED — the deleted file is counted into "
+              "artifacts_omitted, so it does not vanish silently either",
+              fomitted_n == 1, f"got {fomitted_n}" + seal_suffix + purge_suffix)
+        check("artifact seal: LOCALISED — and the pass still reports the directory secured, "
+              "because everything that is not sealed is gone",
+              fsecured is True, f"secured {fsecured!r}" + seal_suffix + purge_suffix)
+        fentries, _, fdigests = sup.build_manifest(fjob.dirs.artifacts, sealed=fsealed)
+        if no_seal:
+            skip(manifest_name, "SUPERVISOR_TEST_NO_SEAL=1 builds no seal map to filter by")
+        else:
+            check(manifest_name,
+                  {e["name"] for e in fentries} == set(remaining)
+                  and victim not in fdigests,
+                  f"got {[e['name'] for e in fentries]}")
+
+        # -- fail closed, WHOLE EXECUTION: a failure that cannot be attributed to one file --
+        geid = "99999999-9999-4999-8999-999999999999"
+        gjob = _fake_job(root, geid)
+        for n in range(3):
+            _write(os.path.join(gjob.dirs.artifacts, f"g{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[geid] = [time.monotonic() + 900, 0]
+
+        def unlocalisable(*a, **kw):
+            # What "cannot be attributed to one file" means: the directory would not open, the
+            # entry bound was exceeded, libcrypto went away. Nothing on disk has been examined,
+            # so nothing on disk can be trusted.
+            raise sup.ArtifactCryptoError("simulated non-localisable failure")
+
+        sup.seal_retained_artifacts = unlocalisable
+        try:
+            gsealed, gomitted_n, gsecured = s._seal_retained(gjob)
+        finally:
+            sup.seal_retained_artifacts = real_seal_retained_artifacts
+        gremaining = sorted(os.listdir(gjob.dirs.artifacts))
+        gclear = []
+        for name in gremaining:
+            with open(os.path.join(gjob.dirs.artifacts, name), "rb") as fh:
+                if b"PLAINTEXT-" in fh.read():
+                    gclear.append(name)
+        check("artifact seal: FAIL CLOSED — a failure the pass cannot attribute to any one "
+              "file destroys the whole directory, because nothing in it has been examined",
+              not gclear, f"still in the clear: {gclear}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — and it does not vanish silently either: the "
+              "destroyed artifacts are counted into artifacts_omitted and nothing is listed",
+              gsealed == {} and gomitted_n == 3,
+              f"got {gsealed!r} {gomitted_n}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — the whole-directory purge succeeded, so the pass "
+              "reports the directory secured",
+              gsecured is True, f"secured {gsecured!r}" + seal_suffix + purge_suffix)
+        gentries, _, gdigests = sup.build_manifest(gjob.dirs.artifacts, sealed=gsealed)
+        check("artifact seal: FAIL CLOSED — the manifest built afterwards advertises nothing, "
+              "so no caller is told about an artifact it cannot have",
+              gentries == [] and gdigests == {},
+              f"got {gentries} {gdigests}" + seal_suffix + purge_suffix)
+        check("artifact seal: FAIL CLOSED — and the execution still answers, because the "
+              "retention path failing is not the script failing",
+              geid in s._retention and geid not in s._artifact_keys,
+              f"retained {geid in s._retention}, key {geid in s._artifact_keys}")
+
+        # -- NOT fail-closed, and it says so: plaintext that could not be REMOVED either -----
+        # MEASURED before the fix: a same-uid peer chmod 0500 on artifacts/ between the retain
+        # and the seal produced the log line "destroyed 0 rather than retaining them in the
+        # clear" over two files that were, at that moment, in the clear — and a 200 whose only
+        # signal was a larger artifacts_omitted. A count cannot distinguish "destroyed
+        # everything" from "destroyed nothing", so _purge_artifacts now returns whether the
+        # directory is actually empty and every caller has to answer it.
+        ueid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ujob = _fake_job(root, ueid)
+        for n in range(2):
+            _write(os.path.join(ujob.dirs.artifacts, f"u{n}.csv"), b"PLAINTEXT-%d\n" % n)
+        s._retention[ueid] = [time.monotonic() + 900, 0]
+        sup.seal_retained_artifacts = unlocalisable
+        sup._purge_artifacts = lambda d: (0, False)   # the chmod 0500 outcome, deterministically
+        try:
+            with _LogCapture() as ulog:
+                usealed, uomitted_n, usecured = s._seal_retained(ujob)
+        finally:
+            sup.seal_retained_artifacts = real_seal_retained_artifacts
+            sup._purge_artifacts = (_purge_that_keeps_plaintext if keeps_plaintext
+                                    else real_purge)
+        check("artifact seal: NOT SECURED — when the plaintext can be neither sealed nor "
+              "deleted the pass says so, because that is the one outcome artifacts_omitted "
+              "cannot describe",
+              usecured is False and usealed == {},
+              f"secured {usecured!r}, sealed {usealed!r}")
+        check("artifact seal: NOT SECURED — and the log does not claim a property the code "
+              "did not achieve: it says the artifacts are retained in the clear, and never "
+              "'destroyed N rather than retaining them in the clear'",
+              "RETAINED IN THE CLEAR" in "\n".join(ulog.lines)
+              and "rather than retaining them in the clear" not in "\n".join(ulog.lines),
+              f"logged {ulog.lines!r}")
+        real_purge(ujob.dirs.artifacts)
+
+        # -- an entry that will not even stat is removed and counted, not skipped ------------
+        # `continue` on the os.stat left such an entry outside BOTH halves of "what is not
+        # sealed is deleted" and outside artifacts_omitted: neither sealed, nor purged, nor
+        # counted. A dangling symlink is the cheapest way to build one whose stat succeeds only
+        # with follow_symlinks=False, so the stat itself is made to fail instead.
+        seid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        sjob = _fake_job(root, seid)
+        _write(os.path.join(sjob.dirs.artifacts, "kept.csv"), b"KEPT\n")
+        _write(os.path.join(sjob.dirs.artifacts, "unstattable.csv"), b"PLAINTEXT-X\n")
+        s._retention[seid] = [time.monotonic() + 900, 0]
+        real_stat = os.stat
+
+        def refusing_stat(path, *a, **kw):
+            if path == "unstattable.csv":
+                raise OSError(5, "simulated EIO")
+            return real_stat(path, *a, **kw)
+
+        os.stat = refusing_stat
+        try:
+            ssealed, somitted_n, ssecured = s._seal_retained(sjob)
+        finally:
+            os.stat = real_stat
+        sleft = sorted(os.listdir(sjob.dirs.artifacts))
+        unstat_name = ("artifact seal: an entry that cannot be examined is REMOVED and "
+                       "COUNTED rather than skipped — nothing may be neither sealed, nor "
+                       "purged, nor reported")
+        if no_seal:
+            skip(unstat_name, "SUPERVISOR_TEST_NO_SEAL=1 never examines an entry at all")
+        else:
+            check(unstat_name,
+                  sleft == ["kept.csv"] and somitted_n == 1 and ssecured is True,
+                  f"left {sleft}, omitted {somitted_n}, secured {ssecured!r}")
+
+        # -- STRUCTURAL: a directory retained WITHOUT the seal pass is emptied ---------------
+        # THE ORIGINAL DEMONSTRATED ATTACK, reproduced against the sealed build. _seal_retained
+        # runs on the completion path only, so ANY exception out of _execute_inner — a
+        # ForkServerError out of _reap, which this module models explicitly — propagated PAST
+        # it and run()'s finally retained the directory with the child's plaintext exactly
+        # where it wrote it, for the whole of RETENTION_S. The read path answering 404 is not
+        # a defence: the threat is a same-uid open() on a flat, enumerable /scratch.
+        reid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        rjob = sup.Job(types.SimpleNamespace(execution_id=reid), None)
+        rjob.dirs = sup.ExecutionDirs(root, reid)
+        rjob.dirs.create()
+        _write(os.path.join(rjob.dirs.artifacts, "private.csv"), b"SECRET-VICTIM-DATA,1\n")
+        _write(os.path.join(rjob.dirs.tmp, "scratch.tmp"), b"SECRET-VICTIM-DATA,2\n")
+        check("artifact seal: (setup) a job that never reached the seal pass is not marked "
+              "sealed", rjob.sealed is False, f"sealed {rjob.sealed!r}")
+        s._release(rjob, retain=True)
+        rleft = []
+        for dirpath, _, filenames in os.walk(rjob.dirs.base):
+            rleft.extend(os.path.join(dirpath, f) for f in filenames)
+        rclear = []
+        for path in rleft:
+            with open(path, "rb") as fh:
+                if b"SECRET-VICTIM-DATA" in fh.read():
+                    rclear.append(os.path.relpath(path, rjob.dirs.base))
+        check("artifact seal: STRUCTURAL — an execution that RAISED before the seal retains "
+              "nothing in the clear; nothing was ever advertised for it, so emptying the "
+              "directory costs no caller anything",
+              not rclear, f"still in the clear: {sorted(rclear)}" + release_suffix)
+        check("artifact seal: STRUCTURAL — and the directory itself stays, so the execution "
+              "id remains reserved and the reaper removes it on the usual schedule",
+              os.path.isdir(rjob.dirs.base) and reid in s._retention,
+              f"dir {os.path.isdir(rjob.dirs.base)}, retained {reid in s._retention}")
+        s._forget_retained(reid)
+
+        # -- the startup gate ---------------------------------------------------------------
+        probe_dir = os.path.join(tmp, "selftest")
+        os.makedirs(probe_dir)
+        selftest_raised = None
+        try:
+            sup.crypto_selftest(probe_dir)
+        except Exception as exc:
+            selftest_raised = exc
+        check("artifact seal: crypto_selftest passes and leaves nothing behind — it is the "
+              "startup gate, so a pod whose libcrypto cannot seal never reports ready",
+              selftest_raised is None and os.listdir(probe_dir) == [],
+              f"raised {selftest_raised!r}, left {os.listdir(probe_dir)}")
+    finally:
+        sup.Supervisor._seal_retained = real_seal_retained
+        sup.Supervisor._secure_unsealed = real_secure_unsealed
+        sup.artifact_aad = real_aad
+        sup._purge_artifacts = real_purge
+        sup.seal_artifact = real_seal_artifact
+        sup.seal_retained_artifacts = real_seal_retained_artifacts
 
 def test_artifact_scoping(tmp):
     """The id is the authorisation, and only a RETAINED execution has one."""
@@ -451,6 +1258,11 @@ def test_artifact_scoping(tmp):
         fh.write(b"\x89PNG")
 
     s = sup.Supervisor(root, ready=True)
+    # What a completed execution leaves behind: a retention row and the digest map its manifest
+    # was built from. Both are what _retain and _execute_inner write; see test_artifact_integrity
+    # for what the map is FOR.
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, sup.build_manifest(dirs.artifacts)[2])
     expect_request_error("artifact scoping: a directory that exists but is not retained is 404",
                          lambda: s.read_artifact(eid, "plot.png"), 404, "NotFound")
     expect_request_error("artifact scoping: a malformed execution id is 400",
@@ -462,6 +1274,189 @@ def test_artifact_scoping(tmp):
           data == b"\x89PNG" and ctype == "image/png", f"got {data!r} {ctype}")
     expect_request_error("artifact scoping: retention does not widen the name rules",
                          lambda: s.read_artifact(eid, "../plot.png"), 400, "InvalidRequest")
+
+
+def test_artifact_fifo_does_not_block(tmp):
+    """genetics-results-suite-4h6.52: a listed name replaced by a FIFO must not hang the read.
+
+    THE HAZARD IS A REPLACEMENT DURING RETENTION, not a plant. A planted fifo is not in the
+    digest map and is refused before it is opened; build_manifest lists regular files only. But
+    a same-uid peer can `unlink` a name the manifest DID list and `mkfifo` it back, and
+    `O_RDONLY` on a fifo with no writer blocks IN THE KERNEL — before the `S_ISREG` that would
+    refuse it ever runs. That thread then never returns, and the chat turn waiting on the read
+    never gets an answer. It is a one-line denial of service from inside the sandbox.
+
+    This became the ONLY read path when read_artifact stopped reading chat-backend's own
+    filesystem: the local reader carried O_NONBLOCK from the start, so before the convergence
+    the flag existed somewhere. Now it has to exist here.
+
+    THE READ RUNS ON ITS OWN THREAD WITH A DEADLINE, because the failure mode under test is a
+    hang: asserting the return value alone would leave a regression wedging the whole harness
+    rather than failing it.
+    """
+    root = os.path.join(tmp, "fifo")
+    os.makedirs(root)
+    eid = "44444444-4444-4444-8444-444444444444"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    with open(os.path.join(dirs.artifacts, "results.tsv"), "wb") as fh:
+        fh.write(b"rsid\tpval\n")
+
+    s = sup.Supervisor(root, ready=True)
+    s._retention[eid] = [time.monotonic() + 900, 0]
+    s._record_digests(eid, sup.build_manifest(dirs.artifacts)[2])
+    s._retained_ids.add(eid)
+    data, _ = s.read_artifact(eid, "results.tsv")
+    check("artifact fifo: the regular file it replaces is served normally",
+          data == b"rsid\tpval\n", f"got {data!r}")
+
+    os.unlink(os.path.join(dirs.artifacts, "results.tsv"))
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+
+    outcome = {}
+
+    def read():
+        try:
+            outcome["data"] = s.read_artifact(eid, "results.tsv")
+        except BaseException as exc:
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=read, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(10)
+    elapsed = time.monotonic() - started
+    check("artifact fifo: a listed name replaced by a FIFO does not block the read",
+          not thread.is_alive(), f"still running after {elapsed:.1f}s")
+    if thread.is_alive():
+        return
+    exc = outcome.get("exc")
+    check("artifact fifo: it is refused as not-found, the same answer every other "
+          "non-regular file gets",
+          isinstance(exc, sup.RequestError) and exc.status == 404,
+          f"got {outcome!r}")
+    check("artifact fifo: and it is refused in well under a second, not at some timeout",
+          elapsed < 1.0, f"took {elapsed:.1f}s")
+
+    # _artifact_digest carries the same flag for the same reason: build_manifest stats an entry
+    # and finds a regular file, and the replacement can land before the digest's own open.
+    dfd = os.open(dirs.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        digest = {}
+
+        def hash_it():
+            digest["value"] = sup._artifact_digest(dfd, "results.tsv")
+
+        thread = threading.Thread(target=hash_it, daemon=True)
+        thread.start()
+        thread.join(10)
+        # It RETURNS A DIGEST rather than None: a non-blocking read of a writerless fifo gives
+        # EOF, not EAGAIN, so the hash is over zero bytes. Do not read that as harmless in
+        # general — if the peer swaps the fifo for an EMPTY REGULAR FILE before the read, the
+        # empty hash MATCHES and read_artifact_bytes serves it as digest-verified. What makes
+        # it moot is narrower: build_manifest's `sealed is None` branch, the only caller of
+        # _artifact_digest, has no production caller of its own (_execute_inner always passes a
+        # sealed map), so this function runs only here. What matters in this check is only that
+        # the manifest build cannot be wedged by a fifo.
+        check("artifact fifo: hashing one for the manifest does not block either",
+              not thread.is_alive(), f"alive={thread.is_alive()} digest={digest!r}")
+    finally:
+        os.close(dfd)
+
+
+def test_seal_fifo_does_not_block(tmp):
+    """genetics-results-suite-4h6.52: the seal pass must not hang on a FIFO either.
+
+    THIS IS THE SITE PRODUCTION ACTUALLY REACHES. `_artifact_digest` only runs in
+    `build_manifest`'s `sealed is None` branch, which `_execute_inner` never takes; the open
+    that runs on every completed execution is `seal_artifact`'s. `seal_retained_artifacts`
+    lstats the entry, checks `S_ISREG` and `st_nlink == 1`, and THEN opens it by name — the
+    identical check-then-open window. A same-uid peer that unlinks a listed regular file and
+    `mkfifo`s it back inside that window would block `O_RDONLY` in the kernel forever, on the
+    completion path, holding the execution slot with no timeout above it.
+
+    ON A THREAD WITH A DEADLINE, because the failure mode is a hang: without O_NONBLOCK in
+    `seal_artifact` this check fails on the deadline instead of wedging the whole harness.
+    """
+    root = os.path.join(tmp, "sealfifo")
+    os.makedirs(root)
+    eid = "45454545-4545-4545-8545-454545454545"
+    dirs = sup.ExecutionDirs(root, eid)
+    dirs.create()
+    with open(os.path.join(dirs.artifacts, "keep.tsv"), "wb") as fh:
+        fh.write(b"rsid\tpval\n")
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+
+    key = bytearray(os.urandom(sup.ARTIFACT_KEY_BYTES))
+    outcome = {}
+
+    def seal():
+        try:
+            outcome["value"] = sup.seal_retained_artifacts(dirs.artifacts, eid, key)
+        except BaseException as exc:  # noqa: BLE001 - reported through the check below
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=seal, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(10)
+    elapsed = time.monotonic() - started
+    check("seal fifo: a listed name replaced by a FIFO does not block the seal pass",
+          not thread.is_alive(), f"still running after {elapsed:.1f}s")
+    if thread.is_alive():
+        return
+    check("seal fifo: and it returns in well under a second, not at some timeout",
+          elapsed < 1.0, f"took {elapsed:.1f}s")
+    check("seal fifo: the pass completed rather than raising",
+          "exc" not in outcome, f"raised {outcome.get('exc')!r}")
+    if "exc" in outcome:
+        return
+    sealed, _purged, _growth, stranded = outcome["value"]
+    # seal_retained_artifacts stats BEFORE the open, so in this test the fifo is rejected at
+    # S_ISREG and never reaches seal_artifact. The point of the check is the deadline: the
+    # window the flag closes is not reproducible from outside the pass, so the open itself is
+    # driven directly below.
+    check("seal fifo: the real artifact still sealed",
+          "keep.tsv" in sealed and stranded == 0, f"got {sealed!r} stranded={stranded}")
+
+    # THE WINDOW ITSELF: seal_artifact called on a name that is a fifo, which is exactly what
+    # seal_retained_artifacts holds after a peer swaps the file between its stat and this open.
+    # Re-made here because the pass above already purged the first one at its S_ISREG check.
+    os.mkfifo(os.path.join(dirs.artifacts, "results.tsv"))
+    dfd = os.open(dirs.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        direct = {}
+
+        def seal_one():
+            try:
+                direct["value"] = sup.seal_artifact(dfd, "results.tsv", key,
+                                                    sup.artifact_aad(eid, "results.tsv"))
+            except BaseException as exc:  # noqa: BLE001 - reported through the check below
+                direct["exc"] = exc
+
+        thread = threading.Thread(target=seal_one, daemon=True)
+        started = time.monotonic()
+        thread.start()
+        thread.join(10)
+        elapsed = time.monotonic() - started
+        check("seal fifo: seal_artifact itself does not block on a FIFO in that window",
+              not thread.is_alive(), f"still running after {elapsed:.1f}s")
+        if thread.is_alive():
+            return
+        check("seal fifo: it returns in well under a second",
+              elapsed < 1.0, f"took {elapsed:.1f}s")
+        # EOF on the first read, so what is renamed over the name is an empty sealed regular
+        # file. That is the intended outcome, not a hole: a peer able to swap the name could
+        # have truncated the file anyway, and the digest recorded is the digest of what will
+        # actually be served.
+        check("seal fifo: the fifo is replaced by an empty sealed regular file",
+              direct.get("value") == (0, hashlib.sha256(b"").hexdigest()),
+              f"got {direct!r}")
+        st = os.stat("results.tsv", dir_fd=dfd, follow_symlinks=False)
+        check("seal fifo: and the name is no longer a fifo",
+              sup.stat.S_ISREG(st.st_mode), f"mode={st.st_mode:o}")
+    finally:
+        os.close(dfd)
 
 
 # --------------------------------------------------------------------------------------
@@ -514,6 +1509,10 @@ class Server:
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        # Each Server brings up its own supervisor and therefore its own fork server; without
+        # this the run accumulates one idle fork server per group.
+        if self.supervisor is not None and self.supervisor.forkserver is not None:
+            self.supervisor.forkserver.close()
 
 
 class RemoteServer(Server):
@@ -656,6 +1655,139 @@ def test_http(server):
               status == 400 and body["error"]["type"] == "InvalidRequest", f"got {status} {body}")
         status, _, body = server.request("POST", "/artifact", body={})
         check("http: POST /artifact -> 405", status == 405, f"got {status}")
+
+        # 4h6.82 over the wire, against an artifact a REAL execution wrote and a REAL manifest
+        # listed: the tamper is a plain write at the shared uid, which is the whole primitive.
+        # Container mode has no host view of /scratch, so it cannot do the write.
+        if server.host_scratch is None:
+            skip("http: /artifact refuses a tampered artifact",
+                 "no host view of /scratch in container mode")
+        else:
+            out_csv = os.path.join(server.host_scratch, payload["execution_id"],
+                                   "artifacts", "out.csv")
+            # 4h6.88 over the wire, against an artifact a REAL execution wrote: what a process
+            # at the shared uid finds on disk is the sealed envelope, not what the script
+            # wrote. The bytes are kept so the negative control below can put back what was
+            # THERE rather than what was WRITTEN — restoring plaintext would no longer
+            # authenticate, and the control has to isolate the write's content, not the seal.
+            with open(out_csv, "rb") as fh:
+                sealed_on_disk = fh.read()
+            check("http: a retained artifact is SEALED on disk — a same-uid read gets the "
+                  "envelope and not the four bytes the script wrote "
+                  "(genetics-results-suite-4h6.88)",
+                  b"a,b\n" not in sealed_on_disk
+                  and len(sealed_on_disk) == 4 + sup.ARTIFACT_ENVELOPE_BYTES,
+                  f"read {sealed_on_disk!r} off disk")
+            with open(out_csv, "wb") as fh:
+                fh.write(b"x,y\n")     # same four bytes' worth of shape, different content
+            status, _, body = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
+            check("http: /artifact refuses an artifact that was overwritten after its manifest "
+                  "was built",
+                  status == 409 and body["error"]["type"] == "ArtifactModified",
+                  f"got {status} {body}")
+            planted = os.path.join(server.host_scratch, payload["execution_id"],
+                                   "artifacts", "planted.csv")
+            with open(planted, "wb") as fh:
+                fh.write(b"p\n")
+            status, _, body = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=planted.csv")
+            check("http: /artifact refuses a file planted into a retained execution",
+                  status == 404 and body["error"]["type"] == "NotFound", f"got {status} {body}")
+            os.unlink(planted)
+            with open(out_csv, "wb") as fh:
+                fh.write(sealed_on_disk)   # restore, so later checks see the execution's own bytes
+            status, _, art = server.request(
+                "GET", f"/artifact?execution_id={payload['execution_id']}&name=out.csv")
+            check("http: NEGATIVE CONTROL — restoring the SEALED bytes the execution itself "
+                  "left on disk makes /artifact serve it again, so the refusal is the content "
+                  "check and not the fact that a write happened",
+                  status == 200 and base64.b64decode(art["content_base64"]) == b"a,b\n",
+                  f"got {status} {art}")
+
+        # THE ZERO-BYTE BOUNDARY, ON THE WIRE (genetics-results-suite-4h6.88). An empty
+        # artifact is ordinary — a result frame with no rows, a log nothing wrote to — and it
+        # is the case where the sealed read used to raise out of the ctypes layer into
+        # socketserver.handle_error, which logs a traceback and CLOSES THE SOCKET WITH NO
+        # STATUS LINE. So this asserts a STATUS, not only a body: a wire check is the only
+        # one that can tell "409" from "the connection died".
+        status, _, body = server.request("POST", "/execute", body=make_body(
+            code="import os\n"
+                 "d = os.environ['SANDBOX_ARTIFACTS_DIR']\n"
+                 "open(os.path.join(d, 'empty.bin'), 'wb').close()\n"
+                 "open(os.path.join(d, 'ok.csv'), 'w').write('a,1\\n')\n"))
+        empty_eid = body["execution_id"]
+        check("http: an execution that writes a ZERO-BYTE artifact lists it in the manifest "
+              "with size 0",
+              status == 200
+              and {(e["name"], e["size"]) for e in body["artifacts"]}
+              == {("empty.bin", 0), ("ok.csv", 4)},
+              f"got {status} {body.get('artifacts')}")
+        check("http: a normal execution carries artifacts_retained_in_clear false — the field "
+              "is always present, so a client can read it without treating absence as safe",
+              body.get("artifacts_retained_in_clear") is False,
+              f"got {body.get('artifacts_retained_in_clear')!r}")
+        status, _, art = server.request(
+            "GET", f"/artifact?execution_id={empty_eid}&name=empty.bin")
+        check("http: GET on the zero-byte artifact the manifest advertised answers 200 with "
+              "an empty body — the manifest must never name something the read cannot serve",
+              status == 200 and art.get("size") == 0
+              and base64.b64decode(art["content_base64"]) == b"",
+              f"got {status} {art}")
+        status, _, art = server.request(
+            "GET", f"/artifact?execution_id={empty_eid}&name=ok.csv")
+        check("http: and the non-empty artifact of the same execution still serves, so the "
+              "zero-byte case did not poison the connection or the key",
+              status == 200 and base64.b64decode(art["content_base64"]) == b"a,1\n",
+              f"got {status} {art}")
+
+        # THE WIRE ANSWER WHEN PLAINTEXT COULD NOT BE REMOVED (genetics-results-suite-4h6.88).
+        # A 200 whose only signal is a larger artifacts_omitted is not adequate for "we could
+        # not remove your data": that field means "produced, present, not listed". So the
+        # response carries artifacts_retained_in_clear, and this is the only place the mapping
+        # from `secured=False` to the wire can be observed.
+        #
+        # AND IT MUST NOT BE A 500. That was the first answer, and it was a same-uid
+        # DENIAL-OF-SERVICE kill switch: MEASURED 3 for 3, a second process at this uid
+        # polling /scratch/*/artifacts and chmod 0500-ing them turned every execution into
+        # `http=500 output=None` — the stdout of a script that ran to completion, destroyed by
+        # a peer. The 500 bought no confidentiality either: deletion is exactly what failed,
+        # so that peer already holds the plaintext whichever status the caller gets. These two
+        # checks pin the trade in both directions — the output survives, AND the exposure is
+        # stated rather than folded into a count.
+        not_secured_name = ("http: an execution whose retained plaintext could be neither "
+                            "sealed nor deleted still returns its stdout — a same-uid peer "
+                            "cannot deny service by making the seal fail")
+        not_secured_field = ("http: and it says so in artifacts_retained_in_clear, its own "
+                             "field, NOT by inflating artifacts_omitted — the caller must be "
+                             "able to tell 'not listed' from 'readable at this uid'")
+        if server.container:
+            for name in (not_secured_name, not_secured_field):
+                skip(name, "the supervisor is in another process; nothing here can "
+                           "make its seal pass report an unsecured directory")
+        else:
+            real_seal = sup.Supervisor._seal_retained
+            sup.Supervisor._seal_retained = lambda self, job: ({}, 2, False)
+            try:
+                status, _, body = server.request("POST", "/execute", body=make_body(
+                    code="import os\n"
+                         "open(os.path.join(os.environ['SANDBOX_ARTIFACTS_DIR'],'x.csv'),'w')"
+                         ".write('a\\n')\n"
+                         "print('STDOUT-THE-CALLER-PAID-FOR')\n"))
+            finally:
+                sup.Supervisor._seal_retained = real_seal
+            check(not_secured_name,
+                  status == 200 and body["status"] == "ok" and body["error"] is None
+                  and "STDOUT-THE-CALLER-PAID-FOR" in (body.get("output") or ""),
+                  f"got {status} {body}")
+            # 3 = the stub's 2 purged + the one artifact the script wrote, which the manifest
+            # omits because the (stubbed) seal map does not name it. The count is still a
+            # truthful "produced, present, not listed"; what it cannot say is that those bytes
+            # are readable at this uid, which is the boolean's job.
+            check(not_secured_field,
+                  body.get("artifacts_retained_in_clear") is True
+                  and body["artifacts"] == [] and body["artifacts_omitted"] == 3,
+                  f"got {body}")
 
         # an uncaught exception
         status, _, body = server.request("POST", "/execute", body=make_body(
@@ -1204,6 +2336,26 @@ def test_retention_expiry(server):
 # --------------------------------------------------------------------------------------
 
 
+def _all_retained_with_ceiling(tmp, ids, digests, ceiling=1 << 40):
+    """Retain the same ids and maps with the memory ceiling raised, and count what survives.
+
+    The negative control for the memory ceiling: without it, "everything was evicted" and "the
+    supervisor evicts on some unrelated ground" look identical.
+    """
+    real = sup.RETAINED_STATE_CEILING_BYTES
+    sup.RETAINED_STATE_CEILING_BYTES = ceiling
+    try:
+        sv = sup.Supervisor(tmp)
+        for eid in ids:
+            with sv._lock:
+                sv._retention[eid] = [time.monotonic() + 900, 0]
+            sv._retained_ids.add(eid)
+            sv._record_digests(eid, dict(digests))
+        return len(sv._retention)
+    finally:
+        sup.RETAINED_STATE_CEILING_BYTES = real
+
+
 def test_cap_units(tmp):
     head, tail = sup.RETURN_HEAD_BYTES, sup.RETURN_TAIL_BYTES
 
@@ -1370,11 +2522,14 @@ def test_hardening_units(tmp):
     os.makedirs(many)
     for i in range(sup.ARTIFACT_ENTRY_BUDGET + 200):
         open(os.path.join(many, "m%05d.txt" % i), "w").close()
-    entries, omitted = sup.build_manifest(many)
+    entries, omitted, digests = sup.build_manifest(many)
     check("manifest: the entry count is capped",
           len(entries) == sup.ARTIFACT_ENTRY_BUDGET, f"got {len(entries)}")
     check("manifest: what it did not list is reported in artifacts_omitted",
           omitted == 200, f"got {omitted}")
+    check("manifest: the digest map covers exactly what was listed, so the cap cannot leave "
+          "a listed name unverifiable",
+          set(digests) == {e["name"] for e in entries}, f"{len(digests)} vs {len(entries)}")
     check("manifest: the scan limit bounds the walk itself",
           sup.build_manifest(many, max_entries=10, scan_limit=50)[0].__len__() == 10)
 
@@ -1481,6 +2636,36 @@ def test_hardening_units(tmp):
     evicted = sv._enforce_retained_ceiling()
     check("ceiling: a single over-ceiling execution is evicted, not left sitting above it",
           evicted == ["only-one"] and not sv._retention, f"got {evicted} {list(sv._retention)}")
+
+    # -- ZERO BYTES ON DISK IS NOT ZERO COST. 1024 empty artifacts with long names measure 0
+    # against the disk ceiling and cost ~0.5 MB of digest map each, and the number of retained
+    # executions has no count cap — so before RETAINED_STATE_CEILING_BYTES this accumulated for
+    # the whole retention window with nothing able to evict it (pod OOM at 512 Mi).
+    sv = sup.Supervisor(tmp)
+    fat = {("a" * 200) + str(i): "0" * 64 for i in range(sup.ARTIFACT_ENTRY_BUDGET)}
+    ids = []
+    for i in range(24):
+        eid = f"{i:08d}-0000-4000-8000-000000000000"
+        ids.append(eid)
+        with sv._lock:
+            sv._retention[eid] = [time.monotonic() + 900, 0]   # zero BYTES on disk
+        sv._retained_ids.add(eid)
+        sv._record_digests(eid, dict(fat))
+    held = sum(sv._retained_memory_costs().values())
+    check("ceiling: the digest maps of executions that are free on disk are still bounded, "
+          "oldest-first, by the memory ceiling",
+          held <= sup.RETAINED_STATE_CEILING_BYTES and len(sv._retention) < len(ids),
+          f"{held} bytes over {len(sv._retention)} retained rows")
+    check("ceiling: NEGATIVE CONTROL — the same maps with the memory ceiling raised out of "
+          "the way are all retained, so the bound above is the thing doing the work",
+          _all_retained_with_ceiling(tmp, ids, fat) == len(ids),
+          "eviction happened for some other reason")
+    check("ceiling: eviction FAILS CLOSED — an evicted id is gone from the digest map and "
+          "from _retained_ids, so it cannot serve unverified bytes",
+          all((eid in sv._artifact_digests) == (eid in sv._retention)
+              and (eid in sv._retained_ids) == (eid in sv._retention) for eid in ids),
+          f"retained={len(sv._retention)} digests={len(sv._artifact_digests)} "
+          f"ids={len(sv._retained_ids)}")
 
     # -- a directory that was created must be registered for reaping whether or not the
     # execution reached _retain: _retained_ids alone made the id answer 409 with nothing
@@ -2122,6 +3307,2896 @@ def test_startup_wipe(tmp):
 
 
 # --------------------------------------------------------------------------------------
+# 11. cross-execution memory isolation (genetics-results-suite-4h6.55, option (b))
+# --------------------------------------------------------------------------------------
+#
+# THIS GROUP TESTS THE PROPERTY, NOT THE PLUMBING. 4h6.55 demonstrated a child recovering
+# another user's tokens, source code and session id by four routes; a test that the fork
+# server starts would prove none of them closed. So the probe below IS the bead's probe: it
+# runs as a real execution, in a real forked child, and goes looking.
+#
+# THE POSITIVE CONTROLS ARE THE LOAD-BEARING PART. A search that finds nothing proves nothing
+# unless the same search finds something it should, so the probe carries two:
+#   * a string planted in the supervisor module BEFORE the fork server is forked. It is in the
+#     fork server's inherited pages by construction, so every route that can read inherited
+#     memory MUST report it. If /proc/self/mem stops working (gVisor, a hardened /proc), this
+#     control goes red and the group fails loudly instead of passing vacuously.
+#   * the probe's own token, read from its own token file. It proves the needle shape and the
+#     matcher are capable of finding a credential in this address space.
+#
+# NEEDLES ARE CARRIED AS SPLIT HALVES and never concatenated in the probe. A probe that held
+# the whole needle would find it in its own code object and report a hit against itself.
+
+_ISOLATION_PROBE = r'''
+import gc, json, os, sys, time
+import collections
+
+PAIRS = __PAIRS__          # [[label, first_half, second_half], ...]
+SLEEP_S = __SLEEP_S__
+
+def _hit(text, a, b):
+    i = text.find(a)
+    while i != -1:
+        if text[i + len(a): i + len(a) + len(b)] == b:
+            return True
+        i = text.find(a, i + 1)
+    return False
+
+def _hit_bytes(blob, a, b):
+    a = a.encode(); b = b.encode()
+    i = blob.find(a)
+    while i != -1:
+        if blob[i + len(a): i + len(a) + len(b)] == b:
+            return True
+        i = blob.find(a, i + 1)
+    return False
+
+_SEQS = (list, tuple, set, frozenset, collections.deque)
+
+def _harvest(roots, depth=8, budget=2000000):
+    """Every string reachable from `roots`. Covers module globals, frame dicts and instance
+    attributes including __slots__, which is what the bead's routes 1-3 walked by hand."""
+    seen = set()
+    stack = [(r, 0) for r in roots]
+    n = 0
+    while stack and n < budget:
+        obj, d = stack.pop()
+        if d > depth:
+            continue
+        oid = id(obj)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        if isinstance(obj, str):
+            n += 1
+            yield obj
+            continue
+        if isinstance(obj, (bytes, bytearray)):
+            n += 1
+            yield bytes(obj).decode('utf-8', 'replace')
+            continue
+        if isinstance(obj, dict):
+            for k, v in list(obj.items())[:50000]:
+                stack.append((k, d + 1))
+                stack.append((v, d + 1))
+            continue
+        if isinstance(obj, _SEQS):
+            for v in list(obj)[:50000]:
+                stack.append((v, d + 1))
+            continue
+        dd = getattr(obj, '__dict__', None)
+        if isinstance(dd, dict):
+            stack.append((dd, d + 1))
+        for slot in getattr(type(obj), '__slots__', ()) or ():
+            try:
+                stack.append((getattr(obj, slot), d + 1))
+            except Exception:
+                pass
+
+def route_module_global():
+    roots = [m for m in list(sys.modules.values()) if getattr(m, 'SUPERVISOR', None) is not None]
+    roots = [m.SUPERVISOR for m in roots] + [getattr(m, '__dict__', {}) for m in roots]
+    return _harvest(roots)
+
+def route_frames():
+    roots = []
+    f = sys._getframe()
+    while f is not None:
+        roots.append(f.f_locals)
+        roots.append(f.f_globals)
+        f = f.f_back
+    return _harvest(roots, depth=6)
+
+def route_gc():
+    for obj in gc.get_objects():
+        for ref in gc.get_referents(obj):
+            if isinstance(ref, str):
+                yield ref
+            elif isinstance(ref, (bytes, bytearray)):
+                yield bytes(ref).decode('utf-8', 'replace')
+
+def scan_refs(route, out):
+    for text in route:
+        for label, a, b in PAIRS:
+            if label in out:
+                continue
+            if _hit(text, a, b):
+                out.add(label)
+
+def scan_mem(out):
+    """The route that decided the design: the raw address space, which no amount of dropping
+    references can clean because freed strings stay in the arenas COW hands over.
+
+    Its findings are kept SEPARATE from the reference routes'. Folding them together lets a
+    dead memory scan hide behind a live reference hit, and this is the route the bead says
+    decides the design — it has to be shown working on its own.
+    """
+    try:
+        lines = open('/proc/self/maps').read().splitlines()
+        mem = os.open('/proc/self/mem', os.O_RDONLY)
+    except OSError as exc:
+        return 'unavailable: %s' % exc
+    scanned = 0
+    try:
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 2 or 'r' not in parts[1]:
+                continue
+            path = parts[5] if len(parts) > 5 else ''
+            if path in ('[vvar]', '[vdso]', '[vsyscall]', '[vvar_vclock]'):
+                continue
+            lo, _, hi = parts[0].partition('-')
+            try:
+                lo = int(lo, 16); hi = int(hi, 16)
+            except ValueError:
+                continue
+            size = hi - lo
+            if size <= 0 or size > 64 * 1024 * 1024 or scanned > 768 * 1024 * 1024:
+                continue
+            try:
+                os.lseek(mem, lo, os.SEEK_SET)
+                blob = os.read(mem, size)
+            except OSError:
+                continue
+            scanned += len(blob)
+            for label, a, b in PAIRS:
+                if label not in out and _hit_bytes(blob, a, b):
+                    out.add(label)
+    finally:
+        os.close(mem)
+    return scanned
+
+result = {}
+for phase in ('released', 'queued'):
+    if phase == 'queued':
+        time.sleep(SLEEP_S)
+    found = set()
+    scan_refs(route_module_global(), found)
+    scan_refs(route_frames(), found)
+    scan_refs(route_gc(), found)
+    in_mem = set()
+    mem = scan_mem(in_mem)
+    result[phase] = {'found': sorted(found | in_mem), 'ref_found': sorted(found),
+                     'mem_found': sorted(in_mem),
+                     'mem': mem if isinstance(mem, str) else 'ok'}
+print('PROBERESULT ' + json.dumps(result))
+'''
+
+
+def _pair(value):
+    """A needle as two halves, so the probe never holds the whole thing."""
+    cut = len(value) // 2
+    return [value[:cut], value[cut:]]
+
+
+def test_isolation(tmp):
+    root = os.path.join(tmp, "isolation")
+    os.makedirs(root)
+
+    # PLANTED BEFORE THE SERVER IS BUILT, and that ordering is the control. bring_up() forks
+    # the fork server, so anything set on the module now is in the fork server's inherited
+    # pages and every child must be able to see it.
+    control = "FORKSRVCTL" + os.urandom(16).hex().upper()
+    sup.ISOLATION_TEST_CONTROL = control
+
+    # THE SECOND CONTROL IS THE BEAD'S OWN SANITY PROBE: a string dropped and gc.collect()-ed
+    # BEFORE the fork, which the bead measured still recoverable in the child. It is what
+    # proves the raw scan reads FREED arenas and not merely live objects, and therefore what
+    # makes "reference-based clearing cannot work" a measurement rather than a claim. It is
+    # reported rather than required — an arena can legitimately be reused or returned to the
+    # OS between the drop and the scan, and a control that is right most of the time must not
+    # be allowed to fail a suite.
+    # 4 KiB of padding so the allocation goes to malloc rather than a pymalloc pool: a 44-byte
+    # string lands in a size class that the supervisor's own startup reuses within microseconds,
+    # which makes the control skip for a reason that has nothing to do with the property.
+    freed = "FORKSRVFREED" + os.urandom(16).hex().upper() + "." * 4096
+    freed_pair = _pair(freed[:44])   # the halves survive; the whole string must not
+    sup.ISOLATION_TEST_FREED = freed
+    del sup.ISOLATION_TEST_FREED
+    del freed
+    gc.collect()
+
+    server = Server(root)
+    try:
+        # -- victim 1: runs to completion and is released before the probe starts.
+        v1 = os.urandom(12).hex().upper()
+        body1 = make_body(code=f"x = 'VICTIMCODE{v1}'\nprint('victim one')\n",
+                          user=f"v1-{v1[:8]}@b.c", session_id=f"sess-{v1}")
+        status, _, _ = server.request("POST", "/execute", body1)
+        check("isolation: the released victim executed", status == 200, f"got {status}")
+
+        # -- victim 2 will be QUEUED behind the probe. Its markers are known now so the probe
+        # can carry them; the request itself is sent after the probe is running.
+        v2 = os.urandom(12).hex().upper()
+        body2 = make_body(code=f"y = 'VICTIMCODE{v2}'\nprint('victim two')\n",
+                          user=f"v2-{v2[:8]}@b.c", session_id=f"sess-{v2}")
+
+        pairs = [
+            ["control-forkserver", *_pair(control)],
+            ["control-freed", *freed_pair],
+            ["released-token", *_pair(body1["tokens"]["db-api"].split(".")[1])],
+            ["released-code", *_pair("VICTIMCODE" + v1)],
+            ["released-session", *_pair("sess-" + v1)],
+            ["queued-token", *_pair(body2["tokens"]["db-api"].split(".")[1])],
+            ["queued-code", *_pair("VICTIMCODE" + v2)],
+            ["queued-session", *_pair("sess-" + v2)],
+        ]
+        probe_code = (_ISOLATION_PROBE
+                      .replace("__PAIRS__", json.dumps(pairs))
+                      .replace("__SLEEP_S__", "2.0"))
+        probe_body = make_body(code=probe_code, user="probe@b.c", session_id="sess-probe")
+        probe_body["timeout_s"] = 60
+
+        box = {}
+        t = threading.Thread(
+            target=lambda: box.update(zip(("status", "retry", "body"),
+                                          server.request("POST", "/execute", probe_body))),
+            daemon=True)
+        t.start()
+        # Long enough for the probe to be the running execution, short enough that victim 2 is
+        # still queued when the probe's second phase scans.
+        time.sleep(0.6)
+        box2 = {}
+        t2 = threading.Thread(
+            target=lambda: box2.update(zip(("status", "retry", "body"),
+                                           server.request("POST", "/execute", body2))),
+            daemon=True)
+        t2.start()
+        t.join(120)
+        t2.join(120)
+
+        body = box.get("body") or {}
+        check("isolation: the probe execution completed",
+              box.get("status") == 200 and body.get("status") == "ok",
+              f"got {box.get('status')} {str(body)[:300]}")
+        check("isolation: victim two was queued behind the probe and then ran",
+              box2.get("status") == 200, f"got {box2.get('status')}")
+
+        line = ""
+        for candidate in (body.get("output") or "").splitlines():
+            if candidate.startswith("PROBERESULT "):
+                line = candidate[len("PROBERESULT "):]
+        try:
+            result = json.loads(line)
+        except Exception:
+            result = None
+        check("isolation: the probe reported a result",
+              isinstance(result, dict) and set(result) == {"released", "queued"},
+              f"output was {str(body.get('output'))[:400]}")
+        if not isinstance(result, dict):
+            return
+
+        for phase in ("released", "queued"):
+            found = set(result[phase]["found"])
+            in_mem = set(result[phase]["mem_found"])
+            in_refs = set(result[phase].get("ref_found", ()))
+            check(f"isolation [{phase}]: the positive control IS reachable, so the search works",
+                  "control-forkserver" in found, f"found {sorted(found)}")
+            # SEPARATELY FROM THE MEM SCAN, because `found` is the union and the union hid a
+            # dead search: SABOTAGED, making scan_refs return immediately — which kills the
+            # module-global, frame-walk and gc routes all at once — left this suite GREEN,
+            # since the mem hit alone satisfied the check above. Three of the four advertised
+            # routes had no positive control at all.
+            check(f"isolation [{phase}]: the reference routes (module global, frame walk, gc) "
+                  f"reach the positive control on their own",
+                  "control-forkserver" in in_refs, f"the reference routes found {sorted(in_refs)}")
+            check(f"isolation [{phase}]: the raw /proc/self/mem scan reaches the fork "
+                  f"server's inherited pages",
+                  result[phase]["mem"] == "ok" and "control-forkserver" in in_mem,
+                  f"mem said {result[phase]['mem']}, found {sorted(in_mem)}")
+            if "control-freed" in in_mem:
+                check(f"isolation [{phase}]: the memory scan recovers a string FREED before "
+                      f"the fork, which is why no reference-clearing fix could have worked",
+                      True)
+            else:
+                skip(f"isolation [{phase}]: the freed-string control",
+                     "its arena was reused or returned before the scan; the live-object "
+                     "control above still proves the scan reads inherited pages")
+            leaked = sorted(found - {"control-forkserver", "control-freed"})
+            check(f"isolation [{phase}]: no other execution's token, code or session id "
+                  f"is reachable from the child", not leaked, f"LEAKED {leaked}")
+    finally:
+        server.close()
+
+
+def test_forkserver_units(tmp):
+    """The two invariants the fork server exists to hold, checked directly rather than through
+    an execution: it never receives user data, and the payload never touches a named file."""
+    payload = {"code": "print(1)", "env": {"A": "b"}, "cwd": tmp}
+    for name, forced in (("memfd", False), ("fallback", True)):
+        real = getattr(sup.os, "memfd_create", None)
+        if forced and real is not None:
+            sup.os.memfd_create = lambda *a, **k: (_ for _ in ()).throw(OSError("forced"))
+        try:
+            before = set(os.listdir(tmp))
+            fd = sup._payload_fd(payload, tmp)
+            try:
+                check(f"payload fd ({name}): leaves no name behind",
+                      set(os.listdir(tmp)) == before, f"{set(os.listdir(tmp)) - before}")
+                check(f"payload fd ({name}): round-trips code, env and cwd",
+                      sup._read_payload(fd) == (payload["code"], payload["env"], payload["cwd"]))
+            finally:
+                os.close(fd)
+        finally:
+            if forced and real is not None:
+                sup.os.memfd_create = real
+
+    big = {"code": "x" * (sup.PAYLOAD_MAX_BYTES + 1), "env": {}, "cwd": tmp}
+    fd = sup._payload_fd(big, tmp)
+    try:
+        try:
+            sup._read_payload(fd)
+        except ValueError:
+            check("payload fd: an over-cap payload is refused rather than read", True)
+        else:
+            check("payload fd: an over-cap payload is refused rather than read", False,
+                  "it was read")
+    finally:
+        os.close(fd)
+
+    # The control protocol carries an op name and nothing else. This is the check that fails
+    # if somebody later "just adds the execution id" to the fork message.
+    src = open(os.path.join(ROOT, "sandbox", "supervisor.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    sent = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_round_trip"):
+            continue
+        for arg in node.args[:1]:
+            if isinstance(arg, ast.Dict):
+                sent.append({k.value for k in arg.keys if isinstance(k, ast.Constant)})
+    check("fork server protocol: every control message is drawn from a fixed key set",
+          sent and all(keys <= {"op", "pid", "nohang"} for keys in sent), f"{sent}")
+
+    fs = sup.ForkServer.start()
+    try:
+        check("fork server: it is in the supervisor's own process group, so _resolve_pgid's "
+              "guard still catches a child that has not reached setsid()",
+              os.getpgid(fs.pid) == os.getpgrp(), f"{os.getpgid(fs.pid)} vs {os.getpgrp()}")
+        expect = "expected 4 descriptors"
+        try:
+            fs._round_trip({"op": sup.FS_OP_FORK})
+        except sup.ForkServerError as exc:
+            check("fork server: a fork without its four descriptors is refused",
+                  expect in str(exc), f"said {exc}")
+        else:
+            check("fork server: a fork without its four descriptors is refused", False, "accepted")
+        try:
+            fs._round_trip({"op": "nonsense"})
+        except sup.ForkServerError as exc:
+            check("fork server: an unknown op is refused", "unknown op" in str(exc), str(exc))
+        else:
+            check("fork server: an unknown op is refused", False, "accepted")
+    finally:
+        fs.close()
+    check("fork server: close() reaps it", fs.pid is None)
+
+    # -- A FAILED ROUND TRIP LOSES MESSAGE ALIGNMENT PERMANENTLY. SOCK_SEQPACKET cannot lose
+    # framing, but a send that succeeded followed by a receive that did not leaves the peer's
+    # reply queued: MEASURED on the unfixed tree, after an FS_OP_WAIT timed out at 0.5s the next
+    # FS_OP_REAP returned that WAIT's {'ok': True}. The ordering that matters is a fork whose
+    # reply is lost — the child WAS forked, so the next execution adopts a stale pid and
+    # watchdogs, killpgs and reaps the PREVIOUS user's child. The socket must fail closed.
+    fs = sup.ForkServer.start()
+    try:
+        real_recv = sup._fs_recv
+
+        def _timeout(*_a, **_k):
+            raise socket.timeout("timed out")
+
+        sup._fs_recv = _timeout
+        try:
+            fs._round_trip({"op": sup.FS_OP_REAP, "pid": os.getpid(), "nohang": True})
+        except sup.ForkServerError:
+            check("fork server: a round trip whose reply is lost raises", True)
+        else:
+            check("fork server: a round trip whose reply is lost raises", False, "it returned")
+        finally:
+            sup._fs_recv = real_recv
+        # The fork server answered that message and the answer is sitting in the socket. A
+        # handle that carried on would hand it back as the reply to this next, unrelated call.
+        try:
+            reply = fs._round_trip({"op": "nonsense"})
+        except sup.ForkServerError as exc:
+            check("fork server: after a failed round trip the control socket is poisoned and "
+                  "every later call refuses rather than reading the previous reply",
+                  "unusable" in str(exc), f"said {exc}")
+        else:
+            check("fork server: after a failed round trip the control socket is poisoned and "
+                  "every later call refuses rather than reading the previous reply",
+                  False, f"it answered {reply}")
+        check("fork server: a poisoned control socket is not alive()", not fs.alive())
+        # BLOCKING 2's other half: a supervisor holding a poisoned or dead fork server must
+        # report it, because sandbox.yaml has only a readinessProbe and 200 ok would leave a
+        # permanently broken pod in the Service endpoints forever.
+        sick = sup.Supervisor(os.path.join(tmp, "sick-health"), ready=True)
+        sick.forkserver = fs
+        code, payload = sick.health()
+        check("health: a supervisor whose fork server is unusable answers 503 forkserver-down, "
+              "so the readiness probe pulls the pod out of endpoints",
+              code == 503 and payload["status"] == "forkserver-down", f"got {code} {payload}")
+    finally:
+        fs.close()
+
+
+def test_forkserver_lost_fork_reply(tmp):
+    """A fork whose {"pid": n} reply never arrives must not leave the child running.
+
+    THIS IS THE HOLE 4h6.55 OPENED AND THE ONLY ONE POISONING DOES NOT CLOSE. The fork server
+    forked the child and answered; the supervisor's round trip failed before reading it, so
+    job.pid stays None and neither _execute_inner's finally nor the watchdog has a pid to kill
+    — the supervisor cannot name the process at all. Poisoning stops that pid being
+    MISATTRIBUTED to the next execution, which was the dangerous half, but the child itself
+    keeps running user code at uid 65532 with write access to /scratch for the pod's lifetime.
+    Before the fork server the supervisor forked directly and always knew the pid, so nothing
+    older covers this. The fork server tracks what it forked and kills it when the control
+    channel ends; the test steals the pid the supervisor never sees and watches it die.
+    """
+    marker = os.path.join(tmp, "lost-reply.started")
+    code = f"import os, time\nopen({marker!r}, 'w').write(str(os.getpid()))\ntime.sleep(300)\n"
+    fs = sup.ForkServer.start()
+    seen = {}
+    fds = []
+    try:
+        payload_fd = sup._payload_fd({"code": code, "env": {}, "cwd": tmp}, tmp)
+        out_r, out_w = os.pipe()
+        status_r, status_w = os.pipe()
+        audit_r, audit_w = os.pipe()
+        fds = [payload_fd, out_r, out_w, status_r, status_w, audit_r, audit_w]
+        real_recv = sup._fs_recv
+
+        def _lose_the_reply(sock, maxfds=0):
+            reply, extra = real_recv(sock, maxfds)
+            seen.update(reply or {})
+            # Do not raise until the child is demonstrably running the user's code, so this is
+            # the real ordering and not a race the fix could win by accident.
+            deadline = time.monotonic() + 30
+            while not os.path.exists(marker) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            raise socket.timeout("timed out")
+
+        sup._fs_recv = _lose_the_reply
+        try:
+            fs.fork_child(payload_fd, out_w, status_w, audit_w)
+        except sup.ForkServerError:
+            pass
+        finally:
+            sup._fs_recv = real_recv
+
+        child = seen.get("pid")
+        check("lost fork reply: the fork server forked a child and the supervisor did not "
+              "learn its pid", isinstance(child, int) and os.path.exists(marker),
+              f"reply {seen}, marker {os.path.exists(marker)}")
+        if not isinstance(child, int):
+            return
+        check("lost fork reply: the control socket is poisoned, so the stale pid cannot be "
+              "misattributed to the next execution", not fs.alive())
+
+        # _poison already closed the supervisor's end, so the fork server is at EOF and the
+        # kill is under way; fs.close() below only reaps the fork server itself.
+        gone = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except OSError:
+                gone = True
+                break
+            try:
+                with open(f"/proc/{child}/stat", "rb") as fh:
+                    raw = fh.read()
+                if raw[raw.rfind(b")") + 2: raw.rfind(b")") + 3] == b"Z":
+                    gone = True  # reparented zombie: not running user code
+                    break
+            except OSError:
+                gone = True
+                break
+            time.sleep(0.05)
+        check("lost fork reply: the fork server kills the child it forked, so a lost reply "
+              "leaves nothing running", gone, f"pid {child} is still running")
+        if not gone:
+            try:
+                os.killpg(os.getpgid(child), signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except OSError:
+                    pass
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        fs.close()
+
+
+def test_forkserver_death_mid_execution(tmp):
+    """The fork server dying under a running execution must still kill that execution's group.
+
+    _reap raises ForkServerError when the control socket dies, and _execute_inner's finally set
+    job.done BEFORE anything killed anything — so _watchdog returned on its first statement
+    without firing a limit, and neither _execute nor run kills on its error path. The request
+    500s and frees the slot while the user's code runs on for the pod's lifetime, holding CPU,
+    memory and same-uid write access to /scratch while later users execute. _kill_group signals
+    with os.killpg directly and never through the control socket, so it works here.
+    """
+    root = os.path.join(tmp, "forkserver-death")
+    os.makedirs(root)
+    server = Server(root)
+    try:
+        body = make_body(code="import time\ntime.sleep(120)\n")
+        body["timeout_s"] = 120
+        box = {}
+        t = threading.Thread(
+            target=lambda: box.update(zip(("status", "retry", "body"),
+                                          server.request("POST", "/execute", body))),
+            daemon=True)
+        t.start()
+
+        child = None
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            running = server.supervisor._running
+            if running is not None and running.pid is not None:
+                child = running.pid
+                break
+            time.sleep(0.02)
+        check("forkserver death: the victim execution reached its fork", child is not None)
+        if child is None:
+            return
+        # Its own session, so killpg on the supervisor's group is not what cleans this up.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and os.getpgid(child) == os.getpgrp():
+            time.sleep(0.02)
+
+        os.kill(server.supervisor.forkserver.pid, signal.SIGKILL)
+        t.join(90)
+        check("forkserver death: the execution is answered 500 rather than hanging",
+              box.get("status") == 500, f"got {box.get('status')} {str(box.get('body'))[:200]}")
+
+        gone = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except OSError:
+                gone = True
+                break
+            # A reparented zombie is not still running; /proc says so.
+            try:
+                with open(f"/proc/{child}/stat", "rb") as fh:
+                    raw = fh.read()
+                if raw[raw.rfind(b")") + 2: raw.rfind(b")") + 3] == b"Z":
+                    gone = True
+                    break
+            except OSError:
+                gone = True
+                break
+            time.sleep(0.05)
+        check("forkserver death: the orphaned execution child is killed, not left running for "
+              "the pod's lifetime", gone, f"pid {child} is still running")
+        if not gone:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except OSError:
+                pass
+
+        status, _, health = server.request("GET", "/health")
+        check("forkserver death: /health stops saying ok, so the readiness probe replaces "
+              "the pod instead of leaving it dead in the endpoints",
+              status == 503 and (health or {}).get("status") == "forkserver-down",
+              f"got {status} {health}")
+    finally:
+        server.close()
+
+
+def _proc_state(pid):
+    """The state letter for `pid`, or None when the pid is gone.
+
+    A ZOMBIE IS NOT A SURVIVOR, and os.kill(pid, 0) cannot tell the two apart — it succeeds
+    for both. That is the entire reason this reads /proc instead: "we contained it" and "it is
+    still running the attacker's code" must not be the same observation.
+    """
+    fields = sup._proc_stat_fields(pid)
+    if not fields:
+        return None
+    return fields[0].decode("ascii", "replace")
+
+
+_SURVIVOR_SLEEP_S = 30
+
+
+def _survivor_code(detach):
+    """A script that leaves ONE process behind and prints its pid, then exits normally.
+
+    IT HOLDS NONE OF THE SUPERVISOR'S DESCRIPTORS, deliberately. 0/1/2 go to /dev/null and the
+    status and audit pipes are closed, so all three drains reach EOF when the direct child
+    exits. Without that, an execution's response would be held for DRAIN_GRACE_S and the test
+    would be measuring the drain deadline (4h6.39) rather than containment. It is the shape
+    4h6.55's finding-3 probe used, for the same reason.
+
+    `detach` is the only difference between the two cases the beads name: with setsid() the
+    survivor leaves the process group and no killpg can reach it (4h6.83); without it, it
+    stays in the group and a normally-completing execution simply never signalled that group
+    (4h6.66). Both were MEASURED surviving.
+    """
+    return (
+        "import os, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        + ("    os.setsid()\n" if detach else "")
+        + "    for fd in (3, 4):\n"
+        "        try:\n"
+        "            os.close(fd)\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    null = os.open('/dev/null', os.O_RDWR)\n"
+        "    for fd in (0, 1, 2):\n"
+        "        os.dup2(null, fd)\n"
+        f"    time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "    os._exit(0)\n"
+        "print('SURVIVOR', pid, flush=True)\n"
+    )
+
+
+def _run_survivor_probe(server, detach):
+    """(pid of the process left behind, response body). pid is None if the probe misfired."""
+    status, _, body = server.request(
+        "POST", "/execute", body=make_body(code=_survivor_code(detach)))
+    body = body or {}
+    if status != 200:
+        return None, body
+    for line in (body.get("output") or "").splitlines():
+        if line.startswith("SURVIVOR "):
+            return int(line.split()[1]), body
+    return None, body
+
+
+def test_survivors(server):
+    """A depth-1 survivor does not outlive its own execution: 4h6.66 and 4h6.83, watched.
+
+    MEASURED BEFORE THIS LANDED, after a status-ok execution — both of these were still
+    running, and would have been for the pod's lifetime:
+        1197089 1197084 PRB-INGRP    <- plain fork, stayed in the process group
+        1197090 1197090 PRB-DETACH   <- setsid() escapee
+    The first is 4h6.66: _kill_group has two call sites and a normal completion has
+    reaped=True, so it reached neither. The second is 4h6.83 and is not reachable by any
+    process-group kill at all; what reaches it is PARENTAGE — the fork server is a
+    PR_SET_CHILD_SUBREAPER, so an escapee whose parent exits reparents to it and FS_OP_SWEEP
+    kills and reaps it.
+
+    THE NEGATIVE CONTROL IS THE SECOND HALF OF THIS TEST AND IT IS NOT DECORATION. A probe
+    whose fork silently failed, or whose survivor exited on its own, would make the positive
+    assertions pass over nothing. So the same two probes are run again with _kill_survivors and
+    _sweep_strays disabled, and the survivors must then BE THERE — restoring the exact
+    behaviour the beads measured — before an explicit sweep clears them.
+
+    WHAT IT DOES NOT PROVE: that the survivor was harmless while its OWN execution ran (it was
+    alive for all of it, by construction), and anything at all about gVisor, which implements
+    prctl and /proc in the sentry and is 4h6.51's to measure.
+    """
+    if server.container or server.supervisor is None:
+        skip("survivors: a depth-1 survivor does not outlive its own execution",
+             "the probe reads /proc for a pid in the supervisor's own namespace")
+        return
+    try:
+        for detach, label in ((True, "a setsid() escapee"), (False, "an in-group grandchild")):
+            pid, body = _run_survivor_probe(server, detach)
+            check(f"survivors: the {label} probe ran and named the process it left behind",
+                  pid is not None, f"got {body}")
+            if pid is None:
+                continue
+            check(f"survivors: the execution that left {label} still answers ok",
+                  body.get("status") == "ok", f"got {body.get('status')} {body.get('error')}")
+            state = _proc_state(pid)
+            check(f"survivors: {label} does not survive a normally-completing execution",
+                  state is None, f"pid {pid} is still there in state {state!r}")
+
+        leftovers = []
+        real_kill = sup._kill_survivors
+        real_sweep = sup.Supervisor._sweep_strays
+        sup._kill_survivors = lambda job: False
+        sup.Supervisor._sweep_strays = lambda self, job: None
+        try:
+            for detach, label in ((True, "a setsid() escapee"), (False, "an in-group grandchild")):
+                pid, body = _run_survivor_probe(server, detach)
+                state = _proc_state(pid) if pid is not None else None
+                check(f"survivors: NEGATIVE CONTROL — with the group kill and the sweep "
+                      f"disabled, {label} IS still running after the execution completes",
+                      state is not None and state != "Z",
+                      f"pid {pid} state {state!r} (the probe proves nothing if this passes "
+                      f"only because the fix ran)")
+                if state is not None:
+                    leftovers.append(pid)
+        finally:
+            sup._kill_survivors = real_kill
+            sup.Supervisor._sweep_strays = real_sweep
+
+        # (killed, reaped-as-zombies): a zombie is not a survivor and the two are reported
+        # separately, so this assertion must read the killed half.
+        swept, _reaped = server.supervisor.forkserver.sweep()
+        check("survivors: an explicit sweep kills and reaps exactly what the negative control "
+              "left behind, so the sweep is what does the work",
+              leftovers and set(leftovers) <= set(swept)
+              and all(_proc_state(p) is None for p in leftovers),
+              f"left {leftovers}, swept {swept}")
+    finally:
+        server.close()
+
+
+def _chain_code():
+    """A script that leaves a DEPTH-2 chain of setsid()'d processes behind, and names both.
+
+    THE MIDDLE PROCESS MUST STAY ALIVE UNTIL THE SWEEP RUNS, which is the entire difference
+    from `_survivor_code` and the reason a single-pass sweep missed this shape: B reparents to
+    the fork server only when A exits, so while A is alive B is not the fork server's child and
+    no enumeration can see it. A is killed by the sweep's first round; B appears afterwards.
+    Both call setsid(), so B is not in A's process group either and the collateral killpg that
+    catches shallower probes does not reach it.
+    """
+    return (
+        "import os, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    b = os.fork()\n"
+        "    if b == 0:\n"
+        "        os.setsid()\n"
+        "        for fd in (3, 4):\n"
+        "            try:\n"
+        "                os.close(fd)\n"
+        "            except OSError:\n"
+        "                pass\n"
+        "        null = os.open('/dev/null', os.O_RDWR)\n"
+        "        for fd in (0, 1, 2):\n"
+        "            os.dup2(null, fd)\n"
+        f"        time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "        os._exit(0)\n"
+        "    print('CHAIN', pid, b, flush=True)\n"
+        "    for fd in (3, 4):\n"
+        "        try:\n"
+        "            os.close(fd)\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    null = os.open('/dev/null', os.O_RDWR)\n"
+        "    for fd in (0, 1, 2):\n"
+        "        os.dup2(null, fd)\n"
+        f"    time.sleep({_SURVIVOR_SLEEP_S})\n"
+        "    os._exit(0)\n"
+        # The direct child exits here, which is what starts A's reparenting. The pause only
+        # keeps the print ahead of the exit so the harness reads the pids from a live pipe.
+        "time.sleep(0.3)\n"
+    )
+
+
+def _run_chain_probe(server):
+    """((pid of A, pid of B), body). The pids are None if the probe misfired.
+
+    A prints the pair, not the direct child: the pid the parent gets from fork() is A's, and B's
+    is only knowable inside A.
+    """
+    status, _, body = server.request(
+        "POST", "/execute", body=make_body(code=_chain_code()))
+    body = body or {}
+    if status != 200:
+        return (None, None), body
+    for line in (body.get("output") or "").splitlines():
+        if line.startswith("CHAIN "):
+            _, a, b = line.split()
+            return (int(a), int(b)), body
+    return (None, None), body
+
+
+def test_survivor_chain(root):
+    """A DEPTH-2 setsid() chain does not survive its own execution either (4h6.83).
+
+    MEASURED against the single-pass sweep this replaced — B was in state S, running, for the
+    whole of the NEXT execution:
+        PROBE4 double-setsid status=ok pids={'A': 1213980, 'B': 1213981} A=None B='S'
+        PROBE4 after ONE more execution: B=None
+    `test_survivors` cannot catch it: both of its probes are depth 1, which is exactly the shape
+    a single enumeration sees. The mechanism is that a process reparents to the subreaper only
+    when ITS OWN parent exits, so B is invisible while A lives, becomes the fork server's child
+    after the sweep has killed A, and then needs a SECOND enumeration.
+
+    THE NEGATIVE CONTROL IS A SECOND SUPERVISOR WITH FS_SWEEP_MAX_ROUNDS AT 1, and it has to be
+    a second supervisor because the fork server is forked at bring_up(): patching the constant
+    afterwards would change the harness's copy and not the one the sweep actually reads. With
+    one round B must BE there afterwards — restoring the measurement above — or the positive
+    assertion is passing over a probe that never worked.
+    """
+    servers = []
+    try:
+        real_rounds = sup.FS_SWEEP_MAX_ROUNDS
+        sup.FS_SWEEP_MAX_ROUNDS = 1
+        try:
+            neg = Server(os.path.join(root, "one-round"))
+        finally:
+            sup.FS_SWEEP_MAX_ROUNDS = real_rounds
+        servers.append(neg)
+        if neg.supervisor is None:
+            skip("survivor chain: a depth-2 setsid() chain does not outlive its execution",
+                 "the probe reads /proc for a pid in the supervisor's own namespace")
+            return
+        (a, b), body = _run_chain_probe(neg)
+        check("survivor chain: the depth-2 probe ran and named both processes it left behind",
+              a is not None and b is not None, f"got {body}")
+        state_b = _proc_state(b) if b is not None else None
+        check("survivor chain: NEGATIVE CONTROL — with the sweep's re-enumeration disabled "
+              "(one round) the grandchild of the chain IS still running afterwards",
+              state_b is not None and state_b != "Z",
+              f"A={_proc_state(a)!r} B={state_b!r} (the positive assertion below proves "
+              f"nothing if this passes only because the fix ran)")
+        swept, _reaped = neg.supervisor.forkserver.sweep()
+        check("survivor chain: and one more sweep round, now that it has reparented, clears it",
+              b is None or _proc_state(b) is None, f"swept {swept}, B={_proc_state(b)!r}")
+
+        pos = Server(os.path.join(root, "all-rounds"))
+        servers.append(pos)
+        (a, b), body = _run_chain_probe(pos)
+        check("survivor chain: the depth-2 probe ran under the real sweep too",
+              a is not None and b is not None, f"got {body}")
+        check("survivor chain: the execution that left the chain still answers ok",
+              body.get("status") == "ok", f"got {body.get('status')} {body.get('error')}")
+        states = (_proc_state(a) if a else None, _proc_state(b) if b else None)
+        check("survivor chain: NEITHER process of a depth-2 setsid() chain survives a "
+              "normally-completing execution",
+              states == (None, None), f"A={states[0]!r} B={states[1]!r}")
+    finally:
+        for server in servers:
+            server.close()
+
+
+def test_pre_ready_execute(tmp):
+    """A POST /execute arriving before the supervisor is ready must be refused BEFORE its body
+    is read.
+
+    main() binds and serves before bring_up() on purpose, so `status: "starting"` is observable
+    — which means requests DO arrive during the multi-second prewarm(), and ForkServer.start()
+    snapshots the address space at the end of it. The readiness check used to sit in _admit,
+    after _read_body and parse_execute_request had already made both JWTs and the user's source
+    into Python strings: an early request answered 503 was still recovered from a later
+    execution child by the /proc/self/mem route. A 503 does not take the bytes back out of the
+    arenas, so the refusal has to happen before they exist.
+    """
+    root = os.path.join(tmp, "pre-ready")
+    os.makedirs(root)
+    saved = sup.SUPERVISOR
+    real_read_body = sup._Handler._read_body
+    supervisor = sup.create(scratch_root=root)  # bound, NOT ready: nothing is forked yet
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    reads = []
+    sup._Handler._read_body = (
+        lambda self, started, _real=real_read_body: reads.append(1) or _real(self, started))
+    try:
+        payload = json.dumps(make_body(code="x = 'PREREADYNEEDLE'\n")).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+        conn.putrequest("POST", "/execute")
+        conn.putheader("Content-Type", "application/json")
+        # DELIBERATELY MORE THAN IS SENT. This is the mechanism-independent half: a supervisor
+        # that reads the body blocks here until BODY_READ_TIMEOUT_S and answers 408, so an
+        # immediate 503 is proof the bytes were never taken in.
+        conn.putheader("Content-Length", str(len(payload) + 65536))
+        conn.endheaders()
+        conn.send(payload)
+        started = time.monotonic()
+        resp = conn.getresponse()
+        raw = resp.read()
+        elapsed = time.monotonic() - started
+        status = resp.status
+        conn.close()
+        parsed = json.loads(raw.decode()) if raw else {}
+        check("pre-ready: POST /execute during bring_up() is refused 503 NotReady",
+              status == 503 and parsed.get("error", {}).get("type") == "NotReady",
+              f"got {status} {parsed}")
+        check("pre-ready: it is refused BEFORE the body is read, so no token and no source "
+              "code ever enters the process the fork server is snapshotted from",
+              not reads, f"_read_body ran {len(reads)} time(s)")
+        check("pre-ready: the refusal does not wait on the unsent body",
+              elapsed < sup.BODY_READ_TIMEOUT_S / 2, f"took {elapsed:.1f}s")
+
+        # The draining half of the same gate. Nothing is ready here, so set both states.
+        supervisor.ready = True
+        supervisor.begin_drain()
+        reads.clear()
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+        conn.putrequest("POST", "/execute")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(payload) + 65536))
+        conn.endheaders()
+        conn.send(payload)
+        resp = conn.getresponse()
+        raw = resp.read()
+        status = resp.status
+        conn.close()
+        check("pre-ready: a draining supervisor refuses the same way, before the body",
+              status == 503 and not reads, f"got {status}, _read_body ran {len(reads)} time(s)")
+    finally:
+        sup._Handler._read_body = real_read_body
+        httpd.shutdown()
+        httpd.server_close()
+        sup.SUPERVISOR = saved
+
+
+ENV_BUFFERED_RFILE = "SUPERVISOR_TEST_BUFFERED_RFILE"
+
+# THE SENDER HAS TO BE ANOTHER PROCESS, and this is not fastidiousness — it was measured. The
+# harness process IS the supervisor process here, so a body built with make_body() is in the
+# heap that ForkServer.start() snapshots no matter what the socket read buffer does: the first
+# version of test_pre_ready_body_bytes recovered all three needles WITH the fix in place, for
+# that reason alone. The needles are therefore minted here, written to a file the parent reads
+# only AFTER the fork, and never exist in the parent before it.
+_EARLY_SENDER = r'''
+import base64, json, os, socket, sys, uuid
+
+port, auds, out = int(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+
+def b64(obj):
+    return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode("ascii").rstrip("=")
+
+v = os.urandom(12).hex().upper()
+eid, user, sid = str(uuid.uuid4()), "early-%s@b.c" % v[:8], "sess-%s" % v
+tokens = {aud: "%s.%s.signature" % (b64({"alg": "HS256"}),
+                                    b64({"aud": aud, "jti": eid, "sub": user, "sid": sid}))
+          for aud in auds}
+body = {"code": "x = 'EARLYCODE%s'\nprint('early')\n" % v, "execution_id": eid,
+        "tokens": tokens, "user": user, "session_id": sid}
+payload = json.dumps(body).encode()
+with open(out, "w") as fh:
+    json.dump({"early-token": tokens[auds[0]].split(".")[1],
+               "early-code": "EARLYCODE" + v, "early-session": sid}, fh)
+head = (b"POST /execute HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n")
+sock = socket.create_connection(("127.0.0.1", port), timeout=30)
+sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+sock.sendall(head + payload)   # ONE sendall: the head and the body share a segment
+answer = sock.recv(4096)
+sock.close()
+sys.exit(0 if b" 503 " in answer else 3)
+'''
+
+
+def _buffered_setup(self):
+    """_Handler.setup as it was BEFORE 4h6.87: an 8 KiB BufferedReader as rfile.
+
+    This is the negative control for test_pre_ready_body_bytes, and it is a whole restoration
+    of the defect rather than a flag the fixed code reads: with it installed the header parse
+    recv()s 8 KiB and the body rides in with the headers again.
+
+    IT ASSERTS AT LEAST ONE NEEDLE RECOVERS, ARENA-DEPENDENT WHICH: measured 2 of 3, with
+    `early-code` the one that comes back only sometimes. A future run seeing 2 red and 1 green
+    is the control working, not a flake.
+    """
+    socketserver.StreamRequestHandler.setup(self)
+    self.rfile = self.connection.makefile("rb", -1)
+
+
+def test_pre_ready_body_bytes(tmp):
+    """A body that shares a TCP segment with its headers must not be in the supervisor when the
+    fork server is forked (genetics-results-suite-4h6.87).
+
+    THE ORDERING FIX IS NOT ENOUGH ON ITS OWN, which is why this is a second test and not an
+    assertion inside test_pre_ready_execute. _execute refuses before _read_body, so no Python
+    string is built — but socketserver's default rfile is an 8 KiB BufferedReader, so
+    BaseHTTPRequestHandler's request-line and header parse had ALREADY recv()d the body
+    underneath the handler. MEASURED before the fix, with the fork gated to land milliseconds
+    after the 503: one segment -> the token, the source and the session id all recovered from
+    the child; two segments -> nothing. Run this with %s=1 to put that buffer back and watch
+    the three checks below go red.
+
+    THE FORK IS GATED DELIBERATELY. ForkServer.start() runs on the next line after the refusal.
+    Under a realistic multi-second prewarm the same probe recovers nothing, but that is arena
+    REUSE and nothing enforces it; a null result there would prove nothing about the property.
+    """ % ENV_BUFFERED_RFILE
+    root = os.path.join(tmp, "pre-ready-bytes")
+    os.makedirs(root)
+    saved_env = os.environ.get(sup.ENV_SCRATCH_ROOT)
+    os.environ[sup.ENV_SCRATCH_ROOT] = root
+    saved = sup.SUPERVISOR
+    real_setup = sup._Handler.setup
+    if os.environ.get(ENV_BUFFERED_RFILE) == "1":
+        print(f"  !! {ENV_BUFFERED_RFILE}=1: the negative control is installed, "
+              f"the checks below MUST fail")
+        sup._Handler.setup = _buffered_setup
+
+    # The same positive control test_isolation uses, planted before the fork server exists: if
+    # this one is not recovered the search is dead and the absences below mean nothing.
+    control = "FORKSRVCTL" + os.urandom(16).hex().upper()
+    sup.ISOLATION_TEST_CONTROL = control
+
+    supervisor = sup.create(scratch_root=root, retention_s=60)  # bound, NOT ready, NOT forked
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    try:
+        needle_file = os.path.join(root, "needles.json")
+        sent = subprocess.run(
+            [sys.executable, "-c", _EARLY_SENDER, str(port),
+             json.dumps(list(sup.TOKEN_AUDIENCES)), needle_file], timeout=120)
+        check("pre-ready bytes: a one-segment POST /execute during bring_up is refused 503",
+              sent.returncode == 0, f"sender exited {sent.returncode}")
+
+        # MILLISECONDS after the refusal, which is what makes the leak observable at all.
+        supervisor.forkserver = sup.ForkServer.start()
+        supervisor.ready = True
+
+        # AFTER the fork, deliberately: see _EARLY_SENDER. Anything read before this line is in
+        # the snapshot the probe searches, and would make every arm of the A/B look identical.
+        with open(needle_file, encoding="utf-8") as fh:
+            early = json.load(fh)
+        pairs = [["control-prefork", *_pair(control)]]
+        pairs += [[label, *_pair(early[label])] for label in
+                  ("early-token", "early-code", "early-session")]
+        probe_code = (_ISOLATION_PROBE
+                      .replace("__PAIRS__", json.dumps(pairs))
+                      .replace("__SLEEP_S__", "0.0"))
+        probe = make_body(code=probe_code, user="probe@b.c", session_id="sess-probe")
+        probe["timeout_s"] = 120
+        raw = json.dumps(probe).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        conn.request("POST", "/execute", body=raw,
+                     headers={"Content-Type": "application/json",
+                              "Content-Length": str(len(raw))})
+        resp = conn.getresponse()
+        answered = json.loads(resp.read().decode())
+        conn.close()
+
+        line = ""
+        for candidate in (answered.get("output") or "").splitlines():
+            if candidate.startswith("PROBERESULT "):
+                line = candidate[len("PROBERESULT "):]
+        try:
+            result = json.loads(line)["released"]
+        except Exception:
+            result = None
+        check("pre-ready bytes: the probe executed and reported",
+              isinstance(result, dict), f"got {str(answered)[:300]}")
+        if not isinstance(result, dict):
+            return
+        found = set(result["found"])
+        check("pre-ready bytes: the positive control IS recovered, so the search works",
+              "control-prefork" in found and result["mem"] == "ok",
+              f"mem said {result['mem']}, found {sorted(found)}")
+        # THREE INDEPENDENT, UNCONDITIONAL CHECKS. Not one check over a union and not an `or`:
+        # this group has already shipped a test that passed because one assertion carried
+        # another (see the isolation group's note on `found`).
+        for label, what in (("early-token", "token"), ("early-code", "source code"),
+                            ("early-session", "session id")):
+            check(f"pre-ready bytes: the refused request's {what} is NOT in the child, so the "
+                  f"socket read buffer no longer carries it into the fork",
+                  label not in found, f"RECOVERED {label}; found {sorted(found)}")
+    finally:
+        sup._Handler.setup = real_setup
+        httpd.shutdown()
+        httpd.server_close()
+        if supervisor.forkserver is not None:
+            supervisor.forkserver.close()
+        sup.SUPERVISOR = saved
+        if saved_env is None:
+            os.environ.pop(sup.ENV_SCRATCH_ROOT, None)
+        else:
+            os.environ[sup.ENV_SCRATCH_ROOT] = saved_env
+
+
+ENV_DROP_LF_CRLF = "SUPERVISOR_TEST_DROP_LF_CRLF"
+ENV_STATIC_SEAM = "SUPERVISOR_TEST_STATIC_SEAM"
+
+
+def _static_seam(self, tail_len, take):
+    """_read_head's seam update as it was BEFORE the rolling window: recomputed from THIS
+    round only.
+
+    The negative control for the drip checks below, and a whole restoration of the defect
+    rather than a flag the fixed code reads. With it installed a peek that returns fewer than
+    _HEADER_TAIL_BYTES bytes discards what earlier rounds saw, so a blank line straddling it is
+    never found: the read consumes the WHOLE body off the kernel queue and blocks in recv_into
+    forever. MEASURED, 4 terminator shapes x 7 chunk sizes: 26/28 with this installed, 28/28
+    without, and the two failures are exactly the take == 1 cells whose blank line is \\r\\n.
+    """
+    tail = min(take, sup._HEADER_TAIL_BYTES)
+    self._edge[:tail] = self._view[take - tail:take]
+    return tail
+
+
+def _drip(sock, blob, chunk, delay):
+    """Feed `blob` `chunk` bytes at a time on a thread, returned so the caller can join it.
+
+    THE JOIN MATTERS: reader.read() is a single recv by design, so a leftover assertion made
+    while the feeder is still writing sees a short read and passes or fails for the wrong
+    reason. Drain to the expected length after the feeder is done.
+    """
+    def go():
+        try:
+            for i in range(0, len(blob), chunk):
+                sock.sendall(blob[i:i + chunk])
+                time.sleep(delay)
+        except OSError:
+            pass  # the reader hung (the control is installed) and the socket was closed
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t
+
+
+def _drain(reader, n):
+    out = b""
+    while len(out) < n:
+        block = reader.read(n - len(out))
+        if not block:
+            break
+        out += block
+    return out
+
+
+def _read_head_watched(reader, timeout):
+    """(result, heap_bytes_seen, still_running) for one _read_head call on its own thread.
+
+    THIS IS A MECHANICS TEST AND MAKES NO LEAK CLAIM — a leak claim has to send from another
+    process (see _EARLY_SENDER), because this process is the supervisor. What it does assert is
+    narrower and checkable here: which objects _read_head puts a byte into. `heap_bytes_seen`
+    is every `bytes` value that appeared as a local of the _read_head frame, so a body byte
+    showing up in one means a heap copy was built where a fixed, wiped buffer was required.
+    """
+    seen, box = [], []
+
+    def tracer(frame, event, arg):
+        if frame.f_code.co_name != "_read_head":
+            return None
+        for value in frame.f_locals.values():
+            if type(value) is bytes:                                     # noqa: E721
+                seen.append(value)
+            elif type(value) is list:                                    # noqa: E721
+                seen.extend(item for item in value if type(item) is bytes)  # noqa: E721
+        return tracer
+
+    def go():
+        sys.settrace(tracer)
+        try:
+            box.append(reader._read_head())
+        except BaseException as exc:                                     # noqa: BLE001
+            box.append(exc)
+        finally:
+            sys.settrace(None)
+
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    t.join(timeout)
+    return (box[0] if box else None), seen, t.is_alive()
+
+
+def test_header_reader_units():
+    """_HeaderBoundedReader's edges, which the wire tests cannot reach on purpose: a head split
+    across segments, a head dripped ONE BYTE AT A TIME, a head that never terminates, a head
+    whose blank line is "\\n\\r\\n", and both fixed buffers left clean."""
+    pair = socket.socketpair
+    saved_terminators = sup._HEADER_TERMINATORS
+    saved_roll = sup._HeaderBoundedReader._roll_tail
+    if os.environ.get(ENV_DROP_LF_CRLF) == "1":
+        print(f"  !! {ENV_DROP_LF_CRLF}=1: the negative control is installed, "
+              f"the \\n\\r\\n checks below MUST fail")
+        sup._HEADER_TERMINATORS = tuple(t for t in sup._HEADER_TERMINATORS if t != b"\n\r\n")
+    if os.environ.get(ENV_STATIC_SEAM) == "1":
+        print(f"  !! {ENV_STATIC_SEAM}=1: the negative control is installed, "
+              f"the drip checks below MUST fail")
+        sup._HeaderBoundedReader._roll_tail = _static_seam
+    try:
+        _header_reader_cases(pair)
+    finally:
+        sup._HEADER_TERMINATORS = saved_terminators
+        sup._HeaderBoundedReader._roll_tail = saved_roll
+
+
+def _header_reader_cases(pair):
+
+    # 1. head and body in one write: the head comes back exactly, the body stays in the kernel.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    a.sendall(b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nBODY!")
+    line = reader.readline(65537)
+    check("header reader: the request line is returned",
+          line == b"POST /x HTTP/1.1\r\n", f"got {line!r}")
+    rest = b"".join(iter(lambda: reader.readline(65537), b"\r\n"))
+    check("header reader: the headers are returned and stop at the blank line",
+          rest == b"Host: h\r\nContent-Length: 5\r\n", f"got {rest!r}")
+    check("header reader: the body is still readable afterwards",
+          reader.read(5) == b"BODY!")
+    check("header reader: the peek scratch is zeroed, so no body byte is left in it",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES))
+    a.close(); b.close()
+
+    # 2. a head split across three segments, with the terminator itself bisected — and a body
+    # riding in the last segment, so the seam search sees body bytes and must not copy them.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    whole = b"GET /y HTTP/1.1\r\nA: " + b"z" * 900 + b"\r\n\r\n"
+    def _feed():
+        a.sendall(whole[:10]); time.sleep(0.05)
+        a.sendall(whole[10:len(whole) - 2]); time.sleep(0.05)
+        a.sendall(whole[len(whole) - 2:] + b"\x01\x02BODYBODY")
+    threading.Thread(target=_feed, daemon=True).start()
+    head, heap, alive = _read_head_watched(reader, 10)
+    check("header reader: a head split across segments, terminator bisected, is reassembled",
+          not alive and head == whole, f"got {head!r} (still running: {alive})")
+    # The seam window straddles the boundary, so its trailing bytes ARE body bytes. Building it
+    # as `tail + bytes(view[:n])` put them in a heap `bytes` that is freed into an arena the
+    # fork server would snapshot; it is a second fixed bytearray for exactly this reason.
+    # THE NEEDLE IS ONE BYTE ON PURPOSE — the pre-fix copy carried only 1 or 2 body bytes here,
+    # so a word-sized needle would have made this assertion pass against the defect it exists
+    # to catch. \x01 and \x02 cannot occur in the head, and the terminators do not contain them.
+    escaped = [chunk for chunk in heap if b"\x01" in chunk or b"\x02" in chunk]
+    check("header reader: the bisected-terminator path copied NO body byte onto the heap",
+          not escaped, f"heap bytes carrying body: {escaped!r}")
+    check("header reader: both fixed buffers are zeroed after the seam read",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+    a.close(); b.close()
+
+    # 2b. THE BLANK LINE IS "\n\r\n" — the fourth shape http.client.parse_headers stops on, and
+    # the one a three-member terminator set misses. Not reachable from the deployed path, but
+    # with it missing this was MEASURED to copy the WHOLE body into `parts` on the heap, leave
+    # it in the un-wiped scratch (the finally never runs), and block in recv_into forever
+    # instead of refusing. Run with SUPERVISOR_TEST_DROP_LF_CRLF=1 to drop it from the set and
+    # watch these go red.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    lf_head = b"POST /execute HTTP/1.1\r\nHost: h\nContent-Length: 15\n\r\n"
+    a.sendall(lf_head + b"SECRETBODYNEEDLE"[:15])
+    head, heap, alive = _read_head_watched(reader, 5)
+    check("header reader: a head whose blank line is \\n\\r\\n terminates and is consumed exactly",
+          not alive and head == lf_head, f"got {head!r} (still blocked in recv_into: {alive})")
+    check("header reader: that head's body is not copied onto the heap",
+          not [chunk for chunk in heap if b"SECRETBODY" in chunk],
+          f"heap bytes carrying body: {[c for c in heap if b'SECRETBODY' in c]!r}")
+    check("header reader: that head's body is not left in the scratch buffer",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES),
+          f"scratch: {bytes(reader._scratch)[:80]!r}")
+    if not alive:
+        check("header reader: that head's body is still in the kernel queue afterwards",
+              reader.read(15) == b"SECRETBODYNEEDL")
+    a.close(); b.close()
+
+    # 2c. THE SAME FAILURE REACHED THROUGH PEEK SIZE RATHER THAN TERMINATOR SHAPE: an ordinary,
+    # entirely valid \r\n\r\n head delivered a byte at a time. The seam window used to be
+    # recomputed from the current round, so a 1-byte peek shrank it to 1 byte and the blank line
+    # straddling it was never found — take became the whole peek every round, THE WHOLE BODY was
+    # consumed off the kernel queue into `parts`, the finally never ran, and the read blocked in
+    # recv_into forever instead of refusing. total never approaches MAX_HEADER_BYTES on that
+    # path, so _HeaderTooLarge never fires either: fail-OPEN and pre-auth. Run with
+    # SUPERVISOR_TEST_STATIC_SEAM=1 to put the per-round window back and watch these go red.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    drip_head = b"POST /execute HTTP/1.1\r\nHost: h\r\nContent-Length: 20\r\n\r\n"
+    # THE BODY OPENS WITH TWO ONE-BYTE NEEDLES, and that is what makes the heap check bite
+    # here: at a byte a drip `parts` fills with 1-byte `bytes`, so a word-sized needle like
+    # SECRETBODY can never appear in one and the check would pass against the defect it exists
+    # to catch. \x01 and \x02 cannot occur in a head and are in no terminator.
+    drip_body = b"\x01\x02SECRETBODYNEEDL" + b"AA"
+    feeder = _drip(a, drip_head + drip_body, 1, 0.004)
+    head, heap, alive = _read_head_watched(reader, 20)
+    feeder.join(20)
+    check("header reader: a head dripped one byte at a time terminates and is consumed exactly",
+          not alive and head == drip_head,
+          f"got {head!r} (still blocked in recv_into: {alive})")
+    leaked = [c for c in heap if b"\x01" in c or b"\x02" in c or b"SECRETBODY" in c]
+    check("header reader: the dripped head's body is not copied onto the heap",
+          not leaked, f"{len(leaked)} heap bytes carrying body, e.g. {leaked[:6]!r}")
+    check("header reader: the dripped head's body is still in the kernel queue afterwards",
+          not alive and _drain(reader, len(drip_body)) == drip_body)
+    check("header reader: both fixed buffers are zeroed after the dripped read",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+    a.close(); b.close()
+
+    # 2d. AND THE WHOLE MATRIX, so the take == 1 class is asserted rather than spot-checked:
+    # every blank-line shape http.client.parse_headers stops on (the last header line ends
+    # \r\n or \n, the blank line is \r\n or \n) crossed with chunk sizes that make a peek land
+    # inside the terminator. MEASURED: 28/28 here, 26/28 with SUPERVISOR_TEST_STATIC_SEAM=1,
+    # and the two that fail there are exactly the take == 1 cells whose blank line is \r\n —
+    # take == 2 is rescued by the b"\n\r\n" member and \n\n survives on a 2-byte window, which
+    # is why one-write clients never saw this and any peer that can connect can trigger it.
+    for prev in (b"\r\n", b"\n"):
+        for blank in (b"\r\n", b"\n"):
+            bad = []
+            for chunk in (1, 2, 3, 4, 5, 7, 512):
+                m_head = (b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 20"
+                          + prev + blank)
+                m_body = b"M" * 20
+                a, b = pair()
+                reader = sup._HeaderBoundedReader(b, None)
+                feeder = _drip(a, m_head + m_body, chunk, 0.004 if chunk <= 2 else 0.002)
+                head, _, alive = _read_head_watched(reader, 20)
+                feeder.join(20)
+                left = b"" if alive else _drain(reader, len(m_body))
+                if not (not alive and head == m_head and left == m_body
+                        and reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+                        and reader._edge == bytearray(sup._HEADER_EDGE_BYTES)):
+                    bad.append(f"chunk={chunk} hung={alive} head={head!r} left={left!r}")
+                a.close(); b.close()
+            check(f"header reader: a head ending {prev + blank!r} is consumed exactly and "
+                  f"leaves its body in the kernel at every chunk size", not bad,
+                  "; ".join(bad))
+
+    # 3. a head that never terminates fails CLOSED at MAX_HEADER_BYTES.
+    a, b = pair()
+    reader = sup._HeaderBoundedReader(b, None)
+    box = []
+    def _over():
+        try:
+            reader.readline(65537)
+        except sup._HeaderTooLarge:
+            box.append("refused")
+        except Exception as exc:                       # noqa: BLE001
+            box.append(repr(exc))
+    t = threading.Thread(target=_over, daemon=True)
+    t.start()
+    try:
+        sent = 0
+        while sent <= sup.MAX_HEADER_BYTES + sup.HEADER_PEEK_BYTES and t.is_alive():
+            a.sendall(b"X: " + b"q" * 1021 + b"\r\n")
+            sent += 1024
+        t.join(10)
+    finally:
+        a.close(); b.close()
+    check("header reader: a head that never terminates is refused, not buffered forever",
+          box == ["refused"], f"got {box!r}")
+    # The wipe is in a `finally`, so it has to survive the raise as well as the return — the
+    # refusal path is the one where a caller has most reason to assume nothing was kept.
+    check("header reader: both fixed buffers are zeroed on the _HeaderTooLarge path too",
+          reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)
+          and reader._edge == bytearray(sup._HEADER_EDGE_BYTES),
+          f"scratch clean: {reader._scratch == bytearray(sup.HEADER_PEEK_BYTES)}, "
+          f"edge: {bytes(reader._edge)!r}")
+
+    # 4. and over the wire that refusal has to be a real answer, not a traceback in the log:
+    # _HeaderTooLarge escapes handle_one_request, which is a path socketserver would otherwise
+    # turn into a dropped connection with no response.
+    httpd = sup._Server(("127.0.0.1", 0), sup._Handler)
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    try:
+        wire = socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=20)
+        wire.sendall(b"GET /health HTTP/1.1\r\nHost: h\r\n")
+        sent = 0
+        try:
+            while sent < sup.MAX_HEADER_BYTES + 4096:
+                wire.sendall(b"X: " + b"q" * 1021 + b"\r\n")
+                sent += 1024
+        except OSError:
+            pass  # the supervisor answered and closed while we were still writing
+        wire.settimeout(20)
+        answer = b""
+        try:
+            while True:
+                block = wire.recv(4096)
+                if not block:
+                    break
+                answer += block
+        except OSError:
+            pass
+        wire.close()
+        check("header reader: an over-long head is answered 431 in the uniform JSON shape and "
+              "the connection is closed",
+              answer.startswith(b"HTTP/1.1 431 ") and b'"PayloadTooLarge"' in answer,
+              f"got {answer[:160]!r}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+ENV_ARM_ONCE = "SUPERVISOR_TEST_ARM_ONCE"
+
+
+def _arm_once(self, deadline):
+    """_read_head's timeout as it would be if it were armed ONCE PER CONNECTION — in setup(),
+    say — instead of once per head.
+
+    The negative control for the keep-alive check below, and a restoration of the defect rather
+    than a flag the fixed code reads. The second head on a kept-alive connection then reads with
+    whatever _read_body's `finally` left on the socket, which is settimeout(None): no deadline at
+    all. With this installed the keep-alive check hangs until its own socket timeout and goes red;
+    the first-request check still passes, which is exactly what makes the defect shape "works
+    once, then silently stops working".
+    """
+    if getattr(self, "_armed_once", False):
+        return
+    self._armed_once = True
+    _real_arm(self, deadline)
+
+
+_real_arm = sup._HeaderBoundedReader._arm
+
+ENV_IDLE_FOREVER = "SUPERVISOR_TEST_IDLE_FOREVER"
+ENV_PER_RECV = "SUPERVISOR_TEST_PER_RECV_TIMEOUT"
+
+
+def _arm_no_idle(self, deadline):
+    """_arm as it would be if only a STARTED head were bounded and silence were not.
+
+    The negative control for the idle-close check. settimeout(None) on the idle branch is the
+    pre-4h6.58 state for a connection that sends zero bytes: the handler thread parks in
+    recv_into forever and the suite stays silent, because a connection that is never answered
+    and a connection that is legitimately quiet look identical to any check that only asserts
+    "nothing was written". Only observing the CLOSE tells them apart.
+    """
+    if deadline is None:
+        self._sock.settimeout(None)
+        return
+    _real_arm(self, deadline)
+
+
+def _arm_per_recv(self, deadline):
+    """_arm as it would be if the head bound were a PER-RECV timer instead of one deadline.
+
+    The negative control for the total-exceeds-budget drip below. Every round gets a fresh
+    HEAD_READ_TIMEOUT_S, so a peer that sends one byte just inside the timer resets it forever
+    and the head is bounded only by MAX_HEADER_BYTES — 64 KiB at whatever rate the peer likes.
+    Every existing head check still passes with this installed, which is precisely why one that
+    fails is needed.
+    """
+    if deadline is None:
+        self._sock.settimeout(sup.IDLE_READ_TIMEOUT_S)
+        return
+    self._sock.settimeout(sup.HEAD_READ_TIMEOUT_S)
+
+
+def _await_eof(wire, timeout):
+    """(bytes read, whether the PEER closed, seconds waited).
+
+    _slurp returns b"" both when the server closed without writing and when the harness's own
+    socket timeout expired, and for the idle bound that distinction IS the property: an idle
+    connection that is held forever is also silent.
+    """
+    wire.settimeout(timeout)
+    began = time.monotonic()
+    out = b""
+    closed = False
+    try:
+        while True:
+            block = wire.recv(4096)
+            if not block:
+                closed = True
+                break
+            out += block
+    except OSError:
+        pass
+    return out, closed, time.monotonic() - began
+
+
+def _raw_wire(server, timeout=40):
+    return socket.create_connection((server.host, server.port), timeout=timeout)
+
+
+def _slurp(wire, timeout=40):
+    """Everything the supervisor writes until it closes, or b"" if it never answers."""
+    wire.settimeout(timeout)
+    out = b""
+    try:
+        while True:
+            block = wire.recv(4096)
+            if not block:
+                break
+            out += block
+    except OSError:
+        pass
+    return out
+
+
+def _one_response(wire, timeout):
+    """One complete response off a KEPT-ALIVE connection, which cannot be read to EOF."""
+    wire.settimeout(timeout)
+    out = b""
+    try:
+        while b"\r\n\r\n" not in out:
+            block = wire.recv(4096)
+            if not block:
+                break
+            out += block
+        head, _, body = out.partition(b"\r\n\r\n")
+        match = re.search(rb"Content-Length: (\d+)", head)
+        want = int(match.group(1)) if match else 0
+        while len(body) < want:
+            block = wire.recv(4096)
+            if not block:
+                break
+            body += block
+    except OSError:
+        pass
+    return out
+
+
+def test_head_timeout(server):
+    """genetics-results-suite-4h6.58: the deadline BODY_READ_TIMEOUT_S's comment used to claim.
+
+    The measured defect was a connection that sent a single b"P" and was still open at 35s: the
+    head is read before _execute takes `started`, so nothing bounded it. These checks are on the
+    wire on purpose — the claim is about what a peer holding a socket can do, not about a
+    function's arguments.
+    """
+    # 1. THE MEASURED CASE. A head that starts and stops is answered, not held.
+    wire = _raw_wire(server)
+    wire.sendall(b"P")
+    began = time.monotonic()
+    answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+    elapsed = time.monotonic() - began
+    wire.close()
+    check("head timeout: a head that starts and stalls is answered 408 in the uniform JSON "
+          "shape and the connection is closed",
+          answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer
+          and b'"execution_id": null' in answer,
+          f"got {answer[:160]!r} after {elapsed:.1f}s")
+    check("head timeout: it waits for the deadline rather than refusing a slow client outright",
+          sup.HEAD_READ_TIMEOUT_S * 0.5 <= elapsed <= sup.HEAD_READ_TIMEOUT_S + 15,
+          f"answered after {elapsed:.1f}s, deadline is {sup.HEAD_READ_TIMEOUT_S}s")
+
+    # 2. A CONNECTION THAT SENDS NOTHING AT ALL is a different case and must not be answered
+    # 408 after HEAD_READ_TIMEOUT_S: that is every kept-alive client between requests, the
+    # kubelet's readiness probe included. It is bounded by IDLE_READ_TIMEOUT_S instead.
+    check("head timeout: the idle bound is far longer than the head bound, so a kept-alive "
+          "client is not the thing being timed",
+          sup.IDLE_READ_TIMEOUT_S >= 4 * sup.HEAD_READ_TIMEOUT_S,
+          f"idle {sup.IDLE_READ_TIMEOUT_S}s vs head {sup.HEAD_READ_TIMEOUT_S}s")
+    wire = _raw_wire(server)
+    quiet = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 3)
+    wire.close()
+    check("head timeout: a connection that has sent NOTHING is not answered 408 at the head "
+          "deadline", quiet == b"", f"got {quiet[:120]!r}")
+
+    # ...and it is nonetheless CLOSED, which the two checks above cannot see: one asserts only
+    # that nothing was written, which a connection held forever also satisfies, and the other
+    # reads the CONSTANTS rather than the wire. Neutering the idle branch to settimeout(None)
+    # was MEASURED to leave both green while a zero-byte connection pinned a daemon handler
+    # thread indefinitely — the pre-4h6.58 slowloris, reached by sending nothing at all. The
+    # module constant is dropped to 3s for the same reason the head checks do not wait out
+    # 65s: the property is that the close happens on the idle bound, not what the bound is.
+    idle_installed = os.environ.get(ENV_IDLE_FOREVER) == "1"
+    if idle_installed:
+        sup._HeaderBoundedReader._arm = _arm_no_idle
+    real_idle = sup.IDLE_READ_TIMEOUT_S
+    sup.IDLE_READ_TIMEOUT_S = 3.0
+    try:
+        wire = _raw_wire(server)
+        held, closed, waited = _await_eof(wire, 3.0 * 4)
+        wire.close()
+    finally:
+        sup.IDLE_READ_TIMEOUT_S = real_idle
+        sup._HeaderBoundedReader._arm = _real_arm
+    check("head timeout: a connection that sends NOTHING is CLOSED at roughly "
+          "IDLE_READ_TIMEOUT_S — silence is the response, not the outcome",
+          closed and held == b"" and 3.0 * 0.5 <= waited <= 3.0 + 6.0,
+          f"closed={closed} after {waited:.1f}s with {held[:80]!r}, bound was 3.0s"
+          + (" (SUPERVISOR_TEST_IDLE_FOREVER=1 is installed: this is the control)"
+             if idle_installed else ""))
+
+    # 3. A SLOW BUT HEALTHY CLIENT — /health dripped a byte at a time, well inside the budget —
+    # still gets its 200. The readiness probe must not be able to fail on a slow write.
+    wire = _raw_wire(server)
+    head = b"GET /health HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"
+    feeder = _drip(wire, head, 1, 0.005)
+    answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+    feeder.join(20)
+    wire.close()
+    check("head timeout: a /health head dripped a byte at a time still answers 200",
+          answer.startswith(b"HTTP/1.1 200 "), f"got {answer[:120]!r}")
+
+    # ...and a drip whose PER-BYTE gap is comfortably inside the budget but whose TOTAL is not
+    # is refused. This is the check that tells ONE ABSOLUTE DEADLINE from a per-recv timer, and
+    # the drip above cannot: 47 bytes at 5ms is ~2% of the budget, so it completes under either
+    # design. At 0.4s per byte against a 2s head bound, the deadline answers 408 six bytes in,
+    # while a timer re-armed every round would never expire and would answer 200 after ~19s —
+    # i.e. the head unbounded again, up to MAX_HEADER_BYTES, at a rate the peer picks.
+    recv_installed = os.environ.get(ENV_PER_RECV) == "1"
+    if recv_installed:
+        sup._HeaderBoundedReader._arm = _arm_per_recv
+    real_head = sup.HEAD_READ_TIMEOUT_S
+    sup.HEAD_READ_TIMEOUT_S = 2.0
+    try:
+        wire = _raw_wire(server)
+        feeder = _drip(wire, head, 1, 0.4)
+        began = time.monotonic()
+        answer = _slurp(wire, 2.0 + 30)
+        elapsed = time.monotonic() - began
+        wire.close()
+        feeder.join(30)
+    finally:
+        sup.HEAD_READ_TIMEOUT_S = real_head
+        sup._HeaderBoundedReader._arm = _real_arm
+    check("head timeout: a drip inside the per-byte budget but over the TOTAL is answered 408 "
+          "— the head has ONE deadline, not a timer each recv resets",
+          answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
+          f"got {answer[:120]!r} after {elapsed:.1f}s against a 2.0s head bound"
+          + (" (SUPERVISOR_TEST_PER_RECV_TIMEOUT=1 is installed: this is the control)"
+             if recv_installed else ""))
+
+    # 4. THE KEEP-ALIVE CASE, which is the whole reason this is not a one-liner. _read_body's
+    # `finally` does settimeout(None), so a deadline armed once per CONNECTION is gone by the
+    # second request. The first request below reaches _read_body (its body is read in full and
+    # only then refused 400 by the parser, which leaves the connection alive), so the disarm has
+    # definitely run before the second head starts.
+    installed = os.environ.get(ENV_ARM_ONCE) == "1"
+    if installed:
+        sup._HeaderBoundedReader._arm = _arm_once
+    try:
+        wire = _raw_wire(server)
+        body = b'{"code": 1}'
+        wire.sendall(b"POST /execute HTTP/1.1\r\nHost: h\r\n"
+                     b"Content-Type: application/json\r\n"
+                     b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        first = _one_response(wire, 40)
+        check("head timeout: the first request on the connection is read to the end of its body "
+              "and kept alive", first.startswith(b"HTTP/1.1 400 ") and b"Connection: close" not in first,
+              f"got {first[:160]!r}")
+        wire.sendall(b"G")
+        began = time.monotonic()
+        answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
+        elapsed = time.monotonic() - began
+        wire.close()
+        check("head timeout: the SECOND head on a kept-alive connection is bounded too — the "
+              "deadline is armed per head, not per connection",
+              answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
+              f"got {answer[:160]!r} after {elapsed:.1f}s"
+              + (" (SUPERVISOR_TEST_ARM_ONCE=1 is installed: this is the control)"
+                 if installed else ""))
+    finally:
+        sup._HeaderBoundedReader._arm = _real_arm
+
+    # 5. genetics-results-suite-4h6.64: the request line reaches LOG.info raw, and since 4h6.45
+    # that stream IS the audit channel. An ESC in the path must not reach it as an ESC.
+    with _LogCapture() as capture:
+        wire = _raw_wire(server)
+        wire.sendall(b"GET /\x1b[31mnope HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+        answer = _slurp(wire, 30)
+        wire.close()
+    logged = [line for line in capture.lines if "nope" in line]
+    check("log sanitising: a request line with an ESC is still routed normally (404)",
+          answer.startswith(b"HTTP/1.1 404 "), f"got {answer[:120]!r}")
+    check("log sanitising: and the ESC reaches the audit stream escaped, not raw",
+          logged and all("\x1b" not in line for line in logged)
+          and any("\\x1b" in line for line in logged),
+          f"logged {logged!r}")
+
+    # Directly, because the wire cannot deliver every control character in a routable request
+    # line: a bare CR or LF would end the request line itself. These are the characters that
+    # make a `kubectl logs` session lie about how many records there are.
+    handler = sup._Handler.__new__(sup._Handler)
+    handler.client_address = ("127.0.0.1", 4321)
+    with _LogCapture() as capture:
+        handler.log_message('"%s" %s %s', "GET /a\r\nfake HTTP/1.1", "200", "-")
+    check("log sanitising: CR and LF in a logged request line are escaped, so one request "
+          "cannot become two log lines",
+          len(capture.lines) == 1 and not any(ord(c) < 0x20 for c in capture.lines[0])
+          and "\\x0d\\x0a" in capture.lines[0],
+          f"logged {capture.lines!r}")
+
+
+# --------------------------------------------------------------------------------------
+# genetics-results-suite-4h6.63: descriptor ownership when os.pipe() itself fails
+# --------------------------------------------------------------------------------------
+
+ENV_PIPES_OUTSIDE_TRY = "SUPERVISOR_TEST_PIPES_OUTSIDE_TRY"
+
+_real_pipe = os.pipe
+_real_execute_inner = sup.Supervisor._execute_inner
+_control_leaks = []
+
+
+class _PipeFailsOn:
+    """os.pipe() that raises EMFILE on its Nth call and works otherwise.
+
+    EMFILE rather than a synthetic error because fd exhaustion is the only state that reaches
+    this code: a supervisor with descriptors to spare never sees os.pipe() fail, which is why
+    the leak compounds exactly when the process can least afford it.
+    """
+
+    def __init__(self, fail_on):
+        self.fail_on = fail_on
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.calls == self.fail_on:
+            raise OSError(errno.EMFILE, "Too many open files")
+        return _real_pipe()
+
+
+def _pipes_outside_try(self, job):
+    """_execute_inner as it was before 4h6.63: a pipe pair created OUTSIDE the try.
+
+    The negative control, and a restoration of the defect rather than a flag the fixed code
+    reads. The pre-fix prologue made all three pairs above `try:`, so a later os.pipe() raising
+    EMFILE never reached the `except BaseException` that closes them and the pairs already made
+    were leaked for the life of the supervisor. This makes exactly one such unowned pair — with
+    the real os.pipe, so the arming counter still fails on the same call of the real body — and
+    then runs the unchanged body. Nothing closes it, so the fd census below sees the two
+    descriptors the pre-fix code lost.
+    """
+    _control_leaks.append(_real_pipe())
+    return _real_execute_inner(self, job)
+
+
+def _open_pipe_fds():
+    """How many of this process's descriptors are pipe ends, from /proc.
+
+    Counting PIPES, not descriptors: the census has to survive the accepted socket and the
+    client connection the request itself opens and closes on their own schedule, and those are
+    socket: links. Only executions and this test create pipes here.
+    """
+    total = 0
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink("/proc/self/fd/" + name).startswith("pipe:"):
+                total += 1
+        except OSError:
+            pass  # the entry was the listdir's own descriptor, already gone
+    return total
+
+
+def _await_zero_responses(supervisor, timeout=5.0):
+    """The in-flight count, polled to zero. The decrement is in the handler's `finally`, which
+    runs after the bytes are on the socket — so the client can be back here first by a hair.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if supervisor.responses_in_flight() == 0:
+            return 0
+        time.sleep(0.01)
+    return supervisor.responses_in_flight()
+
+
+def test_pipe_fd_ownership(tmp):
+    """An os.pipe() that raises must leak nothing, including the pairs made before it.
+
+    genetics-results-suite-4h6.63. _execute_inner made its three pairs above the try that owns
+    every other descriptor, so an EMFILE on the second or third call lost the two or four
+    already made — permanently, in the one state where they matter.
+    """
+    root = os.path.join(tmp, "pipe-ownership")
+    os.makedirs(root)
+    server = Server(root)
+    installed = os.environ.get(ENV_PIPES_OUTSIDE_TRY) == "1"
+    if installed:
+        sup.Supervisor._execute_inner = _pipes_outside_try
+    suffix = (" (SUPERVISOR_TEST_PIPES_OUTSIDE_TRY=1 is installed: this is the control)"
+              if installed else "")
+    try:
+        for ordinal, label in ((2, "second"), (3, "third")):
+            armed = _PipeFailsOn(ordinal)
+            before = _open_pipe_fds()
+            os.pipe = armed
+            try:
+                status, _, body = server.request("POST", "/execute", make_body())
+            finally:
+                os.pipe = _real_pipe
+            after = _open_pipe_fds()
+            check(f"pipe ownership: an EMFILE from the {label} os.pipe() is answered, not "
+                  "swallowed", status == 500 and armed.calls >= ordinal,
+                  f"got {status} after {armed.calls} os.pipe() call(s): {str(body)[:160]}")
+            check(f"pipe ownership: an EMFILE from the {label} os.pipe() leaks no descriptor — "
+                  "the pairs already made are inside the try that closes them",
+                  after == before, f"{after - before} pipe fd(s) leaked "
+                  f"({before} -> {after}){suffix}")
+            check(f"pipe ownership: and the response owed for that failure is given back "
+                  f"({label} os.pipe())",
+                  _await_zero_responses(server.supervisor) == 0,
+                  f"{server.supervisor.responses_in_flight()} still in flight")
+    finally:
+        os.pipe = _real_pipe
+        sup.Supervisor._execute_inner = _real_execute_inner
+        while _control_leaks:
+            for fd in _control_leaks.pop():
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        server.close()
+
+
+# --------------------------------------------------------------------------------------
+# genetics-results-suite-4h6.57: SIGTERM between the slot release and the response write
+# --------------------------------------------------------------------------------------
+
+ENV_SHUTDOWN_ON_IDLE = "SUPERVISOR_TEST_SHUTDOWN_ON_IDLE"
+
+
+def _shutdown_on_idle(httpd, supervisor, poll=0.02):
+    """_shutdown_when_idle as it was before 4h6.57: it waits on idle() and nothing else.
+
+    The negative control, and the pre-fix source line rather than a flag. idle() is true the
+    instant run()'s `finally` gives the execution slot back, which is before the handler writes
+    the 200 — so this returns, main() would run server_close()/forkserver.close() and exit, and
+    the answer to a COMPLETED execution never reaches the socket.
+    """
+    while not supervisor.idle():
+        time.sleep(poll)
+    httpd.shutdown()
+
+
+def test_shutdown_race(tmp):
+    """A SIGTERM landing after the slot release still yields a COMPLETE response.
+
+    genetics-results-suite-4h6.57. Constructed, not raced: _release is wrapped so that the
+    drain and the shutdown thread start at the exact instant the slot is freed and the window
+    is then held open for a second. The property is an ORDERING — the shutdown gate must not
+    open until the response has been written — so the check reads what the gate saw when it
+    returned, not how long anything took.
+    """
+    root = os.path.join(tmp, "shutdown-race")
+    os.makedirs(root)
+    server = Server(root)
+    real_release = sup.Supervisor._release
+    real_send = sup._Handler._send_json
+    real_health = sup.Supervisor.health
+    gate = (_shutdown_on_idle if os.environ.get(ENV_SHUTDOWN_ON_IDLE) == "1"
+            else sup._shutdown_when_idle)
+    installed = gate is not sup._shutdown_when_idle
+    suffix = (" (SUPERVISOR_TEST_SHUTDOWN_ON_IDLE=1 is installed: this is the control)"
+              if installed else "")
+    try:
+        # Nothing is executing, so the gate is open — and it must stay open for a readiness
+        # probe. If /health were counted, a kubelet polling every few seconds could hold the
+        # drain past terminationGracePeriodSeconds and lose the wipe as well as the answer.
+        probe = {}
+
+        def watched_health(self):
+            probe["quiescent"] = self.quiescent()
+            return real_health(self)
+
+        sup.Supervisor.health = watched_health
+        try:
+            status, _, _ = server.request("GET", "/health")
+        finally:
+            sup.Supervisor.health = real_health
+        check("shutdown race: a /health in flight does not hold the shutdown gate — the probe "
+              "is not counted", status == 200 and probe.get("quiescent") is True,
+              f"health {status}, quiescent inside the handler {probe.get('quiescent')!r}")
+
+        seen = {}
+        written = threading.Event()
+        exited = threading.Event()
+
+        def racing_release(self, job, retain):
+            real_release(self, job, retain)
+            if not seen:
+                # SIGTERM, delivered exactly here: begin_drain() then the shutdown thread, which
+                # is all main()'s handler does.
+                seen["idle"] = self.idle()
+                seen["quiescent"] = self.quiescent()
+                self.begin_drain()
+
+                def _gate():
+                    gate(server.httpd, self, 0.02)
+                    seen["written_at_exit"] = written.is_set()
+                    exited.set()
+
+                threading.Thread(target=_gate, daemon=True).start()
+                time.sleep(1.0)  # hold the window open so the race has a decided winner
+
+        def watched_send(self, code, payload, extra_headers=()):
+            real_send(self, code, payload, extra_headers)
+            if code == 200:
+                written.set()
+
+        sup.Supervisor._release = racing_release
+        sup._Handler._send_json = watched_send
+        try:
+            status, _, body = server.request("POST", "/execute", make_body())
+        finally:
+            sup.Supervisor._release = real_release
+            sup._Handler._send_json = real_send
+        exited.wait(60)
+
+        check("shutdown race: the execution completed and was answered in full",
+              status == 200 and (body or {}).get("output", "").startswith("hi"),
+              f"got {status} {str(body)[:200]}")
+        # The reason the shutdown path needs its own predicate rather than idle(): measured
+        # inside the window, idle() already says the process may exit.
+        check("shutdown race: inside the window idle() is TRUE — the execution slot is free — "
+              "while quiescent() is FALSE, because the answer is still owed",
+              seen.get("idle") is True and seen.get("quiescent") is False,
+              f"idle={seen.get('idle')!r} quiescent={seen.get('quiescent')!r}")
+        check("shutdown race: a SIGTERM in that window does not open the shutdown gate until "
+              "the response has been written",
+              exited.is_set() and seen.get("written_at_exit") is True,
+              f"gate returned={exited.is_set()} with the 200 written={seen.get('written_at_exit')!r}"
+              + suffix)
+        check("shutdown race: and the count is given back, so the drain finishes rather than "
+              "running out the 130s grace",
+              _await_zero_responses(server.supervisor) == 0,
+              f"{server.supervisor.responses_in_flight()} still in flight")
+    finally:
+        sup.Supervisor._release = real_release
+        sup._Handler._send_json = real_send
+        sup.Supervisor.health = real_health
+        server.close()
+
+
+def test_shutdown_count_units(tmp):
+    """The count must come back on the ERROR exits too, not only the 200.
+
+    A count that leaks on a refusal is worse than the race it replaces: the drain never reaches
+    zero, the kubelet SIGKILLs at terminationGracePeriodSeconds and the wipe is lost too. These
+    are the exits reachable over the wire without a fork.
+    """
+    root = os.path.join(tmp, "shutdown-count")
+    os.makedirs(root)
+    server = Server(root)
+    try:
+        cases = (
+            ("a body the parser refuses", lambda: server.request(
+                "POST", "/execute", {"code": 1})),
+            ("the wrong content type", lambda: server.request(
+                "POST", "/execute", make_body(), ctype="text/plain")),
+        )
+        for label, call in cases:
+            call()
+            check(f"shutdown count: {label} leaves nothing in flight",
+                  _await_zero_responses(server.supervisor) == 0,
+                  f"{server.supervisor.responses_in_flight()} still in flight")
+        # ...and the 409 path, which is the one that gets past the parser and into run().
+        body = make_body()
+        status, _, _ = server.request("POST", "/execute", body)
+        dup, _, _ = server.request("POST", "/execute", body)
+        check("shutdown count: a duplicate execution_id (409, raised inside run()) leaves "
+              "nothing in flight",
+              status == 200 and dup == 409 and _await_zero_responses(server.supervisor) == 0,
+              f"first {status}, duplicate {dup}, "
+              f"{server.supervisor.responses_in_flight()} in flight")
+
+        # WHY THE COUNT HAS TO EXIST AT ALL: nothing in the shutdown joins a handler thread.
+        # daemon_threads = True makes socketserver's _Threads.append drop the thread on the
+        # floor, so ThreadingMixIn.server_close() joins an empty list and main()'s
+        # serving.join() waits only for serve_forever.
+        recorder = socketserver._Threads()
+        daemon = threading.Thread(target=lambda: None, daemon=True)
+        recorder.append(daemon)
+        daemon.start()
+        daemon.join(10)
+        check("shutdown count: the server does not join its handler threads, so the count is "
+              "the only thing that can wait for a response",
+              sup._Server.daemon_threads is True and list(recorder) == [],
+              f"daemon_threads={sup._Server.daemon_threads}, recorded {list(recorder)!r}")
+    finally:
+        server.close()
+
+
+# --------------------------------------------------------------------------------------
+# 4h6.57, the two failure routes the `finally` and the ceiling close SEPARATELY
+# --------------------------------------------------------------------------------------
+
+ENV_COUNT_NO_FINALLY = "SUPERVISOR_TEST_COUNT_NO_FINALLY"
+ENV_SHUTDOWN_NO_CEILING = "SUPERVISOR_TEST_SHUTDOWN_NO_CEILING"
+
+_real_handler_execute = sup._Handler._execute
+
+
+def _count_without_finally(self):
+    """_execute with end_response() moved OUT of the `finally`. The negative control.
+
+    Every counted exit the other checks drive RETURNS NORMALLY, so none of them needs the
+    `finally` at all and this control leaves them all green. The one exit that does need it is
+    an exception ESCAPING the counted region, which is not hypothetical: _send_json calls
+    send_response()/end_headers() OUTSIDE its own `except OSError` (only self.wfile.write is
+    inside), so a client resetting mid-execution raises ConnectionResetError straight out of
+    the handler body. Without the `finally` that leaks the count permanently.
+    """
+    sup.SUPERVISOR.begin_response()
+    self._execute_and_answer()
+    sup.SUPERVISOR.end_response()
+
+
+def _shutdown_no_ceiling(httpd, supervisor, poll=0.02, deadline_s=None):
+    """_shutdown_when_idle with the ceiling removed — 4h6.57 as first written. The control.
+
+    It polls quiescent() and nothing else, so one handler parked in sendall holds it for as
+    long as the peer likes; measured at 115s and still going with 20 000 pipelined 400s on a
+    socket the client never read. deadline_s is accepted and ignored on purpose: the whole
+    difference is that this gate has no deadline to accept.
+    """
+    while not supervisor.quiescent():
+        time.sleep(poll)
+    httpd.shutdown()
+
+
+class _RecordingHttpd:
+    """Stands in for the real server so the gate can be driven without tearing it down."""
+
+    def __init__(self):
+        self.shutdowns = 0
+
+    def shutdown(self):
+        self.shutdowns += 1
+
+
+def test_shutdown_count_escapes(tmp):
+    """An exception ESCAPING the counted region must still leave the count at zero.
+
+    genetics-results-suite-4h6.57. This is the only exit the `finally` exists for — every
+    other counted exit returns normally — and it is reachable over the wire: a client that
+    resets mid-execution makes send_response()/end_headers() raise out of _send_json, which is
+    outside its own `except OSError`. Measured with SO_LINGER(1,0) against a 3s execution:
+    with the `finally` the count came back to 0, without it the supervisor never became
+    quiescent again. Simulated here at the same point rather than raced with a real reset.
+    """
+    root = os.path.join(tmp, "shutdown-escape")
+    os.makedirs(root)
+    server = Server(root)
+    real_send = sup._Handler._send_json
+    installed = os.environ.get(ENV_COUNT_NO_FINALLY) == "1"
+    suffix = (" (SUPERVISOR_TEST_COUNT_NO_FINALLY=1 is installed: this is the control)"
+              if installed else "")
+    escaped = []
+
+    def resetting_send(self, code, payload, extra_headers=()):
+        if code == 200:
+            raise ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+        real_send(self, code, payload, extra_headers)
+
+    def record_error(request, client_address):
+        escaped.append(sys.exc_info()[1])
+
+    if installed:
+        sup._Handler._execute = _count_without_finally
+    sup._Handler._send_json = resetting_send
+    server.httpd.handle_error = record_error
+    try:
+        try:
+            server.request("POST", "/execute", make_body())
+        except Exception:
+            pass  # nothing was written, so the client sees the connection close
+        check("shutdown count: a client reset mid-response really does escape the handler "
+              "body — send_response()/end_headers() are outside _send_json's except OSError",
+              any(isinstance(exc, ConnectionResetError) for exc in escaped),
+              f"the server recorded {escaped!r}")
+        check("shutdown count: an exception ESCAPING the counted region still gives the count "
+              "back, so the drain reaches zero rather than hanging until the SIGKILL",
+              _await_zero_responses(server.supervisor) == 0,
+              f"{server.supervisor.responses_in_flight()} still in flight" + suffix)
+    finally:
+        sup._Handler._send_json = real_send
+        sup._Handler._execute = _real_handler_execute
+        try:
+            del server.httpd.handle_error
+        except AttributeError:
+            pass
+        server.close()
+
+
+def test_shutdown_ceiling(tmp):
+    """The drain gate must have a ceiling: one response can otherwise hold it forever.
+
+    genetics-results-suite-4h6.57. _send_json's write is a blocking sendall on a connection
+    left at settimeout(None), so a peer that stops reading parks a COUNTED handler with no
+    deadline of its own. The count coming back on every exit does not help when the exit never
+    happens, which is why the `finally` and DRAIN_DEADLINE_S close different routes to the
+    same hang. Driven by holding a count directly — the parked writer is what the ceiling is
+    for, not what it needs to observe — and against a short deadline rather than 125 real
+    seconds.
+    """
+    root = os.path.join(tmp, "shutdown-ceiling")
+    os.makedirs(root)
+    server = Server(root)
+    gate = (_shutdown_no_ceiling if os.environ.get(ENV_SHUTDOWN_NO_CEILING) == "1"
+            else sup._shutdown_when_idle)
+    installed = gate is not sup._shutdown_when_idle
+    suffix = (" (SUPERVISOR_TEST_SHUTDOWN_NO_CEILING=1 is installed: this is the control)"
+              if installed else "")
+    held = False
+    try:
+        check("shutdown ceiling: DRAIN_DEADLINE_S leaves room for a full-length execution "
+              "(MAX_TIMEOUT_S + KILL_GRACE_S) and still exits inside the 130s grace",
+              sup.MAX_TIMEOUT_S + sup.KILL_GRACE_S < sup.DRAIN_DEADLINE_S < 130,
+              f"{sup.MAX_TIMEOUT_S} + {sup.KILL_GRACE_S} < {sup.DRAIN_DEADLINE_S} < 130")
+
+        server.supervisor.begin_response()
+        held = True
+        httpd = _RecordingHttpd()
+        returned = threading.Event()
+        with _LogCapture() as capture:
+            def _gate():
+                gate(httpd, server.supervisor, 0.02, 0.3)
+                returned.set()
+
+            threading.Thread(target=_gate, daemon=True).start()
+            returned.wait(5)
+        check("shutdown ceiling: a response that never finishes writing does NOT hold the "
+              "drain open — the gate proceeds to shutdown() at the deadline",
+              returned.is_set() and httpd.shutdowns == 1,
+              f"gate returned={returned.is_set()}, shutdown() calls={httpd.shutdowns}, "
+              f"{server.supervisor.responses_in_flight()} in flight" + suffix)
+        check("shutdown ceiling: and it is logged loudly, naming the in-flight count, because "
+              "an operator seeing this needs to know the answer was abandoned",
+              any("drain deadline reached" in line and "1 response(s) still in flight" in line
+                  for line in capture.lines),
+              f"logged {capture.lines!r}" + suffix)
+    finally:
+        if held:
+            server.supervisor.end_response()
+        server.close()
+
+
+# --------------------------------------------------------------------------------------
+# 4h6.68 (PID 1 reaps what reparents past the fork server) and 4h6.62 (the drain thread is
+# bounded against a CONTINUOUS writer). One root cause seen from two sides: both are about the
+# residual set the fork server's subreaper + FS_OP_SWEEP does not cover.
+# --------------------------------------------------------------------------------------
+
+ENV_REAPER_UNBOUNDED = "SUPERVISOR_TEST_REAPER_UNBOUNDED"
+ENV_REAPER_NO_FS_SLOT = "SUPERVISOR_TEST_REAPER_NO_FS_SLOT"
+ENV_REAPER_IGNORES_CLOSING = "SUPERVISOR_TEST_REAPER_IGNORES_CLOSING"
+ENV_REAPER_NO_JOB_SLOT = "SUPERVISOR_TEST_REAPER_NO_JOB_SLOT"
+ENV_REAPER_LOGS = "SUPERVISOR_TEST_REAPER_LOGS"
+ENV_REAPER_SIG_IGN = "SUPERVISOR_TEST_REAPER_SIG_IGN"
+ENV_CLOSING_LAST = "SUPERVISOR_TEST_CLOSE_SETS_CLOSING_LAST"
+ENV_DRAIN_READY_ONLY = "SUPERVISOR_TEST_DRAIN_DEADLINE_IN_READY"
+ENV_PUBLISH_KEEPS_PGID = "SUPERVISOR_TEST_PUBLISH_KEEPS_PGID"
+ENV_PUBLISH_NO_REAPED_GUARD = "SUPERVISOR_TEST_PUBLISH_NO_REAPED_GUARD"
+
+
+def _publish_real(supervisor, pid, status):
+    """Supervisor.note_child_reaped itself. The publisher checks route through this so a control
+    differs from production in exactly the one line it is named for."""
+    return supervisor.note_child_reaped(pid, status)
+
+
+def _publish_keeps_pgid(supervisor, pid, status):
+    """note_child_reaped that clears `pid` but LEAVES `reaped_pgid` stamped. The negative control
+    for the completion-path half of the collision: _reap stamps reaped_pgid BEFORE the waitpid
+    that can raise, so a fork server dying in between leaves the pgid set and `reaped` False, the
+    stranded branch is not taken, and _execute_inner's else branch calls _kill_survivors
+    unconditionally on a pgid whose pid the reaper just made recyclable."""
+    job = supervisor._running
+    if job is None or job.reaped or pid != job.pid:
+        return False
+    job.reaped_status = status
+    job.reaped = True
+    job.pid = None
+    return True
+
+
+def _publish_no_reaped_guard(supervisor, pid, status):
+    """note_child_reaped without the `job.reaped` half of its match. The negative control for a
+    NORMALLY reaped job: _reap never clears job.pid and _release does not clear _running until
+    the whole response is built, so that pid number, once recycled, still matches here."""
+    job = supervisor._running
+    if job is None or pid != job.pid:
+        return False
+    job.reaped_pgid = None
+    job.reaped_status = status
+    job.reaped = True
+    job.pid = None
+    return True
+
+
+def _reaper_unbounded(fs=None, max_rounds=None, supervisor=None):
+    """_reap_orphans with the round cap removed. The negative control for the bound.
+
+    max_rounds is accepted and IGNORED on purpose: the whole difference is that this loop has no
+    cap to accept. In PID 1 it is driven from a signal handler, so a peer forking and killing
+    faster than this reaps pins the main thread inside the handler.
+    """
+    reaped = []
+    if fs is not None and getattr(fs, "_closing", False):
+        return reaped
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        _publish(fs, supervisor, pid, status)
+        reaped.append(pid)
+    return reaped
+
+
+def _reaper_no_fs_slot(fs=None, max_rounds=sup.ORPHAN_REAP_MAX_ROUNDS, supervisor=None):
+    """_reap_orphans that reaps fs.pid and DROPS the status. The negative control for the
+    collision resolution: this is the shape a blind waitpid(-1) reaper has, and it leaves
+    ForkServer.close() polling a pid the kernel is free to have given to somebody else."""
+    reaped = []
+    for _ in range(max_rounds):
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        if supervisor is not None:
+            supervisor.note_child_reaped(pid, status)
+        reaped.append(pid)
+    return reaped
+
+
+def _reaper_ignores_closing(fs=None, max_rounds=sup.ORPHAN_REAP_MAX_ROUNDS,
+                            supervisor=None):
+    """_reap_orphans that reaps while close() owns fs.pid. The negative control for `_closing`."""
+    reaped = []
+    for _ in range(max_rounds):
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        _publish(fs, supervisor, pid, status)
+        reaped.append(pid)
+    return reaped
+
+
+def _reaper_no_job_slot(fs=None, max_rounds=sup.ORPHAN_REAP_MAX_ROUNDS, supervisor=None):
+    """_reap_orphans that publishes fs.pid but NOT the running execution's child — the shape
+    before the second publisher existed, and the shape the old docstring described as safe on
+    the grounds that "execution children are the supervisor's grandchildren". They are, until
+    the fork server dies mid-execution and they reparent to PID 1."""
+    reaped = []
+    if fs is not None and getattr(fs, "_closing", False):
+        return reaped
+    for _ in range(max_rounds):
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        if fs is not None:
+            fs.note_reaped(pid, status)
+        reaped.append(pid)
+    return reaped
+
+
+def _reaper_logging_publisher(fs=None, max_rounds=sup.ORPHAN_REAP_MAX_ROUNDS, supervisor=None):
+    """_reap_orphans whose fork-server publisher LOGS from inside the handler — note_reaped as
+    it stood, reaching LOG.error through _mark_broken's default. The negative control for "the
+    handler is silent": against a congested stdout that call raised `reentrant call inside
+    <_io.BufferedWriter>` INSIDE the handler and abandoned the rest of the delivery."""
+    reaped = []
+    if fs is not None and getattr(fs, "_closing", False):
+        return reaped
+    for _ in range(max_rounds):
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            break
+        if pid == 0:
+            break
+        if fs is not None and pid == fs.pid:
+            fs.exit_status = status
+            fs.pid = None
+            fs._mark_broken("the fork server exited (reaped by the PID 1 orphan reaper)")
+        if supervisor is not None:
+            supervisor.note_child_reaped(pid, status)
+        reaped.append(pid)
+    return reaped
+
+
+def _publish(fs, supervisor, pid, status):
+    """Both publishers, as _reap_orphans runs them. Shared by the controls so that each one
+    differs from the real function in exactly the one way it is named for."""
+    if fs is not None:
+        fs.note_reaped(pid, status)
+    if supervisor is not None:
+        supervisor.note_child_reaped(pid, status)
+
+
+def _close_closing_last(fs, grace=2.0):
+    """ForkServer.close with `_closing` set LAST instead of first. The negative control for the
+    ordering close()'s own docstring calls LOAD-BEARING; every other line is copied verbatim, so
+    the single difference is where the flag is set."""
+    with fs._lock:
+        try:
+            fs._sock.close()
+        except OSError:
+            pass
+        pid, fs.pid = fs.pid, None
+    if pid is None:
+        fs._closing = True
+        return
+    deadline = time.monotonic() + grace
+    while True:
+        try:
+            got, _ = os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            fs._closing = True
+            return
+        if got:
+            fs._closing = True
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    try:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+    fs._closing = True
+
+
+def _install_sig_ign(_supervisor):
+    """install_orphan_reaper replaced by `signal(SIGCHLD, SIG_IGN)`. The negative control for
+    the end-to-end wiring: the kernel then auto-reaps, so a check that only asserts the zombie
+    is gone stays green while _reap_orphans, note_reaped, note_child_reaped and `_closing` are
+    all unreachable from production."""
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    return True
+
+
+class _ProbeSock:
+    """A stand-in for the control socket whose close() runs a callback. ForkServer touches the
+    socket only through _sock.close() on this path, which makes it a probe for the exact instant
+    close() first does anything at all."""
+
+    def __init__(self, on_close):
+        self._on_close = on_close
+
+    def close(self):
+        self._on_close()
+
+
+def _drain_deadline_in_ready_branch(fd, limit, reaped=None, grace=sup.DRAIN_GRACE_S, poll=0.2,
+                                    on_limit=None, sink=None):
+    """_drain as it stood before 4h6.62: the deadline is evaluated ONLY when select reports the
+    fd went quiet. Reduced to the loop shape that matters — the output cap and the sink-failure
+    recovery are untouched by this check and copying them would only invite them to drift — so
+    the single difference from the real function is which branch the deadline check sits in."""
+    total = 0
+    deadline = None
+    abandoned = False
+    while True:
+        if deadline is None and reaped is not None and reaped.is_set():
+            deadline = time.monotonic() + grace
+        wait = poll if deadline is None else max(0.0, min(poll, deadline - time.monotonic()))
+        try:
+            ready, _, _ = select.select([fd], [], [], wait)
+        except (InterruptedError, OSError):
+            break
+        if not ready:
+            if deadline is not None and time.monotonic() >= deadline:
+                abandoned = True
+                break
+            continue
+        try:
+            block = os.read(fd, 65536)
+        except OSError:
+            break
+        if not block:
+            break
+        total += len(block)
+        if sink is not None:
+            sink(block)
+    return b"", total, False, abandoned
+
+
+def _fork_zombie(code=0):
+    """A child of THIS process that exits immediately. Returns its pid once it is state 'Z'."""
+    pid = os.fork()
+    if pid == 0:                                        # pragma: no cover - the child
+        os._exit(code)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if _state(pid) == "Z":
+            return pid
+        time.sleep(0.005)
+    return pid
+
+
+def _state(pid):
+    """The /proc state letter, or None once the pid is gone. _proc_stat_fields yields BYTES."""
+    fields = sup._proc_stat_fields(pid)
+    return None if fields is None else fields[0].decode("ascii", "replace")
+
+
+def test_orphan_reaper():
+    """PID 1 must reap what reparents PAST the fork server to it, and must stay bounded doing it.
+
+    genetics-results-suite-4h6.68. bd415f9 made the fork server a subreaper with a bounded
+    re-enumerating FS_OP_SWEEP, so on every ordinary path a stray reparents THERE and is killed
+    and reaped. This is the residual: a dead fork server, or a PR_SET_CHILD_SUBREAPER that never
+    took, sends survivors past it to PID 1, where nothing ever waited on them. MEASURED before
+    the fix: state 'Z', still 'Z' a second later, never waitpid()ed, one pid slot gone against
+    pod_pids_limit for the pod's lifetime.
+
+    The zombies here are real children of this process, forked and left unwaited, which is the
+    same relationship a reparented orphan has to PID 1 — the kernel does not distinguish them,
+    and this harness cannot become PID 1 to make the point any more literally.
+    """
+    reaper = sup._reap_orphans
+    if os.environ.get(ENV_REAPER_UNBOUNDED) == "1":
+        reaper = _reaper_unbounded
+    elif os.environ.get(ENV_REAPER_NO_FS_SLOT) == "1":
+        reaper = _reaper_no_fs_slot
+    elif os.environ.get(ENV_REAPER_IGNORES_CLOSING) == "1":
+        reaper = _reaper_ignores_closing
+    elif os.environ.get(ENV_REAPER_NO_JOB_SLOT) == "1":
+        reaper = _reaper_no_job_slot
+    elif os.environ.get(ENV_REAPER_LOGS) == "1":
+        reaper = _reaper_logging_publisher
+    installed = reaper is not sup._reap_orphans
+    suffix = (f" ({reaper.__name__} is installed: this is the control)" if installed else "")
+
+    # --- it reaps at all, and the thing it reaped really was a zombie first ---
+    pid = _fork_zombie(code=3)
+    was_zombie = _state(pid) == "Z"
+    reaped = reaper(None, 8)
+    check("orphan reaper: an unwaited child of PID 1 really is a permanent zombie until "
+          "something reaps it, so this drives the state the bead measured",
+          was_zombie, f"state was {_state(pid)!r}" + suffix)
+    check("orphan reaper: a bounded waitpid(-1, WNOHANG) sweep reaps it, giving the pid slot "
+          "back to a replicas-1 pod that serves every later user",
+          pid in reaped and _state(pid) is None,
+          f"reaped={reaped}, state now {_state(pid)!r}" + suffix)
+
+    # --- and it STOPS. The cap is not decoration: this runs inside a signal handler. ---
+    zombies = [_fork_zombie() for _ in range(8)]
+    took = reaper(None, 3)
+    left = [z for z in zombies if _state(z) == "Z"]
+    check("orphan reaper: ONE delivery reaps at most max_rounds children and then returns — an "
+          "unbounded waitpid loop in a signal handler pins PID 1's main thread",
+          len(took) == 3 and len(left) >= 5,
+          f"reaped {len(took)} in one call, {len(left)}/8 still zombies" + suffix)
+    for _ in range(8):
+        if not any(_state(z) == "Z" for z in zombies):
+            break
+        reaper(None, 8)
+    check("orphan reaper: and the cap only defers — later deliveries clear the rest",
+          all(_state(z) is None for z in zombies),
+          f"{[z for z in zombies if _state(z) is not None]} left" + suffix)
+
+    # --- THE ONE GENUINE COLLISION: fs.pid. waitpid(-1) cannot skip a pid, so it publishes. ---
+    left_sock, right_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        fs_pid = _fork_zombie(code=7)
+        fs = sup.ForkServer(fs_pid, left_sock)
+        reaper(fs, 8)
+        check("orphan reaper / fs.pid: the fork server's wait status is PUBLISHED through the "
+              "handle rather than dropped — waitpid(-1) reports which child it took only after "
+              "taking it, so the reaper cannot skip fs.pid and must hand it over",
+              fs.exit_status is not None and os.WEXITSTATUS(fs.exit_status) == 7,
+              f"exit_status={fs.exit_status!r}" + suffix)
+        check("orphan reaper / fs.pid: publishing clears fs.pid and marks the handle broken, so "
+              "close()'s grace loop has nothing left to poll and never SIGKILLs a pid the "
+              "kernel may already have recycled",
+              fs.pid is None and fs._broken is not None,
+              f"pid={fs.pid!r}, broken={fs._broken!r}" + suffix)
+        check("orphan reaper / fs.pid: and /health sees it dead without a syscall of its own",
+              fs.alive() is False, f"alive()={fs.alive()!r}" + suffix)
+    finally:
+        left_sock.close()
+        right_sock.close()
+
+    # --- AND IT DOES ALL OF THAT WITHOUT LOGGING. The handler is claimed silent; it was not. ---
+    left_sock, right_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        silent_pid = _fork_zombie(code=13)
+        fs4 = sup.ForkServer(silent_pid, left_sock)
+        with _LogCapture() as cap:
+            reaper(fs4, 8)
+            during = list(cap.lines)
+            fs4.alive()
+            after = cap.lines[len(during):]
+        check("orphan reaper: the handler's whole path emits NO log record. It used to reach "
+              "LOG.error through note_reaped -> _mark_broken, and MEASURED against main()'s own "
+              "logging setup with a stalled stdout consumer that raised `reentrant call inside "
+              "<_io.BufferedWriter>` INSIDE the handler, aborting the delivery with 4 of 5 "
+              "zombies unreaped",
+              during == [], f"the handler path logged {during}" + suffix)
+        check("orphan reaper: and the reason is not lost with the log call — alive(), on a "
+              "normal thread, prints the line the handler could not. _mark_broken sets `_broken` "
+              "BEFORE it logs, so a log call that failed there lost this line for good",
+              any("unusable and will not be reused" in line for line in after),
+              f"lines after the reap: {after}" + suffix)
+    finally:
+        left_sock.close()
+        right_sock.close()
+
+    # --- THE COLLISION THE OLD DOCSTRING DENIED: an execution child stranded by a dead fork
+    # server is not a grandchild any more. It reparents to PID 1 and this reaper takes it. ---
+    supervisor = sup.Supervisor("/nonexistent/orphan-reaper-check")
+    job = sup.Job(sup.parse_execute_request(json.dumps(make_body()).encode()), None)
+    stranded_pid = os.fork()
+    if stranded_pid == 0:                               # pragma: no cover - the child
+        os.setsid()          # its OWN process group, exactly as a real execution child does
+        os._exit(6)
+    deadline = time.monotonic() + 5
+    while _state(stranded_pid) != "Z" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    job.pid = stranded_pid
+    supervisor._running = job
+    reaper(None, 8, supervisor=supervisor)
+    check("orphan reaper / stranded execution: the child's wait status is published to the "
+          "running job. test_forkserver_death_mid_execution already drives the case that "
+          "produces it — a fork server that dies mid-execution leaves its child a DIRECT child "
+          "of PID 1, and _reap raised, so nothing else will ever mark that job reaped",
+          job.reaped and job.pid is None and job.reaped_status is not None
+          and os.WEXITSTATUS(job.reaped_status) == 6,
+          f"reaped={job.reaped}, pid={job.pid!r}, status={job.reaped_status!r}" + suffix)
+
+    kills = []
+    real_kill, real_killpg = os.kill, os.killpg
+    os.kill = lambda pid, sig: (kills.append(("kill", pid, sig)), real_kill(pid, sig))[1]
+    os.killpg = lambda pgid, sig: (kills.append(("killpg", pgid, sig)), real_killpg(pgid, sig))[1]
+    try:
+        with _LogCapture() as cap:
+            started_kill = time.monotonic()
+            answer = sup._signal_group(job, signal.SIGKILL)
+            sup._kill_group(job)
+            kill_elapsed = time.monotonic() - started_kill
+            kill_lines = list(cap.lines)
+    finally:
+        os.kill, os.killpg = real_kill, real_killpg
+    check("orphan reaper / stranded execution: NOTHING SIGNALS THAT PID AFTERWARDS. The reaper "
+          "freed it, so the number is the kernel's to hand out again — measured as real PID 1 "
+          "with ns_last_pid forcing reuse, the pre-fix code killed an unrelated bystander that "
+          "had been forked onto it",
+          answer == sup._SIGNAL_GONE and kills == [],
+          f"_signal_group said {answer}; syscalls issued: {kills}" + suffix)
+    check("orphan reaper / stranded execution: and _kill_group returns at once rather than "
+          "spending the whole of KILL_GRACE_S polling a job that can never go reaped and then "
+          "escalating onto that pid",
+          kill_elapsed < sup.KILL_GRACE_S / 2,
+          f"took {kill_elapsed:.2f}s against a {sup.KILL_GRACE_S}s grace" + suffix)
+    check("orphan reaper / stranded execution: the false diagnostic is unreachable too — the "
+          "child DID setsid() into its own group, and 'no process group of its own' was only "
+          "_resolve_pgid reading a pid the reaper had already freed",
+          not any("no process group of its own" in line for line in kill_lines),
+          f"logged {kill_lines}" + suffix)
+
+    # --- THE SAME COLLISION ON THE COMPLETION PATH, which the stranded checks above cannot
+    # reach. _reap stamps job.reaped_pgid BEFORE the waitpid that can raise ForkServerError, so
+    # a fork server dying between the FS_OP_WAIT reply and the FS_OP_REAP reply leaves the pgid
+    # stamped and `reaped` False: the stranded branch is NOT taken and _execute_inner's else
+    # branch calls _kill_survivors unconditionally. For a setsid() child that pgid IS the pid. ---
+    publisher = _publish_real
+    if os.environ.get(ENV_PUBLISH_KEEPS_PGID) == "1":
+        publisher = _publish_keeps_pgid
+    elif os.environ.get(ENV_PUBLISH_NO_REAPED_GUARD) == "1":
+        publisher = _publish_no_reaped_guard
+    pub_suffix = ("" if publisher is _publish_real
+                  else f" ({publisher.__name__} is installed: this is the control)")
+
+    # A LIVE process in its own group, standing in for whoever holds that number after the
+    # reaper frees it. It has to be live: a group with only zombies in it is one _kill_survivors
+    # walks away from anyway, which would leave the control green.
+    hold2_r, hold2_w = os.pipe()
+    bystander = os.fork()
+    if bystander == 0:                                  # pragma: no cover - the child
+        os.setsid()          # its OWN process group, so its pgid IS its pid
+        os.close(hold2_w)
+        try:
+            os.read(hold2_r, 1)
+        finally:
+            os._exit(0)
+    os.close(hold2_r)
+    try:
+        job2 = sup.Job(sup.parse_execute_request(json.dumps(make_body()).encode()), None)
+        job2.pid = bystander
+        deadline = time.monotonic() + 5
+        while sup._resolve_pgid(job2) is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        job2.reaped_pgid = sup._resolve_pgid(job2)       # exactly _reap's stamp
+        stamped = job2.reaped_pgid
+        supervisor._running = job2
+        took2 = publisher(supervisor, bystander, 0)      # ...and then the reap does NOT happen
+        kills2 = []
+        real_kill, real_killpg = os.kill, os.killpg
+        os.kill = lambda pid, sig: (kills2.append(("kill", pid, sig)), real_kill(pid, sig))[1]
+        os.killpg = lambda pgid, sig: (kills2.append(("killpg", pgid, sig)),
+                                       real_killpg(pgid, sig))[1]
+        try:
+            with _LogCapture() as cap:
+                survivors = sup._kill_survivors(job2)
+                surv_lines = list(cap.lines)
+        finally:
+            os.kill, os.killpg = real_kill, real_killpg
+        still_alive = sup._pid_is_live(bystander)
+        check("orphan reaper / completed execution: publishing clears the RECORDED PGID as well "
+              "as the pid, so _kill_survivors signals nothing. It is the one reader of "
+              "reaped_pgid and it runs on the else branch UNCONDITIONALLY, so a stamp that "
+              "outlived the reap sent SIGTERM to a group whose number the reaper had just made "
+              "recyclable — for a setsid() child that number is the child's own pid",
+              took2 and job2.reaped_pgid is None and survivors is False and kills2 == [],
+              f"published={took2}, reaped_pgid stamped {stamped!r} now {job2.reaped_pgid!r}, "
+              f"_kill_survivors said {survivors!r}, syscalls issued: {kills2}" + pub_suffix)
+        check("orphan reaper / completed execution: and the process still holding that group "
+              "number is untouched, INCLUDING the announcement. MEASURED under `unshare -Urpf "
+              "--mount-proc` with ns_last_pid: the supervisor logged 'process group 117 still "
+              "has members; killing them' about an unrelated process and killed it",
+              still_alive and not any("still has members" in line for line in surv_lines),
+              f"bystander {bystander} live={still_alive}, logged {surv_lines}" + pub_suffix)
+    finally:
+        try:
+            os.write(hold2_w, b"x")
+        except OSError:
+            pass
+        os.close(hold2_w)
+        try:
+            os.kill(bystander, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(bystander, 0)
+        except OSError:
+            pass
+
+    # --- AND A JOB THAT WAS REAPED NORMALLY REFUSES A FOREIGN STATUS. _reap never clears
+    # job.pid and _release does not clear _running until the whole response is built. ---
+    sup_src = open(os.path.join(ROOT, "sandbox", "supervisor.py"), encoding="utf-8").read()
+    reap_node = next(n for n in ast.parse(sup_src).body
+                     if isinstance(n, ast.FunctionDef) and n.name == "_reap")
+    reap_src = ast.get_source_segment(sup_src, reap_node) or ""
+    job3 = sup.Job(sup.parse_execute_request(json.dumps(make_body()).encode()), None)
+    job3.pid = 0x7FFFFFF0        # a number this process never forked: the recycled pid's stand-in
+    job3.reaped = True           # ...reaped by _reap itself, which leaves job.pid naming it
+    supervisor._running = job3
+    took3 = publisher(supervisor, job3.pid, 1337)
+    check("orphan reaper / already-reaped job: `job.reaped` is part of the match, so a pid the "
+          "kernel recycled after an ORDINARY reap cannot stamp a foreign wait status onto a "
+          "healthy execution. reaped_status has exactly one reader — _execute_inner's `is not "
+          "None` check — so the harm is bounded to a spurious 'the fork server died "
+          "mid-execution' ERROR, and the docstring's _running/pid-turnover argument is now true "
+          "as written rather than true by luck",
+          took3 is False and job3.reaped_status is None,
+          f"published={took3}, reaped_status={job3.reaped_status!r}; the case is reachable "
+          f"because _reap clears job.pid: {'job.pid = None' in reap_src}" + pub_suffix)
+    supervisor._running = None
+
+    # --- and close() OWNS fs.pid for the whole of its grace loop ---
+    left_sock, right_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        closing_pid = _fork_zombie(code=5)
+        fs2 = sup.ForkServer(closing_pid, left_sock)
+        fs2._closing = True
+        took2 = reaper(fs2, 8)
+        check("orphan reaper / close(): with `_closing` set the reaper stands down entirely, so "
+              "no reap can land between close()'s last poll and its SIGKILL",
+              took2 == [] and _state(closing_pid) == "Z",
+              f"reaped {took2}, pid state {_state(closing_pid)!r}" + suffix)
+        fs2.close(grace=1.0)
+        check("orphan reaper / close(): and close() still reaps it itself, so standing down "
+              "costs no zombie",
+              _state(closing_pid) is None, f"state {_state(closing_pid)!r}" + suffix)
+    finally:
+        left_sock.close()
+        right_sock.close()
+
+    # --- and close() SETS THE FLAG FIRST. The check above hands it the flag; this one makes
+    # close() produce it, which is the ordering its docstring calls LOAD-BEARING. ---
+    closer = sup.ForkServer.close
+    if os.environ.get(ENV_CLOSING_LAST) == "1":
+        closer = _close_closing_last
+    closing_ctl = ("" if closer is sup.ForkServer.close else
+                   f" ({ENV_CLOSING_LAST}=1 is installed: this is the control)")
+    ordering_pid = _fork_zombie(code=8)
+    observed = []
+    # The probe runs at the FIRST thing close()'s body touches after the flag should be set.
+    fs6 = sup.ForkServer(ordering_pid, _ProbeSock(lambda: observed.append(reaper(fs6, 8))))
+    closer(fs6, grace=0.5)
+    check("orphan reaper / close(): `_closing` is set BEFORE close() touches anything else — a "
+          "reaper delivered at the first instruction of close()'s body finds the flag already "
+          "set and stands down, which is what keeps the SIGKILL at the end of the grace loop "
+          "off a pid the reaper freed. Driven THROUGH close(), not by setting the flag by hand",
+          observed == [[]] and fs6.exit_status is None,
+          f"the reaper saw {observed} from inside close(), exit_status={fs6.exit_status!r}"
+          + closing_ctl + suffix)
+    check("orphan reaper / close(): and the pid it stood down over is still close()'s to reap",
+          _state(ordering_pid) is None,
+          f"state {_state(ordering_pid)!r}" + closing_ctl + suffix)
+
+    # --- the production wiring: a SIGCHLD handler, in the main thread, that cannot raise ---
+    if installed:
+        skip("orphan reaper: the SIGCHLD handler end to end",
+             f"{reaper.__name__} is installed; the handler calls the real _reap_orphans")
+    else:
+        install = sup.install_orphan_reaper
+        if os.environ.get(ENV_REAPER_SIG_IGN) == "1":
+            install = _install_sig_ign
+        install_ctl = ("" if install is sup.install_orphan_reaper else
+                       f" ({ENV_REAPER_SIG_IGN}=1 is installed: this is the control)")
+        previous = signal.getsignal(signal.SIGCHLD)
+        published = []
+        left_sock, right_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        # The child must not die before the handle it publishes into exists, so it waits for a
+        # byte rather than racing the parent.
+        hold_r, hold_w = os.pipe()
+        try:
+            handler_pid = os.fork()
+            if handler_pid == 0:                        # pragma: no cover - the child
+                os.close(hold_w)
+                os.read(hold_r, 1)
+                os._exit(11)
+            os.close(hold_r)
+            fs5 = sup.ForkServer(handler_pid, left_sock)
+            server_stub = types.SimpleNamespace(forkserver=fs5)
+            server_stub.note_child_reaped = (
+                lambda pid, status: published.append((pid, status)) or False)
+            ok = install(server_stub)
+            os.write(hold_w, b"x")
+            deadline = time.monotonic() + 5
+            while _state(handler_pid) is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            check("orphan reaper: main()'s SIGCHLD handler reaps without anybody calling "
+                  "waitpid — the zombie is gone at the moment it appears, not a poll later",
+                  ok and _state(handler_pid) is None,
+                  f"installed={ok}, state {_state(handler_pid)!r}" + install_ctl)
+            check("orphan reaper: and it is OUR reaper that took it, not the kernel. The status "
+                  "reached BOTH publishers, which is a side effect nothing else produces: "
+                  "signal(SIGCHLD, SIG_IGN) leaves the pid just as gone while _reap_orphans, "
+                  "note_reaped, note_child_reaped and `_closing` are all unreachable from "
+                  "production",
+                  fs5.exit_status is not None and os.WEXITSTATUS(fs5.exit_status) == 11
+                  and published == [(handler_pid, fs5.exit_status)],
+                  f"fs.exit_status={fs5.exit_status!r}, published={published}" + install_ctl)
+        finally:
+            signal.signal(signal.SIGCHLD, previous)
+            try:
+                os.close(hold_w)
+            except OSError:
+                pass
+            left_sock.close()
+            right_sock.close()
+
+    tree = ast.parse(open(os.path.join(ROOT, "sandbox", "supervisor.py"), encoding="utf-8").read())
+    main_fn = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "main")
+    wired = any(isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_orphan_reaper"
+                for n in ast.walk(main_fn))
+    check("orphan reaper: main() actually installs it — the checks above drive the reaper "
+          "directly, and nothing else ties it to the process that runs as PID 1",
+          wired, "main() never calls install_orphan_reaper")
+
+
+def test_drain_continuous_writer():
+    """A descendant that writes CONTINUOUSLY must not hold a drain thread for the pod's lifetime.
+
+    genetics-results-suite-4h6.62. The deadline used to be evaluated only inside `if not ready:`,
+    so a setsid()'d escapee writing without pause kept `ready` truthy on every pass and the
+    deadline was never reached. THE WRITER HERE NEVER STOPS AND ITS WRITE END IS NEVER CLOSED
+    while the drain runs — a writer that stops, or an EOF, is precisely the case the pre-fix code
+    already handled, and a check driving that would leave the control green.
+
+    The sink sleeps a few milliseconds per block so the writer stays ahead of the reader and the
+    64 KiB pipe is never observed empty; without that the pipe can drain between two writes,
+    select reports not-ready, and the PRE-FIX loop reaches its deadline too — which would make
+    the control flaky rather than red.
+    """
+    drain = (_drain_deadline_in_ready_branch
+             if os.environ.get(ENV_DRAIN_READY_ONLY) == "1" else sup._drain)
+    installed = drain is not sup._drain
+    suffix = (" (SUPERVISOR_TEST_DRAIN_DEADLINE_IN_READY=1 is installed: this is the control)"
+              if installed else "")
+    grace = 0.5
+
+    read_fd, write_fd = os.pipe()
+    stop = threading.Event()
+    reaped = threading.Event()
+    written = [0]
+    result = []
+
+    def writer():
+        while not stop.is_set():
+            try:
+                written[0] += os.write(write_fd, b"x" * 4096)
+            except OSError:
+                break
+
+    def sink(block):
+        time.sleep(0.005)
+
+    w = threading.Thread(target=writer, daemon=True)
+    w.start()
+    started = time.monotonic()
+    reaped.set()
+
+    def run():
+        result.append(drain(read_fd, limit=None, reaped=reaped, grace=grace, poll=0.05,
+                            sink=sink))
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=grace + 6.0)
+    elapsed = time.monotonic() - started
+    # THE REGIME, sampled at the moment the drain let go. `written` cannot be used for this: once
+    # nothing reads the pipe the writer blocks in os.write and its counter stops by definition.
+    # What proves the continuous case is that the write end was still LIVE and the fd still had
+    # unread bytes — the state in which the pre-fix loop sees `ready` truthy forever.
+    fd_still_ready = bool(select.select([read_fd], [], [], 0)[0])
+    writer_live = w.is_alive() and not stop.is_set()
+    stop.set()
+    try:
+        os.close(write_fd)
+    except OSError:
+        pass
+    w.join(timeout=5)
+    t.join(timeout=5)
+    try:
+        os.close(read_fd)
+    except OSError:
+        pass
+
+    check("drain deadline: the drain gave up with the write end STILL LIVE and the fd STILL "
+          "READY — the continuous-writer regime the deadline exists for, not a writer that "
+          "stopped or an EOF",
+          fd_still_ready and writer_live and written[0] > 65536,
+          f"fd ready={fd_still_ready}, writer live={writer_live}, "
+          f"{written[0]} bytes written" + suffix)
+    check("drain deadline: a continuously-written pipe does NOT hold the drain thread for the "
+          "pod's lifetime — the deadline is evaluated whether or not the fd is ready",
+          bool(result) and result[0][3] is True,
+          f"returned={bool(result)}, result={result[0] if result else None}" + suffix)
+    check("drain deadline: and it gives up ON the deadline rather than merely eventually — "
+          "well inside DRAIN_GRACE_S plus the join slack _execute_inner allows",
+          bool(result) and elapsed < grace + 2.0,
+          f"took {elapsed:.2f}s against a {grace}s grace" + suffix)
+
+    # The regression guard for the fix itself: moving the check out of the `not ready` branch
+    # must not abandon a pipe whose writer simply finished. This one DOES close its write end.
+    read_fd, write_fd = os.pipe()
+    done = threading.Event()
+    os.write(write_fd, b"y" * 1000)
+    os.close(write_fd)
+    done.set()
+    body, total, stopped, abandoned = sup._drain(read_fd, limit=1 << 20, reaped=done,
+                                                 grace=grace, poll=0.02)
+    os.close(read_fd)
+    check("drain deadline: a writer that finishes still yields every byte and a clean EOF — the "
+          "deadline moving out of the `not ready` branch must not truncate an ordinary result",
+          body == b"y" * 1000 and total == 1000 and not stopped and not abandoned,
+          f"{len(body)} bytes, total={total}, stopped={stopped}, abandoned={abandoned}")
+
+
+class _LogCapture(logging.Handler):
+    """The supervisor's own LOG, which is the audit stream: main() points logging at stdout."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+    def __enter__(self):
+        # The harness never calls basicConfig, so this logger sits at the root's WARNING and
+        # LOG.info() returns before any handler sees it. In the image main() puts it at INFO on
+        # stdout, which is the stream this test is about.
+        self._level = sup.LOG.level
+        sup.LOG.setLevel(logging.INFO)
+        sup.LOG.addHandler(self)
+        return self
+
+    def __exit__(self, *exc):
+        sup.LOG.removeHandler(self)
+        sup.LOG.setLevel(self._level)
+        return False
+
+
+# --------------------------------------------------------------------------------------
 
 
 def run_in_process():
@@ -2137,12 +6212,51 @@ def run_in_process():
         print("artifact manifest and retrieval")
         test_manifest(tmp)
         test_artifact_scoping(tmp)
+        test_artifact_fifo_does_not_block(tmp)
+        test_seal_fifo_does_not_block(tmp)
+        test_artifact_integrity(tmp)
+        test_artifact_encryption(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
+        print("fork server units")
+        test_forkserver_units(tmp)
+        print("bounded header reads (4h6.87)")
+        test_header_reader_units()
+        print("fork server failure paths")
+        test_pre_ready_execute(tmp)
+        test_pre_ready_body_bytes(tmp)
+        test_forkserver_lost_fork_reply(tmp)
+        test_forkserver_death_mid_execution(tmp)
+        print("cross-execution memory isolation (4h6.55 option (b))")
+        test_isolation(tmp)
         print("end to end over HTTP")
         root = os.path.join(tmp, "scratch")
         os.makedirs(root)
         test_http(Server(root))
+        print("descriptor ownership and the shutdown gate (4h6.63, 4h6.57)")
+        test_pipe_fd_ownership(tmp)
+        test_shutdown_count_units(tmp)
+        test_shutdown_count_escapes(tmp)
+        test_shutdown_ceiling(tmp)
+        test_shutdown_race(tmp)
+        print("PID 1 orphan reaping and the drain deadline (4h6.68, 4h6.62)")
+        test_orphan_reaper()
+        test_drain_continuous_writer()
+        print("head-read deadline and log sanitising (4h6.58, 4h6.64)")
+        root = os.path.join(tmp, "headtimeout")
+        os.makedirs(root)
+        server = Server(root)
+        try:
+            test_head_timeout(server)
+        finally:
+            server.close()
+        print("what an execution leaves behind (4h6.66, 4h6.83)")
+        root = os.path.join(tmp, "survivors")
+        os.makedirs(root)
+        test_survivors(Server(root))
+        root = os.path.join(tmp, "chain")
+        os.makedirs(root)
+        test_survivor_chain(root)
         print("backpressure over HTTP")
         root = os.path.join(tmp, "backpressure")
         os.makedirs(root)
@@ -2235,10 +6349,35 @@ def run_container(base_url, retention_s=None, container_name=None):
         "request parsing and token consistency (test_parsing) — calls the parser directly",
         "queue (test_queue, test_peer_gone) — inspects the supervisor's queue objects",
         "artifact manifest (test_manifest) — needs the harness's own view of /scratch",
+        "artifact integrity (test_artifact_integrity) — tampers with a retained artifact "
+        "directly, which needs the harness's own view of /scratch",
+        "artifact encryption at rest (test_artifact_encryption) — reads a retained artifact "
+        "off disk at the shared uid and drives _seal_retained directly, both of which need "
+        "the harness's own view of /scratch",
+        "what an execution leaves behind (test_survivors) — reads /proc for a pid in the "
+        "supervisor's pid namespace, and disables the kill and the sweep in the module to get "
+        "its negative control",
         "startup wipe (test_startup_wipe) — calls wipe_unrecognised_scratch() directly",
         "capping and accounting units (test_cap_units) — calls _cap_output/_dir_usage directly",
         "hardening units (test_hardening_units) — calls _trim_artifacts/_cap_response/_reap directly",
         "audit stream units (test_audit_units) — calls _AuditForwarder and _drain directly",
+        "PID 1 orphan reaping and the drain deadline (test_orphan_reaper, "
+        "test_drain_continuous_writer) — forks its own zombies, drives _reap_orphans and "
+        "ForkServer.note_reaped directly and installs a SIGCHLD handler in this process, none "
+        "of which is reachable over the wire",
+        "fork server units (test_forkserver_units) — drives ForkServer and _payload_fd directly",
+        "fork server failure paths (test_pre_ready_execute, test_pre_ready_body_bytes, "
+        "test_forkserver_lost_fork_reply, test_forkserver_death_mid_execution) — needs to bind "
+        "its own pre-ready supervisor and gate ForkServer.start() around a refused request, to "
+        "drop a fork reply inside the control protocol and to SIGKILL the fork server, none of "
+        "which is reachable over the wire",
+        "bounded header reads (test_header_reader_units) — drives _HeaderBoundedReader over a "
+        "socketpair, which needs the module",
+        "head-read deadline and log sanitising (test_head_timeout) — times a stalled head "
+        "against HEAD_READ_TIMEOUT_S and reads the supervisor's own LOG, so it needs the "
+        "module and a socket whose latency is the harness's own",
+        "cross-execution memory isolation (test_isolation) — plants its positive control in "
+        "the supervisor module before the fork server is forked, which needs the module",
     ])
 
 
