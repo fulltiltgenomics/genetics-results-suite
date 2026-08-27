@@ -52,6 +52,32 @@ export ENABLE_SANDBOX
 echo "Using tfvars:  ${TFVARS##*/}"
 echo "Using backend: ${BACKEND_FILE##*/}"
 
+# MANIFEST-RENDER PREFLIGHT — offline, and first, deliberately.
+# Every manifest applied below is piped through `envsubst '<whitelist>'` in full, not
+# field-wise, so a whitelisted name spelled ${...} anywhere in a file is substituted — comments
+# included. LEGACY_REDIRECT and KEYCLOAK_SERVER are multi-line, so such an expansion inside a
+# `#` line breaks out of the comment and the render stops being valid YAML; kubectl apply then
+# fails partway through a deploy (genetics-results-suite-i5v, -puv). This needs no terraform,
+# no cluster and no credentials, so it runs before either, and it derives the whitelists from
+# this script rather than carrying a copy of them.
+# exit 1 = a manifest would misrender, and the deploy aborts before anything is applied.
+# exit 2 = the harness itself could not tell (no PyYAML, no envsubst, or ANY drift in this
+# script it cannot follow — a renamed render-loop variable, an envsubst wrapped over two lines,
+# a `printf -v` it cannot read, a rendered directory that no longer exists). It cross-checks
+# what it parsed out of this script against a looser survey of the same loops and refuses on
+# any disagreement, rather than quietly checking fewer files. That is not evidence of a broken
+# manifest, so it only warns.
+set +e
+python3 "${SCRIPT_DIR}/test-manifest-render.py"
+render_check=$?
+set -e
+if [ "${render_check}" -eq 1 ]; then
+  echo "ERROR: a manifest does not survive deploy.sh's own envsubst; refusing to deploy."
+  exit 1
+elif [ "${render_check}" -ne 0 ]; then
+  echo "WARNING: scripts/test-manifest-render.py could not run (exit ${render_check}); deploying unverified."
+fi
+
 # apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="

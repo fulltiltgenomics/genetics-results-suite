@@ -11,7 +11,9 @@ data:
   #      NEVER spell a whitelisted name as a ${...} placeholder in a comment in this file:
   #      deploy.sh envsubst's the WHOLE document, not just the nginx.conf value, and both
   #      fragments are multi-line — an expansion inside a `#` line breaks out of the comment
-  #      and the render stops being valid YAML (genetics-results-suite-i5v).
+  #      and the render stops being valid YAML (genetics-results-suite-i5v). That is no longer
+  #      a convention: scripts/test-manifest-render.py renders this file the way deploy.sh does
+  #      with both fragments populated and aborts the deploy on a violation (-puv).
   #   2. the render-config initContainer below, which reads INTERNAL_API_SECRET and
   #      GATEWAY_IDENTITY_SECRET from the genetics-secrets Secret and envsubst's only those
   #      two names into an emptyDir. nginx cannot read environment variables from config

@@ -361,6 +361,20 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 
 > **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, `${DOMAIN}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
 
+> **Note:** the substitution is over the **whole document**, not over selected fields —
+> `deploy.sh` pipes each file in `k8s/configs/`, `k8s/deployments/` and `k8s/cronjobs/` through
+> `envsubst '<whitelist>'` in full. A whitelisted name spelled `${...}` in a *comment* is
+> therefore substituted too, and two of the values (`LEGACY_REDIRECT`, `KEYCLOAK_SERVER`) are
+> multi-line nginx fragments, so such an expansion breaks out of the `#` and the render stops
+> being valid YAML. `scripts/test-manifest-render.py` is the guard: it is the first thing
+> `deploy.sh` runs — before terraform, before kubectl, so a refusal costs nothing and cannot
+> strand a half-finished deploy — and it aborts the deploy when a manifest would misrender.
+> Names deploy.sh deliberately leaves out of the whitelist (`${INTERNAL_API_SECRET}`,
+> `${GATEWAY_IDENTITY_SECRET}`, which a later initContainer renders from a Secret) and nginx's
+> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. It catches the
+> comment form and structural breakage, not every possible mangling — a multi-line fragment
+> expanded into a scalar position still parses as YAML and is not flagged.
+
 ### Multiple domains
 
 There is no checked-in `ingress.yaml` or `managed-certs.yaml` — `deploy.sh` generates both from the
