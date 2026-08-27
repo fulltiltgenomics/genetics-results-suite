@@ -201,6 +201,9 @@ client-side reconnect and no persistence of partial assistant turns.
 │   ├── deploy.sh             # full deploy (terraform + k8s)
 │   ├── rollout.sh            # single-service image update
 │   ├── sync-datasets.sh      # copy datasets.yaml to sibling service repos for local dev
+│   ├── test-manifest-render.py  # offline: renders every manifest deploy.sh renders, with
+│                             #   deploy.sh's own whitelists, and refuses a render that
+│                             #   is not the YAML the file declares. Gates deploy.sh
 │   ├── test-e2e-local.py     # end-to-end run_analysis verification against the live local
 │                             #   stack (4h6.49). Needs dev-stack.sh + run-sandbox-local.sh up
 │   ├── dev-stack.sh          # start/stop the five local dev servers from one tree
@@ -1589,6 +1592,79 @@ If you only run `deploy.sh` without building, the rollout restart will re-pull w
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from the terraform `registry` output (overridable via `REGISTRY` env var, which must agree with `DEPLOY_ENV` unless `REGISTRY_FORCE=1`) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
 - **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (via `tfvar app_name` from `scripts/lib/env.sh`, reading the tfvars `DEPLOY_ENV` selected) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
+### Manifest-render preflight (`scripts/test-manifest-render.py`)
+
+`deploy.sh` does not substitute *fields*; it pipes each file in `k8s/configs/`,
+`k8s/deployments/` and `k8s/cronjobs/` through `envsubst '<whitelist>'` **in full** and applies
+the result. So a whitelisted name spelled `${...}` anywhere in a manifest is substituted,
+comments included — and two of the values are multi-line nginx fragments built by `printf -v`
+(`LEGACY_REDIRECT` from `redirect_from_host`/`redirect_to_host`, `KEYCLOAK_SERVER` when the
+broker is enabled), so an expansion inside a `#` line breaks out of the comment and the render
+stops being valid YAML, failing `kubectl apply` partway through a deploy.
+
+That is not hypothetical: two comment regions of `k8s/deployments/auth-gateway.yaml` spelled
+both names literally for a long time (`genetics-results-suite-i5v`). It stayed invisible because
+**nobody had ever driven that file through `deploy.sh` with either fragment populated** — on the
+deployed profiles both are empty and the render is well-formed. It is not `daly`-only either:
+`LEGACY_REDIRECT` comes from `redirect_from_host`/`redirect_to_host`, which have no profile
+coupling. The fix was a rewording, held in place only by an invariant comment in the file;
+`genetics-results-suite-puv` is the mechanical half.
+
+The harness (`scripts/test-manifest-render.py`, exit 0 pass / 1 broken / 2 could-not-run, the
+same three-way answer `test-network-policies.py` gives) checks **every** manifest `deploy.sh`
+renders, not just `auth-gateway.yaml` — the whole-document `envsubst` is the same in all three
+loops, so auth-gateway is where the hazard was first hit, not where it can only occur. For each
+file it:
+
+- **derives** the whitelist by parsing `deploy.sh`'s own `envsubst '...' < "$f"` invocations,
+  including the `[ "${base}" = "sandbox.yaml" ]` branch that narrows `sandbox.yaml` to its own
+  three names, and derives the multi-line values by parsing the `printf -v` lines. Nothing is
+  re-typed: a hand-kept copy of a 19-name whitelist is a second list to rot, and it would rot
+  *silently*, since a name missing from the copy simply stops being checked;
+- **renders** it exactly as `deploy.sh` does (same whitelist, same `:latest` → `:${TAG}` `sed`)
+  with **both** multi-line fragments populated, and requires the result to parse as YAML and to
+  hold the same number and kinds of documents the file declares. Deliberately *not* the same
+  resource *names*: `${APP_NAME}` is whitelisted and already spelled inside a name
+  (`k8s/deployments/chat-backend.yaml`), so a parameterised `metadata.name` is a legitimate
+  manifest whose name is supposed to change under the render, and failing it would abort every
+  deploy with what reads like a corruption report. Names that hold no placeholder are still
+  compared, so content moving between documents is still caught;
+- **refuses** a whitelisted, multi-line-valued name spelled `${...}` in a comment — the
+  invariant `auth-gateway.yaml`'s header states, mechanised. This one is deliberately narrower
+  than "any `${...}` in a comment": `${INTERNAL_API_SECRET}` is *supposed* to sit in that file's
+  comments (it is not whitelisted, because the render-config initContainer substitutes it from a
+  Secret later and baking a Secret into a ConfigMap is what its absence prevents), and
+  `${KEYCLOAK_HOST}` in `k8s/deployments/keycloak.yaml`'s header comment is whitelisted but
+  single-line and expands harmlessly. A check that flagged either would be deleted rather than
+  obeyed;
+- **asserts** that every `$NAME`/`${NAME}` the file spells that is *not* in its whitelist
+  survives the render verbatim — which covers both later-substituted secrets and nginx's own
+  `$host`, `$remote_addr`, `$scheme`, `$request_uri` without naming any of them.
+
+What it does **not** prove: a multi-line fragment expanded into a *scalar* position — an
+annotation value, say — still parses as valid YAML, so the render check passes it. The guard
+covers the comment form (mechanically) and structural breakage (by parsing the render); it is
+not a diff of every rendered document body against the original.
+
+Because nothing is re-typed, the rot moves from a stale whitelist to a stale parser — and a
+parser that matches only *part* of `deploy.sh` is the dangerous case, not one that matches none
+of it: every file it stops accounting for is checked against an empty whitelist, passes
+vacuously, and is counted in a reassuring summary line. So the harness cross-checks what it
+parsed (globs, number of `envsubst` calls, every `printf -v`) against a deliberately loose
+survey of the same script, and treats any disagreement — or an empty whitelist for a file under
+a rendered glob — as could-not-run. Wrapping the 19-name deployments `envsubst` over two lines,
+renaming the loop variable, or rebuilding a fragment with a double-quoted `printf -v` all warn
+instead of passing.
+
+It runs **first** in `deploy.sh`, before `terraform apply` and before kubectl is configured: it
+needs no cluster, no credentials and no terraform output, so there is no reason to pay for those
+before finding out a manifest cannot be applied. Exit 1 aborts; exit 2 (no PyYAML, no `envsubst`,
+a rendered directory that no longer exists, or any of the parser drift above) warns and proceeds,
+because "cannot tell" is not "broken". An *empty* rendered directory is not drift — `deploy.sh`
+tolerates an empty `k8s/cronjobs/` by design (`[ -e "$f" ] || continue`), so the harness does
+too, and only a missing directory is exit 2. The repo has no CI and the pre-commit hook only
+runs the doc-drift check, so this is the only place it runs.
+
 ### There is no development environment — and the BigQuery rehearsal dataset
 
 Established read-only on 2026-08-13 (`genetics-results-suite-44g`) and worth stating
