@@ -201,6 +201,19 @@ and is not duplicated here.
   run will not apply it", and deploy.sh *skips* the manifest rather than deleting it, so a
   later gate-off deploy can run against a sandbox that is still serving. A live sandbox with
   the gate off is a hard failure there; an undeterminable cluster fails closed.
+- **`SANDBOX_URL` on chat-backend is a second, separate variable, and it is not optional.**
+  `SANDBOX_ENABLED` says a sandbox exists; `SANDBOX_URL` says where. It has **no default**:
+  `genetics-results-suite-6um` removed the old `http://127.0.0.1:8080` fallback, because on a dev
+  machine that address is db-api — a real, authenticating service that answers *something* rather
+  than refusing — and in the cluster it is chat-backend's own pod. An unset value now raises
+  `SandboxNotConfigured` at client construction rather than sending `/execute` somewhere
+  arbitrary. `k8s/deployments/chat-backend.yaml` ships
+  `http://sandbox.genetics.svc.cluster.local:8080` unconditionally, set even while
+  `SANDBOX_ENABLED` is `"false"`, so flipping the flag is the only change the enabling deploy
+  makes. Confirmed on the `daly-staging` bring-up: with the address absent, every `run_analysis`
+  failed while the sandbox pod stayed healthy and answered its probes — a silent feature outage,
+  not a security control failing open, since the misdirected request reaches a port nothing
+  serves.
 
 ### The uid choice: option (b), one shared uid — DECIDED (`4h6.7`)
 
@@ -316,7 +329,7 @@ first place does that, which is why the supervisor has to hold the budget.
 **Decision: yes, and this settles the node-pool question rather than complicating it.**
 
 The argument against is real: GKE Sandbox cannot be enabled on an existing pool's workloads
-selectively — it requires a pool created with `sandbox_config { type = "gvisor" }`,
+selectively — it requires a pool created with `sandbox_config { type = "GVISOR" }`,
 which is a *dedicated* pool, and gVisor's syscall interception costs measurably on the
 `mmap`/`futex`-heavy paths that numpy and polars live on.
 
@@ -352,11 +365,11 @@ Two corrections against the spec as originally drafted below, and they are **not
 standing — do not read them as a pair:
 
 - **Tool-verified.** The provider argument is `sandbox_config { type = ... }`, not
-  `sandbox_type`; `terraform validate` rejects the latter outright. (One thing even this does
-  not settle: the GKE REST enum is `GVISOR` and the provider does no normalization — there is no
-  lowercase `gvisor` string in the binary — so whether the API accepts `"gvisor"` is
-  **unverified** and is a 30-second check at the first real apply. If rejected, the value becomes
-  `"GVISOR"` here and in `docs/project-spec.md` too.)
+  `sandbox_type`; `terraform validate` rejects the latter outright. (The case question this
+  bullet carried as open — the GKE REST enum is `GVISOR`, the provider does no normalization, and
+  there is no lowercase `gvisor` string in the binary — was **settled at the first real apply**
+  (`daly-staging`, 2026-08-26): the value is `"GVISOR"`, here, in `terraform/gke.tf` and in
+  `docs/project-spec.md`, and the created pool reports `sandboxConfig.type: GVISOR`.)
 - **Not verified by anything.** `pod_pids_limit` was raised from 256 to **1024** on the strength
   of GKE's *documented* minimum. `terraform validate` did **not** find this and does not confirm
   it: the provider schema is a bare optional number with no range check, so it passes on 256 as
@@ -368,7 +381,7 @@ standing — do not read them as a pair:
   `min_node_count == max_node_count == 1`. The pinning rationale here is *not* inherited from
   the main pool (which autoscales 1-3 — see `genetics-results-suite-262`): it is that a
   scale-down would kill an in-flight script, with no second replica.
-- `machine_type = "e2-standard-2"`, `sandbox_config { type = "gvisor" }`,
+- `machine_type = "e2-standard-2"`, `sandbox_config { type = "GVISOR" }`,
   `kubelet_config { pod_pids_limit = 1024 }`. Sizing on an `e2-standard-2`: CPU allocatable is
   1930m; **memory allocatable is not derivable offline** — the capacity-minus-reservations method
   gives 6249 Mi but provably overstates (the same method gives 13622 Mi for the measured

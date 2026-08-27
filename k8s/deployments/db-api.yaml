@@ -58,7 +58,7 @@ spec:
         # true, db-api refuses to start if either secret above is unset — a sandbox script can
         # otherwise be served by simply omitting the Authorization header.
         - name: SANDBOX_ENABLED
-          value: "false"
+          value: "true"
         # per-execution (`jti`) request-count and concurrency limits, all at their in-code
         # defaults (api/sandbox_budget.py). Declared here so an operator can widen or tighten
         # them without a rebuild, which is the only reason they are env vars — "env-configurable"

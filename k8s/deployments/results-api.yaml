@@ -58,7 +58,7 @@ spec:
         # flipped to "true" by the deploy that creates the sandbox Deployment (4h6.7). While
         # true, results-api refuses to start if either secret above is unset.
         - name: SANDBOX_ENABLED
-          value: "false"
+          value: "true"
         # the anonymous surface: "true" (the in-code default, declared here so it is visible and
         # tunable without a rebuild) means /healthz is the ONLY route served with no credential;
         # everything else 401s. SEPARATE from SANDBOX_ENABLED on purpose — that one is the
