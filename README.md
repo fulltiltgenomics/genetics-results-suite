@@ -265,13 +265,15 @@ export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
 export COHERE_API_KEY="..."              # optional, for rag-service embeddings (required when ENABLE_RAG=true)
-export MCP_API_KEY="$(openssl rand -hex 32)"  # optional for bearer token MCP and API access, comma-separated for multiple keys
 export ADMIN_USERS="a@example.com,b@example.com"  # optional, emails allowed on the chat admin page
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."  # optional, for the monitor CronJob
 export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers proxied by chat-backend
 # INTERNAL_API_SECRET for results API is auto-generated if not set
 # GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
 # auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
+# MCP_API_KEY (bearer token mcp-server requires for its sse/streamable-http transports; it
+# refuses to start without one) is auto-generated too if not set; export it yourself
+# (comma-separated for multiple keys) to pin a specific value instead
 
 # oauth2-proxy credentials (YOUR_CLIENT_ID/SECRET from the OAuth client created in step 2).
 # only needed on first install — afterwards they're reused from the cluster if unset.
