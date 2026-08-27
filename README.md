@@ -12,15 +12,23 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 identity broker is enabled (see docs/keycloak-apple-signin.md)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
-                     │                 (FastAPI, port 4000) directly
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
+                     │                 the BFF proxies it out to the external LD API (LD_API_URL),
+                     │                 because the frontend CSP forbids off-origin fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
 
 Internal only (ClusterIP + NetworkPolicy):
-  ├── db-api            (BigQuery proxy, port 8080) — only from chat-backend + mcp-server
+  ├── db-api            (BigQuery proxy, port 8080) — from chat-backend, mcp-server + sandbox
   ├── rag-service       (RAG retrieval, port 8000)  — only from chat-backend + mcp-server
-  └── keycloak-postgres (Keycloak DB, port 5432)    — only from keycloak
+  ├── keycloak-postgres (Keycloak DB, port 5432)    — from keycloak + keycloak-postgres-backup
+  └── sandbox           (code execution, port 8080) — from chat-backend ONLY; egress limited to
+                                                      db-api + results-api; the namespace's only
+                                                      Egress policy. Its NetworkPolicies are
+                                                      applied unconditionally (inert while no
+                                                      pod matches); only the Deployment is
+                                                      gated on ENABLE_SANDBOX=true
 ```
 
 ## Prerequisites
@@ -36,6 +44,26 @@ export GCP_PROJECT="your-gcp-project-id"
 export GCP_REGION="europe-west1"
 export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 ```
+
+`REGISTRY` is optional once terraform is configured — the scripts derive it from the selected
+deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
+stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
+
+## Deployment environments
+
+This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
+`DEPLOY_ENV`, which selects `terraform/terraform.tfvars.<env>`, `terraform/<env>.tfbackend` and
+`.env.<env>`:
+
+```bash
+DEPLOY_ENV=daly-staging ./scripts/build-all.sh
+DEPLOY_ENV=daly-staging ./scripts/deploy.sh
+```
+
+`daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
+resource names carry `resource_suffix`. The setup below describes a single deployment; see
+[docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
+against deploying across environments, and the staging bring-up runbook.
 
 ## Setup
 
@@ -95,24 +123,27 @@ gcloud auth application-default login --impersonate-service-account=terraform@$G
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars  # set project_id and other values
-terraform init
-terraform apply                               # review the plan before confirming
+cp terraform.tfvars.example terraform.tfvars.<env>  # set project_id and other values
+terraform init -backend-config=<env>.tfbackend
+terraform apply -var-file=terraform.tfvars.<env>    # review the plan before confirming
 ```
 
-> `terraform.tfvars` is gitignored and lives only in your main checkout. Terraform refuses to plan
-> or apply without it (`require_tfvars`, default `true`) — otherwise a run from a git worktree or a
-> fresh clone would use variable defaults and destroy the log sinks and replace the node pool.
-> `apply -target=...` bypasses the guard entirely, and `destroy` does too (deliberately). If
-> you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`. `deploy.sh` enforces
-> the same before applying; `SKIP_TERRAFORM=true` (k8s manifests only) is unaffected.
+(`deploy.sh` does all of this for you from `DEPLOY_ENV` — see `docs/environments.md`. For a
+single-deployment instance you may instead keep a bare `terraform.tfvars` and leave `DEPLOY_ENV`
+unset.)
 
-> **Switching profiles**: the main checkout keeps `terraform.tfvars.daly` and `terraform.tfvars.finngen`
-> beside the active `terraform.tfvars`. `CONFIG_PROFILE` picks the *state backend*, not the values, so
-> switching profiles means copying the file too — `cp terraform.tfvars.daly terraform.tfvars`. Get it
-> wrong and one profile's project, region and domains would be applied into the other's state; both
-> `deploy.sh` (before `terraform init`) and a terraform `precondition` (against the initialized state
-> bucket) now refuse. Leaving `CONFIG_PROFILE` unset makes `deploy.sh` follow the file in place.
+> The tfvars files are gitignored and live only in your main checkout. Terraform refuses to plan
+> or apply when none of them is present (`require_tfvars`, default `true`) — otherwise a run from
+> a git worktree or a fresh clone would use variable defaults and destroy the log sinks and
+> replace the node pool. `apply -target=...` bypasses the guard entirely, and `destroy` does too
+> (deliberately). If you keep values elsewhere, pass `-var-file=... -var require_tfvars=false`.
+
+> **Which state a run writes to** is fixed by `terraform init -backend-config=<env>.tfbackend`,
+> independently of the values in place. Apply one environment's project, region and domains into
+> another's state and the plan will not look wrong. `scripts/lib/env.sh` derives both from the
+> same `DEPLOY_ENV` so they cannot disagree, and a terraform `precondition` compares the
+> initialized state bucket against the one `${config_profile}.tfbackend` names as a backstop for
+> a bare `terraform apply`.
 
 If `manage_iam` is `false` in your tfvars, grant the node pool service account access to Artifact Registry so it can pull images:
 
@@ -157,6 +188,17 @@ Note this pool is created with `workload_metadata_config { mode = "GKE_METADATA"
 unconditionally, which is why `google_container_cluster.primary`'s `workload_identity_config`
 is also unconditional — GKE rejects the former without the latter **at apply, not at plan**.
 See "The sandbox pool" in `docs/project-spec.md` before changing either.
+
+**One step the flag does not do for you**, hit on the first `daly-staging` bring-up: **the pool
+comes up with zero nodes.** It is declared `min == max == 1` with no `initial_node_count`, so GKE
+creates it empty and the autoscaler never scales it to its own minimum — nothing is pending on it,
+because `scripts/deploy.sh` refuses to apply `sandbox.yaml` until a node carries
+`workload=sandbox`. Break the deadlock once:
+
+```bash
+gcloud container clusters resize "$CLUSTER" \
+  --node-pool="${CLUSTER}-sandbox-pool" --num-nodes=1 --zone="$ZONE"
+```
 
 > **What the next apply does whether or not you enable the pool.** `workload_identity_config`
 > on the cluster is unconditional now, and the live cluster currently has an **empty**
@@ -223,11 +265,15 @@ export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
 export COHERE_API_KEY="..."              # optional, for rag-service embeddings (required when ENABLE_RAG=true)
-export MCP_API_KEY="$(openssl rand -hex 32)"  # optional for bearer token MCP and API access, comma-separated for multiple keys
 export ADMIN_USERS="a@example.com,b@example.com"  # optional, emails allowed on the chat admin page
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."  # optional, for the monitor CronJob
 export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers proxied by chat-backend
 # INTERNAL_API_SECRET for results API is auto-generated if not set
+# GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
+# auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
+# MCP_API_KEY (bearer token mcp-server requires for its sse/streamable-http transports; it
+# refuses to start without one) is auto-generated too if not set; export it yourself
+# (comma-separated for multiple keys) to pin a specific value instead
 
 # oauth2-proxy credentials (YOUR_CLIENT_ID/SECRET from the OAuth client created in step 2).
 # only needed on first install — afterwards they're reused from the cluster if unset.
@@ -239,9 +285,10 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 ```
 
 > **Run it from the main checkout.** It derives the config profile (which decides whether
-> `keycloak-secrets` is written) from `terraform/terraform.tfvars`, which is gitignored and lives
-> only there. From a git worktree it refuses with exit 1 rather than guessing — export
-> `CONFIG_PROFILE=daly` or `CONFIG_PROFILE=finngen` if you really need to run it from one.
+> `keycloak-secrets` is written) from the tfvars `DEPLOY_ENV` selects, and those are gitignored
+> and live only there. From a git worktree `resolve_deploy_env` refuses with exit 1 rather than
+> guessing, and `CONFIG_PROFILE` does **not** rescue it — that variable overrides the profile
+> *read from* the file, it does not stand in for a missing one.
 
 ### 4. Build and push Docker images
 
@@ -314,12 +361,26 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 
 > **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, `${DOMAIN}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
 
+> **Note:** the substitution is over the **whole document**, not over selected fields —
+> `deploy.sh` pipes each file in `k8s/configs/`, `k8s/deployments/` and `k8s/cronjobs/` through
+> `envsubst '<whitelist>'` in full. A whitelisted name spelled `${...}` in a *comment* is
+> therefore substituted too, and two of the values (`LEGACY_REDIRECT`, `KEYCLOAK_SERVER`) are
+> multi-line nginx fragments, so such an expansion breaks out of the `#` and the render stops
+> being valid YAML. `scripts/test-manifest-render.py` is the guard: it is the first thing
+> `deploy.sh` runs — before terraform, before kubectl, so a refusal costs nothing and cannot
+> strand a half-finished deploy — and it aborts the deploy when a manifest would misrender.
+> Names deploy.sh deliberately leaves out of the whitelist (`${INTERNAL_API_SECRET}`,
+> `${GATEWAY_IDENTITY_SECRET}`, which a later initContainer renders from a Secret) and nginx's
+> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. It catches the
+> comment form and structural breakage, not every possible mangling — a multi-line fragment
+> expanded into a scalar position still parses as YAML and is not flagged.
+
 ### Multiple domains
 
 There is no checked-in `ingress.yaml` or `managed-certs.yaml` — `deploy.sh` generates both from the
 terraform `domains` list, emitting one `ManagedCertificate` (`managed-cert`) covering every domain as
 a SAN and one Ingress host rule per domain, all pointing at `auth-gateway`. So serving several
-hostnames only means listing them in `terraform.tfvars` and redeploying:
+hostnames only means listing them in the deployment's tfvars and redeploying:
 
 ```hcl
 domains = ["primary.example.com", "secondary.example.com"]
@@ -353,6 +414,16 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+`rollout.sh` knows nine services — `frontend`, `bff`, `results-api`, `chat-backend`,
+`mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak` — and only swaps container images,
+so ConfigMap-driven pods (auth-gateway) and the CronJobs still need `deploy.sh`. `monitor` is
+deliberately not in that list, for the only reason that actually discriminates: it is a CronJob,
+not a Deployment, so `kubectl set image deployment/monitor` cannot address it. A service with no
+Deployment on the current context gets a "Not deployed" message and exit 1 — the ordinary case
+for `sandbox` and `keycloak`, which are applied only when their gates are on. A query that
+*failed* rather than answered (no context, expired credentials, unreachable API server) is
+reported as "could not ask", with kubectl's own error, instead of as a missing service.
+
 ### Deploying the trusted-proxy marker
 
 **Roll out `bff` before `results-api`, and never both in the same `deploy.sh`.** results-api
@@ -383,6 +454,12 @@ The same rule reaches chat-backend — auth-gateway first:
 - **auth-gateway new, chat-backend old** — safe, and safe to sit in: the gateway carries the
   marker on its own `X-Internal-Auth` header, which the old chat-backend does not recognise, so
   it behaves exactly as it did before. The fix simply is not in force yet.
+- Both headers the gateway adds here (`X-Internal-Auth` and, since
+  `genetics-results-suite-4h6.84`, `X-Gateway-Auth` carrying the separate
+  `gateway-identity-secret`) behave that way. A **new chat-backend ahead of the gateway** loses
+  only code execution — `run_analysis` refuses while chat itself keeps working — and both
+  Deployments mount `gateway-identity-secret` non-optionally, so `create-secrets.sh` (or the
+  `kubectl patch` `deploy.sh` prints) must run before either manifest is applied.
 - **chat-backend new, auth-gateway old** — every browser chat request 401s. This is the order to
   avoid.
 - Rolling back reverses it: chat-backend first, then auth-gateway; the state in between is the
@@ -409,7 +486,11 @@ signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 copies are current, that every view and column reaches a file **with its BigQuery type**,
 and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
-Exit 1 = a property broke, 2 = the harness could not run (no staged SDK source).
+Exit 1 = a property broke, 2 = the harness could not run (no SDK source). Run either script
+by hand with no `--sdk-src` and it resolves `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the
+live sibling genetics-mcp-server checkout, and prints which one it used — it never falls back to
+the gitignored `sandbox/.sdk-src`, which only exists after an *interrupted* build and would
+silently regenerate the shipped stubs from an old SDK (`genetics-results-suite-4h6.60`).
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
 
 `./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
@@ -426,16 +507,29 @@ local `/scratch` tmpfs is charged to the container's memory cgroup while the pod
 against it (the name is what lets the audit-stream group read the container's stdout);
 `--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
 
-The Deployment is `k8s/deployments/sandbox.yaml`, and it carries no `command`/`args` because
-the image ships no `CMD` and the supervisor is supplied at run time — so it is applied only when
+The Deployment is `k8s/deployments/sandbox.yaml`. The image ships no `CMD` and its ENTRYPOINT is
+the bare interpreter, so the manifest supplies the supervisor itself —
+`args: ["/genetics/supervisor.py"]` on the sandbox container. It is applied only when
 `ENABLE_SANDBOX=true`, which `scripts/deploy.sh` derives from `sandbox_pool_enabled` in
-`terraform.tfvars`. A preflight in deploy.sh — before the first `kubectl apply` of the run, so a
-refusal cannot strand a half-finished deploy — refuses that apply if no node carries
-`workload=sandbox` (the pod would be Pending forever) or while the manifest still declares no
-`command`/`args` (it would schedule and CrashLoopBackOff while the deploy printed success); the
-second refusal names `genetics-results-suite-4h6.39` (the supervisor) and clears itself when
-`genetics-results-suite-4h6.50` wires it into the manifest. See "The sandbox Deployment" in
-`docs/project-spec.md` and
+`terraform.tfvars`, and a preflight in deploy.sh — before the first `kubectl apply` of the run, so
+a refusal cannot strand a half-finished deploy — refuses that apply on three preconditions: no
+node carries `workload=sandbox` (the pod would be Pending forever); the sandbox **container**
+declares neither `command:` nor `args:` (it would schedule and CrashLoopBackOff while the deploy
+printed success — the manifest is parsed with PyYAML and the question is scoped to the container
+named `sandbox` in the Deployment named `sandbox`, so no initContainer, sidecar, other document or
+nested probe `exec.command` can clear it, reformatting cannot trip it, and a file that cannot be
+parsed fails closed); or `${REGISTRY}/sandbox:${TAG}` is definitely not in Artifact Registry —
+`gcloud` being absent, unauthenticated or unauthorised warns and proceeds instead, naming which
+of those it was, because not being able to ask is not evidence the image is missing. That last one exists because `scripts/build-all.sh` skips the sandbox image
+non-fatally when the mcp-server branch has no SDK or the generated schema docs fail to verify —
+which would otherwise deploy a Deployment pointing at a tag nobody pushed. `build-all.sh` no
+longer claims "All images built and pushed." after such a skip, and exits non-zero when the
+tfvars actually enables the sandbox. Once applied, `sandbox` is restarted and waited on **last**
+in the deploy's rollout list, because `strategy: Recreate` makes that restart a brief outage of
+code execution. To update it on its own: `./scripts/rollout.sh sandbox <tag>` (it kills any
+in-flight execution and leaves no sandbox for up to ~130 s; the 300 s rollout-status timeout
+covers that, and it prints a "Not deployed" message rather than a raw `kubectl` error when the
+gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` and
 [docs/code-execution-security.md](docs/code-execution-security.md).
 
 ## Running the suite locally
@@ -466,7 +560,7 @@ on any chromosome smoke-tests, `APOE` included. Nothing in this script touches t
 | Service | Source Repo | Image | Port | Notes |
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, passes other `/api/*` calls through |
+| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx:1.27-alpine | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google + Apple), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
@@ -477,7 +571,7 @@ on any chromosome smoke-tests, `APOE` included. Nothing in this script touches t
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (every 8h): health checks, BQ coverage, log alerts → Slack |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
@@ -493,9 +587,10 @@ Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` prov
 - **Frontend, Chat backend**: Protected by oauth2-proxy. Unauthenticated users are redirected to the sign-in page (Google directly, or the Keycloak provider chooser).
 - **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens — the recommended path — Google Identity Tokens (deprecated) or internal shared secret).
 - **MCP server**: Not behind oauth2-proxy. Uses bearer token auth via `MCP_API_KEY`, user-created tokens (recommended), Google Identity Tokens (deprecated), or — where the broker is enabled — Keycloak OAuth 2.1 access tokens.
-- **DB API**: Internal only (NetworkPolicy restricts access to chat-backend and mcp-server), and additionally requires the `INTERNAL_API_SECRET` bearer token on every endpoint except `/health` — the NetworkPolicy alone is not a sufficient boundary, since mcp-server is allowed through it and is itself reachable from outside.
+- **DB API**: Internal only (NetworkPolicy restricts access to chat-backend, mcp-server and — where it is deployed — the sandbox), and additionally requires the `INTERNAL_API_SECRET` bearer token on every endpoint except `/health` — the NetworkPolicy alone is not a sufficient boundary, since mcp-server is allowed through it and is itself reachable from outside.
 - **Internal service calls**: The chat-backend authenticates to results-api using a shared secret (`INTERNAL_API_SECRET`), auto-generated by `create-secrets.sh`.
-- **Code-execution sandbox**: never holds `INTERNAL_API_SECRET`. chat-backend mints a short-lived (5 minute), audience-bound HS256 token per script execution, signed with a separate key (`SANDBOX_TOKEN_SIGNING_KEY`, also auto-generated by `create-secrets.sh`); db-api and results-api verify it, fail closed when the key is missing, and refuse to start at all when `SANDBOX_ENABLED=true` and either secret is unset. Both services then bound the execution in aggregate from in-process counters keyed on the token's `jti` — db-api 200 GB of BigQuery bytes; results-api 1 GiB of response bytes, 1000 requests and 4 concurrent requests (8 pod-wide), plus a 4096-entry bound on the counter map — which is why the `replicas: 1` on both Deployments carries a comment saying it is load-bearing: scaling either up multiplies every one of those limits until the counters move to shared state. results-api's five are declared at their defaults in `k8s/deployments/results-api.yaml` so an operator can tune them without a rebuild, and the pod refuses to start on a value below 1 or on a pod-wide bound tighter than the per-execution one. **They bind only a request that presents a token** — a header-less request is never admitted — so results-api pairs them with an empty anonymous surface: with `ANONYMOUS_SURFACE_MINIMAL` on — its default, declared `"true"` in `k8s/deployments/results-api.yaml`, and forced by `SANDBOX_ENABLED=true` — `/healthz` is the only route it will answer without a resolved principal, and everything else 401s, so a script cannot shed its per-execution bounds by omitting the header (`genetics-results-suite-0lf`; the browser is unaffected because the BFF authenticates its upstream calls with the shared secret). That flag is deliberately **separate** from `SANDBOX_ENABLED` (`genetics-results-suite-rhh`): while the surface keyed on the sandbox switch, disabling the sandbox during an incident silently re-opened six routes to anonymous callers. Its counterpart in genetics-mcp-server is `genetics-results-suite-618`: the tool executor used to send **no** `Authorization` header when `INTERNAL_API_SECRET` was unset, so the deployed entrypoints now refuse to start without it rather than making anonymous calls that no log can distinguish from authenticated ones. The remaining gap — the two pod-wide bounds are cross-tenant denial surfaces — is documented in `docs/code-execution-security.md` §4.
+- **Code execution requires a browser session, proven by a secret**: `run_analysis` dispatches only when the request carries `GATEWAY_IDENTITY_SECRET` (the `gateway-identity-secret` key of `genetics-secrets`, auto-generated by `create-secrets.sh`) in `X-Gateway-Auth`, which auth-gateway sets on its two chat locations after verifying an oauth2-proxy session. That key is mounted **only** into auth-gateway and chat-backend, so mcp-server and results-api — which hold `INTERNAL_API_SECRET` by design and can reach chat-backend on the pod network — cannot mint the provenance by choosing their own headers. Unset, it refuses every dispatch. Bounds in `docs/code-execution-security.md` §5, "Layer 2c".
+- **Code-execution sandbox**: never holds `INTERNAL_API_SECRET`. chat-backend mints a short-lived (5 minute), audience-bound HS256 token per script execution, signed with a separate key (`SANDBOX_TOKEN_SIGNING_KEY`, also auto-generated by `create-secrets.sh`); db-api and results-api verify it, fail closed when the key is missing, and refuse to start at all when `SANDBOX_ENABLED=true` and either secret is unset. Both services then bound the execution in aggregate from in-process counters keyed on the token's `jti` — db-api 200 GB of BigQuery bytes, plus (since `genetics-results-suite-4h6.61`) the same request-count and concurrency rule results-api runs; results-api 1 GiB of response bytes — and both enforce 1000 requests and 4 concurrent requests (8 pod-wide) with a 4096-entry bound on the counter map. That is why the `replicas: 1` on both Deployments carries a comment saying it is load-bearing: scaling either up multiplies every one of those limits until the counters move to shared state. results-api's five and db-api's four are declared at their defaults in `k8s/deployments/results-api.yaml` and `k8s/deployments/db-api.yaml` so an operator can tune them without a rebuild, and either pod refuses to start on a value below 1 or on a pod-wide bound tighter than the per-execution one. **They bind only a request that presents a token** — a header-less request is never admitted — so results-api pairs them with an empty anonymous surface: with `ANONYMOUS_SURFACE_MINIMAL` on — its default, declared `"true"` in `k8s/deployments/results-api.yaml`, and forced by `SANDBOX_ENABLED=true` — `/healthz` is the only route it will answer without a resolved principal, and everything else 401s, so a script cannot shed its per-execution bounds by omitting the header (`genetics-results-suite-0lf`; the browser is unaffected because the BFF authenticates its upstream calls with the shared secret). That flag is deliberately **separate** from `SANDBOX_ENABLED` (`genetics-results-suite-rhh`): while the surface keyed on the sandbox switch, disabling the sandbox during an incident silently re-opened six routes to anonymous callers. Its counterpart in genetics-mcp-server is `genetics-results-suite-618`: the tool executor used to send **no** `Authorization` header when `INTERNAL_API_SECRET` was unset, so the deployed entrypoints now refuse to start without it rather than making anonymous calls that no log can distinguish from authenticated ones. The remaining gap — the two pod-wide bounds are cross-tenant denial surfaces — is documented in `docs/code-execution-security.md` §4.
 
 ### Programmatic API access (per-user API key)
 
@@ -571,7 +666,7 @@ via `envFrom`:
 - `oauth_allowed_emails` — comma-separated individual addresses allowed in addition to those domains
   (e.g. Apple users on `me.com`/`icloud.com`/`privaterelay.appleid.com`).
 
-Set them in `terraform.tfvars` and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
+Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
 [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)).
@@ -590,7 +685,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 
 ## Security
 
-- Network policies source-scope **every** service: db-api and rag-service only from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend and mcp-server; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server. The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
+- Network policies source-scope **every** service. Rather than trusting the list that follows, re-derive it — `k8s/network-policies/` is the whole inventory and `scripts/test-network-policies.py` asserts the sandbox half of it. As it stands: db-api (8080) from chat-backend, mcp-server and sandbox; rag-service (8000) from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend, mcp-server and sandbox; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server; sandbox (8080) from chat-backend and nothing else, and it is the one pod in the namespace with an Egress policy at all (db-api:8080 and results-api:4000, no `ipBlock`, no DNS). The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
 - The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. The other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) still mount it. Eight third-party and support workloads (frontend, oauth2-proxy, keycloak, postgres, rag-service, and the monitor, analyze-conversations and keycloak-postgres-backup CronJobs) are not hardened this way; the sandbox goes further still (non-root uid 65532, read-only rootfs, a dedicated KSA with no GCP identity, `automountServiceAccountToken: false`, `enableServiceLinks: false`, and one 512Mi `emptyDir` at `/scratch` as its only mount) — its manifest is `k8s/deployments/sandbox.yaml`, applied only when `ENABLE_SANDBOX=true`. See `docs/project-spec.md` → Security.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect

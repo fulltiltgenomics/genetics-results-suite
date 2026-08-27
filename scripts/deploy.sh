@@ -2,38 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${SCRIPT_DIR}/.."
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TAG="${TAG:-latest}"
 NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
-# load deploy-time config that must stay out of version control (.env is gitignored)
-if [ -f "${ROOT_DIR}/.env" ]; then
-  set -a; . "${ROOT_DIR}/.env"; set +a
-fi
+# resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
 
 # the hook FILES are tracked (.beads/hooks/*) but core.hooksPath is local config a
 # clone does not carry, so an unwired checkout commits with no doc-drift warning and
 # no beads export, silently. warn here; never block a deploy over it.
 "${SCRIPT_DIR}/install-git-hooks.sh" --check || true
 
-# same class, one level up: several paths this script depends on (terraform.tfvars,
+# same class, one level up: several paths this script depends on (the tfvars file,
 # the sibling repos sync-datasets.sh copies into, the beads export) resolve into the
 # MAIN checkout when this runs from a worktree, and degrade without erroring.
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
-echo "Deploying genetics-results-suite (tag: ${TAG})"
+echo "Deploying genetics-results-suite (env: ${DEPLOY_ENV:-default}, tag: ${TAG})"
 
-# determine config profile for backend selection
 cd "${ROOT_DIR}/terraform"
-TFVARS_PROFILE=""
-if [ -f terraform.tfvars ]; then
-  # POSIX [[:space:]], not GNU-only \s: BSD/macOS sed does not know \s, so the substitution
-  # would silently not match and hand back the WHOLE LINE with exit 0 (genetics-results-suite-8wh)
-  TFVARS_PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' terraform.tfvars | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
-fi
-
 # The code-execution sandbox is gated on the node pool that hosts it, DERIVED rather than a
 # separate switch: k8s/deployments/sandbox.yaml tolerates a taint only the gVisor pool carries,
 # and that pool exists only when sandbox_pool_enabled = true (terraform/gke.tf, default false).
@@ -44,7 +36,7 @@ fi
 # where this file cannot see the state terraform holds; the live gVisor-node check in the sandbox
 # preflight (right after kubectl is configured) is what catches an override that is simply wrong.
 TFVARS_SANDBOX_POOL="false"
-if [ -f terraform.tfvars ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' terraform.tfvars; then
+if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
   TFVARS_SANDBOX_POOL="true"
 fi
 ENABLE_SANDBOX="${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}"
@@ -52,65 +44,58 @@ ENABLE_SANDBOX="${ENABLE_SANDBOX:-${TFVARS_SANDBOX_POOL}}"
 # sandbox, so db-api's and results-api's SANDBOX_ENABLED may legitimately still be "false" and
 # that harness must not abort the deploy over it. NOT APPLYING IS NOT THE SAME AS NOT RUNNING —
 # this script skips sandbox.yaml when the gate is off, it never deletes it, so a later deploy
-# from a worktree or with terraform.tfvars unreadable runs gate-off against a sandbox that is
+# from a worktree or with the tfvars file unreadable runs gate-off against a sandbox that is
 # still serving. The harness therefore probes the CLUSTER as well as reading this variable, and
 # refuses when the two disagree; see its "SANDBOX_ENABLED is true..." check.
 export ENABLE_SANDBOX
-if [ -n "${CONFIG_PROFILE:-}" ]; then
-  PROFILE="${CONFIG_PROFILE}"
-elif [ -f terraform.tfvars ]; then
-  PROFILE="${TFVARS_PROFILE}"
-else
-  echo "ERROR: terraform/terraform.tfvars not found. Copy terraform.tfvars.example and edit it (or set CONFIG_PROFILE)."
+
+echo "Using tfvars:  ${TFVARS##*/}"
+echo "Using backend: ${BACKEND_FILE##*/}"
+
+# MANIFEST-RENDER PREFLIGHT — offline, and first, deliberately.
+# Every manifest applied below is piped through `envsubst '<whitelist>'` in full, not
+# field-wise, so a whitelisted name spelled ${...} anywhere in a file is substituted — comments
+# included. LEGACY_REDIRECT and KEYCLOAK_SERVER are multi-line, so such an expansion inside a
+# `#` line breaks out of the comment and the render stops being valid YAML; kubectl apply then
+# fails partway through a deploy (genetics-results-suite-i5v, -puv). This needs no terraform,
+# no cluster and no credentials, so it runs before either, and it derives the whitelists from
+# this script rather than carrying a copy of them.
+# exit 1 = a manifest would misrender, and the deploy aborts before anything is applied.
+# exit 2 = the harness itself could not tell (no PyYAML, no envsubst, or ANY drift in this
+# script it cannot follow — a renamed render-loop variable, an envsubst wrapped over two lines,
+# a `printf -v` it cannot read, a rendered directory that no longer exists). It cross-checks
+# what it parsed out of this script against a looser survey of the same loops and refuses on
+# any disagreement, rather than quietly checking fewer files. That is not evidence of a broken
+# manifest, so it only warns.
+set +e
+python3 "${SCRIPT_DIR}/test-manifest-render.py"
+render_check=$?
+set -e
+if [ "${render_check}" -eq 1 ]; then
+  echo "ERROR: a manifest does not survive deploy.sh's own envsubst; refusing to deploy."
   exit 1
+elif [ "${render_check}" -ne 0 ]; then
+  echo "WARNING: scripts/test-manifest-render.py could not run (exit ${render_check}); deploying unverified."
 fi
-BACKEND_FILE="${ROOT_DIR}/terraform/${PROFILE}.tfbackend"
-if [ ! -f "${BACKEND_FILE}" ]; then
-  echo "ERROR: Backend config not found: ${BACKEND_FILE}"
-  echo "Expected one of: daly.tfbackend, finngen.tfbackend"
-  exit 1
-fi
-echo "Using backend config: ${PROFILE}.tfbackend"
 
 # apply terraform
 if [ "${SKIP_TERRAFORM}" = "true" ]; then
   echo "=== Skipping Terraform apply (SKIP_TERRAFORM=true) ==="
   terraform init -input=false -backend-config="${BACKEND_FILE}" -reconfigure > /dev/null
 else
-  # CONFIG_PROFILE alone is not enough to apply: without terraform.tfvars every other variable
-  # falls back to its default (log sinks off, manage_iam on, daly profile), which destroys and
-  # replaces live infrastructure. terraform itself also refuses (require_tfvars), this is the
-  # earlier and clearer failure.
-  if [ ! -f terraform.tfvars ]; then
-    echo "ERROR: terraform/terraform.tfvars not found — refusing to 'terraform apply'."
-    echo "It is gitignored and lives only in the main checkout; from a git worktree terraform"
-    echo "would use variable defaults and destroy live resources."
-    echo "Deploy from the main checkout, or set SKIP_TERRAFORM=true to deploy k8s manifests only."
-    exit 1
-  fi
-  # existence is not enough: the main checkout keeps terraform.tfvars.daly and .finngen next to the
-  # active terraform.tfvars, and CONFIG_PROFILE picks the BACKEND (so the state, project, cluster and
-  # domains) independently of which one is actually in place. Compare the two identities. When
-  # CONFIG_PROFILE is unset PROFILE was derived from this same file and the check is a no-op by
-  # construction — the mismatch only exists when something outside the file chose the backend.
-  if [ "${TFVARS_PROFILE}" != "${PROFILE}" ]; then
-    echo "ERROR: config profile mismatch — refusing to 'terraform apply'."
-    echo "  backend/state: ${PROFILE}.tfbackend (from CONFIG_PROFILE=${CONFIG_PROFILE:-<unset>})"
-    echo "  terraform/terraform.tfvars: config_profile = \"${TFVARS_PROFILE:-<unset>}\""
-    echo "Applying would write ${TFVARS_PROFILE:-unknown}-profile values (project_id, region, domains,"
-    echo "IAM, static IP) into the ${PROFILE} state — a different GCP project and cluster."
-    echo "Fix: cp terraform.tfvars.${PROFILE} terraform.tfvars, or unset CONFIG_PROFILE to follow the"
-    echo "tfvars file that is in place."
-    exit 1
-  fi
+  # the file-exists and tfvars/backend-agreement guards this branch used to carry now live in
+  # scripts/lib/env.sh: resolve_deploy_env() refuses when the resolved tfvars is missing, and
+  # derives TFVARS and BACKEND_FILE from the same DEPLOY_ENV (or, in legacy mode, the backend
+  # from the tfvars' own config_profile), so the two identities cannot disagree by construction.
   echo "=== Applying Terraform ==="
   terraform init -backend-config="${BACKEND_FILE}" -reconfigure
-  terraform apply -auto-approve
+  terraform apply -auto-approve "${TF_VAR_FILE_ARGS[@]}"
 fi
 
 # configure kubectl
 echo "=== Configuring kubectl ==="
 CLUSTER_NAME=$(terraform output -raw cluster_name)
+export CLUSTER_NAME
 eval "$(terraform output -raw kubectl_command)"
 
 # SANDBOX PREFLIGHT — before anything is applied, deliberately.
@@ -129,7 +114,7 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   if [ -z "$(kubectl get nodes -l workload=sandbox -o name 2>/dev/null)" ]; then
     echo "ERROR: ENABLE_SANDBOX=true but no node carries workload=sandbox."
     echo "       Either the gVisor pool is not up — set sandbox_pool_enabled = true (and"
-    echo "       sandbox_node_service_account) in terraform/terraform.tfvars, which lives in the"
+    echo "       sandbox_node_service_account) in ${TFVARS}, which lives in the"
     echo "       MAIN checkout and is gitignored, and apply terraform before this deploy — or the"
     echo "       pool was just created and its node has not finished registering the label yet, in"
     echo "       which case 'kubectl get nodes -l workload=sandbox' answers within a few minutes"
@@ -143,12 +128,86 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   # on this rollout, so the deploy would exit 0 and print success over a pod that can never
   # serve. That is the same silent success the gate exists to prevent, so refuse it too. Keyed
   # on the manifest, not on a ticket number: the check clears itself when 4h6.50 lands `args:`.
-  if ! grep -Eq '^[[:space:]]*(command|args):' "${ROOT_DIR}/k8s/deployments/sandbox.yaml"; then
-    echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml declares no command/args."
-    echo "       The supervisor process is genetics-results-suite-4h6.39 and has not landed; the"
-    echo "       image's ENTRYPOINT is the bare interpreter, so this pod would CrashLoopBackOff"
-    echo "       while the deploy reported success. Land the supervisor chain (4h6.50 adds 'args:'"
-    echo "       to that manifest) before enabling the sandbox, or set sandbox_pool_enabled = false."
+  # PARSED, NOT GREPPED, and scoped to the one container it is about. The indentation-anchored
+  # grep this replaced was wrong in both directions, measured end to end: an initContainer or a
+  # second document carrying a `command:`/`args:` key at the same column CLEARED it with the
+  # sandbox container's own `args:` deleted, and a semantically identical reformat that moved
+  # the real `args:` two columns TRIPPED it with a message claiming the key was absent. So ask
+  # the question directly — does the container named `sandbox` in the Deployment named `sandbox`
+  # run something — the way scripts/test-network-policies.py already reads this directory.
+  # Fails closed on an unparseable file or a missing PyYAML (exit 2), because "cannot tell"
+  # must not read as "fine"; each exit code below names the cause it actually detected.
+  SANDBOX_ARGV_RC=0
+  SANDBOX_ARGV_ERR=$(python3 - "${ROOT_DIR}/k8s/deployments/sandbox.yaml" 2>&1 >/dev/null <<'PY'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print("PyYAML is not installed (pip install pyyaml)", file=sys.stderr)
+    sys.exit(2)
+
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        docs = list(yaml.safe_load_all(fh))
+except (OSError, yaml.YAMLError) as exc:
+    print(str(exc).replace("\n", " ")[:300], file=sys.stderr)
+    sys.exit(2)
+
+deployment = None
+for doc in docs:
+    if not isinstance(doc, dict):
+        continue
+    if doc.get("kind") == "Deployment" and (doc.get("metadata") or {}).get("name") == "sandbox":
+        deployment = doc
+        break
+if deployment is None:
+    print("no Deployment named 'sandbox' in the file", file=sys.stderr)
+    sys.exit(3)
+
+# containers: only. initContainers and ephemeralContainers are deliberately NOT consulted —
+# an init container that runs something says nothing about what the serving container runs.
+spec = (((deployment.get("spec") or {}).get("template") or {}).get("spec") or {})
+containers = spec.get("containers") or []
+container = None
+for c in containers:
+    if isinstance(c, dict) and c.get("name") == "sandbox":
+        container = c
+        break
+if container is None:
+    names = ", ".join(sorted(str(c.get("name")) for c in containers if isinstance(c, dict))) or "none"
+    print("the sandbox Deployment has no container named 'sandbox' (containers: %s)" % names,
+          file=sys.stderr)
+    sys.exit(3)
+
+# a present-but-empty `args: []` runs the bare ENTRYPOINT, which is the failure being guarded
+# against, so emptiness counts as absence.
+for key in ("command", "args"):
+    value = container.get(key)
+    if isinstance(value, (list, tuple)) and any(str(v).strip() for v in value):
+        sys.exit(0)
+    if isinstance(value, str) and value.strip():
+        sys.exit(0)
+print("the sandbox container declares no non-empty command/args", file=sys.stderr)
+sys.exit(4)
+PY
+  ) || SANDBOX_ARGV_RC=$?
+  if [ "${SANDBOX_ARGV_RC}" != "0" ]; then
+    case "${SANDBOX_ARGV_RC}" in
+      3) echo "ERROR: k8s/deployments/sandbox.yaml no longer describes the workload this gate checks" ;;
+      4) echo "ERROR: ENABLE_SANDBOX=true but k8s/deployments/sandbox.yaml's sandbox container"
+         echo "       declares no command/args." ;;
+      *) echo "ERROR: could not determine what k8s/deployments/sandbox.yaml's sandbox container runs" ;;
+    esac
+    echo "       cause: ${SANDBOX_ARGV_ERR:-(no detail)}"
+    echo "       The check is scoped to the container named 'sandbox' in the Deployment named"
+    echo "       'sandbox', and refuses when it cannot tell."
+    echo "       The image's ENTRYPOINT is the bare interpreter and it ships no CMD, so a pod with"
+    echo "       no command/args starts python3 with no script and CrashLoopBackOffs while the"
+    echo "       deploy reports success — nothing here waits on that rollout. Restore"
+    echo "       'args: [\"/genetics/supervisor.py\"]' on the sandbox container, or set"
+    echo "       sandbox_pool_enabled = false."
     exit 1
   fi
 fi
@@ -164,7 +223,57 @@ export GCP_REGION="${GCP_REGION:-${TF_REGION}}"
 export DOMAIN="${DOMAIN:-${TF_DOMAIN}}"
 DOMAINS="${DOMAINS:-${TF_DOMAINS}}"
 export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
-export REGISTRY="${REGISTRY:-${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results}"
+TF_REGISTRY=$(terraform output -raw registry)
+resolve_registry "${TF_REGISTRY}"
+
+# THE SANDBOX IMAGE MUST EXIST BEFORE THE MANIFEST IS APPLIED. scripts/build-all.sh SKIPS the
+# sandbox image non-fatally when the resolved genetics-mcp-server branch has no SDK or when the
+# schema docs fail to verify — a warning in the middle of a long build log, after which the build
+# still exits 0. While the supervisor refusal above was unclearable that could not reach the
+# cluster; now that the manifest carries args:, an omitted image becomes a sandbox Deployment
+# pointing at a tag nobody pushed — ImagePullBackOff behind a `kubectl apply` that returned 0,
+# with nothing rollout-statusing it. Same silent success, different route, so it is refused the
+# same way. Not in the preflight above only because REGISTRY is not resolved until here.
+# gcloud being unable to ANSWER (not installed, no artifactregistry.reader, no credentials) is
+# not evidence of absence and must not block a deploy, so those cases warn; only a definite
+# NOT_FOUND is fatal. THE THREE CASES ARE KEPT GENUINELY DISTINCT, because they were not:
+# with gcloud off PATH the shell's own "gcloud: command not found" matched a bare `not found`
+# substring and the deploy died claiming THE IMAGE was missing, the exact opposite of what this
+# comment promises. So the absence of the tool is asked first, and the fatal test is anchored to
+# gcloud's own error shape (`ERROR: (gcloud.<command>) ...`, or an explicit NOT_FOUND status)
+# rather than to a phrase any program on the system can emit.
+if [ "${ENABLE_SANDBOX}" = "true" ]; then
+  SANDBOX_IMAGE="${REGISTRY}/sandbox:${TAG}"
+  if ! command -v gcloud >/dev/null 2>&1; then
+    echo "WARNING: gcloud is not on PATH, so ${SANDBOX_IMAGE} could not be checked."
+    echo "         Proceeding; if the image was never pushed the sandbox pod ImagePullBackOffs."
+  elif ! AR_ERR=$(gcloud artifacts docker images describe "${SANDBOX_IMAGE}" 2>&1 >/dev/null); then
+    if printf '%s' "${AR_ERR}" | grep -qE 'NOT_FOUND' ||
+       printf '%s' "${AR_ERR}" | grep -qE '^ERROR: \(gcloud\.[^)]*\).*([Nn]ot found|does not exist)'; then
+      echo "ERROR: ENABLE_SANDBOX=true but ${SANDBOX_IMAGE} is not in the registry."
+      echo "       scripts/build-all.sh skips the sandbox image non-fatally (no SDK on the"
+      echo "       resolved genetics-mcp-server branch, or the schema-doc check failed) and still"
+      echo "       exits 0 — re-read the build log for a 'SKIPPING sandbox' line. Applying"
+      echo "       sandbox.yaml now would leave an ImagePullBackOff pod nothing waits on."
+      echo "       Build it with scripts/build.sh sandbox (which fails hard instead of skipping)."
+      exit 1
+    fi
+    # unanswerable, not absent. Name the likely reason rather than just the query's output: the
+    # operator has to decide whether to trust this warning, and "PERMISSION_DENIED" and "could
+    # not reach the API" call for different responses.
+    case "${AR_ERR}" in
+      *PERMISSION_DENIED*|*"does not have permission"*|*Forbidden*)
+        AR_WHY="the caller lacks artifactregistry.reader on ${REGISTRY}" ;;
+      *UNAUTHENTICATED*|*"gcloud auth"*|*credentials*)
+        AR_WHY="gcloud has no usable credentials (try: gcloud auth login)" ;;
+      *)
+        AR_WHY="the query failed for a reason that is not an absent image" ;;
+    esac
+    echo "WARNING: could not verify ${SANDBOX_IMAGE} exists — ${AR_WHY}."
+    echo "         gcloud said: ${AR_ERR%%$'\n'*}"
+    echo "         Proceeding; if the image was never pushed the sandbox pod ImagePullBackOffs."
+  fi
+fi
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
 export BQ_DATASET="${BQ_DATASET:-genetics_results}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
@@ -280,7 +389,10 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
 # ANTHROPIC_API_KEY — that key alone is never read back from the cluster, and without it the
 # script aborts before writing anything. The targeted patch below stays as the alternative for
 # operators who do not have that key to hand.
-for key in internal-api-secret sandbox-token-signing-key; do
+# gateway-identity-secret is checked the same way and for a sharper reason: auth-gateway's
+# render-config initContainer refuses to start without it, and chat-backend gates code
+# execution on it, so an older genetics-secrets would take the gateway down at rollout.
+for key in internal-api-secret sandbox-token-signing-key gateway-identity-secret; do
   if [ -z "$(kubectl get secret genetics-secrets -n "${NAMESPACE}" \
        -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
     cat >&2 <<EOF
@@ -293,7 +405,9 @@ Add ONLY that key, leaving every other key in the secret untouched:
 
 (Substitute your own value for \$(openssl rand -base64 32) if the key already exists elsewhere
 and must match — sandbox-token-signing-key must be identical on chat-backend, db-api and
-results-api, and internal-api-secret on every internal caller.)
+results-api, internal-api-secret on every internal caller, and gateway-identity-secret on
+auth-gateway and chat-backend — those two ONLY, since it is what tells chat-backend a request
+came through the gateway rather than from another holder of internal-api-secret.)
 
 Re-running create-secrets.sh also fixes this and is safe for the optional keys: it reuses every
 value already in the cluster instead of blanking the ones you have not exported. It does still
@@ -504,7 +618,7 @@ for f in deployments/*.yaml; do
   fi
   if [ "${base}" = "sandbox.yaml" ]; then
     if [ "${ENABLE_SANDBOX}" != "true" ]; then
-      echo "Skipping sandbox (ENABLE_SANDBOX=${ENABLE_SANDBOX}; set sandbox_pool_enabled = true in terraform.tfvars)"
+      echo "Skipping sandbox (ENABLE_SANDBOX=${ENABLE_SANDBOX}; set sandbox_pool_enabled = true in ${TFVARS##*/})"
       continue
     fi
     # the gVisor-node and supervisor preconditions were judged in the sandbox preflight near the
@@ -527,7 +641,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

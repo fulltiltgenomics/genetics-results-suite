@@ -98,14 +98,28 @@ fi
 # worktree, and exits nonzero if it cannot resolve the sibling root at all. A check here
 # would have nothing left to compare.
 
-# --- terraform.tfvars: gitignored, so it exists only in the main checkout ---
-if [ ! -f "$toplevel/terraform/terraform.tfvars" ] &&
-    [ -f "$main_root/terraform/terraform.tfvars" ]; then
-    note "terraform/terraform.tfvars exists only in $main_root (it is gitignored).
-    terraform run from here falls back to variable DEFAULTS, which are not a no-op subset
-    of the live config. The require_tfvars precondition and deploy.sh block an apply, but
-    'terraform apply -target=' and 'terraform destroy' bypass it, and build.sh/build-all.sh
-    print this same warning and then build with APP_NAME=FinnGenie anyway."
+# --- tfvars: gitignored, so they exist only in the main checkout ---
+# Matched with a GLOB, not the bare terraform.tfvars: an instance that uses DEPLOY_ENV keeps
+# its values in terraform.tfvars.<env> and scripts/lib/env.sh REFUSES to run while a bare
+# terraform.tfvars sits beside them, so a check for that one name can never fire there.
+# .example is committed and would satisfy the test everywhere, so it is excluded.
+tfvars_here=0
+tfvars_main=0
+for f in "$toplevel"/terraform/terraform.tfvars*; do
+    case "$f" in *.example | *'*') continue ;; esac
+    [ -f "$f" ] && tfvars_here=1
+done
+for f in "$main_root"/terraform/terraform.tfvars*; do
+    case "$f" in *.example | *'*') continue ;; esac
+    [ -f "$f" ] && tfvars_main=1
+done
+if [ "$tfvars_here" -eq 0 ] && [ "$tfvars_main" -eq 1 ]; then
+    note "terraform/terraform.tfvars* exist only in $main_root (they are gitignored).
+    Every entry-point script resolves its tfvars through scripts/lib/env.sh, which REFUSES
+    to run from here — deploy.sh and create-secrets.sh included, SKIP_TERRAFORM=true too.
+    A bare 'terraform apply' from here falls back to variable DEFAULTS, which are not a
+    no-op subset of the live config; the require_tfvars precondition blocks it, but
+    'terraform apply -target=' and 'terraform destroy' bypass that."
 fi
 
 # --- core.hooksPath: local git config, shared across worktrees ---

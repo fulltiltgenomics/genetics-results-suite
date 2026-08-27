@@ -6,21 +6,27 @@ set -euo pipefail
 # not set, so a re-run with only some of them exported never blanks the rest. ANTHROPIC_API_KEY
 # is the one exception: it is never read back from the cluster and must ALWAYS be exported,
 # otherwise the script aborts before writing anything. Keys absent both in the environment and
-# in the cluster get a fresh random value only where marked "generated"; the optional API keys
-# stay EMPTY rather than being invented (a random string is a plausible-looking key
-# that fails only at call time), and the keycloak usernames fall back to their literal defaults.
+# in the cluster get a fresh random value where marked "generated" — that covers the secrets
+# this deployment mints for itself; the optional THIRD-PARTY API keys stay EMPTY rather than
+# being invented (a random string is a plausible-looking key that fails only at call time), and
+# the keycloak usernames fall back to their literal defaults.
 # set these environment variables before running:
 #   ANTHROPIC_API_KEY     - Anthropic API key for chat backend (ALWAYS required, including on
 #                           re-runs: it is the one key never read back from the cluster)
 #   OPENAI_API_KEY        - OpenAI API key (optional for chat backend, required for rag-service)
 #   TAVILY_API_KEY        - Tavily API key (optional)
 #   PERPLEXITY_API_KEY    - Perplexity API key (optional)
-#   MCP_API_KEY           - bearer token for MCP server auth (optional)
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings (required only when ENABLE_RAG=true)
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (reused from the existing secret if not set, generated on first install)
 #   SANDBOX_TOKEN_SIGNING_KEY  - signing key for per-execution sandbox tokens (reused if not set, generated on first install; see docs/code-execution-security.md §4)
+#   GATEWAY_IDENTITY_SECRET    - auth-gateway -> chat-backend provenance secret gating sandbox dispatch
+#                           (reused if not set, generated on first install; MUST stay distinct from INTERNAL_API_SECRET)
+#   MCP_API_KEY           - bearer token mcp-server requires for its sse/streamable-http transports;
+#                           it refuses to start without one. Reused from the existing secret if not
+#                           set, generated on first install — it's a secret this deployment mints
+#                           for itself, not a third-party credential, so a generated value is valid.
 #   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
 #   OAUTH2_PROXY_CLIENT_ID     - oauth2-proxy OAuth client id (Google client id on finngen; Keycloak OIDC client id on daly). reused from the cluster if not set; required on first install
 #   OAUTH2_PROXY_CLIENT_SECRET - matching OAuth client secret (reused if not set; required on first install)
@@ -30,32 +36,22 @@ NAMESPACE="${NAMESPACE:-genetics}"
 ENABLE_RAG="${ENABLE_RAG:-false}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
-# derive from terraform.tfvars (like build.sh does for app_name); override with ENABLE_KEYCLOAK.
-# refuse rather than default when the profile is unknowable: this script writes cluster
-# secrets, and a guessed profile writes the wrong ones. Same guard and exit code deploy.sh
-# uses (genetics-results-suite-82s) so an operator sees one message from either entry point.
-# The old form grepped the file unconditionally under `set -euo pipefail`, so a missing
-# tfvars killed the script with exit 2 and no output at all (genetics-results-suite-1xp).
-TFVARS="${SCRIPT_DIR}/../terraform/terraform.tfvars"
-if [ -n "${CONFIG_PROFILE:-}" ]; then
-  PROFILE="${CONFIG_PROFILE}"
-elif [ -f "${TFVARS}" ]; then
-  # POSIX [[:space:]], not GNU-only \s — see deploy.sh (genetics-results-suite-8wh)
-  PROFILE="$(grep -E '^[[:space:]]*config_profile[[:space:]]*=' "${TFVARS}" | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)"
-else
-  echo "ERROR: terraform/terraform.tfvars not found — refusing to write cluster secrets."
-  echo "It is gitignored and lives only in the main checkout; from a git worktree the config"
-  echo "profile cannot be derived, and guessing it writes the wrong per-profile secrets."
-  echo "Run from the main checkout, or set CONFIG_PROFILE (daly|finngen)."
-  echo "Looked for: ${TFVARS}"
-  exit 1
-fi
+# resolve the target deployment (DEPLOY_ENV) and load its .env, so the secrets written here
+# come from the same file the matching deploy.sh run will use
+. "${SCRIPT_DIR}/lib/env.sh"
+resolve_deploy_env
+load_deploy_env
 
-# enforce the "(daly|finngen)" the message above advertises. Anything else — a typo, a case
-# slip, or a tfvars with no config_profile line (the `|| true` above yields empty rather than
-# aborting) — would otherwise fall straight through to ENABLE_KEYCLOAK=false and skip
-# keycloak-secrets silently, leaving a daly deploy with a keycloak pod that cannot start.
+# the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
+# derive from the tfvars resolve_deploy_env picked (it has already refused if that file is
+# missing, so the "profile is unknowable" case cannot reach here); override with
+# ENABLE_KEYCLOAK, or CONFIG_PROFILE to name the profile outright.
+PROFILE="${CONFIG_PROFILE:-$(tfvar config_profile)}"
+
+# enforce the "(daly|finngen)" the message below advertises. Anything else — a typo, a case
+# slip, or a tfvars with no config_profile line (tfvar yields empty rather than aborting) —
+# would otherwise fall straight through to ENABLE_KEYCLOAK=false and skip keycloak-secrets
+# silently, leaving a daly deploy with a keycloak pod that cannot start.
 # Same allowed set terraform/variables.tf validates.
 case "${PROFILE}" in
   daly|finngen) ;;
@@ -70,7 +66,8 @@ case "${PROFILE}" in
 esac
 ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${PROFILE}" = "daly" ] && echo true || echo false)}"
 
-echo "Creating genetics-secrets in namespace ${NAMESPACE}..."
+echo "Creating genetics-secrets in namespace ${NAMESPACE} (env: ${DEPLOY_ENV:-default})..."
+echo "Target cluster: $(kubectl config current-context 2>/dev/null || echo 'NONE — run deploy.sh or gcloud container clusters get-credentials first')"
 
 # read one key out of a secret. The old form (`kubectl ... 2>/dev/null | base64 -d || true`)
 # collapsed three different outcomes into "empty", so a wrong kubeconfig context, an RBAC
@@ -110,9 +107,12 @@ secret_key() {
 }
 
 # an explicit env value wins, otherwise keep whatever is already in the cluster, otherwise
-# leave it empty. Deliberately reuse-then-EMPTY, not the reuse-then-generate used for the
-# two shared secrets below: a random value for an API key would look valid and fail only at
-# call time, and admin-users / external-mcp-servers have no meaningful random value at all.
+# leave it empty. Deliberately reuse-then-EMPTY, not the reuse-then-generate used for the four
+# genetics-secrets keys this deployment mints for itself (internal-api-secret,
+# sandbox-token-signing-key, gateway-identity-secret, mcp-api-key — and, further down and
+# outside this Secret, oauth2-proxy's cookie-secret and keycloak's db-password/admin-password):
+# a random value for a third-party API key would look valid and fail only at call time, and
+# admin-users / external-mcp-servers have no meaningful random value at all.
 reuse_optional() {
   local var="$1" key="$2" val
   [ -z "${!var:-}" ] || return 0
@@ -124,7 +124,6 @@ reuse_optional() {
 reuse_optional OPENAI_API_KEY       openai-api-key
 reuse_optional TAVILY_API_KEY       tavily-api-key
 reuse_optional PERPLEXITY_API_KEY   perplexity-api-key
-reuse_optional MCP_API_KEY          mcp-api-key
 reuse_optional COHERE_API_KEY       cohere-api-key
 reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional ADMIN_USERS          admin-users
@@ -151,18 +150,36 @@ INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(openssl rand -base64 32)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(secret_key genetics-secrets sandbox-token-signing-key)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(openssl rand -base64 32)}"
 
+# auth-gateway's provenance secret (genetics-results-suite-4h6.84). A THIRD distinct secret,
+# and the distinctness is the security property: auth-gateway sends it on the two locations
+# that proxy to chat-backend, chat-backend gates sandbox dispatch on it, and mcp-server and
+# results-api — which hold internal-api-secret by design and can reach chat-backend:8000 —
+# hold this one not at all. Never derive it from INTERNAL_API_SECRET. Same reuse-or-generate
+# rule; rotating it costs at most a gateway+backend restart.
+GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(secret_key genetics-secrets gateway-identity-secret)}"
+GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(openssl rand -base64 32)}"
+
+# bearer token mcp-server requires for its sse/streamable-http transports (it refuses to
+# start without one — no escape hatch). Unlike the third-party keys above, this one is not
+# a credential issued by an outside service: it's a shared secret this deployment mints for
+# itself, so a generated value is authoritative by construction rather than a plausible-
+# looking guess. Same reuse-or-generate rule as the three secrets above.
+MCP_API_KEY="${MCP_API_KEY:-$(secret_key genetics-secrets mcp-api-key)}"
+MCP_API_KEY="${MCP_API_KEY:-$(openssl rand -hex 32)}"
+
 kubectl create secret generic genetics-secrets \
   --namespace="${NAMESPACE}" \
   --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}" \
   --from-literal=openai-api-key="${OPENAI_API_KEY:-}" \
   --from-literal=tavily-api-key="${TAVILY_API_KEY:-}" \
   --from-literal=perplexity-api-key="${PERPLEXITY_API_KEY:-}" \
-  --from-literal=mcp-api-key="${MCP_API_KEY:-}" \
+  --from-literal=mcp-api-key="${MCP_API_KEY}" \
   --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
   --from-literal=sandbox-token-signing-key="${SANDBOX_TOKEN_SIGNING_KEY}" \
+  --from-literal=gateway-identity-secret="${GATEWAY_IDENTITY_SECRET}" \
   --from-literal=slack-webhook-url="${SLACK_WEBHOOK_URL:-}" \
   --dry-run=client -o yaml | kubectl apply -f -
 

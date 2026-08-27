@@ -55,11 +55,17 @@ All tool definitions are in one file:
 `api` 44, `bigquery` 2, `orchestration` 4.
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
-`type` is copied verbatim, `description` / `default` / `items` / `enum` are copied when
-present, and a parameter lands in `required` when its definition sets `"required": True`.
-Nothing else is emitted — there are **no** `minimum`/`maximum`/`pattern` constraints in any
-schema; every stated bound (e.g. `timeout_s` 1–120) lives only in the parameter's prose
-description and is enforced server-side, not by the schema.
+`type` is copied verbatim, `description` / `default` / `items` / `enum` / `minimum` /
+`maximum` / `pattern` are copied when present, and a parameter lands in `required` when its
+definition sets `"required": True`. Since genetics-results-suite-4h6.70 the three
+constraint keywords are forwarded, but they appear on a parameter only where the SERVER
+already enforces the bound, derived from the enforcing code rather than the description —
+12 parameters carry one today (section 8 lists them per tool). Where prose and enforcement
+disagree the parameter stays bare: `search_scientific_literature.max_results` says "max 25"
+but that clamp exists only on the europepmc path and the default backend is perplexity, and
+`query_database.max_rows` is capped downstream in db-api. No parameter declares a `pattern`
+— the candidates are validated after a normalising step that widens what is accepted, so a
+regex matching the validator would reject inputs the server handles.
 
 `get_anthropic_tools(custom_descriptions=...)` can override any description, but
 **chat-backend never passes it**: `chat_api.stream_chat` (`chat_api.py:520-545`) calls
@@ -112,6 +118,20 @@ are therefore unreachable over `/mcp` by construction:
 - `run_analysis` — deliberately omitted; `definitions.py:2392-2401` explains that a missing
   block is a control `disabled_tools` cannot undo, since that set can only subtract.
 
+**This surface's bounds are not the `parameters` bounds.** FastMCP derives each MCP schema
+from the handler's Python signature, so `Annotated[..., Field(ge=…, le=…)]` here makes
+pydantic **reject** an out-of-range value before the executor runs. Only the six parameters
+the executor already rejects carry one — the four `window` arguments on
+`get_asm_qtl_by_gene` / `get_open_chromatin_by_gene` / `get_variant_effect_by_gene` /
+`get_mpra_by_gene`, plus `get_mpra_pip_concordance_by_gene`'s `window` and `min_pip` and
+`get_hla_by_allele.max_rows` — where the declaration only moves an identical `SqlValueError`
+earlier. The **clamped** parameters (`web_search.max_results`, `search_mgi.max_results`,
+`search_cbioportal.max_results`, `search_uniprot.size`) are left bare here even though they
+declare bounds on the Anthropic surface: the server accepts an over-large value today and
+returns the capped count, so a `Field` bound would turn a working MCP call into a
+validation error. This asymmetry is intentional and is stated in `register_mcp_tools`'
+docstring.
+
 `_mcp_disabled` = `_settings.disabled_tools | {` the following 11 names `}`:
 
 ```text
@@ -145,15 +165,19 @@ in both the `api` and `bigquery` profiles. The same `disabled` set is reused in 
 
 ## 3. Tool profiles
 
-There are **two** profile mechanisms. `TOOL_PROFILES` (`definitions.py:1713-1717`) names
-whole *categories*; `TOOL_PROFILE_TOOLS` (`definitions.py:1735-1745`) names individual
-*tools* and takes precedence over it. Verbatim:
+There are **two** profile mechanisms, both in genetics-mcp-server's `tools/definitions.py`. `TOOL_PROFILES` names
+whole *categories*; `TOOL_PROFILE_TOOLS` names individual *tools* and takes precedence over
+it. Both live in the **genetics-mcp-server** repo; locate them from that repo's root with
+`grep -n '^TOOL_PROFILE' src/genetics_mcp_server/tools/definitions.py` rather than by line
+number — the numbers quoted here have now drifted twice, since both dicts sit under a long
+comment block that grows every time the reasoning is revised. Verbatim:
 
 ```python
 TOOL_PROFILES: dict[str, set[str]] = {
     "api": {"general", "api", "orchestration"},
     "bigquery": {"general", "bigquery", "orchestration"},
     "rag": {"general"},
+    "nocode": {"general", "api", "bigquery"},
 }
 
 TOOL_PROFILE_TOOLS: dict[str, set[str]] = {
@@ -181,11 +205,50 @@ existing profile's resolved set changed when `code` landed;
 Selection: `POST /chat/v1/chat` field `tool_profile` (`chat_api.py:284`), persisted per
 message in `chat_messages.tool_profile`, defaulted per user from the `chat_tool_profile`
 key of `user_settings`. It is also selectable from the browser: genetics-results-browser's
-**Tools** control offers All / API / Database / **Code execution**, `rag` being the one
-profile deliberately kept out of the UI. Note the two ends disagree about an unknown
-string — the browser resolves it to `null`, which is the **full** surface, where the server
-degrades to general-only; both refuse to raise because the value is read back from stored
-rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
+**Tools** control offers All / API / Database / **Code execution**.
+
+**The two lists are not the same list, and that is deliberate.** This server knows **five**
+profiles — `api`, `bigquery`, `rag`, `nocode`, `code`. genetics-results-browser's own
+`TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names **four** — `api`, `bigquery`,
+`rag`, `code` — of which `rag` carries a `null` in `TOOL_PROFILE_LABELS` (`LLMChat.tsx`) and
+so is resolvable but never rendered as a radio. `nocode` is absent from the browser
+altogether **on purpose**: it is the comparator arm for `genetics-results-suite-4h6.23` and
+must not be an option a user can pick. Neither omission is an oversight, and neither list
+should be described as mirroring the other.
+
+Since `genetics-results-suite-4h6.74` the two are pinned against each other, once per
+direction:
+
+- **server → browser, at runtime.** A stored `chat_tool_profile` the browser does not
+  enumerate used to be narrowed to `null` — which is *no filtering*, the full surface, so
+  the user's narrower stored choice silently became the widest one. The browser now probes
+  `GET /chat/v1/tools/resolved?tool_profile=<v>` and, on `known_profile: true`, keeps the
+  value, labels it from the raw key and sends it (`adoptServerKnownProfile` in
+  `useChatOptions.ts`). This is what lets an already-stored `nocode` behave correctly
+  without advertising it. The value must first look like a profile name at all —
+  non-empty, ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel
+  (`isPlausibleToolProfile` in `chatOptionsApi.ts`) — or it never reaches the URL. The stored
+  setting is not the only source: `tool_profile` is persisted per message, so **reopening a
+  conversation** that ran under a server-only profile narrowed it to `null` too, and
+  `applyFromConversation` probes that value as well. A conversation's name is adopted only while
+  that conversation is on screen and never becomes the user's default; a settled answer is cached,
+  so reopening the same conversation does not re-ask.
+- **browser → server, at runtime.** The same endpoint is called when a profile is selected
+  and when one is restored at page load; an explicit `known_profile: false` puts an amber
+  "not recognised by the server" beside the **Tools** control. **A failed or unanswerable
+  probe shows nothing** — offline, 5xx, or a backend predating the endpoint is not evidence
+  of drift, so only an explicit `false` is a signal.
+- **browser → server, at build time.** `tests/test_unknown_profile_warning.py::
+  test_the_profile_key_set_is_pinned_against_the_browsers_copy` asserts
+  `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
+  literal and names the browser file in its failure guidance, so adding or renaming a
+  profile here fails a test until the browser is dealt with. It also asserts the two dicts
+  stay disjoint, since `TOOL_PROFILE_TOOLS` wins where they overlap.
+
+The two ends still disagree about a genuinely unknown string, and that stays deliberate:
+the browser resolves it to `null`, the **full** surface; the server degrades to
+general-only. Neither may raise, because the value is read back from stored rows. See
+`docs/project-spec.md` § "Selecting a profile from the browser".
 
 | `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
 |---|---|---|---|---|---|
@@ -195,7 +258,7 @@ rows. See `docs/project-spec.md` § "Selecting a profile from the browser".
 | `"rag"` | categories: general only | 18 | 18 | **no** | yes |
 | `"nocode"` | categories: general + api + bigquery | 64 | 62 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
-| any other string | `TOOL_PROFILES.get(profile, {"general"})` → general only | 18 | 18 | yes | no |
+| any other string | not in either dict → general only, plus a warn-once (below) | 18 | 18 | yes | no |
 
 `"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
@@ -217,13 +280,22 @@ Three behaviours worth stating plainly:
   `if tool_profile is not None` guard at `definitions.py:1777` is skipped entirely, so the
   default surface is every definition in all three lists. `code` **ships dark**: it changes
   no default, and rolling it back is deleting one dict entry.
-- **An unknown profile name silently degrades to `general` only** rather than raising
-  (`definitions.py:1782`). A typo in `tool_profile` costs the model 47 tools with no error.
-  This was kept deliberately when `code` landed — the value is read back from
-  `chat_messages` rows written by older clients, so raising would turn a stale row into a
-  500 — and is pinned by `test_unknown_profile_still_degrades_silently_to_general`.
-  Note the asymmetry in the last row: an unknown name is not `"rag"`, so it still gets
-  external tools but not RAG tools.
+- **An unknown profile name degrades to `general` only** rather than raising. A typo in
+  `tool_profile` costs the model 47 tools and the request still succeeds. The degrade was
+  kept deliberately when `code` landed — the value is read back from `chat_messages` rows
+  written by older clients, so raising would turn a stale row into a 500 — and is pinned by
+  `test_unknown_profile_still_degrades_silently_to_general` (`tests/test_tools.py`) and by
+  `test_the_degrade_itself_is_unchanged` (`tests/test_unknown_profile_warning.py`).
+  It is **no longer silent to an operator**: `genetics-results-suite-4h6.74` split the
+  lookup into `TOOL_PROFILES.get(profile)` plus an explicit `None` branch that calls
+  `_warn_unknown_profile`, logging one WARNING naming the value and the known set — once
+  per **distinct** value, not once per request, because a stored profile is re-sent on
+  every turn of the session that holds it, and bounded at 64 distinct values so a client
+  inventing one per request floods neither the log nor the memo set. It stays silent to
+  the model and to the request itself. The caller-side half of the same signal is
+  `GET /chat/v1/tools/resolved`'s `known_profile: false`.
+  Note the asymmetry in the last table row: an unknown name is not `"rag"`, so it still
+  gets external tools but not RAG tools.
 - **`disabled_tools` is applied *before* the profile filter**, so the three feature flags
   and the env-driven disable list subtract from an explicit profile too. Only
   `launch_subagents` of the three is in a category profile other than `api`, which is why
@@ -273,10 +345,20 @@ reach `credible_sets_v` and `hla_associations_v` through SQL. Section headings a
 ungated wherever their body is: `## Data Sources and Resource Names` is its own block, since
 a gated heading over an ungated body reparents the body under the preceding section.
 
-`chat_api.py` builds the prompt from `service.resolve_local_tool_names(request.tool_profile,
-request.enable_tools)` (`llm_service.py`), which is the same profile + feature-flag +
-subagent-liveness resolution that produces the tool list itself. So on the **Anthropic**
-path the prompt is a function of the tool list and the two cannot drift apart. This does
+`chat_api.py` resolves the tool set **once**, with `service.resolve_local_tools(
+request.tool_profile, request.enable_tools)` (`llm_service.py`), builds the prompt from that
+object's `.names`, and hands the SAME object to `stream_chat` and on to `_stream_anthropic`
+as the model's tool list. `ResolvedLocalTools` is a frozen dataclass holding `definitions`,
+and `names` is a **computed property** over them rather than a stored copy — so the names the
+prompt was gated on are projected off the very definitions the model receives. On the
+**Anthropic** path the no-drift property is therefore structural: there is one derivation,
+not two that agree by convention (`genetics-results-suite-4h6.77`; before it the prompt and
+the tool list were resolved independently and matched only because both calls happened to
+pass the same profile and flags). `resolve_local_tool_names` still exists as a one-line
+delegate to `resolve_local_tools(...).names`, and is still what `/chat/v1/tool-names` calls
+— the prompt just no longer comes through it. Freezing the dataclass is not what carries the
+invariant: `definitions` is a plain list whose contents can still be mutated in place, and
+`tests/test_tool_resolution_single_source.py` mutates it to prove `names` follows. This does
 NOT hold for `provider="openai"`: `_stream_openai` takes neither `enable_tools` nor
 `tool_profile` and never sets `tools`, so that provider gets zero tools while receiving the
 prompt assembled for the full local set. Pre-existing behaviour, unchanged here — the OpenAI
@@ -292,34 +374,121 @@ Phenotype Reports.
 
 What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
-`default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these:
+`default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
+everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
+unfiltered text is 35,420 chars. Measured 2026-08-22:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default) | 65 | ~29,100 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
-| `api` | 63 | ~29,000 | the above, plus the `query_database` wording variants; gains the SDK schema route |
-| `bigquery` | 23 | ~25,500 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
-| `rag` | 18 | ~19,600 | the above, plus HLA, the credible-set grounding rules, the database section and Choosing How to Get Data entirely |
-| `nocode` | 62 | ~28,400 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-19: 29,063 → 28,368 chars) |
-| `code` | 7 | ~21,100 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
+| `None` (default) | 65 | 29,112 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
+| `api` | 63 | 29,109 | the above, plus the `query_database` wording variants; gains the SDK schema route |
+| `bigquery` | 23 | 26,098 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
+| `rag` | 18 | 19,515 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
+| `nocode` | 62 | 28,417 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-22: 29,112 → 28,417 chars) |
+| `code` | 7 | 21,715 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
 
-`tests/test_system_prompt.py` pins three properties across those profiles with
-`ENABLE_SUBAGENTS` both true and false:
+`bigquery` has two shapes and the row above is the sandbox-on one. With
+`SANDBOX_ENABLED=false` it is 22 tools and 25,253 chars, and the text differs by more than
+the missing `run_analysis` guidance: `query_database` keeps the annotation prohibition
+alive while the flag has taken `run_analysis` and with it the SDK route, so
+`genetics-results-suite-4h6.76` gives it a wording of its own — the prohibition followed by
+`get_variant_protein_effect`, which this surface still has and which returns the amino-acid
+change with curated ClinVar clinical significance, population frequency and rsID for a
+coding SNV. The model is told to USE that tool, and to fall back on "not available here"
+only for what the tool does not cover (non-coding variants, pathogenicity scores,
+multi-population frequencies). The blanket "there is no variant-annotation tool on this
+surface" wording — which an earlier revision of this section placed on exactly this
+surface, where it was false — matches **no shipped profile**: it survives only for a
+database-only shape with `get_variant_protein_effect` removed, which is synthesised in the
+test rather than resolved from a profile (see the route-completeness bullet below). The
+other profiles change with the flag too (`None` 64 tools / 28,417 chars, `api` 62 / 24,745,
+`code` 6 / 14,741; `rag` and `nocode` are unaffected).
+
+`tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
+over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
+now includes `nocode`, the arm the `code` arm is measured against; it was missing until
+`genetics-results-suite-4h6.78`/`.79`, so thirteen parametrised test functions never
+exercised the comparator. Every one of the seven reads the RENDERED prompt rather than
+`_Block` metadata, so an assertion cannot pass by restating the constant it guards. Only
+**absence** and the body-under-heading half of **structure** are run with
+`ENABLE_SUBAGENTS` both true and false; the `products`-imperative check inside **capability
+gating** and both directions of **route completeness** are run with `SANDBOX_ENABLED` both
+ways; the rest run with subagents off:
 
 - **absence** — every tool name appearing in the emitted prompt is in the resolved tool
   list. It tokenises the prompt itself rather than reusing the gate's own matcher, so the
-  two implementations have to agree.
+  two implementations have to agree. They are independent on the ALGORITHM but not on the
+  NORMALISATION: neither sees a plural or suffixed mention (`get_hla_by_alleles` for
+  `get_hla_by_allele`), so they would agree while both being wrong. No such mention exists
+  today; `_Block`'s docstring carries the instruction to name tools verbatim
+  (`genetics-results-suite-4h6.78`).
+- **one routing home per surface**
+  (`TestRoutingArbitrationHasOneHomePerSurface`) — no arm is told to prefer a path it does
+  not have: the database fallback is absent wherever `query_database` is, and the SDK
+  wording wherever `run_analysis` is.
 - **presence** — the emitted section headings are pinned per profile, and the load-bearing
   science and grounding strings are asserted present. Absence-only assertions could not see
   text going missing, which is how the over-subtraction above survived review.
+- **domain science survives filtering** (`TestDomainScienceSurvives`) — the
+  MPRA / caQTL / variant-effect / open-chromatin distinction and the grounding and
+  terminology rules are present on every profile. That distinction is a statement about
+  what the assays measure and is not reachable through `list_capabilities`, so removing
+  tools must not remove it.
 - **structure** — no body line may land under a different heading than it has in the
   unfiltered text, and no heading may be emitted with no body under it.
+- **capability gating of guidance keyed on a parameter or an output field**
+  (`genetics-results-suite-4h6.75`) — the gate matches tool NAMES, so a rule resting on a
+  `summarize` argument or a `products` field names no tool and was emitted unconditionally.
+  Pinned per profile: the `summarize=true` remedy appears exactly on the surfaces carrying a
+  tool with that parameter and the generic "Narrow the request" fallback exactly on those
+  that do not; the count remedy names the database iff `query_database` is available, names
+  the SDK (`genetics.sql(...)`) iff `run_analysis` is available without it, and names
+  neither on `rag`, which has neither; the `products` imperative follows `list_datasets`
+  **or** `run_analysis`, because two routes read the field and not one — the SDK's
+  `genetics.datasets(resource=..., include_stats=True)` reaches the same executor method
+  `list_datasets` calls (chain verified: this repo's `sandbox/stubs/genetics.pyi:397` →
+  mcp-server `sdk/client.py:897-903` → `tools/executor.py:2491-2503` → results-api
+  `/v1/datasets`, whose per-dataset payload carries `products`), so gating on
+  `list_datasets` alone was dropping actionable guidance from the sandboxed arm. A surface
+  that reaches the catalog only through the SDK is additionally told which call that is.
+  The products-vs-`data_type` knowledge stays on every surface. `_SUMMARIZE_PARAM_TOOLS`
+  is itself asserted against the live tool schemas rather than trusted as a constant.
+- **route completeness of the annotation prohibition** (`genetics-results-suite-4h6.76`) —
+  two directions, both parametrised over every profile x `SANDBOX_ENABLED`. **Forward**
+  (`test_no_surface_gets_the_prohibition_without_a_route`): wherever the "you must NEVER
+  query the database for them" prohibition is emitted, exactly one route accompanies it,
+  and where it is not emitted, no route is either. There are **four** shipped arms, each
+  additionally pinned by its own test: the annotation tools (`None`, `api`); the SDK
+  together with `get_variant_protein_effect` — "Fetch consequence, allele frequency and
+  gene in a script instead", on `bigquery` with the sandbox on, which carries both; the SDK
+  alone — "Fetch them in a script instead: `genetics.variant_annotation(`" — on `code`,
+  whose seven tools include no annotation tool of any kind, so its "not in the database
+  either" clause is true as written there; and the database-only wording, "The database is
+  not an alternative route to them. For a coding SNV …", on `bigquery` with
+  `SANDBOX_ENABLED=false`. A fifth string exists — the blanket "there is no
+  variant-annotation tool on this surface" — but it is not a fifth surface: no shipped
+  profile has that shape, so its test synthesises one, subtracting
+  `get_variant_protein_effect` from the resolved `bigquery`-no-sandbox set and rendering
+  `default_system_prompt` over the result rather than naming a profile. **Reverse**
+  (`test_no_prompt_refuses_what_the_same_prompt_explains_how_to_get`): no rendered prompt
+  may carry a refusal sentence alongside the tool whose presence makes it false. That is
+  the defect the first fix shipped — the no-route wording landed on `bigquery`, which has
+  `get_variant_protein_effect` and whose own prompt describes what it returns — and nothing
+  had pinned it.
 
-A fourth property, **routing**, is deliberately not parametrised over the profiles: every
-surface that can reach data emits exactly one arm-routing sentence, checked over ~80 tool sets
-synthesised from the full list by removing single tools and flag-shaped tool families (see
-"Choosing How to Get Data" below). Profile-parametrised checks could not see the defect it
-guards, because all five profiles carry the example tools the arbitration cited.
+The remaining **three** classes are deliberately not parametrised over the profiles.
+**Routing** (`TestEverySurfaceWithADataPathIsRouted`): every surface that can reach data
+emits exactly one arm-routing sentence, checked over ~80 tool sets synthesised from the
+full list by removing single tools and flag-shaped tool families (see "Choosing How to Get
+Data" below). Profile-parametrised checks could not see the defect it guards, because every profile that
+actually emits the arbitration (`None`, `nocode`) carries all three example tools, so no
+profile ever exercises the case the defect lived in — arbitration emitted with an example
+tool absent. **The gate itself**
+(`TestAssemblyMechanism`): `_assemble` is exercised on synthetic `_Block`s, so the
+mechanism is pinned independently of today's prompt text. **Arm neutrality**
+(`TestRunAnalysisWordingIsArmNeutral`): the `run_analysis` bullet is byte-identical across
+every arm that carries it (`None`, `api`, `bigquery`, `code`), which is what makes the
+`code`-vs-`nocode` A/B a comparison of tools rather than of wording.
 
 `tests/test_llm_service.py::TestResolveLocalToolNames` pins the resolution itself: that
 `MCP_ENABLED=false` advertises nothing, and that `ENABLE_SUBAGENTS=true` with a dead
@@ -338,20 +507,39 @@ The passages that steer tool choice — the load-bearing ones — quoted verbati
 - **get_gene_based_results returns only genebass p < 1e-4 rows, so a gene missing from it is not a gene without a burden result.** To say a gene was tested and came out null in a given trait, use get_gene_based_results_by_phenotype (unfiltered, one trait) or query gene_burden_results_v in the database (unfiltered, every gene x annotation x trait)
 ```
 
+The truncation rule is no longer one sentence: `genetics-results-suite-4h6.75` split its
+remedy into four gated clauses, so the rendered bullet DIFFERS PER PROFILE. Quoting the
+default surface (`tool_profile=None`, sandbox on), where the first and third rows of the
+table below are the clauses that fire:
+
 ```text
-- **A tool result marked `[TRUNCATED: ...]` is a PREFIX of an ordered result, not a sample of it.** Whatever sorts last — the weakest signals, the later chromosomes, entire data types or resources — is what got cut, and you cannot see what is missing. Never answer a counting question ("how many X"), an inventory question ("which cell types / datasets / traits"), or an absence question ("is there any caQTL data for this gene") from a truncated result, and never state that something is not in the data because it was not in the visible part. Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete, or query the database for the count directly. If you report anything at all from a truncated result, say explicitly that it is partial
+- **A tool result marked `[TRUNCATED: ...]` is a PREFIX of an ordered result, not a sample of it.** Whatever sorts last — the weakest signals, the later chromosomes, entire data types or resources — is what got cut, and you cannot see what is missing. Never answer a counting question ("how many X"), an inventory question ("which cell types / datasets / traits"), or an absence question ("is there any caQTL data for this gene") from a truncated result, and never state that something is not in the data because it was not in the visible part. Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete. Query the database for the count directly rather than inferring it from the prefix. If you report anything at all from a truncated result, say explicitly that it is partial
 - **Never present output you have not received yet.** Do not write a table, count, or effect estimate with empty cells or placeholders such as `[from query]` or `[to confirm]`, and do not end a turn by announcing a query you have not run. Announcing a call is not making one: if answering needs data, call the tool in the same turn and write the table only from the result that came back. If you cannot get the data, say what is missing instead of laying out the shape of an answer you do not have
 ```
 
+The prohibition itself (first sentences) and the "say explicitly that it is partial" tail are
+ungated and identical everywhere; the two middle clauses swap:
+
+| clause as rendered | gate | profiles that get it (sandbox on) |
+|---|---|---|
+| `` Re-run the tool with narrower arguments (`data_types`, `resource`) or with `summarize=true` until the result is complete. `` | `requires_any=_SUMMARIZE_PARAM_TOOLS` (the five `get_credible_sets_*` tools) | `None`, `api`, `nocode` |
+| ` Narrow the request until the result is complete.` | `excludes=_SUMMARIZE_PARAM_TOOLS` | `bigquery`, `rag`, `code` |
+| ` Query the database for the count directly rather than inferring it from the prefix.` | `requires_any=query_database` | `None`, `bigquery`, `nocode` |
+| `` Count the rows in a script with `genetics.sql(...)` rather than inferring the count from the prefix. `` | `requires_any=run_analysis`, `excludes=query_database` | `api`, `code` |
+
+`rag` gets neither count clause — it has no database and no sandbox, so it is told to narrow
+and stop there rather than pointed at a route it does not have.
+
+
 The routing arbitration (section "Choosing How to Get Data"), **one variant per surface**.
-Emitted when the api tools and `query_database` are both present — i.e. profile `None`:
+Emitted when the api tools and `query_database` are both present — profiles `None` and `nocode`:
 
 ```text
 - **Prefer the dedicated API tools over the database.** They access the same underlying data. Use a dedicated tool (e.g. get_credible_sets_by_gene, get_exome_results_by_gene, get_gene_based_results) even when querying several genes — calling a tool several times is fine and gives cleaner results than writing SQL.
 - Fall back to the database for queries that genuinely cannot be expressed with the API tools: complex joins, custom aggregations across many phenotypes, or filters the API tools do not support.
 ```
 
-Emitted whenever `run_analysis` is present — which is every profile except `rag`, and which a
+Emitted whenever `run_analysis` is present — every profile except `rag` and `nocode`, and which a
 feature flag in front of that tool (`genetics-results-suite-4h6.56`) would remove with no
 edit to the prompt:
 
@@ -381,8 +569,9 @@ leaving the `run_analysis` bullet unopposed on the very benchmark built to compa
 precondition is a `requires_all` now and each `(e.g. …)` list is its own block, so an absent
 example costs the examples and not the arbitration. `TestEverySurfaceWithADataPathIsRouted` in
 `genetics-mcp-server/tests/test_system_prompt.py` holds the invariant over ~80 synthesised tool
-sets rather than over the five profiles — every profile carries all three example tools, which
-is why profile-by-profile checking could not see the dependence.
+sets rather than over the six profiles — every profile that emits the arbitration carries all
+three example tools, so profile-by-profile checking never exercises the case the defect lived
+in.
 
 The prompt no longer carries a "call `get_database_schema` first" instruction: that is a
 precondition of one tool, and it lives in `query_database`'s own description, which travels
@@ -691,17 +880,22 @@ does not currently match, verified against source on 2026-08-18.
    hardcoded `/scratch/` prefix (`executor.py:392-395`, `5566-5578`) that chat-backend has no
    volume for, so in chat-backend it always answers "Code execution is not enabled here"
    (`executor.py:5662`).
-8. **Nothing in the schemas enforces any documented bound.** `timeout_s` says "1-120
-   (default 60)" in prose and carries no `minimum`/`maximum`; `max_rows` says "default 1000"
-   and has no bound. Enforcement is entirely server-side.
+8. **Most documented bounds are still prose, and the schema now says which ones are not.**
+   Until genetics-results-suite-4h6.70 no schema carried `minimum`/`maximum`/`pattern` at
+   all. 12 parameters now do (`timeout_s` 1–120 among them), each mirroring code that
+   already rejects or clamps the value; enforcement is still server-side, the schema only
+   declares it. Every other numeric bound in a description — `search_scientific_literature`'s
+   "max 25", `query_database.max_rows` — remains unenforced at the schema layer, and
+   deliberately so, because no single code path applies it.
 
 ## 8. Full tool catalogue
 
 Every entry below is generated from `definitions.py` at the commit in the header. The
 description block is the **exact** string sent to the model — the definitions use implicit
 string concatenation and triple-quoted literals, so what appears here is the joined result.
-The parameter table is the `input_schema` `get_anthropic_tools()` builds; anything not listed
-(minimum, maximum, pattern, format) is absent from the schema entirely.
+The parameter table is the `input_schema` `get_anthropic_tools()` builds; a `minimum`/
+`maximum` appears in the `enum / items / bounds` column when the parameter declares one,
+and anything not listed (`pattern`, `format`) is absent from the schema entirely.
 
 Read a row as: `type` is the JSON-schema type; `req` yes means the name is in
 `input_schema.required`; `default` is emitted into the schema and is **advisory to the
@@ -718,7 +912,7 @@ Description as sent to the model:
 Look up phenotypes. Use when you need to find if there is a phenotype for a disease/trait name or the exact phenotype code for a disease/trait name. Do NOT use this to find disease associations - use get_credible_sets_by_gene instead.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Disease or trait name(s) to look up. Supports comma-separated values for batch lookup (e.g., 'diabetes,obesity,hypertension') |
 | `limit` | `integer` | no | `100` | — | Maximum results (default 100) |
@@ -734,7 +928,7 @@ Description as sent to the model:
 Look up gene symbols and positions. Use ONLY when you need to verify a gene symbol or find its genomic coordinates. Do NOT use this to find gene associations.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Gene name(s) or symbol(s) to look up. Supports comma-separated values for batch lookup (e.g., 'BRCA1,TP53,EGFR') |
 | `limit` | `integer` | no | `10` | — | Maximum results (default 10) |
@@ -750,7 +944,7 @@ Description as sent to the model:
 Convert rsIDs to variant IDs (chr:pos:ref:alt format). Use this when you have rsIDs and need to convert them to variant format for use with other tools.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `rsids` | `string` | yes | — | — | rsID or comma-separated list of rsIDs (e.g., 'rs1234567' or 'rs1234567,rs9876543') |
 
@@ -765,7 +959,7 @@ Description as sent to the model:
 **Use this to translate phenotype codes to human-readable names.** Takes a list of phenotype codes and returns their names. Call this ONCE with ALL codes you need.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `codes` | `array` | yes | — | items: `{"type": "string"}` | List of phenotype codes to look up |
 
@@ -780,7 +974,7 @@ Description as sent to the model:
 List all datasets available in the API with descriptions, provenance (author, version, publication date), sample-size statistics (number of phenotypes, median sample size, case/control ranges), and which products (credible sets / summary stats / colocalization) each dataset supports. ALWAYS call this FIRST when the user asks about data availability, sample sizes, number of endpoints/phenotypes, dataset metadata, or mentions a data source by name. The returned `dataset_id` and `resource` are what you pass to downstream tools. For datasets marked `collection: true` (e.g. eQTL Catalogue), sub-studies are enumerated in /resource_metadata/{resource} (link in `metadata_endpoint`).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | no | — | — | Optional: filter to a specific resource (e.g. 'finngen', 'eqtl_catalogue'). Omit to list all. |
 | `include_stats` | `boolean` | no | — | — | Include aggregate sample-size stats. Default true. |
@@ -796,7 +990,7 @@ Description as sent to the model:
 Get the harmonized per-trait metadata of one resource: every phenotype/study it serves with its trait name, sample sizes and (for collections like eQTL Catalogue) the sub-studies. Use this after list_datasets when the question is about a resource's contents — which traits exist, how many, what a trait code means, or how large a study is. list_datasets gives dataset-level aggregates; this gives the per-trait rows behind them.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Resource name (e.g. 'finngen', 'eqtl_catalogue') |
 
@@ -825,7 +1019,7 @@ Search scientific literature for research papers about genes, variants, diseases
 When reporting results to the user, name the backend that was actually queried: the 'backend' field in the response, which is authoritative. Do NOT invent hybrid labels like 'PubMed/Europe PMC' or 'Perplexity/PubMed' — PubMed etc. are content indexed by the europepmc backend, not separate backends. Perplexity hits carry bibliographic metadata (authors, journal) looked up in Europe PMC where a PMID/DOI/PMCID was available; that is recorded per record in 'metadata_source' and does not change which backend was searched.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Search query - can include gene names, disease names, variant IDs, or biological concepts. |
 | `max_results` | `integer` | no | `10` | — | Maximum papers to return (default 10, max 25) |
@@ -843,10 +1037,10 @@ Description as sent to the model:
 Search the web for general information. Use for finding drug information, clinical guidelines, news, or explanations of concepts. Use search_scientific_literature for research papers instead.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Search query |
-| `max_results` | `integer` | no | `5` | — | Maximum results (default 5, max 10) |
+| `max_results` | `integer` | no | `5` | `maximum` 10 | Maximum results (default 5, max 10) |
 | `include_domains` | `array` | no | — | items: `{"type": "string"}` | Optional: only search these domains |
 | `exclude_domains` | `array` | no | — | items: `{"type": "string"}` | Optional: exclude these domains |
 
@@ -861,12 +1055,12 @@ Description as sent to the model:
 Search Jackson Lab Mouse Genome Informatics (MGI) for curated mouse gene → phenotype annotations (MP ontology), knockout/transgenic allele phenotypes, and human-mouse ortholog mappings. Returns structured records (not papers). Complements search_scientific_literature — use it for mouse KO / phenotype / MP-ontology / ortholog questions.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Gene symbol (human or mouse), phenotype term, or MGI ID, depending on query_type. |
 | `query_type` | `string` | no | `"gene_phenotypes"` | enum: `gene_phenotypes`, `phenotype_genes`, `allele`, `ortholog` | What to look up: 'gene_phenotypes' (gene → MP phenotype terms + alleles), 'phenotype_genes' (MP term → genes), 'allele' (allele details), or 'ortholog' (mouse-human ortholog mapping). |
 | `species` | `string` | no | `"mouse"` | enum: `mouse`, `human` | Species of the input query: 'mouse' or 'human' (used to set ortholog lookup direction). Default 'mouse'. |
-| `max_results` | `integer` | no | `25` | — | Maximum records to return (default 25, max 100). |
+| `max_results` | `integer` | no | `25` | `minimum` 1, `maximum` 100 | Maximum records to return (default 25, max 100). |
 
 `required`: ['query']
 
@@ -893,12 +1087,12 @@ Examples:
 Frequencies from gene_by_cancer_type are lower bounds: their denominator counts every sample with mutation data, including samples sequenced on gene panels that omit this gene. gene_summary reports the panel-aware profiled count and a not_profiled_samples figure — check it before treating a per-cancer-type frequency as exact.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | A gene symbol for the gene_* query types; 'GENE RESIDUE' (e.g. 'TP53 R175H' or 'TP53 175') for variant_hotspot; a free-text term for study_search. |
 | `query_type` | `string` | no | `"gene_summary"` | enum: `gene_summary`, `gene_by_cancer_type`, `gene_mutations`, `gene_fusions`, `variant_hotspot`, `study_search` | What to look up: 'gene_summary' (pan-cancer mutation + copy-number frequency), 'gene_by_cancer_type' (frequency per cancer type), 'gene_mutations' (recurrent protein changes / hotspots), 'gene_fusions' (structural-variant partners), 'variant_hotspot' (sample count at one residue), or 'study_search' (find studies). |
 | `cancer_types` | `array` | no | — | items: `{"type": "string"}` | Optional, gene_by_cancer_type only: restrict to these cancer types by name (matched case- and punctuation-insensitively, e.g. 'Non-Small Cell Lung Cancer'). Omit to rank all of them. |
-| `max_results` | `integer` | no | `25` | — | Maximum records to return (default 25, max 100). |
+| `max_results` | `integer` | no | `25` | `minimum` 1, `maximum` 100 | Maximum records to return (default 25, max 100). |
 
 `required`: ['query']
 
@@ -923,7 +1117,7 @@ Examples:
 Do NOT use this tool for protein-position → genomic-coordinate mapping — use map_protein_variants. Do NOT use it to find which proteins share a property — use search_uniprot.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | yes | — | — | Gene symbol (strongly preferred, e.g. 'TPO', 'PRSS55'), UniProt entry name, or accession. Never supply an accession recalled from memory when a gene symbol is available. |
 | `organism_id` | `integer` | no | `9606` | — | NCBI taxon ID to restrict symbol resolution to (default 9606, human). Use 10090 for mouse. Pass null to search all organisms. |
@@ -951,7 +1145,7 @@ Pass the gene symbol, not an accession you remember. A wrong accession maps ever
 Every result carries a resolution block naming the protein the variants were mapped against, plus a per-variant check that the reference amino acid matches that sequence. A reference mismatch means the variant is not on this isoform (or not on this protein) — do not report its coordinates as if it were.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variants` | `array` | yes | — | items: `{"type": "string"}` | Amino-acid substitutions, e.g. ['P70A', 'G393A', 'R438H', 'W873C']. One-letter ('P70A'), three-letter ('Pro70Ala') and HGVS protein ('p.Pro70Ala') notation all accepted. Batch them in a single call rather than one call per variant. |
 | `query` | `string` | yes | — | — | Gene symbol of the protein the variants belong to (strongly preferred, e.g. 'TPO'), or a UniProt accession the user supplied. Never an accession recalled from memory. |
@@ -980,7 +1174,7 @@ Scope and limits:
 - Already have an amino-acid change and want its genomic coordinate/rsID instead? That is the opposite direction — use map_protein_variants.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variants` | `array` | yes | — | items: `{"type": "string"}` | Genomic SNVs as 'chr:pos:ref:alt' on GRCh38, e.g. ['12:40340400:G:A', '19:55014977:T:G']. A leading 'chr' is accepted. Batch them in a single call. |
 
@@ -1007,14 +1201,14 @@ Examples:
 Do NOT use this to look up a protein you can already name; resolving a gene symbol is what get_protein_annotations and map_protein_variants do for you. Never cite a UniProt accession from memory — if you need one, get it from this tool's output.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `query` | `string` | no | — | — | UniProtKB query string, free text or native field syntax (e.g. 'family:peroxidase', 'cc_scl_term:SL-0173 AND length:[500 TO *]'). Provide query or keyword or both. |
 | `keyword` | `string` | no | — | — | UniProt keyword ID (e.g. 'KW-0865') or keyword name, added as a keyword: clause. Provide query or keyword or both. |
 | `organism_id` | `integer` | no | `9606` | — | NCBI taxon ID restricting the search (default 9606, human). Pass null to search all organisms. |
 | `reviewed_only` | `boolean` | no | `true` | — | Restrict to reviewed Swiss-Prot entries (default true). Set false to include unreviewed TrEMBL entries, which are far more numerous and not manually curated. |
 | `fields` | `string` | no | `"accession,id,protein_name,gene_names,organism_name"` | — | Comma-separated UniProt return fields (default 'accession,id,protein_name,gene_names,organism_name'). Add e.g. 'length,cc_function,ft_act_site' for more per-entry detail. |
-| `size` | `integer` | no | `25` | — | Maximum entries to return (default 25, max 500). Use count_only first when the set may be large. |
+| `size` | `integer` | no | `25` | `maximum` 500 | Maximum entries to return (default 25, max 500). Use count_only first when the set may be large. |
 | `count_only` | `boolean` | no | `false` | — | Return only the total number of matching entries, no rows. Cheap way to size a query before enumerating it. |
 
 `required`: []
@@ -1028,7 +1222,7 @@ Description as sent to the model:
 Create a PheWAS (Phenome-Wide Association Study) plot showing all phenotype associations for a variant. Returns a base64-encoded PNG image with phenotypes grouped by category on the X-axis and -log10(p-value) on the Y-axis.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID (chr:pos:ref:alt, e.g., '19:44908684:T:C') |
 | `resource` | `string` | no | — | — | Data resource: 'finngen', 'ukbb', or omit for all sources |
@@ -1046,7 +1240,7 @@ Description as sent to the model:
 Enumerate the member genes of an HGNC gene group / family (e.g. all GPCRs), returning gene symbols together with their genomic coordinates. Identify the group by exactly ONE of group_id (HGNC gene-group ID) or group_name (HGNC gene-group name); provide one, not both. By default olfactory receptors are EXCLUDED (exclude_olfactory=true): they are GPCRs that dominate large families like GPCRs by sheer count and are rarely the analysis target. Set exclude_olfactory=false to get the full membership. Results come from HGNC gene-group data served by the API. TIP: for database analyses joining a whole gene group (e.g. cis-pQTL colocalizations for all GPCRs), prefer filtering gene_annotations_v directly on gene_group_ids/gene_group_names rather than enumerating members here — see the get_database_schema example for gene_annotations_v.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `group_id` | `integer` | no | — | — | HGNC gene-group ID. Provide exactly one of group_id or group_name. |
 | `group_name` | `string` | no | — | — | HGNC gene-group / family name (e.g. 'G protein-coupled receptors'). Provide exactly one of group_id or group_name. |
@@ -1063,7 +1257,7 @@ Description as sent to the model:
 Resolve input gene symbols / aliases / previous symbols to their current approved HGNC symbol (exact match, not fuzzy). Useful to clean up a gene list before querying. Returns mappings + any unresolved inputs. Served by the API.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `symbols` | `array` | yes | — | items: `{"type": "string"}` | Gene symbols, aliases, or previous symbols to resolve to current approved HGNC symbols. |
 
@@ -1080,7 +1274,7 @@ Description as sent to the model:
 Get credible sets for variants near a gene. Returns fine-mapped variants with phenotype codes, p-values, effect sizes, and PIPs. **IMPORTANT**: Always use the data_types parameter to filter results ('GWAS', 'eQTL', 'pQTL', 'sQTL', 'caQTL'). Without filtering, results may be truncated.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols (e.g., 'APOE', 'IL23R', 'PCSK9') |
 | `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). A wide window is used because the strongest signal attributed to a gene can sit far from its body — e.g. a long-range regulatory variant several hundred kb upstream. Narrow it only when you specifically want signals inside or immediately around the gene. |
@@ -1099,7 +1293,7 @@ Description as sent to the model:
 Get credible sets containing a specific variant. Returns fine-mapped associations where this variant is part of a credible set. Use this to find which phenotypes/traits a variant is associated with and its causal probability (PIP). NOTE: For 3+ variants, use analyze_variant_list instead — it is much faster and provides aggregated pattern analysis.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '19:44908684:T:C') |
 | `resource` | `string` | no | — | — | Data resource: e.g. 'finngen', 'ukbb', or omit to search all. |
@@ -1117,7 +1311,7 @@ Description as sent to the model:
 Get credible sets overlapping a genomic region across all resources. Use this when the locus is defined by coordinates rather than a gene or a variant — e.g. a GWAS peak boundary, a fine-mapping window from a paper, or 'what else is fine-mapped in this interval'. For a gene use get_credible_sets_by_gene (it applies the window for you) and for a single variant use get_credible_sets_by_variant.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `region` | `string` | yes | — | — | Region as chr:start-end (e.g. '1:1000000-1500000'; X is accepted). Max 10Mb. |
 | `resource` | `string` | no | — | — | Comma-separated resources, e.g. 'finngen' or 'finngen,eqtl_catalogue'. Omit to search all. |
@@ -1135,7 +1329,7 @@ Description as sent to the model:
 **PRIMARY TOOL for phenotype-to-gene queries.** Get ALL genes/variants associated with a phenotype from GWAS fine-mapping. Returns genome-wide significant loci with causal variant candidates ranked by PIP.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `phenotype` | `string` | yes | — | — | Phenotype code (e.g., 'I9_CHD', 'T2D', 'K11_CROHN') |
 | `resource` | `string` | no | `"finngen"` | — | Data resource: 'finngen' or 'ukbb' (default 'finngen') |
@@ -1152,7 +1346,7 @@ Description as sent to the model:
 Get ONE row per credible set for a phenotype: the lead variant of each set (the flagged lead, else highest PIP with ties broken by p-value). Use this to enumerate a trait's independent signals — 'how many loci does this trait have', 'list the lead variants' — without pulling every member variant. get_credible_sets_by_phenotype returns all member variants of all sets, which is far larger; use that only when you need the members.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `phenotype` | `string` | yes | — | — | Phenotype code (e.g., 'I9_CHD', 'T2D', 'K11_CROHN') |
 | `resource` | `string` | no | `"finngen"` | — | Data resource (default 'finngen') |
@@ -1168,7 +1362,7 @@ Description as sent to the model:
 Get all variants in a specific credible set. Use this to investigate a credible set in detail - see all variants, their consequences, PIPs, and count how many variants are in the set.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Data resource (e.g., 'finngen', 'ukbb') |
 | `phenotype` | `string` | yes | — | — | Phenotype code (e.g., 'K11_IBD_STRICT') |
@@ -1185,7 +1379,7 @@ Description as sent to the model:
 Get QTL associations where a gene is the molecular trait (target). Returns variants ANYWHERE in the genome that affect expression/splicing/protein levels of the gene. Different from get_credible_sets_by_gene which finds variants NEAR a gene. **This is also the correct tool for gene-based caQTL questions.** A caQTL trait is a chromatin ACCESSIBILITY PEAK, not a gene, so 'caQTL for gene X' means variants affecting peaks LINKED to X. This tool already resolves that link (Open4Gene peak-to-gene, cell-type-matched): for caQTL rows `trait` is the linked gene symbol and `trait_original` / `cs_id` hold the peak id (chr-start-end). Do NOT fall back to matching peak coordinates against the gene's position — linked peaks sit up to ~1 Mb away and most peaks near a gene are not linked to it.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols (e.g., 'APOE', 'IL23R', 'PCSK9') |
 | `data_types` | `string` | no | — | — | Comma-separated QTL types: 'eQTL', 'pQTL', 'sQTL', 'caQTL'. Case-insensitive. Default returns all, which for a well-studied gene can be thousands of rows that get truncated before you see them — always set this when you only care about one type. |
@@ -1203,7 +1397,7 @@ Description as sent to the model:
 Get tissue-specific gene expression levels. Returns expression data across tissues/cell types. Use this to understand where a gene is expressed.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols |
 
@@ -1218,7 +1412,7 @@ Description as sent to the model:
 Get allele-specific methylation QTL (ASM-QTL) data for a variant. Returns associations between a sequence variant and CpG/MDS methylation rates, including effect sizes, methylation rates on reference and alternative haplotypes, and variant rank (primary/secondary).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '1:808040:G:A') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'decode_cpg' (CpG methylation), 'decode_mds' (MDS methylation). Omit to search all. |
@@ -1234,11 +1428,11 @@ Description as sent to the model:
 Get allele-specific methylation QTL (ASM-QTL) data for variants near a gene. Returns associations between sequence variants and CpG/MDS methylation rates for variants within the gene body ± window, selected by genomic coordinates (not by most-severe-consequence attribution, which misses nearby regulatory variants).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'decode_cpg' (CpG methylation), 'decode_mds' (MDS methylation). Omit to search all. |
-| `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). |
+| `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 
 `required`: ['gene']
 
@@ -1251,7 +1445,7 @@ Description as sent to the model:
 Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a variant's position. Answers 'in which cell types/tissues/conditions is this variant's region of open/accessible chromatin?'. Returns overlapping accessible regions labeled by cell_type, tissue, life_stage and condition (resting/stimulated/AD/control) so cell-type specificity can be reported. This is a peak ATLAS (measured accessibility across brain, heart, immune and body-wide contexts) — distinct from caqtl (accessibility QTL) and chromatin_peaks (peak-to-gene links).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant as chr:pos:ref:alt or chr:pos (e.g., '1:1000500:A:G' or '1:1000500'); only chromosome and position are used for overlap |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein' (fetal+adult brain/heart scATAC), 'li_brain_atac' (adult brain), 'catlas' (body-wide adult), 'epimap' (bulk chromHMM regulatory states), 'calderon_immune' (stimulation-responsive immune), 'rosmap_brain' (aged/AD brain). Omit to search all. |
@@ -1267,7 +1461,7 @@ Description as sent to the model:
 Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a genomic region. Answers 'in which cell types/tissues/conditions is this region of open/accessible chromatin?'. Returns overlapping accessible regions labeled by cell_type, tissue, life_stage and condition. This is a peak ATLAS of measured accessibility — distinct from caqtl (accessibility QTL) and chromatin_peaks (peak-to-gene links).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `chrom` | `string` | yes | — | — | Chromosome (e.g., '1', 'chr1', 'X') |
 | `start` | `integer` | yes | — | — | Region start position (1-based, inclusive) |
@@ -1282,12 +1476,12 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a 
 Description as sent to the model:
 
 ```text
-Get one open-chromatin atlas peak by its peak id (chr-start-end), returning every cell_type/tissue/condition row recorded for it. Use this to follow up a peak id returned by get_open_chromatin_by_variant/_by_region or by a caQTL credible set, when you want that peak's full annotation rather than everything overlapping a position.
+Get one open-chromatin atlas peak by its peak id, returning every cell_type/tissue/condition row recorded for it. Use this to follow up a peak id returned by get_open_chromatin_by_variant/_by_region when you want that peak's full annotation rather than everything overlapping a position. Atlas peak ids are a SEPARATE id space from caQTL/Open4Gene peak ids (credible_sets trait, get_peak_to_genes): those will not be found here, so reach the atlas from a caQTL peak by region overlap (get_open_chromatin_by_region) instead.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `peak_id` | `string` | yes | — | — | Peak ID as chr-start-end (e.g. 'chr5-35482826-35484273') |
+| `peak_id` | `string` | yes | — | — | Atlas peak ID as chr-start-end with a bare numeric chromosome (e.g. '22-20750312-20751112'; X=23). This endpoint also tolerates a 'chr' prefix, but the open_chromatin_v BigQuery view does not — SQL must use the bare form. |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein', 'li_brain_atac', 'catlas', 'epimap', 'calderon_immune', 'rosmap_brain'. Omit to search all. |
 
 `required`: ['peak_id']
@@ -1301,7 +1495,7 @@ Description as sent to the model:
 Get the GENES an Open4Gene chromatin peak is linked to, with the cell type each link was significant in. This is the peak-to-gene LINK table (which gene a regulatory region acts on) — distinct from get_open_chromatin_by_peak, which returns measured accessibility of the peak itself. Use this to interpret a caQTL signal: caQTL credible sets are keyed by peak, and this is what turns a peak id into candidate target genes.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `peak_id` | `string` | yes | — | — | Peak ID as chr-start-end (e.g. 'chr5-35482826-35484273') |
 | `resources` | `string` | no | — | — | Comma-separated resources. Omit to use all. |
@@ -1318,7 +1512,7 @@ Description as sent to the model:
 Get the Open4Gene chromatin PEAKS linked to a gene, per cell type — the inverse of get_peak_to_genes. Answers 'which regulatory regions act on this gene, and in which cell types'. Distinct from get_open_chromatin_by_gene, which returns measured accessibility near the gene by coordinate overlap with no link evidence. Rows are capped at 500 inline; `truncated` says whether more exist.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or ENSG ID (e.g. 'PCSK9', 'ENSG00000169174') |
 | `resources` | `string` | no | — | — | Comma-separated resources. Omit to use all. |
@@ -1335,11 +1529,11 @@ Description as sent to the model:
 Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory/enhancer peaks). Answers 'in which cell types/tissues/conditions is the chromatin around this gene open/accessible?'. Returns accessible regions labeled by cell_type, tissue, life_stage and condition. This is a peak ATLAS of measured accessibility — distinct from caqtl (accessibility QTL) and chromatin_peaks (peak-to-gene links).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein', 'li_brain_atac', 'catlas', 'epimap', 'calderon_immune', 'rosmap_brain'. Omit to search all. |
-| `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). |
+| `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 
 `required`: ['gene']
 
@@ -1352,7 +1546,7 @@ Description as sent to the model:
 Get in-silico PREDICTED variant effect on chromatin accessibility for a variant. Answers 'is this variant predicted to disrupt chromatin accessibility, how strongly, and in which cell types?'. Returns per-model, per-cell-type predicted scores: ChromBPNet (model=chrombpnet) gives the predicted accessibility effect (score/mlog10p/quantile_rank/is_significant) in specific cell_type/tissue contexts; FLARE (model=flare) gives a pan-context regulatory score (cell_type/tissue may be null). These are MODEL PREDICTIONS — distinct from measured caqtl (accessibility QTL) and open_chromatin (measured accessibility atlas).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant as chr:pos:ref:alt or chr:pos (e.g., '1:1000500:A:G' or '1:1000500') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein' (Marderstein/Kundaje 2026 ChromBPNet + FLARE predictions). Omit to search all. |
@@ -1368,11 +1562,11 @@ Description as sent to the model:
 Get in-silico PREDICTED variant effects on chromatin accessibility for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'how strongly and in which cell types are this gene's variants predicted to affect chromatin accessibility?'. Returns per-model, per-cell-type predicted-effect rows: ChromBPNet (model=chrombpnet) predicted accessibility effect in specific cell_type/tissue contexts; FLARE (model=flare) pan-context regulatory score (cell_type/tissue may be null). These are MODEL PREDICTIONS — distinct from measured caqtl (accessibility QTL) and open_chromatin (measured accessibility atlas).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein' (Marderstein/Kundaje 2026 ChromBPNet + FLARE predictions). Omit to search all. |
-| `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). |
+| `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 
 `required`: ['gene']
 
@@ -1385,7 +1579,7 @@ Description as sent to the model:
 Get MEASURED cis-regulatory allelic activity for a variant from a massively parallel reporter assay (MPRA; Siraj et al. 2026). Answers 'does this variant's allele actually change reporter/enhancer activity, and in which cell lines?'. Returns one LONG row per cell_line: cell_line is 'meta' (cross-cell-line meta-analysis summary) or one of K562/HEPG2/SKNSH/HCT116/A549. Key calls per row: emVar (allele modulates reporter expression — allelic skew significant), active (element drives reporter above background); plus log2Skew (signed allelic effect log2(alt/ref), positive = alt drives higher expression), log2FC (element activity), log2Skew_mlog10p/log2FC_mlog10p (significance), mean_RNA_ref/alt (per-line reporter levels). MPRA MEASURES intrinsic cis-regulatory allelic activity — distinct from in-silico variant_effect (ChromBPNet/FLARE) PREDICTIONS and from endogenous eQTL/caQTL. emVar rate and allelic-effect concordance scale with FinnGen fine-mapping PIP, so this corroborates that a fine-mapped/credible-set variant is functionally active. Coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants; absence != no effect).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant as chr:pos:ref:alt or chr:pos (e.g., '1:1000500:A:G' or '1:1000500') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'siraj_mpra' (Siraj et al. 2026 MPRA of 221K fine-mapped + 86K control variants in 5 cell lines). Omit to search all. |
@@ -1401,7 +1595,7 @@ Description as sent to the model:
 Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for variants overlapping a genomic region. Answers 'which variants in this region have allele-modulating (emVar) or active regulatory elements, and in which cell lines?'. Returns LONG rows (one per variant per cell_line): cell_line is 'meta' (cross-cell-line summary) or one of K562/HEPG2/SKNSH/HCT116/A549; emVar (allelic skew significant — the key call), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2FC (element activity), *_mlog10p significance, mean_RNA_ref/alt. MPRA MEASURES intrinsic cis-regulatory allelic activity — distinct from in-silico variant_effect (ChromBPNet/FLARE) PREDICTIONS and from endogenous eQTL/caQTL; emVar rate/effect concordance scale with FinnGen fine-mapping PIP. Coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants; absence != no effect).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `chrom` | `string` | yes | — | — | Chromosome (e.g., '1', 'chr1', 'X') |
 | `start` | `integer` | yes | — | — | Region start position (1-based, inclusive) |
@@ -1419,11 +1613,11 @@ Description as sent to the model:
 Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'which of this gene's variants actually modulate reporter/enhancer activity (emVar), how strongly, and in which cell lines?'. Returns LONG rows (one per variant per cell_line): cell_line is 'meta' (cross-cell-line summary) or one of K562/HEPG2/SKNSH/HCT116/A549; emVar (allelic skew significant — the key call), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2FC (element activity), *_mlog10p significance, mean_RNA_ref/alt. MPRA MEASURES intrinsic cis-regulatory allelic activity — distinct from in-silico variant_effect (ChromBPNet/FLARE) PREDICTIONS and from endogenous eQTL/caQTL; emVar rate/effect concordance scale with FinnGen fine-mapping PIP, so this corroborates functionally active fine-mapped variants. Coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants; absence != no effect).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'siraj_mpra'. Omit to search all. |
-| `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). |
+| `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 
 `required`: ['gene']
 
@@ -1436,12 +1630,12 @@ Description as sent to the model:
 Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar calls for variants near a gene — the core regulatory-buffering check (Kanai et al.): do high-PIP (credibly causal) fine-mapped variants actually show measured cis-regulatory allelic activity (emVar) in MPRA? Joins credible_sets_v (FinnGen fine-mapped, filtered to resource + pip>=min_pip) to the MPRA cross-cell-line meta row (mpra_v.cell_line='meta') on the shared chr:pos:ref:alt variant key. Per matched variant returns: FinnGen PIP, cs_id, trait, data_type, GWAS mlog10p/beta, and the meta MPRA call — emVar (allele modulates reporter expression), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2Skew_mlog10p (skew significance), log2FC (element activity), cohort. Ordered emVar then PIP. This corroborates whether fine-mapped variants are FUNCTIONALLY active in a reporter assay — MPRA measures intrinsic cis-regulatory allelic activity, distinct from in-silico variant_effect predictions and endogenous eQTL/caQTL. Distinct from get_mpra_by_gene, which returns MPRA rows WITHOUT the PIP cross-reference. FinnGen-credible-set-based and meta-row-based by default; MPRA coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants).
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
-| `window` | `integer` | no | `500000` | — | Flank in bp added on each side of the gene body (default 500000). |
+| `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 | `resource` | `string` | no | `"finngen"` | — | Fine-mapping resource in credible_sets_v to cross-reference (default 'finngen'). |
-| `min_pip` | `number` | no | `0.1` | — | Minimum posterior inclusion probability (PIP) to include, so results focus on credibly causal variants (default 0.1). |
+| `min_pip` | `number` | no | `0.1` | `minimum` 0.0, `maximum` 1.0 | Minimum posterior inclusion probability (PIP) to include, so results focus on credibly causal variants (default 0.1). |
 
 `required`: ['gene']
 
@@ -1454,7 +1648,7 @@ Description as sent to the model:
 Get Mendelian/rare disease gene-disease relationships from ClinGen/GENCC. Use ONLY for rare disease genetics questions, NOT for GWAS/common variant associations.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols |
 
@@ -1469,7 +1663,7 @@ Description as sent to the model:
 Get colocalization results for a variant. Returns trait pairs that share the same causal signal at this locus. Use this to find traits that may share biological mechanisms.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID (e.g., '1:123456:A:G' or 'rs12345') |
 
@@ -1484,7 +1678,7 @@ Description as sent to the model:
 Get the credible sets that colocalize with ONE specific credible set, identified by resource + phenotype + cs_id. Use this after get_credible_sets_by_gene/_by_variant/_by_region has given you a cs_id and you want that signal's colocalizations specifically — get_colocalization takes a variant and returns everything colocalizing at the position, which mixes in other signals at the same locus.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Data resource of the credible set (e.g. 'finngen') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code of the credible set (e.g. 'K11_IBD_STRICT') |
@@ -1502,7 +1696,7 @@ Description as sent to the model:
 Get rare variant burden test results for a gene. Returns individual variant-level association statistics from exome sequencing across available resources (genebass/UKBB filtered to p<1e-4, IBD exome containing only exome-wide significant variants). Use this for single-gene queries. For batch queries across many genes, use the database instead (call get_database_schema to find the exome results table). For full individual-trait results, use get_exome_results_by_phenotype.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols |
 
@@ -1517,7 +1711,7 @@ Description as sent to the model:
 Get rare-variant exome association results for one specific variant across exome resources (genebass/UKBB filtered to p<1e-4, IBD exome exome-wide significant). Use this to check whether a named coding variant has a rare-variant association, as the counterpart to get_credible_sets_by_variant for GWAS. For a gene use get_exome_results_by_gene.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID as chr:pos:ref:alt (e.g. '19:44908684:T:C') |
 | `resources` | `string` | no | — | — | Comma-separated exome resources (e.g. 'genebass', 'ibd_exome_2026'). Omit to search all. |
@@ -1533,7 +1727,7 @@ Description as sent to the model:
 Get rare-variant exome association results overlapping a genomic region across exome resources. Use this when the locus is coordinates rather than a gene — e.g. checking whether a GWAS interval also carries rare-variant signal. For a single gene use get_exome_results_by_gene. Rows are capped at 500 inline; `truncated` says whether more exist and the full result is at `_download_url`.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `region` | `string` | yes | — | — | Region as chr:start-end (e.g. '1:1000000-1500000'). Max 10Mb. |
 | `resources` | `string` | no | — | — | Comma-separated exome resources (e.g. 'genebass', 'ibd_exome_2026'). Omit to search all. |
@@ -1549,7 +1743,7 @@ Description as sent to the model:
 Get individual variant exome results for a specific phenotype within an exome dataset. Returns the full set of variant-level results for one trait from a given resource (e.g. genebass, ibd_exome_2026). Use this when you need all exome variants for a particular phenotype rather than a gene-centric view.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Exome data resource (e.g. 'genebass', 'ibd_exome_2026') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'IBD') |
@@ -1565,7 +1759,7 @@ Description as sent to the model:
 Get gene-level burden test results from genebass, IBD, BipEx2, and SCHEMA datasets. Returns gene-based association statistics aggregated at the gene level. Different from get_exome_results_by_gene which returns individual variant-level exome results. genebass rows here are limited to p<1e-4; for a gene's result in a specific trait regardless of significance use get_gene_based_results_by_phenotype, or the gene_burden_results table in the database (unfiltered) for batch queries across many genes or traits.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols (e.g., 'APOE', 'BRCA1,TP53') |
 
@@ -1580,7 +1774,7 @@ Description as sent to the model:
 Get the complete, unfiltered gene burden test results for one phenotype: every gene and annotation class tested in that trait, with no p-value cutoff. Use this to check whether a gene was tested in a trait and what the result was even when it is not significant, or to rank all genes within one trait. For a gene across many traits use get_gene_based_results instead.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema', 'bipex', 'ibd') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use |
@@ -1596,7 +1790,7 @@ Description as sent to the model:
 Get a detailed markdown report for a phenotype. Returns a markdown report with credible sets and gene evidence summaries in those credible sets. This is the first line of phenotype-based inquiry and should be called first before calling other tools.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | no | `"finngen"` | — | Data resource: 'finngen', 'ukbb', 'open_targets' (default 'finngen') |
 | `phenotype_code` | `string` | yes | — | — | Phenotype code (e.g., 'I9_CHD', 'T2D') |
@@ -1612,7 +1806,7 @@ Description as sent to the model:
 Get summary statistics of credible sets (fine-mapped associations) for a dataset. Returns counts of risk and protective credible sets, including those with coding/LoF variants. Use this to answer questions like 'how many protective associations in FinnGen Kanta?' CRITICAL: Your response MUST include the INCLUDE_IN_RESPONSE field value verbatim - it contains a download link the user needs.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource_or_dataset` | `string` | yes | — | — | Resource name or dataset_id. Call list_datasets to see available dataset_ids and their resources. |
 | `trait` | `string` | no | — | — | Optional: filter to specific trait/phenotype code |
@@ -1628,7 +1822,7 @@ Description as sent to the model:
 Get genes nearest to a variant. Returns genes sorted by distance, with distance=0 for variants inside a gene. By default, only protein-coding genes are returned. Includes gene coordinates, strand, type, and HGNC annotations.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '5:56444534:A:T') |
 | `gene_type` | `string` | no | `"protein_coding"` | — | Type of genes: 'protein_coding' or 'all' (default 'protein_coding') |
@@ -1648,7 +1842,7 @@ Description as sent to the model:
 Get all genes in a genomic region. Returns genes overlapping the specified coordinates with gene name, position, strand, type, and HGNC annotations.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `chr` | `string` | yes | — | — | Chromosome (e.g., '1', '22', 'X') |
 | `start` | `integer` | yes | — | — | Start position (bp) |
@@ -1667,7 +1861,7 @@ Description as sent to the model:
 Get linkage disequilibrium (LD) statistics between two specific variants. Returns r2 and D' values from the FinnGen reference panel. Both variants must be on the same chromosome and within 5 Mb of each other.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant1` | `string` | yes | — | — | First variant ID in format chr:pos:ref:alt (e.g., '6:44693011:A:G') |
 | `variant2` | `string` | yes | — | — | Second variant ID in format chr:pos:ref:alt (e.g., '6:44682355:C:G') |
@@ -1685,7 +1879,7 @@ Description as sent to the model:
 Get all variants in linkage disequilibrium (LD) with a given variant. Returns variants within the specified window that exceed the r2 threshold, useful for finding proxy variants or understanding LD structure.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '6:44693011:A:G') |
 | `window` | `integer` | no | `1500000` | — | Window size in base pairs around the variant (default 1500000) |
@@ -1711,7 +1905,7 @@ Use this tool when:
 Do NOT use this as a discovery tool — use credible set tools or PheWAS for that. This tool is for targeted lookups when you already know which variant(s) and phenotype(s) to query.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variants` | `array` | yes | — | items: `{"type": "string"}` | List of variant IDs in chr:pos:ref:alt format (e.g., ['19:44908684:T:C', '1:154453788:C:T']). Separator can be : - _ or \| |
 | `phenotypes` | `array` | yes | — | items: `{"type": "string"}` | List of phenotype codes (e.g., ['T2D', 'I9_CHD']) |
@@ -1740,7 +1934,7 @@ Read `mlog10p`, NOT `pval` — pval underflows to 0 for the strongest HLA signal
 For the reverse question — which traits an allele is associated with — use get_hla_by_allele.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `phenotypes` | `array` | yes | — | items: `{"type": "string"}` | List of FinnGen endpoint codes (e.g. ['K11_COELIAC', 'T1D']) |
 | `genes` | `string` | no | — | — | Optional comma-separated HLA gene filter, e.g. 'HLA-B,HLA-DQB1'. Omit for all 10 genes. HLA-DRB3/DRB4/DRB5 share one anchor position and always return together |
@@ -1765,13 +1959,13 @@ Pass the allele gene-stripped and two-field, exactly as it appears in the data: 
 Results are filtered to `min_info` (default 0.5) because rare badly-imputed alleles produce enormous unstable betas that look like spectacular associations; pass min_info=0 to see them. Ranked by `mlog10p`.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `allele` | `string` | yes | — | — | Gene-stripped two-field HLA allele name, e.g. 'B*27:05' or 'DQB1*02:01' |
 | `min_mlogp` | `number` | no | `7.3` | — | Minimum -log10 p-value (7.3 = genome-wide significance) |
 | `min_info` | `number` | no | `0.5` | — | Minimum imputation INFO for the allele; 0 disables the filter |
 | `resource` | `string` | no | `"finngen"` | — | Data resource carrying HLA results |
-| `max_rows` | `integer` | no | `200` | — | Maximum phenotypes to return |
+| `max_rows` | `integer` | no | `200` | `minimum` 1, `maximum` 100000 | Maximum phenotypes to return |
 
 `required`: ['allele']
 
@@ -1790,7 +1984,7 @@ Use this when:
 Phenotypes are REQUIRED: summary stats are stored per phenotype, so there is no region query across all traits. For specific known variants use get_summary_stats instead — it is much cheaper. Region size is capped (5Mb here); rows are capped at 500 inline with `truncated` set, and the full result is at `_download_url`.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `region` | `string` | yes | — | — | Region as chr:start-end (e.g. '1:1000000-1100000'; X is accepted) |
 | `phenotypes` | `array` | yes | — | items: `{"type": "string"}` | List of phenotype codes (e.g. ['T2D', 'I9_CHD']) |
@@ -1822,7 +2016,7 @@ IMPORTANT: When a user provides multiple variants (3+), ALWAYS use this tool ins
 Returns aggregated counts sorted by frequency. The response already includes nearest genes for every variant in the variant_genes array — do NOT call get_nearest_genes separately after using this tool.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variants` | `string` | yes | — | — | Variant list: one per line or space-separated. Format: chr:pos:ref:alt (any CPRA separator accepted: : - _ \| / \). Optionally include tab/comma/space-separated beta, se, pvalue columns. A header row is auto-detected. |
 | `resource` | `string` | no | — | — | Filter to a specific data resource (e.g., 'finngen', 'ukbb'). Omit to search all. |
@@ -1849,7 +2043,7 @@ For batch lookups of multiple specific variants, use the 'variants' parameter in
 Returns: variant ID, chromosome, position, ref/alt alleles, allele frequency (AF), heterozygous/homozygous counts, most severe consequence, gene for most severe consequence, rsID, and exome/genome enrichment values.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | no | — | — | Single variant in chr:pos:ref:alt format (e.g., '1:13668:G:A'). Any separator (: - _ \|) accepted. |
 | `region` | `string` | no | — | — | Genomic region in chr:start-end format (e.g., '1:13668-14506'). 1-based, inclusive. |
@@ -1882,7 +2076,7 @@ Do NOT use this tool for:
 Returns: ClinVar clinical significance and conditions, CADD phred score, functional predictions (SIFT, PolyPhen2, MutationTaster, etc.), COSMIC cancer data, CIViC clinical evidence, and rsID.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | no | — | — | Single variant in chr:pos:ref:alt format (e.g., '1:55051215:G:A'). Any separator (: - _ \|) accepted. |
 | `variants` | `array` | no | — | items: `{"type": "string"}` | List of variant IDs for batch lookup (e.g., ['1:55051215:G:A', '7:117559590:ATCT:A']). Max 1000. |
@@ -1918,7 +2112,7 @@ The download file automatically includes all matching rows (up to 100,000) regar
 If the download hits the 100,000-row cap, tell the user to add filters to narrow the results.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `sql` | `string` | yes | — | — | SQL query to execute. Refer to views by their bare name (e.g., credible_sets_v) — do not prefix them with a project or dataset. Call get_database_schema first to discover available tables. Always include LIMIT clause. |
 | `max_rows` | `integer` | no | `1000` | — | Maximum rows to return to the LLM (default 1000). The download file is not affected by this limit. |
@@ -1935,7 +2129,7 @@ Description as sent to the model:
 Get schema for database tables. **Always call this before query_database** to discover available data. Returns resource descriptions with aliases, table/column metadata with allowed filter values, and example SQL queries. Optionally pass a table name to get schema for just that table.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `table` | `string` | no | — | — | Optional: return schema for just this table (e.g. 'gene_burden_results_v'). Omit for all tables. Available: credible_sets_v, colocalization_v, coloc_credsets_v, exome_variant_results_v, gene_burden_results_v |
 
@@ -1952,7 +2146,7 @@ Description as sent to the model:
 List the `genetics` SDK surface available to analysis scripts, one module at a time. Returns signatures with their docstrings, and the `usage` line saying exactly how to import it. Call this before writing a script instead of guessing function names. Modules: 'genetics' (the sync functions a script calls), 'client' (the awaitable GeneticsClient form), 'errors' (what a script catches). Omit `module` for a cheap index of module names and the functions each exports.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `module` | `string` | no | — | enum: `genetics`, `client`, `errors` | SDK module to describe. Omit for the index. |
 
@@ -1973,10 +2167,10 @@ Files the script writes to its artifacts directory are reported as a manifest of
 Each run is independent: no variables, files or imports survive from one call to the next, so a follow-up script must redo the work it needs.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `code` | `string` | yes | — | — | Python source to run. Print the results you want to see. |
-| `timeout_s` | `integer` | no | `60` | — | Wall-clock seconds allowed for the script, 1-120 (default 60). Raise it only for a script you expect to be slow; a larger value does not make a queued run start sooner. |
+| `timeout_s` | `integer` | no | `60` | `minimum` 1, `maximum` 120 | Wall-clock seconds allowed for the script, 1-120 (default 60). Raise it only for a script you expect to be slow; a larger value does not make a queued run start sooner. |
 
 `required`: ['code']
 
@@ -1989,7 +2183,7 @@ Description as sent to the model:
 Read a named file from this server's local artifacts directory. Takes the artifact NAME exactly as reported in a manifest — never a path and never an execution id. Returns text inline, and binary content base64-encoded with its content type. It CANNOT retrieve artifacts written by run_analysis: those live in the sandbox and this tool does not reach it. Do not call it for a run_analysis artifact — image artifacts are shown to the user automatically, and for anything else have the script print what you need instead.
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `name` | `string` | yes | — | — | Artifact file name from the run's manifest, e.g. 'manhattan.png'. |
 
@@ -2013,7 +2207,7 @@ Available skills:
 - **variant_list_analysis**: Analyze a list of variants for phenotype, QTL, and tissue patterns
 ```
 
-| parameter | type | req | default | enum / items | description |
+| parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `tasks` | `array` | yes | — | items: see schema below | List of subagent tasks to run in parallel |
 
@@ -2072,7 +2266,9 @@ unreachable over `/mcp` no matter what `disabled_tools` says — today that is
 Counts to re-check whenever `definitions.py` changes: the four category totals, the
 per-profile totals in section 3 (both `TOOL_PROFILES` and `TOOL_PROFILE_TOOLS` — a new tool
 in an existing category silently joins the category profiles but never an explicit one), the
-66 MCP handlers, and the effective `/mcp` count of 54.
+66 MCP handlers, and the effective `/mcp` count of 54. The profile **key set** does not need
+re-deriving by hand: `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+fails on any addition or rename, and section 3 says what to update when it does.
 
 ## Documentation ownership
 

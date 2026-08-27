@@ -4,7 +4,9 @@ metadata:
   name: monitor
   namespace: genetics
 spec:
-  schedule: "0 */8 * * *"
+  # once a day at 08:00 UTC, after the 02:00 backup and 02:30 conversation analysis so their
+  # output lands in the same report. ALERT_LOOKBACK_HOURS below must track this interval.
+  schedule: "0 8 * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -33,6 +35,10 @@ spec:
               value: "${BQ_DATASET}"
             - name: K8S_NAMESPACE
               value: "genetics"
+            # scopes the Cloud Logging alert query to this cluster. Both deployments in a shared
+            # project use the `genetics` namespace, so without it each reports the other's errors
+            - name: K8S_CLUSTER
+              value: "${CLUSTER_NAME}"
             - name: INTERNAL_API_SECRET
               valueFrom:
                 secretKeyRef:
@@ -47,6 +53,15 @@ spec:
               value: "${SLACK_ALERT_USER_ID}"
             - name: MONITOR_DB_PATH
               value: "/data/monitor.db"
+            # must equal the schedule interval: a shorter lookback leaves a blind spot between
+            # runs, a longer one re-reports entries the previous run already covered
+            - name: ALERT_LOOKBACK_HOURS
+              value: "24"
+            # deliberately just under the 24h interval so a still-ongoing problem re-alerts once
+            # per day instead of racing the TTL boundary against cron jitter (at exactly 24h,
+            # whether yesterday's dedup row has expired depends on job start times)
+            - name: ALERT_DEDUP_TTL_HOURS
+              value: "23"
             volumeMounts:
             - name: datasets-config
               mountPath: /app/configs/datasets.yaml
