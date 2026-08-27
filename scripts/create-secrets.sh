@@ -6,21 +6,27 @@ set -euo pipefail
 # not set, so a re-run with only some of them exported never blanks the rest. ANTHROPIC_API_KEY
 # is the one exception: it is never read back from the cluster and must ALWAYS be exported,
 # otherwise the script aborts before writing anything. Keys absent both in the environment and
-# in the cluster get a fresh random value only where marked "generated"; the optional API keys
-# stay EMPTY rather than being invented (a random string is a plausible-looking key
-# that fails only at call time), and the keycloak usernames fall back to their literal defaults.
+# in the cluster get a fresh random value where marked "generated" — that covers the secrets
+# this deployment mints for itself; the optional THIRD-PARTY API keys stay EMPTY rather than
+# being invented (a random string is a plausible-looking key that fails only at call time), and
+# the keycloak usernames fall back to their literal defaults.
 # set these environment variables before running:
 #   ANTHROPIC_API_KEY     - Anthropic API key for chat backend (ALWAYS required, including on
 #                           re-runs: it is the one key never read back from the cluster)
 #   OPENAI_API_KEY        - OpenAI API key (optional for chat backend, required for rag-service)
 #   TAVILY_API_KEY        - Tavily API key (optional)
 #   PERPLEXITY_API_KEY    - Perplexity API key (optional)
-#   MCP_API_KEY           - bearer token for MCP server auth (optional)
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings (required only when ENABLE_RAG=true)
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (reused from the existing secret if not set, generated on first install)
 #   SANDBOX_TOKEN_SIGNING_KEY  - signing key for per-execution sandbox tokens (reused if not set, generated on first install; see docs/code-execution-security.md §4)
+#   GATEWAY_IDENTITY_SECRET    - auth-gateway -> chat-backend provenance secret gating sandbox dispatch
+#                           (reused if not set, generated on first install; MUST stay distinct from INTERNAL_API_SECRET)
+#   MCP_API_KEY           - bearer token mcp-server requires for its sse/streamable-http transports;
+#                           it refuses to start without one. Reused from the existing secret if not
+#                           set, generated on first install — it's a secret this deployment mints
+#                           for itself, not a third-party credential, so a generated value is valid.
 #   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
 #   OAUTH2_PROXY_CLIENT_ID     - oauth2-proxy OAuth client id (Google client id on finngen; Keycloak OIDC client id on daly). reused from the cluster if not set; required on first install
 #   OAUTH2_PROXY_CLIENT_SECRET - matching OAuth client secret (reused if not set; required on first install)
@@ -101,9 +107,12 @@ secret_key() {
 }
 
 # an explicit env value wins, otherwise keep whatever is already in the cluster, otherwise
-# leave it empty. Deliberately reuse-then-EMPTY, not the reuse-then-generate used for the
-# two shared secrets below: a random value for an API key would look valid and fail only at
-# call time, and admin-users / external-mcp-servers have no meaningful random value at all.
+# leave it empty. Deliberately reuse-then-EMPTY, not the reuse-then-generate used for the four
+# genetics-secrets keys this deployment mints for itself (internal-api-secret,
+# sandbox-token-signing-key, gateway-identity-secret, mcp-api-key — and, further down and
+# outside this Secret, oauth2-proxy's cookie-secret and keycloak's db-password/admin-password):
+# a random value for a third-party API key would look valid and fail only at call time, and
+# admin-users / external-mcp-servers have no meaningful random value at all.
 reuse_optional() {
   local var="$1" key="$2" val
   [ -z "${!var:-}" ] || return 0
@@ -115,7 +124,6 @@ reuse_optional() {
 reuse_optional OPENAI_API_KEY       openai-api-key
 reuse_optional TAVILY_API_KEY       tavily-api-key
 reuse_optional PERPLEXITY_API_KEY   perplexity-api-key
-reuse_optional MCP_API_KEY          mcp-api-key
 reuse_optional COHERE_API_KEY       cohere-api-key
 reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional ADMIN_USERS          admin-users
@@ -151,13 +159,21 @@ SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(openssl rand -base64 3
 GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(secret_key genetics-secrets gateway-identity-secret)}"
 GATEWAY_IDENTITY_SECRET="${GATEWAY_IDENTITY_SECRET:-$(openssl rand -base64 32)}"
 
+# bearer token mcp-server requires for its sse/streamable-http transports (it refuses to
+# start without one — no escape hatch). Unlike the third-party keys above, this one is not
+# a credential issued by an outside service: it's a shared secret this deployment mints for
+# itself, so a generated value is authoritative by construction rather than a plausible-
+# looking guess. Same reuse-or-generate rule as the three secrets above.
+MCP_API_KEY="${MCP_API_KEY:-$(secret_key genetics-secrets mcp-api-key)}"
+MCP_API_KEY="${MCP_API_KEY:-$(openssl rand -hex 32)}"
+
 kubectl create secret generic genetics-secrets \
   --namespace="${NAMESPACE}" \
   --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}" \
   --from-literal=openai-api-key="${OPENAI_API_KEY:-}" \
   --from-literal=tavily-api-key="${TAVILY_API_KEY:-}" \
   --from-literal=perplexity-api-key="${PERPLEXITY_API_KEY:-}" \
-  --from-literal=mcp-api-key="${MCP_API_KEY:-}" \
+  --from-literal=mcp-api-key="${MCP_API_KEY}" \
   --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \

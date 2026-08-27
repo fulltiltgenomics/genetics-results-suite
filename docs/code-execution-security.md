@@ -4934,8 +4934,13 @@ the same operation in reverse.
 **If a Deployment's env is missing the key entirely**, either fix works. Re-running
 `create-secrets.sh` is safe for the optional keys — it reuses whatever is already in the cluster
 for every key it is not given in the environment, so the ones you have not exported
-(`openai-api-key`, `tavily-api-key`, `perplexity-api-key`, `cohere-api-key`, `mcp-api-key`,
-`external-mcp-servers`, `admin-users`, `slack-webhook-url`) survive untouched. It does require
+(`openai-api-key`, `tavily-api-key`, `perplexity-api-key`, `cohere-api-key`,
+`external-mcp-servers`, `admin-users`, `slack-webhook-url`) survive untouched — those stay
+**empty** if the cluster has no value either. `mcp-api-key` is **not** in that group
+(`genetics-results-suite-9xz`): like `internal-api-secret`, `sandbox-token-signing-key` and
+`gateway-identity-secret` it is reused when the cluster already holds a value, but an absent or
+empty one is **generated** rather than left blank, because mcp-server refuses to start without
+it. A re-run therefore never rotates it out from under a running pod, and never leaves it empty. It does require
 `ANTHROPIC_API_KEY` to be exported: that key alone is never read back from the cluster, and
 without it the script aborts before writing anything. Without that key to hand, use the targeted
 `kubectl patch secret genetics-secrets --type=merge` on the one missing key instead —
