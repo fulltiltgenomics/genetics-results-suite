@@ -4491,10 +4491,18 @@ authenticated routes.
 
 Sizes are measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
 (external traffic only — bff and mcp-server reach results-api in-cluster and bypass the
-gateway, so **no response size is logged for the dominant caller**). The middleware emits a
-`jsonPayload`-only record, so `httpRequest.responseSize` is structurally NULL on every row of
-this sink — there is no response-size data in it at all — and `full_path`, which would reveal
-rsid counts, is stripped before Cloud Logging.
+gateway, so **no response size is logged for the dominant caller**). The middleware emitted a
+`jsonPayload`-only record for every row in the measured window, so `httpRequest.responseSize` is
+structurally NULL across all of them — there is no response-size data in it for that period — and
+`full_path`, which would reveal rsid counts, is stripped before Cloud Logging. Rows written from
+2026-08-27 carry a size (`app/middleware_usage_logging.py` emits `response_body_bytes`), but it is
+**not commensurate with `$body_bytes_sent` and cannot be substituted into this table**: it counts
+uncompressed body bytes excluding headers — the usage middleware sits inside `GZipMiddleware` —
+while the gateway counts compressed wire bytes, and for these TSV endpoints the two differ by
+roughly an order of magnitude. Mixing them is exactly the apples-to-oranges comparison this caveat
+exists to prevent; a re-measurement from those rows has to re-derive the whole table in body-byte
+terms rather than swap one column for the other. **Nothing in this analysis is re-derived from
+those rows** — it still rests on the GCS file sizes and the gateway's `$body_bytes_sent`.
 
 *What this table cannot show, and why an earlier draft got it wrong.* An earlier draft sourced
 these counts from `phewas-development.genetics_api_logs.genetics_results_api` and added
