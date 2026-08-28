@@ -17,6 +17,11 @@ spec:
       labels:
         app: keycloak-postgres
     spec:
+      # Plain single-instance postgres: no Patroni/stolon-style HA agent in the image and nothing
+      # else that talks to the API server. Denying the projected `default` token removes a valid
+      # cluster credential for reconnaissance, not an escalation path — see auth-gateway.yaml for
+      # what genetics:default can actually reach.
+      automountServiceAccountToken: false
       containers:
       - name: postgres
         image: postgres:16-alpine

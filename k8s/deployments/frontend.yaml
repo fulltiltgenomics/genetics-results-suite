@@ -13,6 +13,12 @@ spec:
       labels:
         app: frontend
     spec:
+      # nginx serving a static bundle: no Kubernetes API calls, so the projected `default`
+      # ServiceAccount token is attack surface with no use. Denying it removes a valid cluster
+      # credential for reconnaissance, not an escalation path — see auth-gateway.yaml for the
+      # measurement of what genetics:default can actually reach. Also sits directly behind the
+      # internet-facing gateway.
+      automountServiceAccountToken: false
       containers:
       - name: frontend
         image: ${REGISTRY}/genetics-results-browser:latest

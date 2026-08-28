@@ -225,8 +225,8 @@ def sandbox_tells(fname, doc):
     accident, and the third — serviceAccountName, not gVisor-derived — fires on any pod naming a
     service account other than `genetics-suite`, which is the sandbox alone.
 
-    An ABSENT serviceAccountName is not a tell: bff, frontend, keycloak, postgres and
-    oauth2-proxy declare none, and counting absence would fire on all of them.
+    An ABSENT serviceAccountName is not a tell: auth-gateway, bff, frontend, keycloak, postgres
+    and oauth2-proxy declare none, and counting absence would fire on all of them.
     """
     spec = pod_template(fname, doc).get("spec") or {}
     if not isinstance(spec, dict):
