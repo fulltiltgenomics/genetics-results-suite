@@ -17,6 +17,13 @@ spec:
       labels:
         app: keycloak
     spec:
+      # Keycloak needs no Kubernetes API access here: single replica, the cache transport in
+      # conf/cache-ispn.xml names no stack, and the image ships no jgroups-kubernetes jar — so
+      # KUBE_PING cluster discovery is not merely unconfigured, it is unavailable. Denying the
+      # projected `default` token removes a valid cluster credential for reconnaissance, not an
+      # escalation path (auth-gateway.yaml has the measurement of what genetics:default reaches).
+      # Scaling out with --cache-stack=kubernetes would require revisiting this.
+      automountServiceAccountToken: false
       containers:
       - name: keycloak
         image: ${REGISTRY}/keycloak:latest

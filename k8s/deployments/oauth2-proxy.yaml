@@ -13,6 +13,12 @@ spec:
       labels:
         app: oauth2-proxy
     spec:
+      # oauth2-proxy never calls the API server: the v7.14.3 binary links only k8s.io/apimachinery's
+      # util/sets and util/errors helpers — no client-go, no in-cluster config, no token path — and
+      # the session store is left at the cookie default (its only alternative is redis). Denying
+      # the projected `default` token removes a valid cluster credential for reconnaissance, not an
+      # escalation path — see auth-gateway.yaml for what genetics:default can actually reach.
+      automountServiceAccountToken: false
       containers:
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.14.3

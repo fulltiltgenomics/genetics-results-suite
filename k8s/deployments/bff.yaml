@@ -18,6 +18,13 @@ spec:
       labels:
         app: bff
     spec:
+      # The BFF makes no Kubernetes API calls — it talks to results-api and the LD API only, and
+      # the image carries no Kubernetes client — so the projected `default` ServiceAccount token
+      # is attack surface with no use. What this denies is a valid cluster credential for
+      # reconnaissance, not an escalation path: no binding grants genetics:default more than any
+      # authenticated identity gets, and the SA reaches GCP not at all (measured in
+      # auth-gateway.yaml). This pod sits directly behind the internet-facing gateway.
+      automountServiceAccountToken: false
       containers:
       - name: bff
         image: ${REGISTRY}/genetics-results-browser-bff:latest
