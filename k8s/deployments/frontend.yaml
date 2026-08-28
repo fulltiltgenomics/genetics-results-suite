@@ -19,11 +19,33 @@ spec:
       # measurement of what genetics:default can actually reach. Also sits directly behind the
       # internet-facing gateway.
       automountServiceAccountToken: false
+      # fsGroup, and it is NOT hardening — nor is it strictly necessary, which is the correction
+      # to make if you are tempted to write that it is. A kubelet emptyDir root is created 0777
+      # owned root:root, so uid 101 can already create nginx.pid and the /var/cache/nginx/*_temp
+      # directories in one with no fsGroup at all; that was measured, and it works. What fsGroup
+      # buys is determinism — the root becomes root:101 2777 and the pod stops depending on the
+      # kubelet's default mode staying world-writable — which is the reason sandbox.yaml gives for
+      # its own fsGroup. Same value and same role as auth-gateway.yaml, the other nginx pod here.
+      securityContext:
+        fsGroup: 101
       containers:
       - name: frontend
         image: ${REGISTRY}/genetics-results-browser:latest
         ports:
         - containerPort: 3000
+        # The only two writable paths this image needs. /etc/nginx/nginx.conf in the image sets
+        # `pid /tmp/nginx/nginx.pid` — not the compiled-in /run/nginx.pid — and nginx creates
+        # its five compiled-in temp paths under /var/cache/nginx at startup. Both directories
+        # ALREADY EXIST in the image, owned 101:101 0755 (checked: `ls -land /tmp/nginx
+        # /var/cache/nginx`), so what makes them unwritable is readOnlyRootFilesystem below and
+        # nothing else — the emptyDirs are the cost of that field, not a fix for a missing path.
+        # This differs from auth-gateway, whose stock nginx image has /var/cache/nginx root:root
+        # with none of the *_temp dirs created.
+        volumeMounts:
+        - name: tmp-nginx
+          mountPath: /tmp/nginx
+        - name: cache
+          mountPath: /var/cache/nginx
         readinessProbe:
           httpGet:
             path: /
@@ -36,6 +58,31 @@ spec:
             port: 3000
           initialDelaySeconds: 10
           periodSeconds: 30
+        # Verified against this exact image under `--user 101:101 --cap-drop=ALL
+        # --security-opt no-new-privileges --read-only`, with the two mounts above emulated as
+        # root:101 0775 tmpfs: master and workers start, `/`, an SPA deep link and
+        # /assets/*.js all return 200 with the CSP and X-Frame-Options headers intact, and
+        # nginx creates all five *_temp directories owned by 101 — the same status codes and
+        # the same security headers as the unconstrained run of the same image.
+        #
+        # drop: [ALL] takes away nothing this container had. The image already declares
+        # `USER nginx` (uid/gid 101), and the UNCONSTRAINED run already shows CapPrm/CapEff 0
+        # in /proc/1/status — a non-root uid gets no capabilities to begin with — so runAsUser
+        # here pins what it does today rather than changing it. NET_BIND_SERVICE is not needed:
+        # the only `listen` in default.conf is 3000. CHOWN/SETUID/SETGID are not needed for the
+        # reason auth-gateway.yaml records: nginx applies its compiled-in --user default only
+        # when geteuid() == 0, so as uid 101 the master never chowns a temp path and never
+        # setuids a worker.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 101
+          runAsGroup: 101
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "50m"
@@ -43,6 +90,14 @@ spec:
           limits:
             cpu: "200m"
             memory: "128Mi"
+      volumes:
+      - name: tmp-nginx
+        emptyDir: {}
+      # Deliberately NOT `medium: Memory`: a buffered request body would be charged against the
+      # 128Mi limit. Static serving barely touches these — nginx rejects a POST to a static
+      # location with 405 before buffering — but the directories must exist for startup.
+      - name: cache
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

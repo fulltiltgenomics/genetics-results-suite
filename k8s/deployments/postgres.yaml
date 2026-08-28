@@ -22,6 +22,44 @@ spec:
       # cluster credential for reconnaissance, not an escalation path — see auth-gateway.yaml for
       # what genetics:default can actually reach.
       automountServiceAccountToken: false
+      # fsGroup 70 is what makes a FRESH PVC bootstrap at all once the container starts as uid 70.
+      # `docker_create_db_directories()` in the image's entrypoint does an unguarded
+      # `mkdir -p "$PGDATA"`, and $PGDATA is a subdirectory of the volume root (see the PGDATA env
+      # below — the subdir exists so lost+found does not trip up initdb), so uid 70 must be able to
+      # create `pgdata` inside a volume root the kubelet would otherwise leave root-owned. That is
+      # the WHOLE reason for this field. It is NOT what makes the `run` emptyDir writable — uid 70
+      # can write that with or without fsGroup (see the emptyDir arithmetic in the container
+      # comment below); an earlier revision of this comment claimed otherwise and was wrong.
+      #
+      # Applying it to the EXISTING PVC is safe, and this was measured rather than reasoned about,
+      # because the kubelet takes PGDATA from 70:0 0700 to 70:70 2770 and postgres refuses any data
+      # directory that is not u=rwx or u=rwx,g=rx. Reproduced against postgres:16-alpine: a PGDATA
+      # initialised through the normal root+gosu path (confirmed 70:0 0700), then re-grouped exactly
+      # as the kubelet does (chown -R :70; dirs |= g+rwx and setgid, files |= g+rw, giving 70:70
+      # 2770), started clean under `--user 70:70 --cap-drop=ALL --security-opt no-new-privileges`
+      # and served — because the entrypoint's `chmod 00700 "$PGDATA"` runs before postgres does its
+      # permission check, and the directory was 0700 again afterwards. The fresh case was measured
+      # too: an empty volume root at root:70 2775 initialises and starts under the same flags.
+      #
+      # OnRootMismatch is a COST optimisation, not a correctness requirement — do not be afraid to
+      # remove it. Cycle 1 recurses either way, and the entrypoint's chmod repairs PGDATA either
+      # way; without the policy the kubelet would simply re-walk the whole PVC on every start. What
+      # it buys after the first apply, where the volume root already carries gid 70 and the setgid
+      # bit: the walk is skipped, and PGDATA stays at the 0700 the entrypoint restored rather than
+      # being re-widened to 2770 on each start.
+      #
+      # KNOW THIS BEFORE THE FIRST APPLY: that first pass PERMANENTLY MODIFIES THE CONTENTS of the
+      # Keycloak database volume. Every subdirectory under PGDATA is left 70:70 2770 and every
+      # pre-existing file 0660, and nothing ever puts them back — the entrypoint's `chmod 00700`
+      # touches the top-level directory only. Exposure is nil in practice (gid 70 *is* postgres, the
+      # volume is RWO, and this is the sole process in the pod), there is no ongoing drift because
+      # postgres keeps creating new files 0600 under `data_directory_mode = 0700`, and rollback was
+      # verified: the pre-change manifest shape starts against a re-grouped volume with all rows
+      # intact. It is still a one-way change to a volume holding every identity in the realm, so it
+      # belongs in the head of whoever applies it rather than in a postmortem.
+      securityContext:
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
       containers:
       - name: postgres
         image: postgres:16-alpine
@@ -46,6 +84,20 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
+        # The only path outside the PVC this server writes, and the whole cost of
+        # readOnlyRootFilesystem below: the unix socket .s.PGSQL.5432 and its .lock file. Note the
+        # image has /var/run -> ../run, so the mount actually lands on /run/postgresql; runc
+        # resolves the symlink inside the container rootfs, and the mounted directory is where the
+        # socket appeared when this was measured.
+        #
+        # Small, deliberate difference from the image: the entrypoint's `chmod 03775
+        # /var/run/postgresql` fails silently (it is `|| :`) because uid 70 does not own an emptyDir
+        # the kubelet made root:70, so this directory stays 2777 — world-writable, no sticky bit —
+        # where the image would have left 3775. Inert as deployed, since nothing else runs in this
+        # container and the mount is not shared, but it is a real regression against the image
+        # default and would matter the moment a second process or a shared mount appears here.
+        - name: run
+          mountPath: /var/run/postgresql
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
@@ -56,6 +108,46 @@ spec:
             command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
           initialDelaySeconds: 30
           periodSeconds: 30
+        # runAsUser 70 is what this container already becomes, not a new identity. The image's
+        # entrypoint runs as root only long enough to mkdir/chmod PGDATA and chown it, then
+        # `exec gosu postgres` — so the live server is uid 70 with CapPrm/CapEff 0 today
+        # (observed in an unconstrained run). Starting AS 70 removes the root phase instead of
+        # changing who owns the data, and that the data really is uid 70 is entailed rather
+        # than assumed: postgres refuses to start on a data directory it does not own, verified
+        # by chowning PGDATA to another uid, after which the same command exits 1. The
+        # entrypoint's non-root path is a supported mode of this image ("allow the container to
+        # be started with --user"), and everything it still does — chmod 00700 "$PGDATA",
+        # mkdir/chmod of the socket dir — succeeds as the owner.
+        #
+        # Measured on an already-initialised data directory:
+        #   --user 70:70 --cap-drop=ALL --security-opt no-new-privileges  -> starts, pg_isready
+        #     accepting connections, INSERT + CHECKPOINT + a disk-spilling sort all fine.
+        #   root + --cap-drop=ALL (no runAsUser)                          -> exits 1 at
+        #     `chmod: /var/lib/postgresql/data/pgdata: Operation not permitted` and
+        #     `find: /var/lib/postgresql/data/pgdata: Permission denied`; the root entrypoint
+        #     needs CHOWN, DAC_OVERRIDE, FOWNER, SETGID and SETUID to do its chown-and-gosu
+        #     dance, and adding those five back is strictly worse than not being root.
+        # So running as 70 from the start is what makes drop: [ALL] free here.
+        #
+        # readOnlyRootFilesystem costs exactly one emptyDir, the `run` mount above. Measured in
+        # the shape this manifest ships — `--user 70:70 --cap-drop=ALL --security-opt
+        # no-new-privileges --read-only`, PGDATA re-grouped as the kubelet's fsGroup: 70 leaves
+        # it (70:70 2770) and the socket directory emulated as a real emptyDir under that
+        # fsGroup (root:70 2777, which is what the kubelet produces: an emptyDir is created
+        # 0777 root:root and fsGroup makes it root:<fsGroup> 2777 — see sandbox.yaml, and do
+        # NOT restate the old claim that it stays root:root and is therefore unwritable). The
+        # server starts, replays WAL, accepts connections on the socket in the emptyDir, and an
+        # INSERT of 10k rows plus a CHECKPOINT commits; /etc is Read-only file system.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 70
+          runAsGroup: 70
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "100m"
@@ -67,6 +159,10 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: keycloak-postgres-data
+      # Deliberately NOT `medium: Memory`: it would be charged against the 512Mi limit. Nothing but
+      # a zero-byte socket and a ~70-byte lock file is ever written here.
+      - name: run
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
