@@ -118,7 +118,7 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 |---|---|---|
 | Base image | `gcr.io/distroless/python3-debian12:nonroot`, multi-stage with a venv built in a `python:3.12-slim` stage | No shell, no package manager, no `curl`. `execute_script`'s `bash` interpreter is not merely un-allow-listed, it is absent from the filesystem. |
 | uid / gid | `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65532` | The distroless `nonroot` identity. Deliberately not 1032/1000/10001 — none of the existing suite uids, so no accidental filesystem-permission overlap if a volume is ever attached by mistake. |
-| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The only other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`), and they need two writable `emptyDir`s to do so; the sandbox needs none. |
+| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The only other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`) and the `monitor` CronJob (`genetics-results-suite-d6n`), and each needs a writable `emptyDir` to do so (two for auth-gateway, one at `/tmp` for the monitor); the sandbox needs none. |
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
