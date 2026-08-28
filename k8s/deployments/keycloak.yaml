@@ -24,6 +24,16 @@ spec:
       # escalation path (auth-gateway.yaml has the measurement of what genetics:default reaches).
       # Scaling out with --cache-stack=kubernetes would require revisiting this.
       automountServiceAccountToken: false
+      # fsGroup, and it is NOT hardening — nor is it strictly necessary. A kubelet emptyDir root
+      # is created 0777 owned root:root, so uid 1000 with primary gid 0 can already write one;
+      # that was measured with no fsGroup at all, and it works. Do not restate the earlier claim
+      # that a root:root emptyDir "would not do" — the mode, not the owner, is what decides.
+      # What fsGroup buys is determinism: the root becomes root:1000 2777 rather than relying on
+      # the kubelet's default mode staying world-writable, which is the reason sandbox.yaml gives
+      # for its own. Verified with the container in exactly the shape it runs in — uid 1000,
+      # gid 0, supplementary group 1000 — against mounts owned root:1000 0775.
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: keycloak
         image: ${REGISTRY}/keycloak:latest
@@ -74,6 +84,15 @@ spec:
         - containerPort: 8080
         - containerPort: 9000
         volumeMounts:
+        # Writable because readOnlyRootFilesystem is set below. Keycloak creates
+        # /opt/keycloak/data/transaction-logs on every start (observed in an unconstrained run
+        # of this image) and Quarkus/the JVM write /tmp (hsperfdata, vertx-cache, uploads).
+        # The realm-import mount below nests inside this one; the kubelet orders mounts by path
+        # depth, and the nesting was verified locally — the realm still imports.
+        - name: data
+          mountPath: /opt/keycloak/data
+        - name: tmp
+          mountPath: /tmp
         - name: realm-import
           mountPath: /opt/keycloak/data/import
           readOnly: true
@@ -94,6 +113,28 @@ spec:
             port: 9000
           initialDelaySeconds: 60
           periodSeconds: 30
+        # Verified against this exact image under `--user 1000 --cap-drop=ALL --security-opt
+        # no-new-privileges --read-only`, talking to a real postgres 16-alpine, with the two
+        # mounts above emulated as tmpfs owned root:1000 0775: `start --optimized
+        # --import-realm` imports the realm, creates the bootstrap admin, and /health/ready,
+        # /health/live, the realm's .well-known/openid-configuration and the admin console all
+        # return 200 — the same as the unconstrained run of the same image against the same DB.
+        # The unconstrained run already has CapPrm/CapEff 0 (the image declares USER 1000), so
+        # drop: [ALL] removes nothing it had.
+        #
+        # runAsGroup is deliberately NOT set. This image is uid 1000 / gid 0 and its files are
+        # group-root and group-writable, so pinning a different gid would take away the access
+        # the layout depends on; leaving it unset keeps the image's own gid 0. runAsNonRoot
+        # still holds, because it constrains the uid only.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 1000
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "250m"
@@ -102,6 +143,10 @@ spec:
             cpu: "1"
             memory: "1Gi"
       volumes:
+      - name: data
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
       - name: realm-import
         secret:
           secretName: keycloak-realm

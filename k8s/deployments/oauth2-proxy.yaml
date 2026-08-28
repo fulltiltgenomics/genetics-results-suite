@@ -69,6 +69,11 @@ spec:
         - name: allowed-emails
           mountPath: /etc/oauth2-proxy
           readOnly: true
+        # The ConfigMap's default mode (0644 root:root) is load-bearing now that this container
+        # is pinned to uid 65532: oauth2-proxy opens the file before it binds, so a defaultMode
+        # that is not world-readable makes the internet-facing proxy exit 1 at
+        # "failed opening authenticated-emails-file ...: permission denied". Seen while
+        # measuring this change, with the file mounted 0700-on-the-directory.
         readinessProbe:
           httpGet:
             path: /ping
@@ -81,6 +86,32 @@ spec:
             port: 4180
           initialDelaySeconds: 10
           periodSeconds: 30
+        # The full baseline, and every field of it was measured rather than assumed — this is
+        # the pod eau warned about, the one in the request path. Verified against this exact
+        # image under `--user 65532:65532 --cap-drop=ALL --security-opt no-new-privileges
+        # --read-only` with NO writable path anywhere, not even /tmp, and the
+        # authenticated-emails file mounted read-only: it starts, registers the file watcher,
+        # and /ping (200), /ready (200), /oauth2/auth unauthenticated (401), /oauth2/start (302
+        # to the provider's authorize endpoint) and /oauth2/sign_out (302) all behave exactly
+        # as in the unconstrained run.
+        #
+        # Nothing is written to disk because the session store is left at the cookie default —
+        # the same fact the automountServiceAccountToken note above rests on. A future switch
+        # to the redis store would still not write locally, but a flag that persists state
+        # would, and would need an emptyDir here.
+        #
+        # The image already declares USER 65532 on a distroless base, so runAsUser pins what it
+        # does today. NET_BIND_SERVICE is unnecessary: --http-address binds 0.0.0.0:4180.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: "50m"
