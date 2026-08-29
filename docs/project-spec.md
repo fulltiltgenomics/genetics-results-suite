@@ -2199,11 +2199,52 @@ Three properties are load-bearing and each is pinned by a test:
    mixed-type columns upstream does produce. `column_names` is consulted **only** when the
    result is empty.
 
-What this does *not* cover: results-api endpoints outside the `range_response` family —
-fuzzy search, gene annotations, gene groups, rsID lookup, LD, gene–disease, and gene-based /
-gene-burden results (`gene_based.py`, which returns `StreamingResponse`/`TimedJSONResponse`
-directly) — which compute their JSON rather than streaming a TSV and so have no header to
-advertise. Those degrade to the previous behaviour (a bare `pl.DataFrame()`), they do not break.
+The four SDK functions outside the `range_response` family — `gene_burden`,
+`gene_annotations`, `gene_disease` and `search`, which compute their JSON rather than
+streaming a TSV — were left degrading to a bare `pl.DataFrame()` by `6uk` and are covered by
+`genetics-results-suite-8a1`. Having no file header to read, each **declares** its columns,
+and because a hand-maintained list per router is exactly the thing that rots, no declaration
+is trusted:
+
+- Where the rows are projected in results-api, the declaration **is** the object the
+  projection uses — the `.select()` list for gene annotations, the row builder for gene-group
+  members, the profile's `output_columns` for gene-disease — so it cannot drift from the rows.
+- `verified_columns_header` (`app/core/responses.py`) **refuses rather than degrading**:
+  a non-empty response compares its declaration against `rows[0]` — names and order — and
+  raises before any byte is written. The four direct callers check that first row only; the
+  search path loops every row, because a search result array is heterogeneous by
+  construction. Search is why this is on the
+  response path and not only in a test — its result dicts are assembled from a live index,
+  so no offline fixture can produce a real one; its declaration is additionally checked
+  against the dict literals in its own module source.
+- `gene_burden(gene=...)` needed no declaration at all: it serves TSV, whose header line
+  `tabix -h` prints even for a locus with no hits, and the SDK was simply dropping it —
+  `ToolExecutor` now takes those names from the reader it already built.
+  `gene_burden(phenotype=...)` reads a file, so it advertises that file's real header via
+  `json_phenotype_with_header`.
+- `gene_disease` expresses "no associations" as a **404** that the SDK reads as an empty
+  frame, so its header rides on that 404.
+
+`tests/test_declared_columns.py` (results-api) mutation-proves the refusal: a projection that
+stops using the declaration, a row builder that grows a key, a search item or ranking splice
+that grows a key, and a declaration that over-claims are each caught. The refusal compares
+`rows[0]` for the four direct callers, whose rows come from one projection, and every row on
+the search path, whose result array is heterogeneous by construction.
+
+**`6uk`'s coverage claim was too wide, and re-deriving it turned up three more.**
+`credible_sets(phenotype=...)`, `credible_sets(phenotype=..., leads_only=True)` and
+`exome(phenotype=...)` are `json_phenotype` callers, not `range_response` callers, so they
+were sending no header while being documented as covered. They read a file, so they now
+advertise its real header line (`json_phenotype_with_header` /
+`lead_variants_phenotype_with_header`) and declare nothing. Re-derived from the routers,
+what still hands the SDK a nameless empty frame is `search(rsids=...)` (`/rsid/variants`)
+and `ld()` (a different service); `credible_sets(cs_id=...)` 404s rather than returning an
+empty array.
+
+The test that hid this is fixed too: `test_sdk_empty_result_schema.py`'s fake transport
+attached `X-Columns` to *every* response, so it passed against a server that advertised for
+none. It now attaches the header only for paths in an explicit `_ADVERTISING_PATHS` list
+re-derived from results-api, which is what makes an uncovered endpoint fail the suite.
 
 ### HLA column rename rollout (`hla_associations_v`)
 
