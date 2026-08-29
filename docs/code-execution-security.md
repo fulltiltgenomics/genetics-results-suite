@@ -4101,8 +4101,10 @@ has 120 seconds in which to loop. For the sandbox audience:
 | Response bytes per request | 16 MiB | **results-api only** (`SANDBOX_MAX_RESPONSE_BYTES`). Bounds one response, of **any** status — a non-2xx body is caller-controlled too, since FastAPI's 422 handler echoes the offending input. Which is the point of the next four rows. |
 | Aggregate response bytes per `jti` | 1 GiB | **results-api only** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`). 64 responses at the per-response cap, or ~8.5 MB/s sustained across the whole 120 second wall clock. Charged from bytes actually **sent**, so it agrees with the per-response cap's own buffer rather than re-measuring — and charged for every status, not only 2xx. |
 | Requests per `jti` | 1000 | **both** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses on results-api, nor a loop of *zero-BigQuery* requests on db-api, and every request costs the pod a tabix seek, a GCS range read or a request slot whatever its size. ~8 rps over 120 seconds. db-api gained it in `4h6.61`; see the `4h6.49` comparison above for the measurement that decided it. |
-| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
+| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). On results-api this is reachable in full only by a **lone** execution — the reserve two rows down is paid for out of the incumbents' allowance; measured at 8/4/2, 3 other executions parked on a slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
 | Concurrent sandbox requests per pod | 8 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply either pod's peak load. Refused at import if it is set below the per-`jti` value, on both services. |
+| Pod-wide slots reserved for idle executions | 2 | **results-api only** (`SANDBOX_RESERVED_POD_SLOTS`, `genetics-results-suite-yv4`). The fairness half of the row above: an execution that already holds a pod-wide slot may not take the last 2, so two executions at their per-`jti` allowance can no longer occupy all 8 and refuse every other execution's *first* request — filling all 8 now takes **four** distinct executions, `ceil((TOTAL − RESERVED) / PER) + RESERVED`. Refused at import above `TOTAL − per-jti`, which is exactly the condition under which a lone execution never meets it — so today's `concurrency: 1` behaviour is unchanged. db-api's port does not carry it; see below. |
+| Sandbox request deadline | 120 s | **results-api only** (`SANDBOX_REQUEST_TIMEOUT_SECONDS`, `genetics-results-suite-yv4`). Equal to the sandbox's own hard wall-clock ceiling, so a request outliving it is producing a body no execution is alive to read. Armed **only** for a request carrying an execution token, in the same `try` whose `finally` releases the slot. Answers `504`, not `429`: it is the pod's deadline firing, not a caller quota. |
 | Tracked executions per pod | 4096 | **both** (`SANDBOX_MAX_TRACKED_EXECUTIONS`). A bound on the counter map itself, not on any execution, so a flood of distinct `jti`s cannot grow it without limit; a full map refuses a **new** execution rather than evicting a live one, because an evicted counter is a reset budget. Entries are swept once the token can no longer authenticate **and** nothing is in flight under it. Note this is a *different* eviction policy from db-api's older `_jti_bytes` byte-budget map, which is still a 1024-entry LRU. |
 | Applied row cap, reported | — | **db-api only** (`max_rows_applied` on the `/query` response). Not a limit: the row cap above is invisible in a truncated result, and the two candidate ceilings differ by 4× (25 000 vs the relaxed 100 000), so `/query` reports the ceiling it actually ran under and the SDK's truncation error quotes that number instead of hardcoding one (`4h6.32`). |
 
@@ -4111,7 +4113,7 @@ script cannot widen them by asking. db-api's BigQuery byte and row caps are modu
 the request-count and concurrency limits are env-configurable on **both** services, because
 neither the payload sizes results-api serves nor the load db-api can absorb is a number an
 operator should have to rebuild an image to move — and on both they are declared at their
-in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, five;
+in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, seven;
 `k8s/deployments/db-api.yaml`, four), since a knob no manifest names is env-configurable in the
 code and code-default-only in practice.
 
@@ -4213,11 +4215,18 @@ bounds **one** response; it does not bound a script that issues many in-cap requ
 seconds, and the producer teardown of `4h6.28` bounds what a single *rejected* request costs to
 produce, not a loop of accepted ones. `app/core/sandbox_budget.py` is the analogue of db-api's
 `_jti_bytes`, deliberately shaped like it — one in-process map keyed on `jti`, checked **before**
-the handler runs, answering 429 rather than truncating. The table above has **five** results-api
-rows and this module holds **four** of them — the aggregate byte budget, the request count and
-the two concurrency bounds; the 16 MiB per-response row lives in `app/core/limits.py` and
-`app/middleware.py` instead. It carries a fifth control of its own that is not a table row,
-`SANDBOX_MAX_TRACKED_EXECUTIONS` (below), which is why it emits **five** rejection codes.
+the handler runs, answering 429 rather than truncating. The table above has **eight** results-api
+rows — count them, an earlier draft said seven and also said the tracked-execution bound was not
+one of them, and both were wrong — and this module holds **six**: the aggregate byte budget, the
+request count, the two concurrency bounds, the pod-wide reserve and `SANDBOX_MAX_TRACKED_EXECUTIONS`.
+The other two are the 16 MiB per-response row, which lives in `app/core/limits.py` and
+`app/middleware.py`, and the deadline, whose value is declared in this module but which is armed
+and answered in `app/middleware.py`. Six of those controls refuse an admission, which is why
+`admit` emits **six** rejection codes. Two more are recorded by this module's
+`log_request_timeout` rather than returned by `admit`, for the two ways the deadline can fire:
+`sandbox_request_timeout` (nothing on the wire — the caller gets the 504) and
+`sandbox_request_timeout_after_send` (the response had already begun — no 504 is possible, since
+that would be a second `http.response.start` on a completed response). **Eight** codes in all.
 
 It is admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI
 contract puts after the last byte of the response, a `StreamingResponse` included. An earlier
@@ -4231,14 +4240,81 @@ that concurrency slot permanently — and `_sweep_locked` cannot reclaim the ent
 it refuses to evict anything with `in_flight > 0`. That is the mutation
 `tests/test_sandbox_budget.py::test_an_unmatched_route_releases_its_slot` exists to kill.
 
+*The request deadline, and why it is armed there too* (`genetics-results-suite-yv4`). Nothing
+bounded how long **one** request may hold a slot, and the anti-eviction rule above is what made
+that compound: a request wedged in a GCS read held a per-`jti` slot, a pod-wide slot **and** an
+entry `_sweep_locked` may never reclaim, for as long as the socket stayed open — so a handful of
+hung requests reached the pod-wide bound with no attacker at all. `SANDBOX_REQUEST_TIMEOUT_SECONDS`
+(120 s) is armed with `asyncio.timeout` inside `SandboxResponseCapMiddleware.__call__`, around
+the same `await self.app(...)` the slot is held across. Two placements were rejected: **uvicorn
+has no per-request timeout** — `timeout_keep_alive` bounds an idle connection between requests
+and `timeout_graceful_shutdown` a shutdown, neither touching a request in progress — and an
+**outer ASGI middleware** would cancel this `__call__` from outside, which still runs the
+`finally` but leaves the deadline and the release as two separately-ordered layers a later
+`setup_middleware` edit could reorder with no test noticing. Armed where it is, the `TimeoutError`
+unwinds through the very `finally` that calls `release`, so the timeout path and the happy path
+are the same line rather than two that must be kept in step —
+`tests/test_sandbox_budget.py::test_a_request_that_outlives_the_deadline_is_abandoned_and_releases_its_slot`
+and `::test_a_timed_out_entry_becomes_evictable_again` are what fail if it moves. The answer is a
+**504** carrying the same `code`/`limit`/`observed` shape, except where an *uncapped* response
+already had its start message sent, where the status is spent and the connection simply closes
+incomplete. It is armed only for a request that resolved an execution token: browser and BFF
+traffic holds no slot and pins no entry, and a deadline on it would be a new bound on traffic
+this control is not about.
+
+*The pod-wide bound has a fairness reserve* (`genetics-results-suite-yv4`). At `TOTAL = 8` and
+`per-jti = 4`, two executions at their own allowance occupied every slot, and the party denied
+was a third execution that had done nothing — the pod-wide limit denying exactly the tenants it
+exists to protect. `SANDBOX_RESERVED_POD_SLOTS` (2) makes the last slots reachable only by an
+execution with **nothing in flight**: one already holding a slot stops at `TOTAL − RESERVED`.
+Nothing is preempted — that would corrupt a running execution's accounting the way eviction
+would — and nothing is queued, for the reasons above. What this buys is bounded and worth
+stating exactly: filling the pod takes `ceil((TOTAL − RESERVED) / PER) + RESERVED` distinct
+executions, **four** at the shipped 8/4/2 against two before — by exhaustive search of the
+reachable states, 1 execution reaches 4 in flight, 2 reach 6, 3 reach 7 and 4 reach 8 — so the
+guarantee is "**no execution is denied its first concurrent request until at least
+`SANDBOX_RESERVED_POD_SLOTS` others each hold one**", not "no execution is ever denied".
+**The newcomer's fairness is paid for out of the incumbents' allowance**, which is inherent to a
+reservation and is not visible in the number 4 anywhere that number is advertised: an execution
+reaches its per-`jti` allowance in full only when it is alone. Measured at 8/4/2 — 3 other
+executions parked on one slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The reserve is refused at import above `TOTAL − per-jti`, which is precisely the
+condition under which a lone execution — the only case that exists while the sandbox is
+`concurrency: 1`, since `_in_flight_total` is then that execution's own `in_flight` — never
+meets it. **db-api's port (`api/sandbox_budget.py`) does not carry the reserve or the deadline**:
+its pod-wide bound has the same shape and the same latent unfairness, and closing it there is a
+separate change against a separate service.
+
 *Rejection, not queueing, and the reason.* Queueing an over-concurrency request holds it while
 the sandbox's ~120 second clock keeps running, which a script cannot distinguish from slow data
 and cannot act on, and work admitted from a queue can complete after its execution is already
 dead — precisely the wasted production `4h6.28` removed. A fast 429 leaves the script clock to
 narrow the request or back off. Every one of these 429s carries a `code`, a `limit` and an
 `observed` value (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`,
-`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_execution_tracker_full`), so an
-operator reading a log line knows which control fired without inferring it from prose.
+`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`,
+`sandbox_execution_tracker_full`), so an operator reading a log line knows which control fired
+without inferring it from prose. The deadline's two codes carry the same three
+fields but are **not** among these 429s, and are recorded by
+`sandbox_budget.log_request_timeout` rather than returned by `admit`: `sandbox_request_timeout`
+answers **504**, and `sandbox_request_timeout_after_send` answers nothing at all. The second is
+counted rather than swallowed because the slot was pinned for the full deadline either way —
+a request that reaches the deadline is never silent, which is the property an operator needs
+when the alternative is the cheapest slot-pinning primitive in the module going unrecorded.
+
+*Denials are observable, and the counters travel with them* (`genetics-results-suite-yv4`).
+Until this, a rejection produced a `logger.warning` and an admission produced nothing, so a
+denied hour and a quiet hour looked identical in a log and there was no production datum to size
+1000/4/8 against. Three changes, all in `app/core/sandbox_budget.py`: a **pod-wide** denial
+(`sandbox_execution_tracker_full`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`)
+and a `sandbox_request_timeout` log at **ERROR**, because one of those is either an attack or a
+capacity signal, while a per-execution denial and a `sandbox_request_timeout_after_send` stay
+WARNINGs because in neither case was anybody served worse; every such
+line carries process-lifetime counters and high-water marks (`stats()`: admissions, rejections
+by code, tracked entries, peak in-flight pod-wide and per-execution, peak requests per
+execution), so the denial and its denominator arrive together; and **one INFO line per
+execution** — emitted when its map entry is created, not per request, which at the measured 23
+chat turns/hour is the admission signal without 1000× the volume for no extra information.
+There is no metrics endpoint: `stats()` is a dict on a `replicas: 1` process whose uptime is the
+window, and adding a scrape surface is a bigger change than the observability gap warranted.
 
 *Bytes are counted as **sent**, from the cap middleware's own buffer.* The two therefore cannot
 diverge or double-count. **Every status is buffered, capped and charged, not only 2xx.** An
@@ -4261,20 +4337,32 @@ still accept it (`exp` plus the verifier's leeway, so no further request can pre
 **and** it has nothing in flight — the second condition covering a stream that outlives its own
 token. The map is still hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096, swept lazily when
 a new `jti` arrives), but at the bound it is the *new* execution that is refused, never a running
-one that is evicted. Entries live at most one token lifetime (~305 s), so at the measured peak of
-23 chat turns/hour the bound is a backstop rather than a working limit.
+one that is evicted. At the measured peak of 23 chat turns/hour the bound is a backstop rather
+than a working limit. The **deadline** above is the counterpart the anti-eviction rule previously
+lacked: it bounds how long an entry can stay unevictable at `SANDBOX_REQUEST_TIMEOUT_SECONDS`
+rather than at the life of the socket.
+
+*"Entries live at most one token lifetime (~305 s)" is the **minter's** invariant, not the
+verifier's,* and earlier drafts of this section stated it as though results-api enforced it.
+`_Execution.expires_at` is the token's `exp` taken verbatim, and `verify_sandbox_token` bounds
+`iat` in the past (`>= now - 300`) while putting **no ceiling on `exp - now`** — so a token minted
+with a far-future `exp` produces an entry the sweep will not touch for as long as that `exp`
+says. It holds because chat-backend is the only minter and mints 300 s tokens. A ceiling would
+belong in `app/core/sandbox_token.py` (and db-api's `api/sandbox_auth.py`), next to the `iat`
+check; none is asserted today.
 
 *`replicas: 1` is load-bearing here too.* The counters are in-process, so N replicas give one
 execution N × every limit above — and N × the pod-wide concurrency bound that exists to protect
 this pod's 8Gi against buffered response bodies. `k8s/deployments/results-api.yaml` carries a
 comment on `replicas: 1` saying so, matching db-api's.
 
-*Operator-tunable in fact, not only in principle.* All five env vars are declared at their
+*Operator-tunable in fact, not only in principle.* All seven env vars are declared at their
 defaults in `k8s/deployments/results-api.yaml`, so tuning one is an edit and a rollout rather
 than a rebuild. They were code-default-only in the first draft, which made "env-configurable"
 true of the code and false in practice. Each is a ceiling compared with `>=`, so a value below 1
 would silently mean "reject every sandbox request" — results-api therefore refuses to start on
-one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, rather
+one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, and on a
+`SANDBOX_RESERVED_POD_SLOTS` larger than the headroom between those two, rather
 than failing at the first request where no health check would attribute it to a typo.
 
 **Two limitations, stated because as shipped these controls bound less than the rest of this
@@ -4401,27 +4489,43 @@ section implies.**
    limit — held for the per-response byte cap only; for these four counters, omitting it would
    buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
    capped. Both module docstrings now say the partial version.
-   Still deliberately **not** done: no rate limiter, no request timeout, no anonymous-traffic
-   bucket. `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
+   Still deliberately **not** done: no rate limiter and no anonymous-traffic
+   bucket. (A **request** timeout now exists — `SANDBOX_REQUEST_TIMEOUT_SECONDS`, above — but it
+   is armed off the execution token, so it bounds none of the traffic this limitation is about.) `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
    probes bypass NetworkPolicy) and its request rate is unbounded; its handler is a constant
    document on no data path, so that residue is `genetics-results-suite-8zk`'s, not a
    per-execution budget any counter here can hold.
-2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
-   surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
-   slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
-   sizing above is an argument about honest volume and says nothing about an attacker, and there
-   is no per-tenant fairness behind either number. Limitation 1's sandbox half is now closed —
+2. *`sandbox_execution_tracker_full` is a cross-tenant denial surface; the pod-wide concurrency
+   limit no longer is.* Both are pod-wide, so a caller that fills the counter map or holds the
+   pod-wide slots locks *other* executions out; neither was merely a self-limit. The "23 chat
+   turns/hour" sizing above is an argument about honest volume and says nothing about an
+   attacker. Limitation 1's sandbox half is now closed —
    the SDK sends the per-execution token and nothing else (`4h6.44`) — but the counters were
    never a fairness mechanism, and the intentional internal-secret residue means an
    internal-secret caller inside the namespace still reaches these pod-wide surfaces without
-   being accounted. They are sized far
-   above honest use precisely so an honest execution never meets them, and both fail toward
-   refusing new work rather than corrupting a running execution's accounting.
+   being accounted.
 
-Production impact today is nil for the counters themselves: no sandbox Deployment is applied (the
-manifest exists since `4h6.7`, gated off) and
-`SANDBOX_ENABLED` is `"false"` on both services, so nothing but `tests/test_sandbox_budget.py`
-(30 tests, offline lane) will report a regression in any of this. **The anonymous surface is the
+   The concurrency half is closed by `SANDBOX_RESERVED_POD_SLOTS` (above,
+   `genetics-results-suite-yv4`), with the bounded guarantee stated there. **The tracker bound
+   is not, and the choice is deliberate rather than pending.** The obvious alternative — at a
+   full map, shed the oldest *idle* entry instead of refusing the newcomer — moves the harm from
+   the innocent newcomer to an incumbent, and that trade is worse than it looks: an idle entry is
+   not a finished one. `_sweep_locked` already drops every entry whose token can no longer
+   authenticate, so a map that is full is full of executions that **can** still present their
+   `jti`, and a shed entry returns with `requests`, `bytes_sent` and `in_flight` reset to zero.
+   Shedding-oldest therefore converts a bounded, visible, `429`-with-a-code denial of the
+   newcomer into a silent reset of an incumbent's aggregate budget — the fail-open direction, the
+   exact failure this map is not db-api's LRU in order to avoid — and an attacker who can fill
+   the map can then also mint a fresh `jti` per request to shed its own accounting on demand. It
+   is sized far above honest use precisely so an honest execution never meets it, entries live no
+   longer than the `exp` their minter chose (see above — that is chat-backend's invariant, not one
+   this service enforces), the deadline now bounds how long any one of them can stay unevictable, and it fails toward refusing new work rather than corrupting a running
+   execution's accounting.
+
+Production impact is no longer hypothetical: staging has run the sandbox under gVisor since
+2026-08-26 and `k8s/deployments/results-api.yaml` sets `SANDBOX_ENABLED: "true"`, so these
+counters bind live traffic there. `tests/test_sandbox_budget.py` (44 tests, offline lane) is
+still the only thing that will report a regression in the accounting itself. **The anonymous surface is the
 exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
 answered anonymous callers stop doing so at the next results-api deploy (see the ordering
 constraint on `genetics-results-suite-618` above).
