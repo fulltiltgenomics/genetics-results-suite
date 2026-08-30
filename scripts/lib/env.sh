@@ -24,6 +24,16 @@ ROOT_DIR="${ROOT_DIR:-$(cd "${_ENV_SH_DIR}/../.." && pwd)}"
 # reads the result in an assignment — so the script died with no output before its own
 # fallback or error message was reached (genetics-results-suite-1xp). Callers that need to
 # distinguish "absent" from "empty" must test the value, not the status.
+#
+# KNOWN WEAK, recorded rather than fixed here: `^[[:space:]]*<key>` plus `head -1` takes the
+# first LINE-ANCHORED match, which is not the top-level HCL attribute. It reads a key nested
+# inside an indented block, and it silently picks the first of a duplicated key rather than
+# refusing. Terraform would reject the duplicate, but none of these callers run terraform, so
+# nothing else catches it. rollout.sh's context guard, whose wrong answers name a production
+# cluster, therefore carries its own column-0-anchored, refuse-on-ambiguity reader instead of
+# calling this. Hardening this one is genetics-results-suite-mrg's job: it changes REGISTRY and
+# config_profile resolution for deploy.sh, build.sh, build-all.sh and create-secrets.sh too,
+# which is a wider blast radius than the guard's own fix had.
 tfvar() {
   grep -E "^[[:space:]]*$1[[:space:]]*=" "${TFVARS}" 2>/dev/null \
     | head -1 | sed 's/.*=[[:space:]]*"\(.*\)".*/\1/' || true

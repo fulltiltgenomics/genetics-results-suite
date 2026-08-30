@@ -49,6 +49,16 @@ export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
 stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
 
+`rollout.sh` applies the same rule to the *cluster*: it refuses when kubectl's current context is
+not the one the selected deployment's tfvars **states**, in a mandatory `kube_context` key. Its
+override is the `--context` flag rather than an environment variable, so it cannot be exported and
+inherited by a later invocation (see [Updating Services](#updating-services)).
+
+> **The tfvars files are gitignored, so this key does not arrive with a clone or with a pull.**
+> `rollout.sh` refuses — by design — in any checkout whose `terraform/terraform.tfvars*` has no
+> `kube_context`. Adding the line, copied from `kubectl config get-contexts -o name`, is the whole
+> fix; `terraform/terraform.tfvars.example` carries a commented template.
+
 ## Deployment environments
 
 This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
@@ -426,6 +436,65 @@ Deployment on the current context gets a "Not deployed" message and exit 1 — t
 for `sandbox` and `keycloak`, which are applied only when their gates are on. A query that
 *failed* rather than answered (no context, expired credentials, unreachable API server) is
 reported as "could not ask", with kubectl's own error, instead of as a missing service.
+
+**Before it touches the cluster, `rollout.sh` refuses a context that is not the one `DEPLOY_ENV`
+names.** The expected context is not inferred from anything — the deployment **states** it, in one
+line of its own tfvars:
+
+```hcl
+kube_context = "gke_daly-finngenie_us-central1-a_finngenie-staging"
+```
+
+The script reads that single key, compares it with `kubectl config current-context`, and stops if
+they differ. It does **not** switch your context the way `deploy.sh` does; `deploy.sh` owns the
+whole run, while silently retargeting the shell of a single-service tool is its own hazard, so
+this one stops and prints the `kubectl config use-context` to run. This exists because two of the
+three deployments are production, both production clusters are named `finngenie` (only the project
+distinguishes them, and one of those projects is called `phewas-development`), and the daly
+production context differs from staging's by a trailing `-staging` alone.
+
+The three cluster-contacting `kubectl` calls then run pinned to the context it verified
+(`kubectl --context ...`), so a `kubectl config use-context` from another terminal cannot retarget
+them between the check and the call.
+
+**`kube_context` is mandatory and there is no fallback.** It is stated rather than derived from
+`project_id`/`zone`/`cluster_name` because every attempt to derive it by matching text in the HCL
+broke in a new way, and each break degraded in the same direction: a key that reads as *absent*
+falls back to terraform's defaults, and `zone = europe-west1-b` with `cluster_name = finngenie`
+name a **production** cluster in *both* projects.
+
+So the reader infers nothing, and it does not model HCL either — that was the second half of the
+same lesson. The rule is an occurrence count: the token `kube_context` must appear **exactly once
+in the whole file**, comments and strings included, and that one line must be a column-0
+`kube_context = "..."` with a plain quoted value (a trailing `#` comment is fine). One stateless
+precondition sits in front of that: a tfvars containing `/*` **anywhere** is refused outright, since
+a block comment is the only form that can present a commented-out key as the file's one legal line —
+`#` and `//` comments need no change, and a `/*` block has to be removed or converted. Anything else
+is a refusal naming the file and the line. This is deliberately **stricter than HCL** — a file that
+mentions the key in a comment *and* sets it is refused, one obvious edit that the message names —
+and in exchange no heredoc, block comment or string can change what the reader returns, because
+nothing is being interpreted. A refusal costs one line in a tfvars; a wrong derivation costs a
+production cluster.
+
+> ⚠️ **Every checkout must add this key once.** `terraform/terraform.tfvars*` is **gitignored**
+> (only `terraform.tfvars.example` is tracked), so the key does not travel with the repo:
+> `rollout.sh` refuses in any checkout that has not added it, including the production checkout,
+> until someone pastes the line in. That is the intended fail-closed behaviour rather than a
+> regression — the script would otherwise have to guess which of two identically-named production
+> clusters it was pointed at. `terraform/variables.tf` declares `variable "kube_context"` so that
+> `terraform plan` does not emit a *"Value for undeclared variable"* warning (measured on Terraform
+> v1.14.8: an undeclared key in a `-var-file` is a **warning**, not an error); no resource reads it.
+
+For a deliberately off-target rollout, pass `--context <ctx>`. It is a **flag and not an
+environment variable** on purpose: an `export` outlives the invocation it was typed for and
+silently re-authorises every later one from the same shell, which is exactly how a staging image
+once reached a production cluster. The flag must name the context kubectl is actually on, and
+when that context also differs from the one `DEPLOY_ENV` expects, the acceptance says so loudly.
+
+```bash
+kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   # the normal fix
+./scripts/rollout.sh --context <the-cluster-you-mean> bff                       # deliberate
+```
 
 ### Deploying the trusted-proxy marker
 
