@@ -492,7 +492,7 @@ explicitly: pin the build, or match on something build-independent.
 
 - **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
 - **Region**: Configured via `region` in the deployment's tfvars
-- **GKE Cluster**: Single cluster with Workload Identity for GCP API access
+- **GKE Cluster**: **one cluster per deployment, three today** — `finngenie` and `finngenie-staging` in project `daly-finngenie`, and `finngenie` in project `phewas-development` (`docs/environments.md`). **Two of the three are production** (`daly` and `finngen`); only `daly-staging` is not, and it is a rehearsal ground for manifests and images rather than for data — see "There is no development environment" below. Each has Workload Identity available for GCP API access
 - **Node pool**: `e2-standard-4`, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging`, the only committed tfvars, pins `min = max = 2` — that file is the **daly-staging** profile, and no daly- or finngen-production tfvars exists in this repo, so production node counts are not repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
@@ -868,10 +868,12 @@ supervisor enforces a child pid budget far below it.
 `SKIP_TERRAFORM=true` applies manifests only and is the escape hatch. `terraform.tfvars` is
 gitignored and lives only in the **main checkout**, so setting `sandbox_pool_enabled` or
 `sandbox_node_service_account` there is a manual step this repo cannot make. And because
-`workload_identity_config` on the cluster is now unconditional while the live cluster's
+`workload_identity_config` on the cluster is now unconditional while the target cluster's
 `workloadPool` is currently **empty** (`manage_iam = false`, verified via
-`gcloud container clusters list`), **the next apply enables Workload Identity on the live
-cluster whether or not the sandbox pool is enabled**. That is an in-place update and very likely
+`gcloud container clusters list` on the two `daly-finngenie` clusters; the
+`phewas-development` cluster 403s from this checkout, so its `workloadPool` is not
+observable here), **the next apply enables Workload Identity on whichever cluster the
+deploy targets, whether or not the sandbox pool is enabled**. That is an in-place update and very likely
 inert today — no pool runs in `GKE_METADATA` mode and no KSA carries a WI binding — but it
 reaches production without anyone opting in, which is more than "an in-place cluster update"
 conveys. **Recorded as a known risk, not changed here:** afterwards the primary pool still has no
@@ -1686,11 +1688,17 @@ runs the doc-drift check, so this is the only place it runs.
 
 Established read-only on 2026-08-13 (`genetics-results-suite-44g`) and worth stating
 plainly because the project's name argues the opposite: **`phewas-development` IS
-production.** One GKE cluster and one kubeconfig context
-(`gke_phewas-development_europe-west1-b_finngenie`), one GCP project with no companion
-`phewas-production`, one application namespace (`genetics`), and exactly three BigQuery
-datasets — `genetics_api_logs`, `genetics_chat_logs`, `genetics_results` — with no dev
-copy of any of them. The live results-api carries `DEPLOY_ENV=prod` and
+production.** In that project: one GKE cluster and one kubeconfig context
+(`gke_phewas-development_europe-west1-b_finngenie`), no companion
+`phewas-production`, one application namespace (`genetics`), and **four** BigQuery
+datasets — `genetics_api_logs`, `genetics_chat_logs`, `genetics_results`, and since
+2026-08-14 `genetics_dev`: a **persistent full-size copy of `genetics_results`**
+(755,813,602 rows / 136.69 GB after the 2026-08-18 widening) that `--tree worktree`
+points db-api at (`docs/bigquery-dev-dataset.md`, "Why this exists";
+`docs/local-dev-vm.md`, "The dev dataset"). So the results data *does* have a standing
+dev copy; the two log datasets do not, and neither does the cluster. The survey line
+this paragraph used to carry — "exactly three … with no dev copy of any of them" — is
+the enumeration that rotted. The live results-api carries `DEPLOY_ENV=prod` and
 `LOG_SOURCE=finngenie_prod`. The `daly` profile is a **second production brand** with its
 own project, region, domain and real users, not a staging copy, so it is not a canary.
 (`log_source` `genetics-results-api-dev1` in the monitoring section is historical; nothing
@@ -1700,6 +1708,31 @@ The `daly-staging` deployment added later does **not** change this for `phewas-d
 It is a second GKE cluster inside the **daly** project (`docs/environments.md`), so it is a
 rehearsal ground for the daly brand's manifests and images — not for this project, and not
 for BigQuery, whose datasets it does not duplicate.
+
+**It does change the suite-wide framing, and this section used to state it globally**
+(`genetics-results-suite-8vn`, corrected 2026-08-30). There are **three clusters in two
+projects**, and **two of them are production**: `finngenie` in `daly-finngenie` (daly
+brand, real Broad users) alongside `finngenie` in `phewas-development`. Any statement of
+the form "there is only one cluster and one project" is now false, and acting on it is
+dangerous in one specific way — it invites treating the daly `finngenie` cluster as
+non-production and therefore safe to mutate. It is production.
+
+Two further facts, measured 2026-08-30 from db-api's and results-api's environments on the
+two clusters this admin instance can reach:
+
+- **`daly-staging` is not data-isolated from `daly` production.** Both clusters' db-api
+  runs with `PROJECT_ID=daly-finngenie` and `DATASET_ID=genetics_results` — one dataset,
+  two clusters. Staging rehearses manifests and images; it rehearses nothing about
+  BigQuery. Filed as `genetics-results-suite-zaw` (deferred).
+- **`DEPLOY_ENV` does not discriminate them at runtime.** results-api reports
+  `DEPLOY_ENV=prod` and `CONFIG_PROFILE=daly` on *both* daly clusters; the only
+  distinguishing environment value is `LOG_SOURCE` (`finngenie_prod` vs `staging_prod`).
+  Do not use `DEPLOY_ENV` read off a running pod to tell staging from production.
+
+`phewas-development` was **not** re-measured and cannot be from this checkout — it has no
+kubeconfig context here and `gcloud container clusters list --project phewas-development`
+returns 403. Its node count, cluster state and dataset contents are therefore unverifiable
+from this repo; the figures above for it rest on the 2026-08-13 survey.
 
 Consequently every BigQuery DDL change is a change to live data by default. The
 rehearsal ground is `scripts/bq-dev-dataset.sh`, which builds `genetics_results_dev` next

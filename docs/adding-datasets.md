@@ -233,16 +233,21 @@ Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (crea
 view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
 `genetics_results` placeholder with `<project>.<dataset>`.
 
-**There is no dev deployment and no second BigQuery dataset — `phewas-development` is
-production.** Anything beyond an additive `CREATE OR REPLACE VIEW` (a rename, a
-re-clustering, a `DROP`) should be rehearsed first in the throwaway dataset that
+**There is no dev deployment and no dev BigQuery dataset for either production brand —
+`phewas-development` is production, and so is the daly `finngenie` cluster; the third
+cluster, `daly-staging`, rehearses manifests but shares daly production's
+`genetics_results` (`docs/environments.md`, `genetics-results-suite-zaw`).** Anything
+beyond an additive `CREATE OR REPLACE VIEW` (a rename, a re-clustering, a `DROP`) should
+be rehearsed first in the throwaway dataset that
 `scripts/bq-dev-dataset.sh` builds; `setup_bigquery.sh` already takes `PROJECT_ID` /
 `DATASET_ID` / `LOCATION` from the environment, so pointing it at the rehearsal dataset
 needs no file edits. See **`docs/bigquery-dev-dataset.md`**.
 
-These counts rot easily, so re-derive them rather than trusting this paragraph. As of
-2026-08-13, `bq ls phewas-development:genetics_results` holds **18 base tables and 15
-views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
+These counts rot easily, so re-derive them rather than trusting this paragraph — and note
+that `phewas-development` is **not reachable from the admin instance** (no kubeconfig
+context; `gcloud container clusters list --project phewas-development` returns 403), so
+the numbers below cannot be re-derived from this checkout at all. As of 2026-08-13,
+`bq ls phewas-development:genetics_results` holds **18 base tables and 15 views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
 and `variant_annotation_v` are the other two live views and are in neither list. Both do
 carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
 tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`

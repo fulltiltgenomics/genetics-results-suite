@@ -5,12 +5,13 @@ data, and how to promote it once it is verified.
 
 ## Why this exists
 
-**There is no development environment in this suite, and there never has been one that is
-still standing.** A read-only survey on 2026-08-13 established:
+**There is no development environment for the `finngen` deployment, and there never has
+been one that is still standing.** A read-only survey on 2026-08-13 established, **of the
+`phewas-development` project only** — see the correction below for what has changed since:
 
-- one GKE cluster (`gke_phewas-development_europe-west1-b_finngenie`), one kubeconfig
-  context, no staging context;
-- one GCP project. `phewas-development` is a historical name — `terraform.tfvars` sets
+- one GKE cluster (`gke_phewas-development_europe-west1-b_finngenie`) and one kubeconfig
+  context in that project, no staging context;
+- `phewas-development` is a historical name — `terraform.tfvars` sets
   `project_id = "phewas-development"`, the live results-api carries `DEPLOY_ENV=prod` and
   `LOG_SOURCE=finngenie_prod`, and the domains are `finngenie.finngen.fi` /
   `finngenie.fi`. **`phewas-development` IS production**;
@@ -25,9 +26,38 @@ still standing.** A read-only survey on 2026-08-13 established:
 - the `daly` profile is a **second production brand** (its own project, region, domain,
   Keycloak realm and real Broad users), not a staging copy. It is not a canary.
 
-Meanwhile five open beads are BigQuery DDL against the single live `genetics_results`
-that the live db-api reads, and one of them is three irreversible ~27 GB `DROP TABLE`s.
-This document plus `scripts/bq-dev-dataset.sh` is the rehearsal ground.
+### Correction, 2026-08-30 — the suite is no longer one cluster in one project
+
+`genetics-results-suite-8vn`. The survey above described the whole suite when it was
+written; it now describes only one of three deployments (`docs/environments.md`):
+
+| `DEPLOY_ENV` | GCP project | cluster | role |
+|---|---|---|---|
+| `finngen` | `phewas-development` | `gke_phewas-development_europe-west1-b_finngenie` | **production** |
+| `daly` | `daly-finngenie` | `finngenie` | **production** |
+| `daly-staging` | `daly-finngenie` | `finngenie-staging` | staging |
+
+Three consequences for this document:
+
+1. "`phewas-development` IS production" is still true, and it is **no longer the only**
+   production project. The daly `finngenie` cluster is production too, with real Broad
+   users — it is not a rehearsal ground and must not be mutated as one.
+2. **`daly-staging` is not BigQuery-isolated from `daly` production.** Measured
+   2026-08-30 from db-api's environment on both clusters: `PROJECT_ID=daly-finngenie`,
+   `DATASET_ID=genetics_results` on *both*. A DDL rehearsal run from the staging cluster
+   therefore lands in the daly production dataset. That hazard is filed as
+   `genetics-results-suite-zaw` (deferred) — this document's throwaway-clone workflow
+   below is still the way to rehearse, on either brand.
+3. Nothing about `phewas-development` was re-measured. It has **no kubeconfig context on
+   the admin instance and `gcloud container clusters list --project phewas-development`
+   returns 403**, so its cluster state, node count and dataset contents are **not
+   observable from this checkout**. Every claim above about that project rests on the
+   2026-08-13 survey and should be treated as unverified rather than replaced with a guess.
+
+Meanwhile five open beads are BigQuery DDL against a live `genetics_results` that a live
+db-api reads — there is one such dataset per production brand and neither has a dev copy —
+and one of them is three irreversible ~27 GB `DROP TABLE`s. This document plus
+`scripts/bq-dev-dataset.sh` is the rehearsal ground.
 
 ## What the script does
 

@@ -201,9 +201,12 @@ gcloud container clusters resize "$CLUSTER" \
 ```
 
 > **What the next apply does whether or not you enable the pool.** `workload_identity_config`
-> on the cluster is unconditional now, and the live cluster currently has an **empty**
-> `workloadPool` (verified with `gcloud container clusters list`) because `manage_iam = false`.
-> So the next apply **enables Workload Identity on the live cluster** — an in-place update, very
+> on the cluster is unconditional now, and the target cluster currently has an **empty**
+> `workloadPool` (verified with `gcloud container clusters list` on the two `daly-finngenie`
+> clusters — the `phewas-development` cluster 403s from this checkout, so its `workloadPool`
+> is not observable here) because `manage_iam = false`.
+> So the next apply **enables Workload Identity on whichever cluster the deploy targets**
+> (two of the three are production — see `docs/environments.md`) — an in-place update, very
 > likely inert (no pool is in `GKE_METADATA` mode and no KSA has a WI binding), but it reaches
 > production without anyone opting into it. Two consequences worth knowing before you run it:
 > `terraform.tfvars` is gitignored and lives only in the **main checkout**, so adding

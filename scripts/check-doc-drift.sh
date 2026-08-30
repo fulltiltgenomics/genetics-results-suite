@@ -103,6 +103,36 @@ check "$SANDBOX_PATHS" \
     '^docs/project-spec\.md$' \
     'sandbox image/manifests/policy/schema -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy, what the sandbox exposes)'
 
+# the generated trees above were mapped to code-execution-security.md while the GENERATOR
+# was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
+# the shipped schema docs with no warning at all (genetics-results-suite-8vn). Named
+# literally rather than folded into a scripts/ glob: nothing else under scripts/ owns this
+# contract, and a wider pattern would fire where it cannot apply.
+check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/gen-sandbox-docs.py, test-sandbox-docs.py -> docs/code-execution-security.md (neither generated tree empty, no PLACEHOLDER survives the build gate, each view file carries description/columns/worked example, stubs cover exactly the SDK surface)'
+
+# two checks, not one alternation: project-spec.md enumerates this pair as a build step (what
+# the generator emits per view, what the test asserts, the --sdk-src resolution order, the
+# PLACEHOLDER gate, the shared 0/1/2 exit-code convention) while code-execution-security.md
+# owns the schema-doc contract. Satisfying one doc must not mask an unexamined claim in the
+# other.
+check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/gen-sandbox-docs.py, test-sandbox-docs.py -> docs/project-spec.md (what the generator emits per view, what the test asserts, --sdk-src resolution order, the PLACEHOLDER build gate, the 0/1/2 exit-code convention)'
+
+# two checks, not one alternation, for the same reason as the sandbox pair: project-spec.md
+# enumerates what the harness itself checks (discovery tells, both locks, the workload kinds,
+# the three-way live-sandbox answer), while code-execution-security.md cites it control by
+# control. Updating one leaves the other's claims unexamined.
+check '^scripts/test-network-policies\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/test-network-policies.py -> docs/code-execution-security.md (the controls it is cited as enforcing: sandbox ingress/egress allow-lists, MCP-exclusion layers, the SANDBOX_ENABLED pairing, which pod-spec fields are still sandbox tells)'
+
+check '^scripts/test-network-policies\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer)'
+
 # Only the *static branding assets* under keycloak/themes/ are exempt: a stylesheet, an
 # image, a font or a `.properties` bundle changes how the login page looks and reads and
 # has no other effect. The exemption is by extension, not by directory, because
