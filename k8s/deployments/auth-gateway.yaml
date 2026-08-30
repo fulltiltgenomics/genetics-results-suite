@@ -52,6 +52,33 @@ data:
       # inheriting into /oauth2/auth (chat messages with a base64 image attached exceed 1m)
       client_max_body_size 50M;
 
+      # per-request ceiling on proxy_temp, http-level for the same reason as the line above:
+      # it must cover every buffered location, present and future. nginx's default is 1024m,
+      # which on a buffered location is a full GiB of node disk per in-flight request — the
+      # dominant term in this pod's disk exposure (see the `cache` volume below).
+      #
+      # This is a BEHAVIOUR change, not a limit, and it was measured rather than reasoned
+      # (genetics-results-suite-3zi). Past the ceiling nginx stops extending the temp file and
+      # falls back to client-paced streaming; it does NOT truncate and does NOT 502. Measured
+      # against this rendered config, one slow client (~5 MB/s) pulling a 100 MB response
+      # through /api/:
+      #   unset (1024m default)  HTTP 200, all 104857600 bytes, sha256 match, peak 95.6 MiB on disk
+      #   64m                    HTTP 200, all 104857600 bytes, sha256 match, peak 64.0 MiB on disk
+      #   0                      HTTP 200, all 104857600 bytes, sha256 match, peak 4 KiB (no temp file)
+      # 64m rather than 0 because buffering is what frees the upstream worker early: /api/ goes
+      # to results-api through the BFF with 300s timeouts, and 0 would pin a BFF and a
+      # results-api connection open for the whole of every slow client's read. 64m keeps that
+      # decoupling for every response the API actually produces and degrades gracefully above it.
+      # "Gracefully" is measured, not assumed, because the obvious worry is that a blocked temp
+      # file arms proxy_read_timeout and turns a slow download into a 504: with proxy_read_timeout
+      # scaled 60x down to 5s and the same 100 MB / ~5 MB/s client, the result is still HTTP 200,
+      # all bytes, sha256 match, clean error log. nginx does not arm the upstream read timeout
+      # while the pipe is blocked on a full temp file.
+      # It does NOT bound client_temp — measured, a 50M POST still spools 50.0 MiB with this at 0.
+      # The floor is not a concern either: `nginx -t` accepts down to 32k, so 64m clears the
+      # minimum by 2048x.
+      proxy_max_temp_file_size 64m;
+
       access_log /dev/stdout redacted;
       resolver kube-dns.kube-system.svc.cluster.local valid=10s;
 
@@ -503,33 +530,79 @@ spec:
       # node-disk backed on purpose (see the mount comment): nginx's temp paths, which the
       # image leaves unwritable for uid 101, plus /tmp for the pid file under a read-only rootfs
       #
-      # NO sizeLimit, DELIBERATELY, and the arithmetic is recorded here so the next reader does
-      # not rediscover the question (genetics-results-suite-o5i). A sizeLimit does not produce
-      # ENOSPC inside nginx; the kubelet EVICTS the pod, and this Deployment is replicas: 1 and
-      # internet-facing, so every candidate number is a new whole-site outage path.
-      #   cache: the config's own ceiling is ~1 TiB. worker_processes 1 x worker_connections 1024
-      #     concurrent requests; each can spool a 50M body (client_max_body_size, and anything
-      #     over the ~16k client_body_buffer_size default goes to client_temp) = 51.2 GB, plus
-      #     proxy_max_temp_file_size, which is left at its 1024m DEFAULT and applies per request
-      #     on every buffered location (proxy_buffering is turned off only on /mcp and /chat/v1/)
-      #     = another 1 TiB. The node offers ~43.8 GiB allocatable ephemeral storage, so no limit
-      #     derived from the config can bound the adversarial case — it is ~24x the whole disk.
-      #     Nor is the suggested 1Gi safe for LEGITIMATE traffic: /api/ proxies results-api
-      #     through the BFF with buffering on and 300s timeouts, so one slow client pulling a
-      #     large summary-stats response spools up to 1024m into proxy_temp on its own. 1Gi would
-      #     trade a hypothetical disk-fill for a reachable eviction. A defensible number needs
-      #     proxy_max_temp_file_size bounded in the config FIRST; that is an nginx behaviour
-      #     change (nginx falls back to upstream-paced buffering) and needs its own traffic test.
+      # NO sizeLimit, still deliberately, and the arithmetic is recorded here so the next reader
+      # does not rediscover the question (genetics-results-suite-o5i, revisited by -3zi after
+      # proxy_max_temp_file_size was bounded above). A sizeLimit does not produce ENOSPC inside
+      # nginx; the kubelet EVICTS the pod, and this Deployment is replicas: 1 and internet-facing,
+      # so every candidate number is a new whole-site outage path.
+      #   cache: the config's own ceiling, per worker_processes 1 x worker_connections 1024 in
+      #     flight, is now
+      #       client_temp  1024 x 50 MiB (client_max_body_size 50M; anything over the ~16k
+      #                    client_body_buffer_size default spools)          = 50 GiB
+      #       proxy_temp   1024 x 64 MiB (proxy_max_temp_file_size above)   = 64 GiB
+      #     = 114 GiB against ~43.83 GiB of allocatable ephemeral storage (47,060,071,478 B,
+      #     re-measured 2026-08-29). Bounding proxy_max_temp_file_size took the proxy half from
+      #     1 TiB to 64 GiB and the total from ~24x the disk to ~2.6x — a 9.4x cut that still does
+      #     not close the arithmetic, because the half it did not touch is the reachable one.
+      #     MEASURED, and this is the fact that decides the shape of the answer: a 50 MB POST to
+      #     /oauth2/ with NO credential of any kind spools the full 50.0 MiB into client_temp,
+      #     because that location carries no auth_request. The same POST to /api/ spools ZERO only
+      #     when the request carries NO Authorization header at all — auth_request then denies at
+      #     the ACCESS phase and nginx answers 302 without ever reading the body. Add any bearer
+      #     prefix and it spools the full 50.0 MiB again (measured, `Authorization: Bearer
+      #     not-a-real-token` -> 200, 50.0 MiB): /api/'s `if ($http_authorization ~* "^Bearer ")`
+      #     runs in the REWRITE phase, ahead of auth_request, and the gateway does not validate
+      #     the token — @api_bearer proxies straight to results-api, so the body is on disk before
+      #     any upstream gets the chance to reject it.
+      #     The auth_request-free locations, machine-derived from the RENDERED config rather than
+      #     read off this file (13 locations; 9 of them carry no `auth_request /oauth2/auth`):
+      #       = /healthz and @oauth2_login          `return`, no proxy_pass, no body read
+      #       = /oauth2/auth                        internal, proxy_pass_request_body off
+      #       /oauth2/, = /mcp, @api_bearer,
+      #       = /.well-known/oauth-protected-resource,
+      #       = /.well-known/oauth-protected-resource/mcp,
+      #       and the injected Keycloak login location where enabled
+      #                                             proxy_pass with request buffering on -> SPOOL
+      #     The four that DO carry auth_request are /api/, = /status, /chat/v1/ and /. Re-derive
+      #     this list rather than trusting it; @api_bearer was missed once already, and it is the
+      #     one that makes /api/ anonymously reachable. No value of proxy_max_temp_file_size
+      #     bounds any of it. The lever that WOULD bound it is a location-scoped
+      #     client_max_body_size on the spooling members of that list — the http-level 50M exists
+      #     so the /oauth2/auth SUBREQUEST inherits it (see the comment on that directive), which
+      #     says nothing about what the public /oauth2/ prefix, the .well-known pair or
+      #     @api_bearer need. Not done here: it is a behaviour change on the login and
+      #     programmatic-API paths and wants its own traffic test.
+      #     What DID become derivable is the per-connection worst case: ~64 MiB after the bound,
+      #     against ~1 GiB before. A number is therefore now constructible as
+      #       sizeLimit = p99 concurrent buffered requests x 64 MiB x safety factor,
+      #     kept far below 43.83 GiB. The missing input is the concurrency figure, which is not
+      #     obtainable from the manifest — it needs the gateway's own access log. Until it exists,
+      #     shipping a guess on the internet-facing pod trades an attacker-reachable disk-fill for
+      #     an attacker-reachable eviction that is roughly 10x cheaper to trigger, and both end in
+      #     the same whole-site outage. What the limit would genuinely buy is confining the damage
+      #     to this pod instead of the node it shares with most of the namespace.
       #   tmp: nothing an attacker can reach writes here. The main container writes only
       #     /tmp/nginx.pid (~6 bytes); the initContainer writes one ~9 KB placeholder config, and
       #     only on the config-rejected error path. A limit would bound a fill path that does not
       #     exist while adding an eviction path that does.
-      # What the pod has instead, by omission: no ephemeral-storage request, so under node
-      # DiskPressure the kubelet's eviction ranking (usage above request, request 0) already puts
-      # the pod that filled the disk at the top of the list — without naming a threshold that
-      # normal traffic can cross. That is a ranking, not a shield: the cluster is a single node,
-      # so DiskPressure is cluster-wide and every other workload feels it before the ranking
-      # rescues anything, and the evicted pod reschedules onto the same full node.
+      # NO ephemeral-storage request or limit either, and the two halves are decided separately.
+      #   A LIMIT is the worse of the two instruments, not the better one: it evicts exactly as a
+      #     sizeLimit does, but it also counts this container's stdout — and the config
+      #     access_logs every request to /dev/stdout — so it would be crossed by traffic VOLUME,
+      #     not only by the temp files it is meant to bound. A sizeLimit on `cache` scopes to the
+      #     attack path; the pod-level limit does not.
+      #   The absent REQUEST is the correct setting, not merely a tolerable one: DiskPressure
+      #     eviction ranks by usage ABOVE request, so naming a request would move this pod DOWN
+      #     the ranking and protect the pod that filled the disk. Request 0 puts it at the top.
+      #     That is a ranking, not a shield — but the reason recorded here previously ("the
+      #     cluster is a single node, so DiskPressure is cluster-wide") is FALSE as measured on
+      #     2026-08-30, for the two clusters this checkout can reach: finngenie-staging runs two
+      #     general nodes plus a gVisor sandbox node, and finngenie (daly production) runs two.
+      #     The finngen production cluster is in another project with no context here, so its
+      #     count is unknown and is not asserted. The weakened form is what matters and it holds:
+      #     on staging, 8 of the 11 pods running in the namespace — this one included — are
+      #     co-scheduled on one general node, so DiskPressure there reaches nearly everything, but
+      #     an evicted pod CAN reschedule onto the other node and the sandbox node is untouched.
       - name: cache
         emptyDir: {}
       - name: tmp
