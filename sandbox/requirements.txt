@@ -7,6 +7,12 @@
 # metadata.google.internal by name, and the sandbox has no DNS, so the probe
 # stalls the full resolver timeout instead of failing fast. build-checks.py
 # fails the build if it reappears.
+#
+# the set is CLOSED at numpy/scipy/polars/matplotlib/httpx: this file declares the SDK's real
+# runtime closure (docs/code-execution-security.md, "Deviation 2" — the SDK is installed
+# --no-deps), not a convenience toolbox. pandas is absent BY DESIGN and not by oversight —
+# polars is the frame type every SDK function returns, so a second dataframe library would add
+# image size and syscall surface to a boundary image for nothing.
 numpy==2.4.6
 scipy==1.17.1
 polars==1.40.1

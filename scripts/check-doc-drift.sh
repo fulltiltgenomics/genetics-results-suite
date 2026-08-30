@@ -11,8 +11,14 @@ set -u
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
 
+# only the *staged* tree is examined, because that is what the pre-commit hook is about
+# to turn into a commit. Run by hand with nothing staged this checks nothing, so say so
+# rather than exiting silently — silence here reads as a pass.
 staged=$(git diff --cached --name-only --diff-filter=ACMRD)
-[ -n "$staged" ] || exit 0
+if [ -z "$staged" ]; then
+    printf 'doc-drift: nothing staged, nothing checked.\n' >&2
+    exit 0
+fi
 
 hit() {
     printf '%s\n' "$staged" | grep -qE "$1"
@@ -60,6 +66,17 @@ check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks
 
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
+
+# One rule, not two: environments.md reasons about the cookie surface of this host as a single
+# passage (oauth2-proxy's --cookie-* flags, keycloak.yaml setting none, and deploy.sh's gateway
+# block rewriting them with proxy_cookie_flags plus building KEYCLOAK_HOST). All three stale the
+# same passage, so they share one warning. deploy.sh is named despite already having a row of its
+# own against project-spec/README: that doc names the printf inside it as "the site least likely
+# to be caught by anyone grepping manifests for --cookie-domain", which is precisely the change
+# this rule exists to catch. Scoped to the two manifests that actually set cookies rather than to
+# k8s/ — a broader pattern would fire on manifests the passage says nothing about.
+check '^(k8s/deployments/(oauth2-proxy|keycloak)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
+    'cookie/host surface (k8s/deployments/oauth2-proxy.yaml, keycloak.yaml, deploy.sh gateway block) -> docs/environments.md (cookie domain, the SameSite=None proxy_cookie_flags rewrite, KEYCLOAK_HOST on the shared host)'
 
 # named literally rather than folded into the glob above: broadening `build*.sh` to reach
 # these would also catch unrelated scripts, and a rule that fires where it cannot apply is
@@ -133,11 +150,16 @@ check '^scripts/test-network-policies\.py$' \
     '^docs/project-spec\.md$' \
     'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer)'
 
-# Only the *static branding assets* under keycloak/themes/ are exempt: a stylesheet, an
-# image, a font or a `.properties` bundle changes how the login page looks and reads and
-# has no other effect. The exemption is by extension, not by directory, because
-# keycloak/themes/genetics/login/ is exactly where a FreeMarker override (`login.ftl`) or a
-# script would go, and those change how the login page *behaves* — they stay covered.
+# Only the *static branding assets* under keycloak/themes/ are exempt, and NOT because they are
+# cosmetic — theme.properties records that css/genetics.css hides the username/password form, so a
+# stylesheet here does change what the login page lets a user do. The exemption holds on the doc
+# side instead: docs/keycloak-apple-signin.md contains no occurrence of theme, .ftl or .css at all,
+# so nothing in it can be staled by these files. Residual, deliberately left in place: the row's
+# other doc, docs/mcp-oauth-onboarding.md, does quote
+# keycloak/themes/genetics/login/messages/messages_en.properties, which this pattern exempts —
+# whether to narrow the extension list is an open decision, not settled here. The exemption is by
+# extension, not by directory, because keycloak/themes/genetics/login/ is exactly where a
+# FreeMarker override (`login.ftl`) or a script would go, and those stay covered.
 KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
 check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \

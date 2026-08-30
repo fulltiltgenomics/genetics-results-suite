@@ -291,6 +291,12 @@ Create Google OAuth credentials for oauth2-proxy:
 (DB + bootstrap admin passwords, generated) where the identity broker is enabled. Set the relevant
 env vars, then run it once:
 ```bash
+export DEPLOY_ENV=daly-staging            # which deployment. Selects terraform.tfvars.<env>,
+                                          # .env.<env>, and the only kubectl context this
+                                          # script will write to. Omit it ONLY on a
+                                          # single-deployment instance that still keeps a bare
+                                          # terraform/terraform.tfvars — otherwise the script
+                                          # stops in resolve_deploy_env before touching anything.
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional

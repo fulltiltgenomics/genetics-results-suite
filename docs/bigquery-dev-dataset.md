@@ -33,9 +33,13 @@ written; it now describes only one of three deployments (`docs/environments.md`)
 
 | `DEPLOY_ENV` | GCP project | cluster | role |
 |---|---|---|---|
-| `finngen` | `phewas-development` | `gke_phewas-development_europe-west1-b_finngenie` | **production** |
+| `finngen` | `phewas-development` | `finngenie` | **production** |
 | `daly` | `daly-finngenie` | `finngenie` | **production** |
 | `daly-staging` | `daly-finngenie` | `finngenie-staging` | staging |
+
+Both production clusters are literally named `finngenie`; only the GCP project tells them
+apart. That is why the context guards compare the full kubeconfig context string rather than
+the cluster name (`docs/environments.md`).
 
 Three consequences for this document:
 

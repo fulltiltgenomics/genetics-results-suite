@@ -8,7 +8,7 @@ between clusters at runtime except read-only source data (GCS/BigQuery).
 |---|---|---|---|---|---|
 | `daly` | `daly-finngenie` | `finngenie` | `genegenie.broadinstitute.org` (301 from `finngenie.…`) | `master` | `gs://genetics-results-terraform-daly/genetics-results-suite` |
 | `daly-staging` | `daly-finngenie` | `finngenie-staging` | `staging.genegenie.broadinstitute.org` | `staging` | `gs://genetics-results-terraform-daly/genetics-results-suite-staging` |
-| `finngen` | (separate project) | `finngenie` | `finngenie.finngen.fi` | `master` | `gs://genetics-results-terraform/genetics-results-suite` |
+| `finngen` | `phewas-development` | `finngenie` | `finngenie.finngen.fi` | `master` | `gs://genetics-results-terraform/genetics-results-suite` |
 
 `daly` and `daly-staging` are managed from the same admin instance; `finngen` is managed
 elsewhere.
@@ -155,10 +155,23 @@ which is hardcoded in ~40 manifests.
       the Google-managed certificate cannot provision until the record resolves, and a
       ManagedCertificate that starts in `FAILED_NOT_VISIBLE` takes a delete/recreate to retry.
       Verify: `dig +short staging.genegenie.broadinstitute.org`.
-- [ ] **`staging` branches exist.** `build-all.sh` clones with `--branch staging` and fails
-      outright if the branch is missing. Needed in `genetics-results-browser`,
-      `genetics-results-api`, `genetics-mcp-server`, `genetics-results-db`.
-      (`monitor` and `keycloak` build from this repo's working tree — no branch involved.)
+- [ ] **`staging` branches exist *and* `.env.daly-staging` selects them.** `build-all.sh`
+      does not assume `staging`: each cloned repo takes its branch from its own variable,
+      **defaulting to `master`** (`scripts/build-all.sh`) — `FRONTEND_BRANCH`
+      (`genetics-results-browser`), `RESULTS_API_BRANCH` (`genetics-results-api`),
+      `MCP_SERVER_BRANCH` (`genetics-mcp-server`) and `DB_API_BRANCH`
+      (`genetics-results-db`). All four must be **set to `staging` in `.env.<DEPLOY_ENV>`**
+      (here `.env.daly-staging`); a `staging` branch that exists on GitHub but is not named
+      in that file is simply not built — the run silently builds `master` instead. Once a
+      variable is set, `git clone --depth 1 --branch` fails the build if that branch is
+      missing. (`monitor` and `keycloak` build from this repo's working tree — no branch
+      involved. `genetics-rag-service` has a fifth variable, `RAG_SERVICE_BRANCH`, default
+      `deploy_jk` and not a `staging` branch; it is cloned and built unconditionally.)
+      One absence is deliberately **not** fatal: if the `MCP_SERVER_BRANCH` clone has no
+      `src/genetics_mcp_server/sdk`, or the schema-doc generation fails, `build-all.sh` skips
+      the sandbox image, says so, and still exits 0 — it fails only when the sandbox is
+      enabled for this deployment (`sandbox_pool_enabled = true` in the tfvars, or
+      `ENABLE_SANDBOX=true`).
 - [ ] **Google OAuth client.** Add the staging broker callback to the existing client's
       authorized redirect URIs (or create a separate client):
       `https://staging.genegenie.broadinstitute.org/auth/realms/genetics/broker/google/endpoint`

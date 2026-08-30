@@ -2460,7 +2460,10 @@ def _fs_sweep(pending):
     been asked to reap is in `pending`, so "my children minus pending" is the set of processes
     that had reparented here AT THE INSTANT OF THE SCAN. It cannot steal a zombie the
     supervisor is about to reap for the same reason: the supervisor only ever names pids that
-    are in `pending`.
+    are in `pending`. THE EXCLUSION IS BY PID, BUT ITS EFFECT IS A WHOLE SUBTREE: a pid is
+    out of `strays` for as long as it is in `pending`, and its descendants reparent here only
+    when it exits, so a pending child and everything beneath it is invisible to this sweep and
+    to every later one until the supervisor asks for its reap and it leaves the set.
 
     ONE SCAN IS NOT THE WHOLE SET, and reading it as complete is what made the first version of
     this function single-pass. A process reparents to the subreaper only when ITS OWN PARENT
@@ -6188,6 +6191,11 @@ def _default_error_type(code):
         405: "MethodNotAllowed",
         408: "RequestTimeout",
         413: "PayloadTooLarge",
+        # 414 is UNREACHABLE as shipped and is kept as a default, not as a path: the stdlib
+        # sends it only when rfile.readline(65537) returns more than 65536 bytes, and
+        # _HeaderBoundedReader caps the whole head at MAX_HEADER_BYTES (= 65536), raising
+        # _HeaderTooLarge -> 431 first. It re-arms by itself if MAX_HEADER_BYTES is ever
+        # raised above 64 KiB, which is why it is left rather than deleted.
         414: "PayloadTooLarge",
         415: "UnsupportedMediaType",
         429: "Busy",
