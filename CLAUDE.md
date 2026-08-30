@@ -57,6 +57,20 @@ repairs it anyway rather than trusting that.
 | `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
 | `sandbox/**` (**including** `sandbox/schema/**` and `sandbox/stubs/**`), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers, what the shipped schema docs and stubs disclose |
 | `sandbox/**` (**including** the generated trees), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/project-spec.md` | services table, isolation-boundary summary, sandbox network policy, what the sandbox exposes |
+| `scripts/gen-sandbox-docs.py`, `scripts/test-sandbox-docs.py` | `docs/code-execution-security.md` | the schema-doc contract the generator *owns*: that neither generated tree is empty, that no `PLACEHOLDER` file survives the build gate, that each view's file carries its description, columns and worked-example SQL, and that the stubs cover exactly the SDK's exported surface |
+| `scripts/gen-sandbox-docs.py`, `scripts/test-sandbox-docs.py` | `docs/project-spec.md` | the build-step spec: what the generator emits (one `sandbox/schema/*.md` per view in `configs/datasets.yaml` plus an index, `sandbox/stubs/*.pyi` read out of the staged SDK), what the test asserts (every view, column, enumerable column and worked example reaches a file; every documented column carries a well-formed BigQuery type; the stubs cover exactly the SDK's exported surface), the `--sdk-src` resolution order, the `PLACEHOLDER` build gate, and the shared 0/1/2 exit-code convention |
+| `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
+| `scripts/test-network-policies.py` | `docs/project-spec.md` | the harness's own enumerated spec: the checks it runs, its discovery tells and both locks, the workload kinds it sweeps, and its three-way answer on the live-sandbox probe |
+
+The four script rows above close a gap that ran the other way: the *generated* trees
+(`sandbox/schema/**`, `sandbox/stubs/**`) were mapped to `docs/code-execution-security.md`
+while the *generator* was not, so a change to `gen-sandbox-docs.py` could falsify every
+claim that doc makes about the shipped schema docs with no path-based warning at all
+(`genetics-results-suite-8vn`). The `gen-sandbox-docs.py`/`test-sandbox-docs.py` pair and
+`test-network-policies.py` each get two rows for the same reason `sandbox/**` does —
+satisfying one of the two docs does not satisfy the other, and folding them into one
+alternation would let a change that touches the easier doc mask an unexamined claim in the
+harder one.
 
 The **except** clause above is not tidiness, and its narrowness is the point. A rule whose
 path pattern is broader than the doc concern it names fires where it can never apply, and
@@ -147,7 +161,7 @@ Repo-specific consequences:
 
 # Project-specific conventions
 
-1. All services are deployed to a single GKE cluster in the `genetics` namespace
+1. All of a deployment's services run in one GKE cluster, in the `genetics` namespace — one cluster per deployment, three today (`docs/environments.md`)
 2. Docker images are stored in Google Artifact Registry (registry path derived from `project_id` in terraform, overridable via `REGISTRY` env var)
 3. Configuration uses Kubernetes secrets and environment variables — never hardcode credentials
 4. Terraform state is stored in a GCS backend bucket
