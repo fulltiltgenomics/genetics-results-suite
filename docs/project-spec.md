@@ -2595,6 +2595,17 @@ consolidation that would create them is deferred, and revisiting it is what woul
 profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
 in `docs/chat-tool-reference.md` § 3.
 
+**Shipping dark is the settled position, not a holding pattern.** It was to be revisited by the
+paired A/B in `genetics-results-suite-4h6.23`, which was **descoped on 2026-08-30** by user
+decision — initial benchmarking was done by hand, and further benchmarking moves outside this
+epic. That bead's kill criterion read *"if the code arm does not beat the baseline on cost AND does
+not regress quality, keep it behind the profile rather than defaulting it on"*, and its
+conservative branch **is** the status quo, so the absence of a measurement has a defined outcome:
+**code execution stays opt-in and `null` remains the default profile.** Read that precisely — the
+code arm was never run against the baseline, so nothing here records it losing; the decision was
+simply not taken on numbers, and the documented default therefore stands. No 4h6.23 result exists
+to look up, and none is coming from this epic.
+
 `nocode` is the fourth category-union profile, added for the genetics-results-suite-4h6.23 A/B and,
 like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
 offer it, and its own list does not even contain the name. That is not an oversight to be corrected:
@@ -2619,7 +2630,8 @@ execution** (`code`). The server knows **five** profiles and the browser's own l
 lists as copies of each other. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
 rode along with every request while nothing could change it — which is why the row above described
 a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
-A/B'd against the full one. The default is unchanged: **All**.
+A/B'd against the full one. The default is unchanged: **All** — and, since 4h6.23 was descoped
+without running (see "It **ships dark**" above), that default is settled rather than provisional.
 
 The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
 backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
