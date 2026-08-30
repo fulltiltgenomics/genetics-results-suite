@@ -212,9 +212,10 @@ profiles — `api`, `bigquery`, `rag`, `nocode`, `code`. genetics-results-browse
 `TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names **four** — `api`, `bigquery`,
 `rag`, `code` — of which `rag` carries a `null` in `TOOL_PROFILE_LABELS` (`LLMChat.tsx`) and
 so is resolvable but never rendered as a radio. `nocode` is absent from the browser
-altogether **on purpose**: it is the comparator arm for `genetics-results-suite-4h6.23` and
-must not be an option a user can pick. Neither omission is an oversight, and neither list
-should be described as mirroring the other.
+altogether **on purpose**: it was the comparator arm for `genetics-results-suite-4h6.23`
+(descoped 2026-08-30 without running — see the note under the profile table below) and must
+not be an option a user can pick. Neither omission is an oversight, and neither list should be
+described as mirroring the other.
 
 Since `genetics-results-suite-4h6.74` the two are pinned against each other, once per
 direction:
@@ -259,6 +260,16 @@ general-only. Neither may raise, because the value is read back from stored rows
 | `"nocode"` | categories: general + api + bigquery | 64 | 62 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
 | any other string | not in either dict → general only, plus a warn-once (below) | 18 | 18 | yes | no |
+
+**The default row above is settled, not provisional.** `null` was to be reconsidered against the
+`code` arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
+2026-08-30** by user decision — initial benchmarking was done by hand and further benchmarking
+moves outside the epic. Its own kill criterion was *"if the code arm does not beat the baseline on
+cost AND does not regress quality, keep it behind the profile rather than defaulting it on"*, and
+that conservative branch is exactly the shipped state, so descoping the benchmark **accepts** the
+documented default: **`code` stays opt-in and `null` remains the default profile.** The arms were
+never compared, so this is not a record of the code arm losing — the decision was not taken on
+numbers, and the default stands unchanged. There is no 4h6.23 figure to cite.
 
 `"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
