@@ -54,6 +54,43 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # a premature close on any other route still alerts, and a genuinely crash-looping
     # mcp-server is caught by the /healthz check rather than by these lines.
     ("nginx", re.compile(r'upstream prematurely closed connection.*request: "[A-Z]+ /mcp')),
+
+    # --- rolling-restart signatures -----------------------------------------------
+    # A deploy, or a GKE node upgrade recreating the pool, restarts every pod in
+    # dependency order and each service logs its own side of the same event: postgres
+    # drops its clients, keycloak goes with it, oauth2-proxy exits because it cannot
+    # reach the IdP, and nginx has no upstream left to connect to. One node upgrade
+    # produced ~30 alerts this way, none of them actionable and all of them stale by
+    # the time the report is read. The lines that a restart does *not* explain are
+    # deliberately absent from this list — see the note at the end of the block.
+
+    # only ever logged when postgres is asked to shut down; an unplanned death logs
+    # something else entirely, so this pattern cannot mask a crash
+    ("postgres", re.compile(r"terminating connection due to administrator command")),
+    # the other half of the /mcp SSE teardown already ignored above: nginx reports the
+    # closed connection, uvicorn reports the handler that was still writing to it
+    ("mcp-server", re.compile(r"ASGI callable returned without completing response")),
+    # scoped to the *connect* phase, which is what an absent upstream looks like. A
+    # timeout while reading a response header means the upstream answered and then
+    # stalled, which is a genuine fault, and still alerts
+    ("nginx", re.compile(
+        r"(?:connect\(\) failed \(111: Connection refused\)"
+        r"|upstream timed out \(110: Operation timed out\))"
+        r" while connecting to upstream"
+    )),
+    # oauth2-proxy echoes the upstream's HTML error body into its log, so a single 504
+    # arrives as one alert per line of markup. The underlying event is the nginx pair
+    # above; these lines carry no information of their own
+    ("oauth2-proxy", re.compile(
+        r"^\s*(?:<!DOCTYPE|</?(?:html|head|body|title|center|hr|h1|pre)\b)", re.I
+    )),
+
+    # NOT ignored, though both also fire during a restart: oauth2-proxy's "Failed to
+    # initialise OAuth2 Proxy" and mcp-server's "Error validating user API token via
+    # chat backend". Both mean nobody can log in, and neither is covered by anything
+    # else in this monitor — the health checks call ClusterIP URLs directly and so
+    # never traverse nginx or oauth2-proxy, and no check watches pod restart counts.
+    # A restart makes them noisy once; silencing them would make a real outage silent.
 ]
 
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
@@ -203,6 +240,12 @@ class LogAlerter:
                 message = payload
             else:
                 message = str(payload)
+
+            # blank lines carry no signal but still arrive tagged ERROR, because GKE's
+            # agent severity-tags by stream rather than by content (see _LEVEL_PATTERNS)
+            if not message.strip():
+                dropped += 1
+                continue
 
             if _should_ignore(container, message):
                 dropped += 1
