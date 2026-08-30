@@ -62,6 +62,8 @@ while [ $# -gt 0 ]; do
       OVERRIDE_CONTEXT="${1#--context=}"; _override_given=1; shift ;;
     -h|--help)
       usage; exit 0 ;;
+    -*)
+      echo "ERROR: unknown option: $1" >&2; usage; exit 1 ;;
     *)
       echo "ERROR: unexpected argument: $1" >&2
       echo "       create-secrets.sh takes no positional arguments; its inputs are the environment" >&2

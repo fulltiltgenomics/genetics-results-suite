@@ -92,7 +92,8 @@ resolve_deploy_env() {
 _list_known_envs() {
   local found=""
   for f in "${ROOT_DIR}"/terraform/terraform.tfvars.*; do
-    case "$f" in *.example|*'*') continue ;; esac
+    # *~ : editor backups would otherwise be advertised as selectable environments
+    case "$f" in *.example|*'~'|*'*') continue ;; esac
     found="${found} ${f##*terraform.tfvars.}"
   done
   [ -n "${found}" ] && echo "       Available DEPLOY_ENV values:${found}" >&2

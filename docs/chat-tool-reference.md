@@ -299,7 +299,9 @@ Three behaviours worth stating plainly:
 - **`disabled_tools` is applied *before* the profile filter**, so the three feature flags
   and the env-driven disable list subtract from an explicit profile too. Only
   `launch_subagents` of the three is in a category profile other than `api`, which is why
-  `"bigquery"` loses exactly one tool under the deployed flags and `"code"` loses none.
+  `"bigquery"` loses exactly one tool under the deployed flags and `"code"` loses none —
+  under `SANDBOX_ENABLED=true` (§4a below); with it `false`, `bigquery`'s deployed-flags
+  count drops to 22, so it loses two, not one.
 
 ## 4. System prompt, verbosity and instruction sets
 

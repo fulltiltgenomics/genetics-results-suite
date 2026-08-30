@@ -194,8 +194,9 @@ deliberately outside it, for **two different reasons** — do not read "not a me
   Both `schemas/phenotypes_v.sql` and `schemas/datasets_v.sql` say so in a header comment
   carrying the instruction "Do not add this view to `scripts/generate_resource_sql.py`'s
   `ALL_VIEWS`." — each comment continues past that sentence to record why the view exists at
-  all (so `api/main.py`'s `VIEWS` exposes views uniformly). Both files live only on
-  genetics-results-db's `worktree-db-only-architecture` branch; they are not on its `master`.
+  all (so `api/main.py`'s `VIEWS` exposes views uniformly). Both files live on
+  genetics-results-db's `staging` branch — the branch checked out beside this repo — and are
+  **not** on its `master`.
 - **`gene_annotations_v` and `variant_annotation_v`** are excluded for the opposite reason:
   their base tables are **single-source and have no dataset discriminator column at all**, so
   there is nothing for a `CASE` to switch on. Each view appends a bare constant —
@@ -235,8 +236,9 @@ view, pipe its `schemas/<view>.sql` through `bq query` after substituting the
 
 **There is no dev deployment and no dev BigQuery dataset for either production brand —
 `phewas-development` is production, and so is the daly `finngenie` cluster; the third
-cluster, `daly-staging`, rehearses manifests but shares daly production's
-`genetics_results` (`docs/environments.md`, `genetics-results-suite-zaw`).** Anything
+*deployment*, `daly-staging` (cluster `finngenie-staging`), rehearses manifests but shares
+daly production's `genetics_results` (`docs/environments.md`,
+`genetics-results-suite-zaw`).** Anything
 beyond an additive `CREATE OR REPLACE VIEW` (a rename, a re-clustering, a `DROP`) should
 be rehearsed first in the throwaway dataset that
 `scripts/bq-dev-dataset.sh` builds; `setup_bigquery.sh` already takes `PROJECT_ID` /
@@ -247,8 +249,9 @@ These counts rot easily, so re-derive them rather than trusting this paragraph �
 that `phewas-development` is **not reachable from the admin instance** (no kubeconfig
 context; `gcloud container clusters list --project phewas-development` returns 403), so
 the numbers below cannot be re-derived from this checkout at all. As of 2026-08-13,
-`bq ls phewas-development:genetics_results` holds **18 base tables and 15 views**. `ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v`
-and `variant_annotation_v` are the other two live views and are in neither list. Both do
+`bq ls phewas-development:genetics_results` holds **18 base tables and 15 views**.
+`ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v` and
+`variant_annotation_v` are the other two live views and are in neither list. Both do
 carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
 tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`
 to switch on (the single-source-constant case above). `configs/datasets.yaml`'s `tables:` section

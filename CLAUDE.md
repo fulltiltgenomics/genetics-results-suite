@@ -31,7 +31,9 @@ QUALITY CODING RULES
 
 Changing a path on the left makes the doc on the right wrong until it is updated in
 the same commit. `scripts/check-doc-drift.sh` warns (never blocks) on commits that
-violate this; it runs from the `pre-commit` hook.
+violate this; it runs from the `pre-commit` hook. It reads `git diff --cached`, so it
+only ever sees **staged** changes — run by hand with an empty index it checks nothing
+and says so; that message is not a pass.
 
 The hook lives in `.beads/hooks/pre-commit`, which is **tracked**, and git finds it
 via `core.hooksPath` — **local config that no clone carries**. So a fresh clone has
@@ -53,6 +55,7 @@ repairs it anyway rather than trusting that.
 | `scripts/run-sandbox-local.sh` | `docs/project-spec.md`, `README.md` | how the sandbox image is built and staged locally, what the local supervisor run does and does not reproduce |
 | `scripts/dev-stack.sh` | `docs/local-dev-vm.md`, `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
 | `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
+| `k8s/deployments/oauth2-proxy.yaml`, `k8s/deployments/keycloak.yaml`, `scripts/deploy.sh` | `docs/environments.md` | the cookie surface of the shared host: that no component sets an explicit cookie `Domain`, the `--cookie-*` flags, the deliberate `proxy_cookie_flags ~ secure samesite=none` rewrite in the gateway block, `KEYCLOAK_HOST` |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
 | `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
 | `sandbox/**` (**including** `sandbox/schema/**` and `sandbox/stubs/**`), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers, what the shipped schema docs and stubs disclose |
@@ -62,7 +65,8 @@ repairs it anyway rather than trusting that.
 | `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
 | `scripts/test-network-policies.py` | `docs/project-spec.md` | the harness's own enumerated spec: the checks it runs, its discovery tells and both locks, the workload kinds it sweeps, and its three-way answer on the live-sandbox probe |
 
-The four script rows above close a gap that ran the other way: the *generated* trees
+The four rows just added — `gen-sandbox-docs.py`/`test-sandbox-docs.py` and
+`test-network-policies.py`, two docs each — close a gap that ran the other way: the *generated* trees
 (`sandbox/schema/**`, `sandbox/stubs/**`) were mapped to `docs/code-execution-security.md`
 while the *generator* was not, so a change to `gen-sandbox-docs.py` could falsify every
 claim that doc makes about the shipped schema docs with no path-based warning at all
@@ -72,7 +76,7 @@ satisfying one of the two docs does not satisfy the other, and folding them into
 alternation would let a change that touches the easier doc mask an unexamined claim in the
 harder one.
 
-The **except** clause above is not tidiness, and its narrowness is the point. A rule whose
+The **except** clause in the `keycloak/**` row is not tidiness, and its narrowness is the point. A rule whose
 path pattern is broader than the doc concern it names fires where it can never apply, and
 that trains people to ignore it (`genetics-results-suite-dqa`) — but the exclusion has to
 be justified against what the doc actually says, not against how the files were produced.

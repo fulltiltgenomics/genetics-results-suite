@@ -247,10 +247,15 @@ def _sdk_alias():
 
 @check("passwd carries the supervisor and child uids on a shared gid")
 def _uids():
-    """Section 2, pids row option (a) and the Permission contract: the child runs as a
-    second non-root uid so RLIMIT_NPROC is a real per-execution control and the child
-    cannot read the supervisor's /proc/<pid>/environ, with a shared gid 65532 carrying
-    access in both directions."""
+    """Section 2's "The uid choice", DECIDED as option (b): ONE SHARED UID. The supervisor
+    and the child both run as 65532. Option (a)'s distinct child uid needs
+    CAP_SETUID/CAP_SETGID/CAP_CHOWN, which this pod drops — setuid(65533) and chown(65533)
+    were measured to return EPERM — so RLIMIT_NPROC is not a per-execution control (the
+    supervisor polices the child's process group instead) and the token file stays within the
+    child's same-uid reach. The `sandboxchild` 65533 entry is therefore ADVERTISED AND
+    UNREACHABLE: the image sets SANDBOX_CHILD_UID=65533 and this check keeps /out/passwd
+    consistent with it, but nothing can switch to that uid and the supervisor must not fork
+    against it. The gid both entries carry is the pod's single, shared gid 65532."""
     entries = {}
     for line in open("/out/passwd"):
         parts = line.strip().split(":")
