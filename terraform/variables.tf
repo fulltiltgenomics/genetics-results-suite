@@ -22,9 +22,10 @@ variable "cluster_name" {
 variable "kube_context" {
   description = <<-EOT
     The kubectl context name for THIS deployment's cluster, e.g.
-    "gke_daly-finngenie_us-central1-a_finngenie-staging". Consumed by scripts/rollout.sh's
-    context guard, which refuses to mutate a cluster the selected tfvars does not name; NO
-    resource reads it. It is stated rather than derived from project_id/zone/cluster_name on
+    "gke_daly-finngenie_us-central1-a_finngenie-staging". Consumed by the context guard in
+    scripts/lib/env.sh (require_kube_context), which both scripts/rollout.sh and
+    scripts/create-secrets.sh call to refuse to mutate a cluster the selected tfvars does not
+    name; NO resource reads it. It is stated rather than derived from project_id/zone/cluster_name on
     purpose: every text-matching derivation over HCL that was tried failed towards terraform's
     defaults, and those name a PRODUCTION cluster in both projects. Declared here only so
     terraform does not warn "Value for undeclared variable" on every plan.
