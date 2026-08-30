@@ -221,8 +221,19 @@ DEPLOY_ENV=daly-staging ./scripts/build.sh chat-backend      # rebuild one servi
 DEPLOY_ENV=daly-staging ./scripts/rollout.sh chat-backend    # roll it out
 ```
 
-`rollout.sh` only sets the image reference; the cluster it acts on is whatever kubectl's
-current context points at, which it now echoes. Switch contexts deliberately:
+`rollout.sh` only sets the image reference, and it no longer acts on whatever kubectl's current
+context happens to be. Each deployment's tfvars **states** its cluster in a mandatory
+`kube_context` key, and `rollout.sh` **refuses** when `kubectl config current-context` is not that
+string, naming the `kubectl config use-context` to run (`genetics-results-suite-b1r`; see README,
+"Updating Services"). Nothing is derived and no HCL is parsed: the token must appear **exactly
+once** in the whole tfvars file, on a column-0 `kube_context = "..."` line, and the file must
+contain no `/*` anywhere (`#` and `//` comments are fine; a block comment could otherwise present a
+commented-out key as the one legal line). A missing, repeated, indented or non-quoted-string key,
+or any `/*`, is a refusal, never a fallback. Because the tfvars files are **gitignored**,
+each checkout has to add the key once or `rollout.sh` stops working there — intended, since the
+alternative is guessing between two production clusters that share a name. A deliberately
+off-target rollout needs the `--context <ctx>` flag, which must spell out the cluster being
+mutated. Switch contexts deliberately:
 
 ```bash
 gcloud container clusters get-credentials finngenie-staging --zone us-central1-a --project daly-finngenie
