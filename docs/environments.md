@@ -31,7 +31,9 @@ DEPLOY_ENV=daly-staging ./scripts/deploy.sh
 | `terraform/<name>.tfbackend` | GCS state backend (bucket + prefix) — **committed** |
 | `.env.<name>` | secrets and deploy knobs, sourced with `set -a` |
 
-Three guardrails exist because picking the wrong one silently deploys across environments:
+Four guardrails exist because picking the wrong one silently deploys across environments. All
+four live in `scripts/lib/env.sh`, but an entry point gets one only by **calling** the function
+that holds it, so which apply depends on the script — see `project-spec.md`'s per-call-site table:
 
 - **`.env.<name>` never falls back to `.env`.** A fallback would push one deployment's
   secrets into another's cluster. A missing file warns instead.
@@ -50,6 +52,26 @@ Three guardrails exist because picking the wrong one silently deploys across env
   `REGISTRY` must match the derived one; otherwise the run stops with both values printed.
   `unset REGISTRY` is the usual fix; `REGISTRY_FORCE=1` overrides for a deliberate scratch
   registry.
+- **A kubectl context that disagrees with `DEPLOY_ENV` is refused** — by `rollout.sh` and
+  `create-secrets.sh`, the two `DEPLOY_ENV`-resolving entry points that mutate a cluster without
+  first pointing kubectl at one. They are not the only unguarded cluster mutators in `scripts/`:
+  `keycloak-register-client.sh`, `keycloak-bind-allowlist.sh` and `keycloak-register-brainzzz.sh`
+  each read the Keycloak admin password out of `keycloak-secrets` on the **ambient** context and
+  then `kubectl exec … kcadm.sh` inside the pod to create or rotate OIDC clients, bind the
+  allow-list authenticator and set realm attributes. None of them sources `lib/env.sh`, resolves
+  `DEPLOY_ENV` or even echoes the context, so none can call this guard as it stands; guarding them
+  is separate work. Nothing is derived: the deployment **states** its cluster in a mandatory
+  `kube_context = "<context name>"` line in its own tfvars, and `require_kube_context` refuses
+  unless `kubectl config current-context` is exactly that string, then freezes that verdict
+  (`readonly ACTING_CONTEXT`) and pins it with `--context` on every cluster-contacting call — so
+  the cluster acted on cannot be changed after the check, not by another terminal's
+  `use-context` and not by a `.env.<env>` line sourced afterwards. The **namespace** is
+  deliberately not frozen and not guarded. The override is a per-invocation `--context` flag in
+  both, never an environment variable. **The tfvars are gitignored, so the key does not arrive with a clone**:
+  both scripts refuse in a checkout that has not added the line. That is fail-closed on purpose —
+  two of the three deployments are production and both production clusters are named `finngenie`.
+  `deploy.sh` needs no such guard: it *sets* the context from `terraform output` before its first
+  apply. Details in `project-spec.md`, "The cluster context guard".
 
 With `DEPLOY_ENV` unset the scripts keep the original single-deployment behaviour (bare
 `terraform.tfvars`, backend derived from its `config_profile`), which is what the `finngen`
@@ -178,7 +200,9 @@ export DEPLOY_ENV=daly-staging
 
 Step 1 stops at `ERROR: genetics-secrets not found` because `deploy.sh` checks for secrets
 before applying manifests. That is the intended order: terraform has to create the cluster
-before `create-secrets.sh` has anywhere to write. Confirm the context first:
+before `create-secrets.sh` has anywhere to write. Confirming the context first is no longer left
+to you — step 2 refuses unless it matches this environment's `kube_context` — but it is still the
+fastest way to see where you are:
 
 ```bash
 kubectl config current-context   # ..._us-central1-a_finngenie-staging
@@ -233,7 +257,15 @@ or any `/*`, is a refusal, never a fallback. Because the tfvars files are **giti
 each checkout has to add the key once or `rollout.sh` stops working there — intended, since the
 alternative is guessing between two production clusters that share a name. A deliberately
 off-target rollout needs the `--context <ctx>` flag, which must spell out the cluster being
-mutated. Switch contexts deliberately:
+mutated. On acceptance the guard prints the two environment-supplied inputs it trusted —
+`Context: <ctx> (env: <env>, kube_context in <tfvars>, kubeconfig <path>)` — because `ROOT_DIR`
+picks the first and `KUBECONFIG` the second, and an **inherited export** of either (already set
+before the script starts) leaves the guard green while pointing it at another checkout's evidence
+or another kubeconfig's endpoint. That printed kubeconfig covers the inherited export **only**: it
+is printed before `create-secrets.sh` sources `.env.<env>`, so a `KUBECONFIG=` line *in that file*
+makes the printed path accurate about what the guard read and obsolete about what the writes use.
+`create-secrets.sh` re-asserts the context after sourcing for that case; `rollout.sh` never sources
+`.env` and so has no such window. Switch contexts deliberately:
 
 ```bash
 gcloud container clusters get-credentials finngenie-staging --zone us-central1-a --project daly-finngenie

@@ -49,15 +49,33 @@ export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
 stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
 
-`rollout.sh` applies the same rule to the *cluster*: it refuses when kubectl's current context is
-not the one the selected deployment's tfvars **states**, in a mandatory `kube_context` key. Its
-override is the `--context` flag rather than an environment variable, so it cannot be exported and
-inherited by a later invocation (see [Updating Services](#updating-services)).
+`rollout.sh` and `create-secrets.sh` apply the same rule to the *cluster*: they refuse when
+kubectl's current context is not the one the selected deployment's tfvars **states**, in a mandatory
+`kube_context` key. They share one implementation, in `scripts/lib/env.sh`. In both, the override is
+a `--context` flag rather than an environment variable, so it cannot be exported and inherited by a
+later invocation (see [Updating Services](#updating-services) and
+[3. Create secrets](#3-create-secrets)). The guard also **freezes** its verdict — `readonly
+ACTING_CONTEXT` — and that frozen value, not a rewritable variable, is what every `kubectl
+--context` below pins, so nothing sourced after the check (a `.env.<env>` line included) can
+re-aim the calls it authorised. Its accepting line names both of the environment-supplied inputs
+it trusted: the tfvars it read the key from, and the kubeconfig it resolved the current context
+out of — which covers a kubeconfig **inherited from the environment**, not one set by a line inside
+`.env.<env>`, since that file is sourced after the line is printed.
+
+> **The threat model is accident, not attack.** `.env.<env>` holds your own API keys and is written
+> by whoever runs these scripts; it is gitignored because it is *secret*, not because it is
+> *hostile*. `create-secrets.sh` sources it as arbitrary shell in its own process, so nothing
+> written inside that script can bound a hostile `.env` — a line in it can redefine any command or
+> rewrite `PATH`. The guard bounds **mistakes**: a stray `PATH=` line in a deployment `.env` is
+> genuinely plausible, a `KUBECONFIG=` line is possible, and a `kubectl()` shell function is not
+> something anyone writes by accident. This is stated in the code at `require_kube_context`.
 
 > **The tfvars files are gitignored, so this key does not arrive with a clone or with a pull.**
-> `rollout.sh` refuses — by design — in any checkout whose `terraform/terraform.tfvars*` has no
-> `kube_context`. Adding the line, copied from `kubectl config get-contexts -o name`, is the whole
-> fix; `terraform/terraform.tfvars.example` carries a commented template.
+> **Both** `rollout.sh` and `create-secrets.sh` refuse — by design — in any checkout whose
+> `terraform/terraform.tfvars*` has no `kube_context`, so a fresh checkout can neither roll out a
+> service nor write its Secrets until the line is added. Adding it, copied from
+> `kubectl config get-contexts -o name`, is the whole fix; `terraform/terraform.tfvars.example`
+> carries a commented template.
 
 ## Deployment environments
 
@@ -297,6 +315,50 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 ./scripts/create-secrets.sh
 ```
 
+**Before it touches the cluster, `create-secrets.sh` refuses a context that is not the one
+`DEPLOY_ENV` names.** It is the same guard `rollout.sh` has and the same implementation
+(`scripts/lib/env.sh`): the deployment **states** its cluster in a mandatory `kube_context` line in
+its own tfvars, and the script stops unless `kubectl config current-context` is exactly that string.
+The rule for the tfvars line, and the reasoning behind it, is in
+[Updating Services](#updating-services) — it applies verbatim here.
+
+This script has the worse blast radius of the two. It rewrites `genetics-secrets`, and rotating
+`internal-api-secret` against a cluster you did not mean breaks every pod running there; the daly
+production context differs from staging's by a trailing `-staging` alone, and both production
+clusters are named `finngenie`. It used to print the current context one line above writing, which
+is not a guard.
+
+All seven of its `kubectl` invocations then run pinned to the verified context
+(`kubectl --context "${ACTING_CONTEXT}"`), so neither a `kubectl config use-context` from another
+terminal nor a later-sourced shell can retarget them between the check and the write. That
+matters here in a way it does not in `rollout.sh`: this script sources `.env.<env>` immediately
+after the guard, and while the pins read an ordinary variable a single line in that file
+redirected all three Secret writes to another cluster behind an accurate success line.
+
+Freezing the verdict stops that file **rewriting** the pin. It does not stop that file changing
+what the pin **means** — a `PATH=` line putting a different `kubectl` first, or a `KUBECONFIG=`
+line resolving the same context *name* through a different file, both let the pin expand faithfully
+and then be reinterpreted. So after sourcing `.env.<env>` and before the first cluster contact, the
+script **asks `kubectl config current-context` a second time** and refuses unless it still equals
+the frozen context, naming `.env.<env>` as the only thing that ran in between. Treat that as an
+**accident detector, not a security boundary**: it catches the `PATH=` and `KUBECONFIG=` cases,
+and it does *not* catch a `kubectl()` shell function defined in that file, which answers the
+re-check too. Its only cost on a normal run is one extra `kubectl config current-context`.
+`rollout.sh` does not have it, and does not need it — it never sources `.env`.
+
+The context is frozen; the **namespace is not** — `NAMESPACE` remains settable from the environment
+and from `.env`, deliberately, so "right cluster" is guaranteed and "right namespace" is taken on
+trust. For a deliberately off-target run, pass `--context <ctx>`;
+as in `rollout.sh` it is a **flag and not an environment variable**, it must name the context
+kubectl is actually on, and it says so loudly when that context is not the one `DEPLOY_ENV`
+expects. `create-secrets.sh` takes no positional arguments, so anything else on the command line
+is an error rather than something it ignores.
+
+```bash
+kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   # the normal fix
+./scripts/create-secrets.sh --context <the-cluster-you-mean>                    # deliberate
+```
+
 > **Run it from the main checkout.** It derives the config profile (which decides whether
 > `keycloak-secrets` is written) from the tfvars `DEPLOY_ENV` selects, and those are gitignored
 > and live only there. From a git worktree `resolve_deploy_env` refuses with exit 1 rather than
@@ -457,6 +519,11 @@ The three cluster-contacting `kubectl` calls then run pinned to the context it v
 (`kubectl --context ...`), so a `kubectl config use-context` from another terminal cannot retarget
 them between the check and the call.
 
+The guard is not `rollout.sh`'s alone. It lives in `scripts/lib/env.sh`, and `create-secrets.sh`
+calls the same code — one implementation rather than two that could drift, since the two scripts
+mutate the same clusters with different blast radii. Everything below about the `kube_context` line
+and the `--context` flag is true of both.
+
 **`kube_context` is mandatory and there is no fallback.** It is stated rather than derived from
 `project_id`/`zone`/`cluster_name` because every attempt to derive it by matching text in the HCL
 broke in a new way, and each break degraded in the same direction: a key that reads as *absent*
@@ -478,8 +545,9 @@ production cluster.
 
 > ⚠️ **Every checkout must add this key once.** `terraform/terraform.tfvars*` is **gitignored**
 > (only `terraform.tfvars.example` is tracked), so the key does not travel with the repo:
-> `rollout.sh` refuses in any checkout that has not added it, including the production checkout,
-> until someone pastes the line in. That is the intended fail-closed behaviour rather than a
+> `rollout.sh` **and `create-secrets.sh`** refuse in any checkout that has not added it, including
+> the production checkout, until someone pastes the line in — so an unconfigured checkout can
+> neither roll out a service nor write its Secrets. That is the intended fail-closed behaviour rather than a
 > regression — the script would otherwise have to guess which of two identically-named production
 > clusters it was pointed at. `terraform/variables.tf` declares `variable "kube_context"` so that
 > `terraform plan` does not emit a *"Value for undeclared variable"* warning (measured on Terraform
