@@ -704,16 +704,17 @@ genetics-mcp-server's own dependency set is resolved: that set contains
 `google-auth[requests]`, plus anthropic, openai and fastapi. The image therefore installs
 the package with `--no-deps` from a staged checkout and declares the SDK's real runtime
 closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx —
-`python-dotenv` was needed only while `config/settings.py` was in the closure, and went
-with it; see below). `build-checks.py` fails the build if a
+`python-dotenv` was needed only while `config/settings.py` was in the closure and
+`pydantic` only while `tools/definitions.py` was, and each went with its module rather
+than becoming a pin; see below). `build-checks.py` fails the build if a
 `google-auth`/`google-cloud` distribution reappears by any route, and separately if
 `import google.auth` succeeds. The cost is that the closure is declared in two places and
 can drift: an SDK that grows a new dependency fails the build's import check rather than
 silently shipping.
 
 `--no-deps` bounds the *distributions*; it does not bound the *files*, and pip installs
-the whole `genetics_mcp_server` package — 48 modules, of which the SDK imports 11. The
-other 37 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
+the whole `genetics_mcp_server` package — 51 modules, of which the SDK imports 10. The
+other 41 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
 `routers/`, `db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
 anthropic, but that is the wrong property to rely on: a prompt-injected script *reads*
 files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every service in
@@ -750,15 +751,49 @@ which is exactly this image, and which is correct there because the sandbox pod 
 internal secret (`4h6.9`). The secret is hard-coded empty in that fallback rather than
 read from the environment, so the variable's *name* does not come back into the image
 through the replacement. `tests/test_sdk_import_closure.py` in genetics-mcp-server pins
-the 11-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
+the 10-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
 build-time backstop.
+
+**`tools/definitions.py` used to be in the closure; it no longer is** (`6bv`). Same shape,
+one module along, and it is the reason that guard test changed shape too. `sdk/client.py`
+imports `tools/executor.py`, which runs the `genetics_mcp_server.tools` package
+`__init__` — and that `__init__` eagerly re-exported `TOOL_DEFINITIONS`,
+`get_anthropic_tools` and every other `__all__` entry except `ToolExecutor` (five more
+names as of this writing) from `definitions.py`. `executor.py` never
+imported `definitions` itself; the parent package's convenience re-export was the whole
+edge. It cost nothing while `definitions.py` imported only the standard library, and then
+`4h6.70` added `from pydantic import Field` at its module scope to emit
+`minimum`/`maximum`/`pattern` in the MCP schemas, and the image's own `import
+genetics_mcp_server.sdk` check started failing for want of pydantic. The re-export is now
+a module `__getattr__` on `tools/__init__.py`, resolved on first attribute access, so
+`from genetics_mcp_server.tools import TOOL_DEFINITIONS` still works everywhere in the
+service and the SDK path never touches it. Adding `pydantic` to `sandbox/requirements.txt`
+was the alternative and was rejected: that file declares the closure, so widening it to
+satisfy an import the closure does not need inverts the argument the file is making.
+Dropping `definitions.py` also stops the image shipping the ~2600-line catalogue of every
+tool the suite exposes, its parameter bounds and its profile map — the same
+`prompt-injected script reads files` disclosure `l41` was about, and the reason
+`test_named_modules_stay_out` now names it beside `config/settings.py`.
+
+The guard on the genetics-mcp-server side is no longer per-offender. It was
+`test_importing_the_sdk_does_not_need_dotenv`, which stubbed out exactly the module `l41`
+had removed and therefore could not have caught this one.
+`test_the_sdk_imports_with_every_unpinned_third_party_module_blocked` replaces it: the
+probe resolves the transitive requirement closure of this file's five pinned
+distributions, installs a `sys.meta_path` finder that raises `ModuleNotFoundError` for
+every *other* installed distribution's top-level modules, and imports the SDK. A third
+offender fails there, in the commit that introduces it, instead of in this repo's image
+build. Blocking by installed distribution rather than by an allow-list of names leaves the
+standard library and the interpreter's own private modules alone, and it deliberately
+tolerates a *denied attempt* inside a `try: ... except ImportError` — httpx's optional CLI
+entry point is one, and it is absent from this image too.
 
 **`tools/executor.py` still ships, and remains a residual disclosure.** `sdk/client.py`
 imports `ToolExecutor` directly and every SDK method delegates to it, so it cannot leave
 the closure without a rewrite of the SDK. With it ship the SQL-building
 methods an earlier draft recorded as blocking the sandbox path — their interpolation is now
 guarded by `tools/sql_safety.py`, see "Handoffs" below — and these environment-variable names — re-derive this
-list by grepping the eleven closure modules, not by trusting it:
+list by grepping the ten closure modules, not by trusting it:
 
 | name | where | kind |
 |---|---|---|
