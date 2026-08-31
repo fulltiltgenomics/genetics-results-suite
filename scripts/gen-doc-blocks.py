@@ -351,9 +351,12 @@ def block_services():
 LAYOUT = {
     "benchmarks": "inputs for the paired A/B replay benchmark; the harness itself lives in "
                   "genetics-mcp-server",
-    "configs": "canonical dataset and resource definitions consumed by results-api and db-api",
+    "configs": "canonical dataset and resource definitions consumed by results-api and "
+               "db-api, and the registry of the suite's declared duplicates",
     "configs/datasets.yaml": "the single source of truth for datasets, resources and views",
     "configs/datasets-schema-example.yaml": "schema reference with example datasets",
+    "configs/twins.yaml": "the duplicates the suite keeps on purpose, netted out of "
+                          "check-duplication.py's counts",
     "configs/rag": "RAG experiment configs (not k8s manifests)",
     "configs/*_pheno.json": "per-phenotype metadata for external GWAS",
     "docs": "everything below, and nothing else",
@@ -372,8 +375,8 @@ LAYOUT = {
     "docs/genegenie-migration.md": "record of the legacy-hostname redirect",
     "docs/nginx-setup.md": "notes for the legacy VM nginx setup",
     "docs/postmortem-code-execution-epic.md": "why the sandbox epic took as long as it did",
-    "docs/duplication-baseline.json": "the cross-repo duplication ratchet's last-written "
-                                      "snapshot, read by check-duplication.py --check",
+    "docs/duplication-baseline.json": "the duplication ratchet's last-written snapshot, "
+                                      "read by check-duplication.py --check",
     "k8s": "manifests, applied by deploy.sh",
     "k8s/namespace.yaml": "the `genetics` namespace",
     "k8s/deployments": "one file per workload, CronJobs included",
@@ -415,8 +418,9 @@ LAYOUT = {
     "scripts/gen-doc-blocks.py": "generate the marked blocks in docs/*.md; `--check` is the "
                                  "build gate",
     "scripts/check-doc-drift.sh": "warn when a commit changes code the docs describe",
-    "scripts/check-duplication.py": "ratchet on the cross-repo and intra-repo duplication "
-                                    "count, measured from the trees themselves",
+    "scripts/check-duplication.py": "ratchet on the suite's UNDECLARED duplication count "
+                                    "(and on the declared one), measured from the trees "
+                                    "themselves",
     "scripts/check-siblings.sh": "run each sibling repo's own discovered test lane from "
                                  "one place",
     "scripts/check-worktree-paths.sh": "warn when a tool would resolve a path into the main "

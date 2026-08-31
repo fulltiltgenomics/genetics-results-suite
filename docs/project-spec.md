@@ -191,19 +191,20 @@ CLAUDE.md                            the coding and documentation-ownership rule
 LICENSE
 README.md                            deployment and operations guide
 benchmarks/                          inputs for the paired A/B replay benchmark; the harness itself lives in genetics-mcp-server
-configs/                             canonical dataset and resource definitions consumed by results-api and db-api
+configs/                             canonical dataset and resource definitions consumed by results-api and db-api, and the registry of the suite's declared duplicates
   covid_hgi_pheno.json               per-phenotype metadata for external GWAS
   datasets-schema-example.yaml       schema reference with example datasets
   datasets.yaml                      the single source of truth for datasets, resources and views
   ibd_gwas_pheno.json                per-phenotype metadata for external GWAS
   rag/                               RAG experiment configs (not k8s manifests)
+  twins.yaml                         the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
 docs/                                everything below, and nothing else
   adding-datasets.md                 how to add a dataset across the repos and profiles
   bigquery-dev-dataset.md            the BigQuery rehearsal dataset
   chat-tool-reference.md             verbatim transcription of what the LLM receives: tool names, descriptions and schemas, the profiles, the system prompt, and the chat surface versus /mcp
   code-execution-security.md         threat model and security design for the sandbox
   datasets-yaml-schema.md            the schema of configs/datasets.yaml
-  duplication-baseline.json          the cross-repo duplication ratchet's last-written snapshot, read by check-duplication.py --check
+  duplication-baseline.json          the duplication ratchet's last-written snapshot, read by check-duplication.py --check
   environments.md                    the three deployments, DEPLOY_ENV, and the staging runbook
   genegenie-migration.md             record of the legacy-hostname redirect
   keycloak-apple-signin.md           Keycloak broker setup, MCP OAuth clients, backup/restore
@@ -229,7 +230,7 @@ scripts/                             build, deploy and verification scripts
   build.sh                           build and push one service's image
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
-  check-duplication.py               ratchet on the cross-repo and intra-repo duplication count, measured from the trees themselves
+  check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
   check-siblings.sh                  run each sibling repo's own discovered test lane from one place
   check-worktree-paths.sh            warn when a tool would resolve a path into the main checkout
   create-secrets.sh                  create the k8s Secrets from environment variables
@@ -1192,12 +1193,45 @@ cause. The suite's own gates are not run here — `build-all.sh` already runs th
 ### Duplication baseline (`scripts/check-duplication.py`)
 
 Counts the one-fact-in-N-copies shape across all six repos, split intra-repo versus
-cross-repo and weighted by lockstep commits rather than by lines. It names nothing: a
-detector holding a list of known copies would be another copy to maintain, so every group
-is found by structure (equal or near-equal function bodies and module-level constant
+cross-repo and weighted by lockstep commits rather than by lines. The detector names
+nothing: one holding a list of known copies would be another copy to maintain, so every
+group is found by structure (equal or near-equal function bodies and module-level constant
 expressions, and the same set of four or more strings written out as a literal in two
 files). It is a unit-level detector — a duplicated block that is neither a body nor a
 literal set is outside its reach, TypeScript entirely so.
+
+What it ratchets is **undeclared** duplication, and the report always shows the split
+rather than one smaller number — a count that fell for an unstated reason is the failure
+this gate exists to prevent. A member **ignored by a tracked `.gitignore` of its own repo
+and byte-identical to a file committed in another** is generated, and no list of them
+exists anywhere because git is asked — which members were struck on a given run is in
+`--json` as each group's `generated_files`, and is not written down here. The ignore has to
+come from a file the clone carries: a rule in `.git/info/exclude` or in the user's global
+excludes file is not accepted, or the same file would be netted out on one machine and
+counted on another with nothing in review able to see it. It fails in the right direction:
+the day a consumer commits its copy, `git check-ignore` stops covering it and it is counted
+again. A group whose remaining files fall inside one entry of **`configs/twins.yaml`** is
+declared. Netting is per member, and a struck member leaves the declared row as well as the
+undeclared ones, so no file is counted in two rows; a group can lose its generated edges and
+stay in the count for the hand-maintained pair underneath — which is what the synced copies
+do to the suite-internal copy in `configs/datasets-schema-example.yaml`, cross-repo groups
+that were really intra-repo groups all along.
+
+`configs/twins.yaml` names the sites of each deliberate duplicate, the property that must
+hold between them, and why they are two things; `merge: never` marks the ones with
+counter-evidence against merging. It is itself a hand-maintained list — the shape this gate
+measures — and netting an entry out is exactly how a real finding would be silenced, so:
+`reason` is mandatory and an entry without one, carrying an unreadable field, or naming a
+site that no longer exists is **exit 2** rather than a quieter count; an entry may pin
+parity to named symbols per site, which is how the auth allow-list matcher is declared
+without declaring the neighbouring function whose fail-open preamble must not be; and the
+**declared count is ratcheted alongside the undeclared ones**, so adding an entry takes a
+`--write-baseline --reason` — non-empty is all the code enforces, and naming the entry in it
+is the convention. The generated count is not ratcheted — it moves when a generator gains a
+consumer, which costs nobody anything. What that argument leaves open is written down at the
+site in `check-duplication.py`: untracking a hand-maintained duplicate takes it out of the
+ratchet with no reason recorded at all, and whole-file byte-identity is what bounds the
+exposure rather than eliminating it.
 
 `docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
 date and commit it was taken at. `--check` ratchets today's counts against it and is wired

@@ -45,7 +45,9 @@ DUP_RC=0
 python3 "${SCRIPT_DIR}/check-duplication.py" --check || DUP_RC=$?
 if [ "${DUP_RC}" -ne 0 ]; then
   echo "!!! duplication check exit ${DUP_RC} (1 = grew past docs/duplication-baseline.json,"
-  echo "!!!  2 = could not count, or the passes now cover less of the trees than the"
+  echo "!!!  2 = could not count: a repo is not checked out, configs/twins.yaml does not say"
+  echo "!!!  what an entry must, the baseline is missing/malformed or was measured over a"
+  echo "!!!  different set of repos, or the passes now cover less of the trees than the"
   echo "!!!  baseline recorded). Not blocking the build."
 fi
 
