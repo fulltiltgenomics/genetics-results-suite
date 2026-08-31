@@ -60,6 +60,13 @@ tables:
     exposed: true                  # optional (default: NOT exposed) -- see below
     description: string            # required -- table-level description
 
+    resource_derivation:           # required -- how the view's `resource` is produced
+      mode: view_case              # view_case | load_time | none -- see below
+      reason: string               # required unless mode is view_case
+
+    dataset_cross_check:           # optional -- opt out of the live `dataset` cross-check
+      excluded_reason: string      # required when the block is present
+
     columns:                       # optional -- per-column descriptions
       <column_name>: string        # description text; overrides BQ field descriptions
 
@@ -111,6 +118,37 @@ from it (`api/yaml_loader.py::load_views`) and refuses to start when the result 
 widening and a narrowing fail that test. Nothing on the deploy path re-checks it.
 
 **Consumers**: db-api (`VIEWS` and the `/query` allow-list), `live_dataset_scope.py`.
+
+### Field details for `tables.<table>.resource_derivation` and `tables.<table>.dataset_cross_check`
+
+Two more per-view decisions that db-api's build scripts read from here rather than from lists
+of their own, so that each exception is stored next to the view it is about and carries its
+own reason.
+
+`resource_derivation.mode` says how the view's `resource` column is produced.
+`view_case` — a `CASE` generated from `dataset_to_resource_rules` sits in `schemas/<view>.sql`
+and `generate_resource_sql.py lint` compares it against the rules. `load_time` — the same
+`CASE` is applied by the loader and stored on the base table (a clustering key cannot be a
+view-derived column), so lint asserts the view SQL contains *no* `CASE`. `none` — `resource`
+is not derived from a `dataset` discriminator at all. The mode is required on every entry and
+unknown values raise: a view that drops out of the lint scope silently is a `CASE` nobody
+compares against the rules.
+
+`dataset_cross_check.excluded_reason` takes a view out of the registry ↔ live-`dataset`
+cross-check (`live_dataset_scope.py`). A view that is neither excluded nor carries a
+`dataset` / `dataset1` / `dataset2` column fails the loader rather than narrowing the check.
+
+**They are different predicates and neither is derived from the other**, though they select
+the same views today: `mode: none` is a claim about where `resource` comes from, exclusion is
+a claim about whether the view contributes `dataset` values. `phenotypes_v` and `datasets_v`
+are in both for unrelated reasons — their `resource` comes from this registry, *and* they are
+built from the mapping the cross-check validates, which would make it self-confirming. A view
+can also carry a `dataset` column while its `resource` is a constant. Both sets are pinned by
+name in `genetics-results-db/tests/test_derived_view_lists.py`, so a config edit that moves a
+view between them fails there.
+
+**Consumers**: `generate_resource_sql.py` (lint scope and the `load_time` assertion),
+`live_dataset_scope.py`.
 
 ### Field details for `tables.<table>.column_types`
 

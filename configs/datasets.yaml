@@ -200,10 +200,23 @@ resources:
 # /tables/{name}/sample. It is a separate decision from documenting one: an entry without
 # the key is documented everywhere but reachable nowhere, so an allow-list cannot grow by
 # someone adding a table here or forgetting a field.
+#
+# `resource_derivation` and `dataset_cross_check` are the other two per-table decisions that
+# live here rather than as hand-kept lists in genetics-results-db's scripts: how a view's
+# `resource` column is produced, and why a view contributes no `dataset` values to the
+# registry cross-check. Each carries its own reason, and neither is derivable from the other
+# or from `exposed` — see docs/datasets-yaml-schema.md.
 # ---------------------------------------------------------------------------
 tables:
   credible_sets_v:
     exposed: true
+    resource_derivation:
+      mode: load_time
+      reason: >-
+        `resource` is a clustering key on the base table and a view-derived column prunes
+        nothing, so load_data.py applies the rules at load time and stores the value; there
+        is no CASE in the view SQL to lint, and a rule change reaches the data only through
+        a reload or backfill
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
       Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
@@ -365,6 +378,8 @@ tables:
 
   colocalization_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Colocalization analysis results (coloc.susie) between pairs of studies.
       PP_H4_abf indicates shared causal variant probability. The view is partitioned by chr,
@@ -504,6 +519,8 @@ tables:
 
   coloc_credsets_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Individual credible set variants in colocalized credible sets. Partitioned by chr, so
       add a literal chr predicate whenever the chromosome is known.
@@ -635,6 +652,8 @@ tables:
 
   exome_variant_results_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Single-variant exome association results from multiple resources with different
       significance thresholds. Genebass contains variants filtered to p < 1e-4.
@@ -716,6 +735,8 @@ tables:
 
   gene_burden_results_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Gene-level burden test results from exome sequencing studies
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
@@ -804,6 +825,8 @@ tables:
 
   asm_qtl_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics
       (Stefansson et al. 2024, doi:10.1038/s41588-024-01851-2), based on Oxford
@@ -890,6 +913,8 @@ tables:
 
   open_chromatin_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Atlas of accessible/active chromatin regions (peaks) labeled by cell
       type, tissue, and condition. Region-indexed presence/annotation atlas
@@ -967,6 +992,8 @@ tables:
 
   variant_effect_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       In-silico PREDICTED effects of variants on chromatin accessibility from
       deep-learning models (ChromBPNet and FLARE). Variant-indexed: one row per
@@ -1043,6 +1070,8 @@ tables:
 
   mpra_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       MEASURED cis-regulatory allelic activity from a massively parallel reporter
       assay (Siraj et al. 2026 MPRA). Variant x cell_line indexed: one row per variant
@@ -1124,6 +1153,8 @@ tables:
 
   hla_associations_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Classical HLA allele associations from FinnGen R14 — every imputed HLA allele
       tested against every core R14 endpoint (~2,712 phenotypes x 187 alleles across
@@ -1242,6 +1273,15 @@ tables:
 
   gene_annotations_v:
     exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table (Ensembl/GENCODE): the view appends the constant
+        'hgnc' AS resource, and the base table carries no `dataset` column for a CASE to
+        switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        gene coordinate reference, has no `dataset` column
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
       GENCODE GRCh38 coordinates, with full-lineage HGNC gene-group arrays
@@ -1348,6 +1388,14 @@ tables:
 
   variant_annotation_v:
     exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table: the view appends the constant 'finngen' AS resource,
+        and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        variant annotation reference, has no `dataset` column
     description: >-
       Per-variant functional annotation and FinnGen (R14) allele frequencies —
       one row per variant, covering all imputed variants, not only fine-mapped ones.
@@ -1432,6 +1480,8 @@ tables:
 
   peak_to_gene_v:
     exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Open4Gene peak-to-gene links from FinnGen ATAC-seq: which genes a chromatin
       peak's accessibility is associated with, in which cell type. One row per
@@ -1536,6 +1586,16 @@ tables:
 
   phenotypes_v:
     exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        `resource` is a real column taken straight from this registry, which is
+        authoritative; the CASE rules exist only to recover a resource from a dataset NAME
+        where the registry is not available in the row
+    dataset_cross_check:
+      excluded_reason: >-
+        built by build_phenotypes.py from the same registry-to-dataset mapping the
+        cross-check validates, so including it would make the check self-confirming
     description: >-
       Trait/phenotype metadata: the human-readable name, trait type, category and
       sample sizes behind the opaque phenotype codes the results tables store.
@@ -1649,6 +1709,16 @@ tables:
 
   datasets_v:
     exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        `resource` is a real column taken straight from this registry, which is
+        authoritative; the CASE rules exist only to recover a resource from a dataset NAME
+        where the registry is not available in the row
+    dataset_cross_check:
+      excluded_reason: >-
+        built by build_phenotypes.py from the same registry-to-dataset mapping the
+        cross-check validates, so including it would make the check self-confirming
     description: >-
       Dataset registry: what every `dataset` value appearing in the results views
       actually is — its resource, version, provenance, description and credible-set
