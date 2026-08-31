@@ -56,6 +56,29 @@ touched two or more of its files at once, and a cross-repo group scores the numb
 calendar days on which two or more repos committed to it. Both are the lockstep edit the
 consolidation is supposed to remove; neither is impressed by a long file.
 
+WHAT THE RATCHET COUNTS IS UNDECLARED DUPLICATION. Two kinds of copy are netted out first,
+and the report always shows the split rather than one smaller number:
+
+  generated   a member ignored by a TRACKED .gitignore of its own repo and byte-identical
+              to a tracked file in another. No list of these is maintained anywhere — git
+              is asked. The ignore has to come from a file every clone has: .git/info/exclude
+              and a global excludesFile are not tracked, so a rule in either would net a copy
+              out here and leave it counted in the next clone. The direction it fails in is
+              the one that matters: a consumer that commits its copy stops being ignored, and
+              the copy comes back as undeclared.
+  declared    a group whose remaining files are covered by an entry in configs/twins.yaml,
+              which names the sites, the property that must hold between them and WHY they
+              are two things. A registry is itself a hand-maintained list — the shape this
+              script exists to measure — so an entry without a reason is a hard error, and
+              the declared count is ratcheted too: declaring a twin takes a --write-baseline
+              --reason naming it.
+
+Netting happens per MEMBER: a group can lose its generated edges and stay in the count for
+the hand-maintained pair underneath, which is what the sync-datasets.sh copies of
+configs/datasets.yaml do to the intra-suite copy in configs/datasets-schema-example.yaml.
+A member struck this way leaves the declared row as well as the undeclared ones, so the four
+rows do not count one file twice.
+
 Usage:
     scripts/check-duplication.py                    report
     scripts/check-duplication.py --json
@@ -64,8 +87,9 @@ Usage:
     scripts/check-duplication.py --check            fail if the counts grew past it
 
 Exit 0 = counted (and within the baseline under --check), 1 = a count grew, 2 = could not
-run: a repo of the suite is not checked out, the baseline was measured over a different set
-of repos and so cannot be compared, or the coverage census fell below the baseline.
+run: a repo of the suite is not checked out, configs/twins.yaml does not say what it must,
+the baseline is missing, unreadable or structurally malformed, it was measured over a
+different set of repos and so cannot be compared, or the coverage census fell below it.
 A missing checkout and a stale parser both lower every count, so treating either as a pass
 is the one outcome that would make this useless. Note which one 2 is NOT: a detector that
 has stopped seeing a site has not measured growth, it has stopped being able to measure.
@@ -74,6 +98,7 @@ has stopped seeing a site has not measured growth, it has stopped being able to 
 import argparse
 import ast
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -86,6 +111,7 @@ import siblings  # noqa: E402
 
 ROOT = siblings.ROOT
 BASELINE = os.path.join(ROOT, "docs", "duplication-baseline.json")
+TWINS = os.path.join(ROOT, "configs", "twins.yaml")
 
 try:
     import yaml
@@ -336,13 +362,14 @@ def collect(repos):
     return units, enums, unreadable, census
 
 
-def tracked_counts(repo_path):
-    """Files per extension straight from `git ls-files` — the census's second opinion.
+def tracked_paths(repo_path):
+    """Everything `git ls-files` reports — the census's second opinion, and the generated
+    rule's notion of "committed somewhere".
 
     walk() is the census's own eyes, so a directory it stops entering lowers read, parsed
     and units together and the drop reads as an ordinary deletion. This shares no code and
     no configuration with it. None means git could not answer, which is a could-not-count
-    rather than a zero: a zero would silently disarm the discovery check.
+    rather than an empty set: an empty set would silently disarm the discovery check.
     """
     try:
         out = subprocess.run(["git", "-C", repo_path, "ls-files", "-z"],
@@ -351,11 +378,224 @@ def tracked_counts(repo_path):
         return None
     if out.returncode != 0:
         return None
+    return {f for f in out.stdout.split("\0") if f}
+
+
+def tracked_counts(paths):
     counts = defaultdict(int)
-    for f in out.stdout.split("\0"):
-        if f and os.path.splitext(f)[1] in EXTS:
-            counts[os.path.splitext(f)[1]] += 1
+    for f in paths:
+        ext = os.path.splitext(f)[1]
+        if ext in EXTS:
+            counts[ext] += 1
     return dict(counts)
+
+
+def ignored_paths(repo_path, rels, tracked):
+    """The subset of `rels` a TRACKED .gitignore of this repo covers.
+
+    `git check-ignore` consults the index, so a path that is TRACKED comes back as not
+    ignored however well it matches a pattern. That is the whole failure direction of the
+    generated rule: the day a consumer commits its generated copy, this stops covering it
+    and the copy is counted again. An unanswerable git is an empty set, which can only
+    leave copies in the count.
+
+    The ignore also has to come from a file every clone has. check-ignore honours
+    .git/info/exclude and the user's core.excludesFile, and neither is tracked, so a rule
+    written in one of them would net a copy out of the ratchet on one machine and leave it
+    counted on another with nothing in review able to see the difference. -v names the
+    source; only a source `git ls-files` reports for this repo is accepted.
+    """
+    if not rels or not tracked:
+        return set()
+    try:
+        out = subprocess.run(["git", "-C", repo_path, "check-ignore", "-v", "-z", "--stdin"],
+                             input="\0".join(rels), capture_output=True, text=True,
+                             check=False)
+    except OSError:
+        return set()
+    if out.returncode not in (0, 1):
+        return set()
+    # -v -z emits <source>\0<line>\0<pattern>\0<pathname>\0 per match
+    fields = out.stdout.split("\0")
+    return {fields[i + 3] for i in range(0, len(fields) - 3, 4) if fields[i] in tracked}
+
+
+def digest(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.md5(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def generated_members(groups, repos, tracked):
+    """Members that are gitignored where they live and byte-identical to a file committed
+    in another repo — the generated copies, recognised without anyone listing them.
+
+    Only files that are already in a group are hashed, and that is not a shortcut: a
+    byte-identical copy yields byte-identical units and enumerations, so it shares every
+    group with its source and the source is always there to compare against.
+    """
+    members = defaultdict(set)
+    for g in groups:
+        for f in g["files"]:
+            repo, _, rel = f.partition(":")
+            members[repo].add(rel)
+    ignored = {r: ignored_paths(repos[r], sorted(rels), tracked.get(r))
+               for r, rels in members.items()}
+    digests = {}
+    for repo, rels in members.items():
+        for rel in rels:
+            d = digest(os.path.join(repos[repo], rel))
+            if d:
+                digests[(repo, rel)] = d
+    committed = defaultdict(set)
+    for (repo, rel), d in digests.items():
+        if tracked.get(repo) and rel in tracked[repo]:
+            committed[d].add(repo)
+    return {f"{repo}:{rel}" for (repo, rel), d in digests.items()
+            if rel in ignored[repo] and committed[d] - {repo}}
+
+
+class TwinError(Exception):
+    """configs/twins.yaml does not say what an entry has to say."""
+
+
+TWIN_REQUIRED = ("id", "property", "reason", "merge")
+# derived rather than written out again: this script's own detector flags the schema
+# restated as a literal beside the entries in configs/twins.yaml that carry every field
+TWIN_FIELDS = set(TWIN_REQUIRED) | {"sites", "symbols"}
+TWIN_MERGE = ("never", "open")
+
+
+def load_twins(repos):
+    """The declared twins, validated hard.
+
+    Nothing here defaults. Netting a group out of the ratchet is how a real finding gets
+    silenced, so an entry missing its reason, naming a site that no longer exists, or
+    carrying a field nobody reads is a refusal to run rather than a quieter count. An
+    ABSENT registry is not an error — it nets nothing out, which can only make the counts
+    larger — but it is said out loud in the report.
+    """
+    path = TWINS
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        raise TwinError(f"{os.path.relpath(path, ROOT)}: {exc}")
+    if not isinstance(doc, dict) or not isinstance(doc.get("twins"), list):
+        raise TwinError(f"{os.path.relpath(path, ROOT)}: expected a `twins:` list")
+    out, seen = [], set()
+    for i, entry in enumerate(doc["twins"]):
+        where = f"{os.path.relpath(path, ROOT)} entry {i + 1}"
+        if not isinstance(entry, dict):
+            raise TwinError(f"{where}: not a mapping")
+        unknown = sorted(set(entry) - TWIN_FIELDS)
+        if unknown:
+            raise TwinError(f"{where}: unknown field(s) {unknown} — a misspelt `reason` is "
+                            "an entry with no reason")
+        for field in TWIN_REQUIRED:
+            value = entry.get(field)
+            # a string, not something that stringifies: `reason: 1` and `reason: {a: b}`
+            # are both an entry with no reason, and both would pass a str() coercion
+            if not isinstance(value, str) or not value.strip():
+                raise TwinError(f"{where}: `{field}` is required and must be a non-empty "
+                                "string")
+        if entry["merge"] not in TWIN_MERGE:
+            raise TwinError(f"{where}: merge must be one of {list(TWIN_MERGE)}")
+        if entry["id"] in seen:
+            raise TwinError(f"{where}: duplicate id {entry['id']!r}")
+        seen.add(entry["id"])
+        sites = entry.get("sites")
+        if not isinstance(sites, list) or len(sites) < 2:
+            raise TwinError(f"{where}: `sites` must list two or more repo:path sites")
+        for site in sites:
+            repo, _, rel = str(site).partition(":")
+            if repo not in repos:
+                raise TwinError(f"{where}: site {site!r} names no repo of the suite")
+            if not rel or not os.path.exists(os.path.join(repos[repo], rel)):
+                raise TwinError(f"{where}: site {site!r} does not exist — a stale entry "
+                                "declares nothing and hides that it declares nothing")
+        symbols = entry.get("symbols") or {}
+        if not isinstance(symbols, dict) or any(
+                s not in sites or not isinstance(n, list) or not n
+                for s, n in symbols.items()):
+            raise TwinError(f"{where}: `symbols` maps a declared site to a non-empty list "
+                            "of names")
+        out.append({**entry, "sites": sites, "symbols": symbols})
+    return out
+
+
+def explaining_twin(twins, files, names_by_file):
+    """The entry that covers this group, or None.
+
+    The whole group must fall inside one entry's sites: a group with a foot outside stays
+    counted, so declaring a file cannot quietly absorb whatever else it duplicates. Where
+    an entry carries `symbols`, every file's names must fall inside the list for THAT site
+    — the mechanism that lets a parity declaration stop at one function.
+    """
+    for t in twins:
+        if not set(files) <= set(t["sites"]):
+            continue
+        if t["symbols"] and not all(
+                names_by_file.get(f) and set(names_by_file[f]) <= set(t["symbols"].get(f, ()))
+                for f in files):
+            continue
+        return t
+    return None
+
+
+def net_out(groups, generated, twins):
+    """Label every group generated, declared or undeclared, stripping generated members.
+
+    The strip runs on every group that survives, declared ones included: a generated copy
+    left inside a declared group is counted in two of the four rows at once, and the
+    lockstep days of the repo it sits in are charged to work nobody has to do.
+    """
+    for g in groups:
+        gen = [f for f in g["files"] if f in generated]
+        left = [f for f in g["files"] if f not in generated]
+        if gen:
+            g["generated_files"] = gen
+        if len(left) < 2:
+            g["status"] = "generated"
+            continue
+        if gen:
+            g["files"] = left
+            g["repos"] = sorted({f.partition(":")[0] for f in left})
+            g["names_by_file"] = {f: n for f, n in g["names_by_file"].items() if f in left}
+            g["names"] = sorted({n for names in g["names_by_file"].values() for n in names})
+        twin = explaining_twin(twins, left, g["names_by_file"])
+        if twin:
+            g["status"] = "declared"
+            g["twin"] = twin["id"]
+            continue
+        g["status"] = "undeclared"
+
+
+def baseline_shape(base):
+    """What is wrong with the baseline's own structure, or None.
+
+    Presence is not enough. A block that is there but malformed — `"declared": {}`, a
+    repos_present that is not a list — reaches the comparisons below as a KeyError or a
+    TypeError, and the process exits 1 saying a count grew when the truth is that nothing
+    could be compared. That is the one answer this must never give: 1 is a finding about
+    the trees, 2 is "could not run".
+    """
+    if not isinstance(base.get("repos_present"), list):
+        return "`repos_present` is missing or is not a list"
+    if not isinstance(base.get("census"), dict):
+        return "`census` is not an object"
+    for scope in ("intra", "cross", "declared"):
+        block = base.get(scope)
+        if not isinstance(block, dict):
+            return f"`{scope}` is not an object"
+        for field in ("groups", "files"):
+            if not isinstance(block.get(field), int):
+                return f"`{scope}.{field}` is missing or is not a number"
+    return None
 
 
 def census_drift(base, now):
@@ -395,10 +635,18 @@ def _group(members, sized=False):
         return None
     if sized and len(files) < WIDE_FILES and max(m[4] for m in members) < FLOOR_NODES:
         return None
+    # per file, not only the union: a twin entry that declares parity on one named function
+    # has to be able to say which name belongs to which side. The union cannot — two repos
+    # each holding a function of the same name would look like the declared one.
+    by_file = defaultdict(set)
+    for m in members:
+        if m[2]:
+            by_file[f"{m[0]}:{m[1]}"].add(m[2])
     return {
         "files": [f"{r}:{p}" for r, p in files],
         "repos": sorted({r for r, _ in files}),
         "names": sorted({m[2] for m in members if m[2]}),
+        "names_by_file": {f: sorted(n) for f, n in sorted(by_file.items())},
     }
 
 
@@ -510,26 +758,31 @@ def weigh(groups, history):
             g["lockstep"] = sum(1 for r in days.values() if len(r) >= 2)
 
 
-def measure(repos, window):
+def measure(repos, window, twins):
     units, enums, unreadable, census = collect(repos)
     blind = []
+    tracked = {}
     for repo, path in sorted(repos.items()):
-        tracked = tracked_counts(path)
-        if tracked is None:
+        tracked[repo] = tracked_paths(path)
+        if tracked[repo] is None:
             # leave on_disk out rather than writing 0: a baseline recorded here would
             # otherwise turn every later committed deletion into a permanent false red
             blind.append(repo)
             continue
-        for ext in set(census.get(repo, {})) | set(tracked):
-            _slot(census, repo, ext)["on_disk"] = tracked.get(ext, 0)
+        counts = tracked_counts(tracked[repo])
+        for ext in set(census.get(repo, {})) | set(counts):
+            _slot(census, repo, ext)["on_disk"] = counts.get(ext, 0)
     exact = exact_groups(units)
     groups = exact + near_groups(units, exact) + enum_groups(enums)
+    net_out(groups, generated_members(groups, repos, tracked), twins)
     history = {r: commit_index(p, window) for r, p in repos.items()}
+    # after net_out, so an undeclared group is weighed on the files still in it and the
+    # generated copies' lockstep days stop counting towards work nobody has to do
     weigh(groups, history)
     groups.sort(key=lambda g: (-g["lockstep"], -len(g["files"]), g["kind"], g["files"]))
 
-    def tally(scope):
-        sel = [g for g in groups if (len(g["repos"]) == 1) == (scope == "intra")]
+    def tally(pick):
+        sel = [g for g in groups if pick(g)]
         return {
             "groups": len(sel),
             "files": len({f for g in sel for f in g["files"]}),
@@ -538,14 +791,24 @@ def measure(repos, window):
                         for k in ("bodies-exact", "bodies-near", "enumerations")},
         }
 
+    def undeclared(scope):
+        return lambda g: (g["status"] == "undeclared"
+                          and (len(g["repos"]) == 1) == (scope == "intra"))
+
+    declared = tally(lambda g: g["status"] == "declared")
+    declared["by_twin"] = {t["id"]: sum(1 for g in groups if g.get("twin") == t["id"])
+                           for t in twins}
     return {
         "repos_present": sorted(repos),
         "window_days": window,
         "unreadable_files": unreadable,
         "census": census,
         "census_blind": blind,
-        "intra": tally("intra"),
-        "cross": tally("cross"),
+        "twins_registry": os.path.exists(TWINS),
+        "intra": tally(undeclared("intra")),
+        "cross": tally(undeclared("cross")),
+        "declared": declared,
+        "generated": tally(lambda g: g["status"] == "generated"),
         "groups": groups,
     }
 
@@ -557,11 +820,24 @@ def render(m, top=12):
         "",
         f"{'':10} {'groups':>7} {'files':>7} {'lockstep':>9}   by kind",
     ]
-    for scope in ("intra", "cross"):
+    for scope in ("intra", "cross", "declared", "generated"):
         t = m[scope]
         kinds = " ".join(f"{k.split('-')[-1]}={v}" for k, v in t["by_kind"].items())
-        lines.append(f"{scope + '-repo':10} {t['groups']:>7} {t['files']:>7} "
+        label = scope + "-repo" if scope in ("intra", "cross") else scope
+        lines.append(f"{label:10} {t['groups']:>7} {t['files']:>7} "
                      f"{t['lockstep']:>9}   {kinds}")
+    lines += ["",
+              "the two -repo rows are UNDECLARED duplication, and they are what --check "
+              "ratchets on.",
+              "declared = covered by an entry in configs/twins.yaml"
+              + ("" if m["twins_registry"] else " (ABSENT — nothing is netted out)")
+              + "; generated = gitignored where",
+              "it lives and byte-identical to a file committed in another repo, so no entry "
+              "is needed."]
+    if m["declared"]["by_twin"]:
+        for tid, n in sorted(m["declared"]["by_twin"].items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append(f"  {tid:28} {n} group(s)"
+                         + ("   — declares nothing this run" if not n else ""))
     lines += ["",
               "lockstep = commits touching >=2 files of one intra-repo group; for cross-repo",
               "groups, days on which >=2 repos committed to the group.", "",
@@ -579,12 +855,14 @@ def render(m, top=12):
                      f"{c['units']:>9}")
     if m["census_blind"]:
         lines.append("  tracked counts unavailable: " + ", ".join(m["census_blind"]))
-    lines += ["", f"top {top} groups by lockstep evidence:"]
-    for g in m["groups"][:top]:
+    lines += ["", f"top {top} UNDECLARED groups by lockstep evidence:"]
+    for g in [g for g in m["groups"] if g["status"] == "undeclared"][:top]:
         scope = "intra" if len(g["repos"]) == 1 else "CROSS"
         names = ", ".join(g["names"][:3]) or "-"
+        stripped = len(g.get("generated_files", ()))
         lines.append(f"  [{scope}] {g['kind']:16} lockstep={g['lockstep']:<3} "
-                     f"{len(g['files'])} files  {names}")
+                     f"{len(g['files'])} files  {names}"
+                     + (f"  (+{stripped} generated)" if stripped else ""))
         for f in g["files"][:6]:
             lines.append(f"        {f}")
         if len(g["files"]) > 6:
@@ -621,7 +899,16 @@ def main():
               "a pass.", file=sys.stderr)
         return 2
 
-    m = measure({r: p for r, p in found.items() if p}, args.window)
+    repos = {r: p for r, p in found.items() if p}
+    try:
+        twins = load_twins(repos)
+    except TwinError as exc:
+        print(f"cannot run: {exc}", file=sys.stderr)
+        print("       an entry that does not say why is how a real finding gets netted "
+              "out silently, so this refuses rather than counting.", file=sys.stderr)
+        return 2
+
+    m = measure(repos, args.window, twins)
 
     if args.write_baseline:
         head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"],
@@ -649,6 +936,8 @@ def main():
             "census": m["census"],
             "intra": m["intra"],
             "cross": m["cross"],
+            "declared": m["declared"],
+            "generated": m["generated"],
         }
         with open(BASELINE, "w") as fh:
             json.dump(snap, fh, indent=2)
@@ -664,6 +953,22 @@ def main():
         except (OSError, ValueError) as exc:
             print(f"cannot run: no readable baseline at {BASELINE}: {exc}", file=sys.stderr)
             return 2
+        if "census" not in base:
+            print("cannot run: the baseline predates the coverage census and cannot say "
+                  "whether the passes still reach as much of the trees as they did. "
+                  "Rerun --write-baseline --reason to record one.", file=sys.stderr)
+            return 2
+        if "declared" not in base:
+            print("cannot run: the baseline predates the declared/generated split, so its "
+                  "intra and cross counts include duplication these do not. Comparing them "
+                  "would read as a large improvement nobody made. Rerun --write-baseline "
+                  "--reason to record one.", file=sys.stderr)
+            return 2
+        broken = baseline_shape(base)
+        if broken:
+            print(f"cannot run: the baseline at {BASELINE} is malformed: {broken}. "
+                  "Rerun --write-baseline --reason to record one.", file=sys.stderr)
+            return 2
         if base["repos_present"] != m["repos_present"]:
             print("cannot run: the baseline was measured over a different set of repos "
                   f"({', '.join(base['repos_present'])}); the counts are not comparable.",
@@ -678,11 +983,6 @@ def main():
                   + ", so a drop in files read cannot be told from a deletion.",
                   file=sys.stderr)
             return 2
-        if "census" not in base:
-            print("cannot run: the baseline predates the coverage census and cannot say "
-                  "whether the passes still reach as much of the trees as they did. "
-                  "Rerun --write-baseline --reason to record one.", file=sys.stderr)
-            return 2
         drift = census_drift(base["census"], m["census"])
         if drift:
             print("the duplication passes cover less of the trees than the baseline "
@@ -695,9 +995,30 @@ def main():
             print("  if the drop is real — files deleted, a helper consolidated away — "
                   "rerun --write-baseline --reason to record it.", file=sys.stderr)
             return 2
+        # declared is ratcheted alongside the undeclared counts: netting a group out is the
+        # one move that makes this number fall for a reason nobody can see, so it has to be
+        # spent through --write-baseline --reason like any other. generated is not — it
+        # moves when a generator gains a consumer, which costs nobody anything.
+        #
+        # WHAT WOULD MAKE THAT FALSE, since a one-directional rationale is the kind that
+        # rots: `git rm --cached` plus a .gitignore line takes a hand-maintained duplicate
+        # out of the ratchet with no --write-baseline and no reason recorded anywhere — the
+        # accountability an entry in configs/twins.yaml carries in its `reason` field has no
+        # counterpart on this side. What bounds it is the precondition: WHOLE-FILE
+        # byte-identity to a file committed in another repo, now also requiring the ignore
+        # to come from a tracked .gitignore. Measured 2026-08-31 over all six repos with no
+        # extension filter, exactly one cross-repo byte-identical pair had a gitignored
+        # side, the sync-datasets.sh copies. It is not exact even so: a probe hand-typed a
+        # 46-byte colors.yaml, ignored under a local/ dev-overrides rule that has nothing to
+        # do with generation and byte-identical to a tracked file in another repo, and it is
+        # netted out. That residue is honest and stays — a size threshold to close it would
+        # be a tuned constant with nothing to check it against.
         grew = [
-            f"{scope}-repo {field}: {m[scope][field]} > {base[scope][field]}"
-            for scope in ("intra", "cross") for field in ("groups", "files")
+            f"{label} {field}: {m[scope][field]} > {base[scope][field]}"
+            for scope, label in (("intra", "undeclared intra-repo"),
+                                 ("cross", "undeclared cross-repo"),
+                                 ("declared", "declared twins"))
+            for field in ("groups", "files")
             if m[scope][field] > base[scope][field]
         ]
         if grew:
@@ -712,7 +1033,9 @@ def main():
                   file=sys.stderr)
             return 1
         print(f"duplication within the baseline ({m['intra']['groups']} intra-repo, "
-              f"{m['cross']['groups']} cross-repo groups)")
+              f"{m['cross']['groups']} cross-repo undeclared groups; "
+              f"{m['declared']['groups']} declared in configs/twins.yaml and "
+              f"{m['generated']['groups']} generated, netted out)")
         return 0
 
     print(json.dumps(m, indent=2) if args.json else render(m, args.top))

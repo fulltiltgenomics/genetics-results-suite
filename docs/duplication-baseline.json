@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-08-31, against commit a961d7c7d898 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
+  "SNAPSHOT": "Measured on 2026-08-31, against commit 5d886d0fc207 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
   "measured_date": "2026-08-31",
-  "measured_commit": "a961d7c7d898ea906db389d8f5945c89d9c19ff5",
+  "measured_commit": "5d886d0fc207cbd2dfde52826eea8cd402f2d623",
   "measured_tree_dirty": true,
-  "reason": "counts unchanged from the xw3.7 measurement: xw3.7 moved three hand-maintained view lists into per-table resource_derivation and dataset_cross_check fields in the canonical configs/datasets.yaml; sync-datasets.sh then generates the -db and -api copies, so each new field adds cross-repo enumeration groups across three copies of one generated file. Rewritten for the census schema, where on_disk is now absent rather than 0 when git cannot answer",
+  "reason": "re-measured after three corrections to the split, over the same trees and the same 191 groups: nothing was consolidated and nothing regrew. Before: intra 118 groups / 139 files, cross 22 / 72, declared 18 / 13, generated 33 / 3. After: intra 118 / 139, cross 34 / 74, declared 6 / 8, generated 33 / 3. (1) The generated rule now requires the ignore to come from a .gitignore that is TRACKED in the repo it lives in - git check-ignore also honours .git/info/exclude and a global core.excludesFile, neither of which travels with the clone, so the same file could be netted out on one machine and counted on another with nothing in review able to see the difference. The two files struck are unchanged: genetics-results-api:configs/datasets.yaml and genetics-results-db:configs/datasets.yaml, both via .gitignore. (2) Generated members are now stripped from DECLARED groups too, not only undeclared ones, so the four rows no longer count one file twice: declared files 13 -> 11 as the two generated configs/datasets.yaml copies leave the exposed-views-pin group, and declared lockstep 12 -> 10 with their repos' commit days no longer charged to it. (3) Two configs/twins.yaml entries declared more than their reason justified and were narrowed with symbols: sandbox-token-and-budget dropped the two tests/test_sandbox_budget.py sites, whose eleven declared groups are pytest scaffolding - fixtures, helpers and whole test bodies - that its reason (the two sandbox_budget.py docstrings and docs/code-execution-security.md section 4) says nothing about, and pinned the four remaining sites to the required claims, the shape test, and the ceilings, admit/release accounting and eviction sweep; sandbox-wire-contract pinned its three sites to the request-shaping and error-envelope names, dropping a bodies-near group on the error carriers' __init__. That moves 12 groups from declared to undeclared cross-repo (11 test bodies + 1 constructor), which is why cross rises 22 -> 34 / 72 -> 74 and declared falls 18 -> 6 / 13 -> 8. The scaffolding is undeclared duplication and is now counted as such",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -116,9 +116,9 @@
     },
     "genetics-results-suite": {
       ".yaml": {
-        "read": 31,
-        "parsed": 31,
-        "units": 30,
+        "read": 32,
+        "parsed": 32,
+        "units": 31,
         "on_disk": 32
       },
       ".py": {
@@ -136,23 +136,51 @@
     }
   },
   "intra": {
-    "groups": 108,
-    "files": 137,
-    "lockstep": 63,
+    "groups": 118,
+    "files": 139,
+    "lockstep": 73,
     "by_kind": {
       "bodies-exact": 44,
       "bodies-near": 36,
-      "enumerations": 28
+      "enumerations": 38
     }
   },
   "cross": {
-    "groups": 83,
-    "files": 82,
-    "lockstep": 124,
+    "groups": 34,
+    "files": 74,
+    "lockstep": 27,
     "by_kind": {
-      "bodies-exact": 21,
+      "bodies-exact": 18,
       "bodies-near": 5,
-      "enumerations": 57
+      "enumerations": 11
+    }
+  },
+  "declared": {
+    "groups": 6,
+    "files": 8,
+    "lockstep": 7,
+    "by_kind": {
+      "bodies-exact": 3,
+      "bodies-near": 0,
+      "enumerations": 3
+    },
+    "by_twin": {
+      "sandbox-wire-contract": 1,
+      "browser-normalized-types": 0,
+      "auth-allow-list-matcher": 0,
+      "exposed-views-pin": 1,
+      "derived-view-lists-pin": 0,
+      "sandbox-token-and-budget": 4
+    }
+  },
+  "generated": {
+    "groups": 33,
+    "files": 3,
+    "lockstep": 66,
+    "by_kind": {
+      "bodies-exact": 0,
+      "bodies-near": 0,
+      "enumerations": 33
     }
   }
 }

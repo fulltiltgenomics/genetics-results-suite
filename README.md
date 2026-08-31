@@ -719,8 +719,17 @@ Repos are located by
 `scripts/lib/siblings.py`, which honours `SUITE_SIBLING_ROOT` and a per-repo
 `SUITE_REPO_<NAME>` override and can find a repo checked out under a different root from
 the others. `check-duplication.py` compares against the dated snapshot in
-`docs/duplication-baseline.json`; `build-all.sh` runs it warn-only. See "Sibling repos" in
-`docs/project-spec.md`.
+`docs/duplication-baseline.json`; `build-all.sh` runs it warn-only. What it ratchets is
+**undeclared** duplication: a copy ignored by a tracked `.gitignore` of its own repo and
+byte-identical to a file committed in another is generated and netted out mechanically (an
+ignore from `.git/info/exclude` or a global excludes file does not count — neither travels
+with the clone), and a group covered by an entry in `configs/twins.yaml` — the sites, the
+property that must hold between them, a mandatory reason, and whether merging them is ruled
+out — is declared and netted out too. Both are reported on their own lines rather than
+folded into a smaller number, and the declared count is ratcheted like the rest, so
+declaring a twin takes a `--write-baseline --reason`; that the reason names the entry is
+convention, non-empty is what the code enforces. See "Sibling repos" and "Duplication
+baseline" in `docs/project-spec.md`.
 
 ## Services
 
