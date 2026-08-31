@@ -53,7 +53,7 @@ DOCS_SPEC='^(docs/project-spec\.md|README\.md)$'
 
 check '^configs/datasets\.yaml$' \
     '^docs/(datasets-yaml-schema|adding-datasets)\.md$' \
-    'configs/datasets.yaml -> docs/datasets-yaml-schema.md (data_type enum, field lists), docs/adding-datasets.md (ALL_VIEWS list)'
+    'configs/datasets.yaml -> docs/datasets-yaml-schema.md (data_type enum, field lists), docs/adding-datasets.md (per-view resource_derivation / dataset_cross_check decisions)'
 
 check '^k8s/' "$DOCS_SPEC" \
     'k8s/ -> docs/project-spec.md + README.md (services table, request routing, PVCs, hardening)'

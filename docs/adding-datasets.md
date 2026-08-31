@@ -178,53 +178,23 @@ python3 scripts/generate_resource_sql.py generate credible_sets_v   # prints the
 python3 scripts/generate_resource_sql.py lint                       # must report "All views match."
 ```
 
-If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` so the `CASE` block matches the
-generated fragment. The resource-mapped views are `credible_sets_v`, `colocalization_v`,
-`coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`,
-`open_chromatin_v`, `variant_effect_v`, `mpra_v`, `peak_to_gene_v` and `hla_associations_v`
-(the script's `ALL_VIEWS`).
+If `lint` reports a mismatch, edit the affected `schemas/*_v.sql` so the `CASE` block matches
+the generated fragment. **What `lint` covers is not a list in the script**: it is every view
+whose `tables.<view>.resource_derivation.mode` in this file is `view_case` (a generated `CASE`
+in the view SQL) or `load_time` (the same `CASE` applied by the loader and stored on the base
+table, so lint asserts the SQL has none). A view opts out with `mode: none` and a `reason`
+recorded beside it — so the question a new view raises, dataset-discriminated vs
+registry-authoritative vs single-source constant, is answered in `configs/datasets.yaml` and
+nowhere else, and a view added without an answer fails loudly.
 
-`configs/datasets.yaml` describes **15** views; `ALL_VIEWS` has **11**. **Four** views are
-deliberately outside it, for **two different reasons** — do not read "not a metadata view" as
-"belongs in `ALL_VIEWS`":
-
-- **`phenotypes_v` and `datasets_v`** carry `resource` as a real column taken straight from
-  this file's registry, which is authoritative; the generated `CASE` blocks only exist to
-  recover the resource from a dataset *name* where the registry is not available in the row.
-  Both `schemas/phenotypes_v.sql` and `schemas/datasets_v.sql` say so in a header comment
-  carrying the instruction "Do not add this view to `scripts/generate_resource_sql.py`'s
-  `ALL_VIEWS`." — each comment continues past that sentence to record why the view exists at
-  all (so `api/main.py`'s `VIEWS` exposes views uniformly). Both files live on
-  genetics-results-db's `staging` branch — the branch checked out beside this repo — and are
-  **not** on its `master`.
-- **`gene_annotations_v` and `variant_annotation_v`** are excluded for the opposite reason:
-  their base tables are **single-source and have no dataset discriminator column at all**, so
-  there is nothing for a `CASE` to switch on. Each view appends a bare constant —
-  `'hgnc' AS resource` and `'finngen' AS resource` respectively (see
-  `schemas/gene_annotations_v.sql` and `schemas/variant_annotation_v.sql`, the latter
-  recording the reason in its header comment). A `CASE` block here would have exactly one arm.
-
-Whenever you add a view, decide which of these three cases it is: dataset-discriminated (goes
-in `ALL_VIEWS`), registry-authoritative, or single-source constant.
-
-Neither group appears in `scripts/monitor/bq_summary.py`'s `VIEWS`, which compares
-per-resource coverage of *result* views against `dataset_to_resource_rules` — meaningless for
-a table whose rows are the registry itself, and for a single-source table whose `resource` is
-a constant. Note that `VIEWS` is narrower still (**8** views): `open_chromatin_v`,
-`variant_effect_v` and `peak_to_gene_v` are in `ALL_VIEWS` but not monitored. Re-derive all
-three lists rather than trusting this paragraph:
-
-Run these from this repo's root. `DB_REPO` has to be set explicitly: the plain sibling path
-`../genetics-results-db` only resolves from a plain clone, and from a `.claude/worktrees/<name>`
-checkout of this repo it points into `.claude/worktrees/` instead — set it to that repo's
-matching worktree.
+`scripts/monitor/bq_summary.py`'s `VIEWS` is narrower still: it compares per-resource coverage
+of *result* views against `dataset_to_resource_rules`, which is meaningless for a table whose
+rows are the registry itself and for a single-source table whose `resource` is a constant, and
+it also leaves out some views that do have a generated `CASE`. Re-derive both rather than
+trusting this paragraph — from this repo's root:
 
 ```bash
-DB_REPO=../genetics-results-db                                   # plain clone
-# DB_REPO=../../../../genetics-results-db/.claude/worktrees/db-only-architecture   # from a worktree
-
-python3 -c "import yaml;print(len(yaml.safe_load(open('configs/datasets.yaml'))['tables']))"
-sed -n '/^ALL_VIEWS = \[/,/^]/p' "$DB_REPO/scripts/generate_resource_sql.py"
+python3 -c "import yaml;t=yaml.safe_load(open('configs/datasets.yaml'))['tables'];print('\n'.join(f\"{i['resource_derivation']['mode']:<10} {n}\" for n,i in t.items()))"
 sed -n '/^VIEWS = \[/,/^]/p' scripts/monitor/bq_summary.py
 ```
 
@@ -250,7 +220,7 @@ that `phewas-development` is **not reachable from the admin instance** (no kubec
 context; `gcloud container clusters list --project phewas-development` returns 403), so
 the numbers below cannot be re-derived from this checkout at all. As of 2026-08-13,
 `bq ls phewas-development:genetics_results` holds **18 base tables and 15 views**.
-`ALL_VIEWS` (11, above) plus the two metadata views is 13 — `gene_annotations_v` and
+The 11 views with a generated `resource` plus the two metadata views is 13 — `gene_annotations_v` and
 `variant_annotation_v` are the other two live views and are in neither list. Both do
 carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
 tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`
@@ -329,9 +299,10 @@ build** on any mismatch.
 The **scope** of that cross-check is derived from the views marked `exposed: true` in
 `datasets.yaml` (by `genetics-results-db`'s `scripts/live_dataset_scope.py`), not from a
 hardcoded table list. So exposing a view is all it takes to bring its `dataset` values under
-the check — and a new `dataset` value fails the loader until it is mapped. Views opt out only via that script's
-`EXCLUDED_VIEWS`, each entry carrying a reason (`gene_annotations_v` and `variant_annotation_v`
-have no `dataset` column; `phenotypes_v` / `datasets_v` are built from the map under test).
+the check — and a new `dataset` value fails the loader until it is mapped. Views opt out only via
+`tables.<view>.dataset_cross_check.excluded_reason` in that same file, which keeps the
+exclusion and its reason beside the view (the reference tables have no `dataset` column; the
+registry-built views are built from the map under test).
 A view that is neither excluded nor has a `dataset` column fails loudly rather than being
 skipped. When you expose a new view, expect the next `load_phenotypes.sh` run to demand a
 `BQ_DATASETS_BY_DATASET_ID` entry for whatever `dataset` values it carries.
@@ -459,7 +430,7 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
    enumerable and are already excluded there.
 4. `genetics-results-db`: `schemas/hla_associations{,_v}.sql`, `scripts/load_hla.sh`, the
    `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view
-   exposed in `datasets.yaml` **and** added to `ALL_VIEWS` in `generate_resource_sql.py` so
+   exposed in `datasets.yaml` **and** given `resource_derivation.mode: view_case` there so
    the linter covers it. `hla_associations_v` lists its
    columns explicitly instead of `SELECT *`, because it renames five to the suite's house
    spelling (`mlogp`→`mlog10p`, `sebeta`→`se`, `af_alt`→`af`, `af_alt_cases`→`af_cases`,
@@ -498,13 +469,16 @@ convenience mirror.
         pins the resulting set by name, so a widened or narrowed allow-list fails that test —
         note the pin is a test, not a deploy-time gate. Omit the flag and nothing can reach
         the view.
-      - `ALL_VIEWS` (generator/linter) — **only if the view is dataset-discriminated**, i.e.
-        its `resource` has to be recovered from a dataset name by a generated `CASE` block.
-        A registry-authoritative or single-source-constant view must stay out of it; see
-        the three-case paragraph in §5 ("Whenever you add a view, decide which of these three
-        cases it is"). Wrongly adding it makes `lint` demand a `CASE` block the view should
-        not have; wrongly omitting it lets the view's `CASE` drift from `datasets.yaml`
-        unnoticed.
+      - `resource_derivation.mode` on the same block — **required**, and it decides whether
+        the generator/linter covers the view: `view_case` if its `resource` has to be
+        recovered from a dataset name by a generated `CASE`, `load_time` if that `CASE` is
+        applied at load time and stored, `none` (with a `reason`) if the view is
+        registry-authoritative or single-source-constant. A wrong `view_case` makes `lint`
+        demand a `CASE` the view should not have; a wrong `none` lets the view's `CASE` drift
+        from `datasets.yaml` unnoticed.
+      - `dataset_cross_check.excluded_reason` — **only** if the view contributes no `dataset`
+        values to the registry cross-check, and then only with the reason. Omitting it for a
+        view with no `dataset` column fails `load_phenotypes.sh` loudly, which is the point.
       - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
         only for *result* views whose per-resource coverage is meaningful to compare against
         `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Exposing a

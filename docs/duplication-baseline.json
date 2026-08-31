@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-08-31, against commit b7884294c9c5 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
+  "SNAPSHOT": "Measured on 2026-08-31, against commit db8e9f95e32e of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
   "measured_date": "2026-08-31",
-  "measured_commit": "b7884294c9c5fb56ed833dcced7f509442ae4a68",
+  "measured_commit": "db8e9f95e32e4f742c80ca139576a4a72ab1a038",
   "measured_tree_dirty": true,
-  "reason": "the pin test in genetics-results-db deliberately duplicates the exposed-view enumeration, because a security pin that derives both sides asserts nothing",
+  "reason": "xw3.7 moved three hand-maintained view lists into per-table resource_derivation and dataset_cross_check fields in the canonical configs/datasets.yaml; sync-datasets.sh then generates the -db and -api copies, so each new field adds cross-repo enumeration groups across three copies of one generated file",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -24,13 +24,13 @@
     }
   },
   "cross": {
-    "groups": 82,
+    "groups": 83,
     "files": 82,
-    "lockstep": 121,
+    "lockstep": 124,
     "by_kind": {
       "bodies-exact": 21,
       "bodies-near": 5,
-      "enumerations": 56
+      "enumerations": 57
     }
   }
 }
