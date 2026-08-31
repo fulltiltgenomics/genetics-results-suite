@@ -18,6 +18,10 @@ spec:
             app: monitor
         spec:
           serviceAccountName: genetics-suite
+          # fsGroup only, and it is NOT hardening: it makes the kubelet chgrp monitor-data to
+          # gid 1000 so the volume stays writable. It is what keeps the container securityContext
+          # below able to drop CAP_DAC_OVERRIDE — the container runs as uid 1000/gid 1000 (the
+          # image's `monitor` user), so it writes /data/monitor.db as owner, needing no capability.
           securityContext:
             fsGroup: 1000
           restartPolicy: OnFailure
@@ -69,6 +73,34 @@ spec:
               readOnly: true
             - name: monitor-data
               mountPath: /data
+            # readOnlyRootFilesystem below leaves the image with NO writable temp directory at
+            # all: verified by running this image under `--read-only` with no tmpfs, where
+            # `tempfile.NamedTemporaryFile()` raises "No usable temporary directory found in
+            # ['/tmp', '/var/tmp', '/usr/tmp', '/app']". Nothing in scripts/monitor/ opens a
+            # tempfile itself (MONITOR_DB_PATH points at the PVC, overriding alerter.py's
+            # /tmp/monitor.db default), but google/cloud/bigquery/client.py,
+            # google/auth/transport/_mtls_helper.py and requests/utils.py in this image all
+            # import tempfile, and those paths are not exercised by a local run without GCP
+            # credentials. An emptyDir here removes the whole class rather than betting on it.
+            - name: tmp
+              mountPath: /tmp
+            # Verified against this image: `--user 1000:1000 --cap-drop=ALL --read-only` imports
+            # every monitor module, writes and commits to a sqlite db on the mounted /data, and
+            # the real `python -m monitor.main --all` entrypoint reaches exactly the same
+            # GCP-credentials failure it reaches unconstrained (no earlier breakage). The image
+            # already declares USER monitor (uid 1000, gid 1000, per its Dockerfile), so
+            # runAsUser/runAsGroup here pin what it does today rather than changing it — which
+            # matters because monitor-data's existing files were written by that uid.
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              seccompProfile:
+                type: RuntimeDefault
             resources:
               requests:
                 cpu: "100m"
@@ -80,6 +112,8 @@ spec:
           - name: datasets-config
             configMap:
               name: datasets-config
+          - name: tmp
+            emptyDir: {}
           - name: monitor-data
             persistentVolumeClaim:
               claimName: monitor-data

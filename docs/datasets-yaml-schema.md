@@ -349,11 +349,15 @@ resource definitions, and dataset entries all use consistent identifiers.
 ## Dev environment
 
 **"Dev environment" here means running the service processes on a workstation, and
-nothing more.** There is no dev cluster, no dev namespace and no dev BigQuery dataset:
-one GKE cluster, one GCP project (`phewas-development`, which *is* production), and three
-BigQuery datasets, none of them a copy. A locally-run service therefore reads the **live**
-`genetics_results`. To rehearse a BigQuery schema or view change against a throwaway
-dataset instead, see `docs/bigquery-dev-dataset.md` and `scripts/bq-dev-dataset.sh`.
+nothing more.** There is no dev namespace and no dev BigQuery dataset for either
+production brand: `phewas-development` *is* production, and so is the daly `finngenie`
+cluster. The suite runs three clusters in two projects (`docs/environments.md`) — the
+`daly-staging` cluster is a rehearsal ground for **manifests and images only**, since its
+db-api points at the same `daly-finngenie:genetics_results` that daly production reads
+(`genetics-results-suite-zaw`). A locally-run service therefore reads a **live**
+`genetics_results` unless it is pointed elsewhere. To rehearse a BigQuery schema or view
+change against a throwaway dataset instead, see `docs/bigquery-dev-dataset.md` and
+`scripts/bq-dev-dataset.sh`.
 
 Each service repo (genetics-results-api, genetics-results-db) runs independently in
 its own tmux window during local development. To keep them in sync with the canonical

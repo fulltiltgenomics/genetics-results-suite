@@ -11,8 +11,14 @@ set -u
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
 
+# only the *staged* tree is examined, because that is what the pre-commit hook is about
+# to turn into a commit. Run by hand with nothing staged this checks nothing, so say so
+# rather than exiting silently — silence here reads as a pass.
 staged=$(git diff --cached --name-only --diff-filter=ACMRD)
-[ -n "$staged" ] || exit 0
+if [ -z "$staged" ]; then
+    printf 'doc-drift: nothing staged, nothing checked.\n' >&2
+    exit 0
+fi
 
 hit() {
     printf '%s\n' "$staged" | grep -qE "$1"
@@ -61,6 +67,17 @@ check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 
+# One rule, not two: environments.md reasons about the cookie surface of this host as a single
+# passage (oauth2-proxy's --cookie-* flags, keycloak.yaml setting none, and deploy.sh's gateway
+# block rewriting them with proxy_cookie_flags plus building KEYCLOAK_HOST). All three stale the
+# same passage, so they share one warning. deploy.sh is named despite already having a row of its
+# own against project-spec/README: that doc names the printf inside it as "the site least likely
+# to be caught by anyone grepping manifests for --cookie-domain", which is precisely the change
+# this rule exists to catch. Scoped to the two manifests that actually set cookies rather than to
+# k8s/ — a broader pattern would fire on manifests the passage says nothing about.
+check '^(k8s/deployments/(oauth2-proxy|keycloak)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
+    'cookie/host surface (k8s/deployments/oauth2-proxy.yaml, keycloak.yaml, deploy.sh gateway block) -> docs/environments.md (cookie domain, the SameSite=None proxy_cookie_flags rewrite, KEYCLOAK_HOST on the shared host)'
+
 # named literally rather than folded into the glob above: broadening `build*.sh` to reach
 # these would also catch unrelated scripts, and a rule that fires where it cannot apply is
 # how this check becomes wallpaper (see the note on the 4th argument above).
@@ -103,11 +120,46 @@ check "$SANDBOX_PATHS" \
     '^docs/project-spec\.md$' \
     'sandbox image/manifests/policy/schema -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy, what the sandbox exposes)'
 
-# Only the *static branding assets* under keycloak/themes/ are exempt: a stylesheet, an
-# image, a font or a `.properties` bundle changes how the login page looks and reads and
-# has no other effect. The exemption is by extension, not by directory, because
-# keycloak/themes/genetics/login/ is exactly where a FreeMarker override (`login.ftl`) or a
-# script would go, and those change how the login page *behaves* — they stay covered.
+# the generated trees above were mapped to code-execution-security.md while the GENERATOR
+# was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
+# the shipped schema docs with no warning at all (genetics-results-suite-8vn). Named
+# literally rather than folded into a scripts/ glob: nothing else under scripts/ owns this
+# contract, and a wider pattern would fire where it cannot apply.
+check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/gen-sandbox-docs.py, test-sandbox-docs.py -> docs/code-execution-security.md (neither generated tree empty, no PLACEHOLDER survives the build gate, each view file carries description/columns/worked example, stubs cover exactly the SDK surface)'
+
+# two checks, not one alternation: project-spec.md enumerates this pair as a build step (what
+# the generator emits per view, what the test asserts, the --sdk-src resolution order, the
+# PLACEHOLDER gate, the shared 0/1/2 exit-code convention) while code-execution-security.md
+# owns the schema-doc contract. Satisfying one doc must not mask an unexamined claim in the
+# other.
+check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/gen-sandbox-docs.py, test-sandbox-docs.py -> docs/project-spec.md (what the generator emits per view, what the test asserts, --sdk-src resolution order, the PLACEHOLDER build gate, the 0/1/2 exit-code convention)'
+
+# two checks, not one alternation, for the same reason as the sandbox pair: project-spec.md
+# enumerates what the harness itself checks (discovery tells, both locks, the workload kinds,
+# the three-way live-sandbox answer), while code-execution-security.md cites it control by
+# control. Updating one leaves the other's claims unexamined.
+check '^scripts/test-network-policies\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/test-network-policies.py -> docs/code-execution-security.md (the controls it is cited as enforcing: sandbox ingress/egress allow-lists, MCP-exclusion layers, the SANDBOX_ENABLED pairing, which pod-spec fields are still sandbox tells)'
+
+check '^scripts/test-network-policies\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer)'
+
+# Only the *static branding assets* under keycloak/themes/ are exempt, and NOT because they are
+# cosmetic — theme.properties records that css/genetics.css hides the username/password form, so a
+# stylesheet here does change what the login page lets a user do. The exemption holds on the doc
+# side instead: docs/keycloak-apple-signin.md contains no occurrence of theme, .ftl or .css at all,
+# so nothing in it can be staled by these files. Residual, deliberately left in place: the row's
+# other doc, docs/mcp-oauth-onboarding.md, does quote
+# keycloak/themes/genetics/login/messages/messages_en.properties, which this pattern exempts —
+# whether to narrow the extension list is an open decision, not settled here. The exemption is by
+# extension, not by directory, because keycloak/themes/genetics/login/ is exactly where a
+# FreeMarker override (`login.ftl`) or a script would go, and those stay covered.
 KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
 check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \

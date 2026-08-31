@@ -2,6 +2,15 @@ project_id           = "your-gcp-project-id"
 region               = "europe-west1"
 zone                 = "europe-west1-b"
 cluster_name         = "finngenie"
+
+# REQUIRED by scripts/rollout.sh. The kubectl context name of THIS deployment's cluster, exactly
+# as `kubectl config get-contexts -o name` prints it. rollout.sh refuses to touch a cluster whose
+# current context is not this string, and refuses outright when the key is missing, set twice,
+# indented, or not a plain quoted string — it is stated here rather than derived from project_id,
+# zone and cluster_name because every derivation that was tried failed towards terraform's
+# defaults, which name a PRODUCTION cluster in both projects. No terraform resource reads it.
+kube_context         = "gke_your-gcp-project-id_europe-west1-b_finngenie"
+
 namespace            = "genetics"
 manage_iam           = false
 node_service_account = "some-account@somewhere.gserviceaccount.com"

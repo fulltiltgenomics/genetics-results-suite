@@ -118,11 +118,11 @@ is the only workload in the cluster that executes attacker-influenceable code *b
 |---|---|---|
 | Base image | `gcr.io/distroless/python3-debian12:nonroot`, multi-stage with a venv built in a `python:3.12-slim` stage | No shell, no package manager, no `curl`. `execute_script`'s `bash` interpreter is not merely un-allow-listed, it is absent from the filesystem. |
 | uid / gid | `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65532` | The distroless `nonroot` identity. Deliberately not 1032/1000/10001 — none of the existing suite uids, so no accidental filesystem-permission overlap if a volume is ever attached by mistake. |
-| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The only other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`), and they need two writable `emptyDir`s to do so; the sandbox needs none. |
+| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`) and, since `genetics-results-suite-d6n`, the `monitor` CronJob, `frontend`, `oauth2-proxy`, `keycloak`, `keycloak-postgres` and `rag-service` — and every one of them except `oauth2-proxy` needs a writable `emptyDir` to do so (two each for auth-gateway, frontend and keycloak; one at `/tmp` for the monitor and rag-service; one at `/var/run/postgresql`, for the unix socket and its lock file, for `keycloak-postgres`). `oauth2-proxy` and the sandbox need none — the sandbox because its bytecode and matplotlib font cache are baked at build time, oauth2-proxy because its session store is the cookie default. |
 | Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
 | `allowPrivilegeEscalation` | `false` | Matches baseline. |
 | Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
-| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does too since `genetics-results-suite-o5i`, which is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
+| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does since `genetics-results-suite-o5i` and `bff`, `frontend`, `keycloak`, `oauth2-proxy` and `keycloak-postgres` since `genetics-results-suite-5ho`, so seven of the fifteen now set it and the other eight name `genetics-suite` and still mount that KSA's token; that is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
 | Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
 | Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 5-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 5 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
 | Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
@@ -704,16 +704,17 @@ genetics-mcp-server's own dependency set is resolved: that set contains
 `google-auth[requests]`, plus anthropic, openai and fastapi. The image therefore installs
 the package with `--no-deps` from a staged checkout and declares the SDK's real runtime
 closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx —
-`python-dotenv` was needed only while `config/settings.py` was in the closure, and went
-with it; see below). `build-checks.py` fails the build if a
+`python-dotenv` was needed only while `config/settings.py` was in the closure and
+`pydantic` only while `tools/definitions.py` was, and each went with its module rather
+than becoming a pin; see below). `build-checks.py` fails the build if a
 `google-auth`/`google-cloud` distribution reappears by any route, and separately if
 `import google.auth` succeeds. The cost is that the closure is declared in two places and
 can drift: an SDK that grows a new dependency fails the build's import check rather than
 silently shipping.
 
 `--no-deps` bounds the *distributions*; it does not bound the *files*, and pip installs
-the whole `genetics_mcp_server` package — 48 modules, of which the SDK imports 11. The
-other 37 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
+the whole `genetics_mcp_server` package — 51 modules, of which the SDK imports 10. The
+other 41 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
 `routers/`, `db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
 anthropic, but that is the wrong property to rely on: a prompt-injected script *reads*
 files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every service in
@@ -750,15 +751,49 @@ which is exactly this image, and which is correct there because the sandbox pod 
 internal secret (`4h6.9`). The secret is hard-coded empty in that fallback rather than
 read from the environment, so the variable's *name* does not come back into the image
 through the replacement. `tests/test_sdk_import_closure.py` in genetics-mcp-server pins
-the 11-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
+the 10-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
 build-time backstop.
+
+**`tools/definitions.py` used to be in the closure; it no longer is** (`6bv`). Same shape,
+one module along, and it is the reason that guard test changed shape too. `sdk/client.py`
+imports `tools/executor.py`, which runs the `genetics_mcp_server.tools` package
+`__init__` — and that `__init__` eagerly re-exported `TOOL_DEFINITIONS`,
+`get_anthropic_tools` and every other `__all__` entry except `ToolExecutor` (five more
+names as of this writing) from `definitions.py`. `executor.py` never
+imported `definitions` itself; the parent package's convenience re-export was the whole
+edge. It cost nothing while `definitions.py` imported only the standard library, and then
+`4h6.70` added `from pydantic import Field` at its module scope to emit
+`minimum`/`maximum`/`pattern` in the MCP schemas, and the image's own `import
+genetics_mcp_server.sdk` check started failing for want of pydantic. The re-export is now
+a module `__getattr__` on `tools/__init__.py`, resolved on first attribute access, so
+`from genetics_mcp_server.tools import TOOL_DEFINITIONS` still works everywhere in the
+service and the SDK path never touches it. Adding `pydantic` to `sandbox/requirements.txt`
+was the alternative and was rejected: that file declares the closure, so widening it to
+satisfy an import the closure does not need inverts the argument the file is making.
+Dropping `definitions.py` also stops the image shipping the ~2600-line catalogue of every
+tool the suite exposes, its parameter bounds and its profile map — the same
+`prompt-injected script reads files` disclosure `l41` was about, and the reason
+`test_named_modules_stay_out` now names it beside `config/settings.py`.
+
+The guard on the genetics-mcp-server side is no longer per-offender. It was
+`test_importing_the_sdk_does_not_need_dotenv`, which stubbed out exactly the module `l41`
+had removed and therefore could not have caught this one.
+`test_the_sdk_imports_with_every_unpinned_third_party_module_blocked` replaces it: the
+probe resolves the transitive requirement closure of this file's five pinned
+distributions, installs a `sys.meta_path` finder that raises `ModuleNotFoundError` for
+every *other* installed distribution's top-level modules, and imports the SDK. A third
+offender fails there, in the commit that introduces it, instead of in this repo's image
+build. Blocking by installed distribution rather than by an allow-list of names leaves the
+standard library and the interpreter's own private modules alone, and it deliberately
+tolerates a *denied attempt* inside a `try: ... except ImportError` — httpx's optional CLI
+entry point is one, and it is absent from this image too.
 
 **`tools/executor.py` still ships, and remains a residual disclosure.** `sdk/client.py`
 imports `ToolExecutor` directly and every SDK method delegates to it, so it cannot leave
-the closure without a rewrite of the SDK. With it ship the five SQL-building
+the closure without a rewrite of the SDK. With it ship the SQL-building
 methods an earlier draft recorded as blocking the sandbox path — their interpolation is now
 guarded by `tools/sql_safety.py`, see "Handoffs" below — and these environment-variable names — re-derive this
-list by grepping the eleven closure modules, not by trusting it:
+list by grepping the ten closure modules, not by trusting it:
 
 | name | where | kind |
 |---|---|---|
@@ -797,6 +832,68 @@ key to anything present, and after `4h6.44` it is not even a key to anything the
 send. This is a different calculus from `config/settings.py`, which named a dozen *unrelated*
 variables and so handed over the shape of the whole internal surface rather than the one
 credential the caller is already using.
+
+**A substantial part of the shipped `ToolExecutor` is INERT in the image, and that is now
+stated rather than discovered at call time** (`genetics-results-suite-tbg`). `executor.py`
+is one file holding both halves of the executor: the data functions the SDK path uses, and
+the orchestration the chat backend and mcp-server call. Five modules the closure reaches at call time are absent from
+this image, and every one of them is reachable — the scope note at the top of this document
+says `GeneticsClient._executor` is one attribute access from a documented entry point, and
+these are exactly the methods that reaches:
+
+| module | absent because | reached from |
+|---|---|---|
+| `ddgs` | not in `sandbox/requirements.txt` — that file declares the closure and is closed at numpy/scipy/polars/matplotlib/httpx | `web_search` → `_search_duckduckgo` |
+| `genetics_mcp_server.sandbox_client` | outside `SDK_ALLOWLIST`, so `prune_venv.py` deletes it | `run_analysis`, `read_artifact`, `_sandbox` |
+| `genetics_mcp_server.auth.core` | outside `SDK_ALLOWLIST` | `run_analysis` |
+| `genetics_mcp_server.sandbox_token` | outside `SDK_ALLOWLIST` | `run_analysis` |
+| `genetics_mcp_server.tools.definitions` | outside `SDK_ALLOWLIST` | **not an executor method** — `tools/__init__.py`'s lazy `__getattr__`, i.e. `from genetics_mcp_server.tools import TOOL_DEFINITIONS` |
+
+The fifth was **created by `6bv`**, the fix immediately above. Making the re-export lazy moved
+that failure from this package's import — where the image's own `import genetics_mcp_server.sdk`
+check would have caught it — to first attribute access, where nothing does. Worth noticing that
+the shape this section is about is partly a *consequence* of the closure cuts rather than an
+accident alongside them: each cut trades a build-time failure for a call-time one, which is the
+right trade only if the call-time failure is legible.
+
+Re-derive that set with an AST walk over the **function-level** imports of all ten closure
+modules — not just `executor.py`, which is where the fifth hides — checked
+against `requirements.txt` and `SDK_ALLOWLIST`; the module-level imports are not where this
+lives, which is the whole reason it survived two guards. `build-checks.py` runs `import
+genetics_mcp_server.sdk` inside the image and a deferred import is never executed by that;
+genetics-mcp-server's `test_sdk_import_closure.py` blocks unpinned distributions and then
+imports the SDK, with the same blind spot. Both stay green.
+
+**What a script sees now.** Each of those import sites in genetics-mcp-server is wrapped in
+`except ModuleNotFoundError` with a name check — the shape `_resolve_settings` already used
+for `config/settings.py`, and the name check is load-bearing: a `ModuleNotFoundError` from
+deeper inside a module that *is* installed is a broken install outside the sandbox and must
+propagate. The guarded methods return a shaped failure with `error_type:
+"CapabilityUnavailable"` and `retryable: false`, saying the module is not installed here and
+no rewrite reaches it, instead of raising a bare `ModuleNotFoundError` in a container with no
+shell and no package manager. `_analysis_hint` no longer answers these with "call
+`list_capabilities` for the exact signatures" — `web_search` and `run_analysis` will never
+appear in that list, so it pointed the model at a catalogue that could not explain the
+failure. `tools/__init__.py`'s `__getattr__` is the one site left **unguarded on purpose**: it
+has no result shape to return, and the `ImportError: cannot import name 'definitions' from
+'genetics_mcp_server.tools'` it already raises names the missing module accurately — the defect
+there was only the hint, so only the hint changed. That error is an `ImportError`, and an
+ImportError of that shape never carries the dotted path, so the hint matches `cannot import
+name 'X' from 'Y'` as well as `No module named '…'`. Outside the sandbox all five modules are
+present and every guard is a pass-through, so chat-backend and mcp-server behaviour is
+unchanged.
+
+**Widening the image was considered and rejected.** Adding `ddgs` to `requirements.txt` buys
+nothing: the sandbox NetworkPolicy has no DNS rule (section 3), so DDGS would stall the glibc
+resolver for the full timeout rather than fail fast — a worse failure than the guarded one.
+Adding `sandbox_client`, `auth/core.py`, `sandbox_token` and `definitions.py` to
+`SDK_ALLOWLIST` would undo `l41` and `6bv` along with it, and would ship a
+confused-deputy surface — a sandboxed script able to construct a supervisor client and mint
+against an identity model — with no egress rule that lets it be used, and `auth/core.py` is
+the one file `prune_venv.py`'s docstring names as the reason the allow-list exists. The
+guards are the containment-preserving answer. The architectural fix — splitting the
+orchestration half of `executor.py` out of the shipped half, so these imports are unreachable
+by construction rather than by a guard — is filed separately.
 
 **The stubs are generated, so this passage is checkable rather than asserted.**
 `scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
@@ -1192,7 +1289,7 @@ silently clamped server-side value makes the client's arithmetic wrong.
 from request receipt — queue wait does not count against the script. On expiry the
 supervisor `SIGTERM`s the child's process group, `SIGKILL`s after a 2s grace, reaps, and
 still answers `200` with `status: "timeout"` and whatever output was captured.
-`terminationGracePeriodSeconds: 130` is 120s plus reap, answer and wipe, so that sequence
+`terminationGracePeriodSeconds: 130` is 120s plus reap and answer, so that sequence
 has to complete in seconds, not tens of them.
 
 #### Concurrency: one at a time, queued, with a bounded queue and a bounded wait
@@ -1261,7 +1358,7 @@ chat-backend has already recorded, and wiping and re-running would delete artifa
 recorded.
 
 **The maximum wait — not the depth — is the number the token lifetime constrains.** The
-inequality is `max wait + timeout_s < 300`: 120 + 120 = 240 against the real 300s TTL
+inequality is `max wait + timeout_s < 300`: 120 + 120 = 240 against the real 300s **token** TTL
 (section 4). Depth does not appear in it, and raising the depth lengthens the queue without
 lengthening any individual wait, because the wait bound cuts first. Anyone raising the
 **wait** above 180s is the one who breaks it, and gets a script whose data calls `401`
@@ -2183,7 +2280,7 @@ against both.
 | `--tmpfs /scratch:…,mode=0700,uid=65532,gid=65532` | the one `emptyDir` at `/scratch`, `fsGroup: 65532` |
 | `--memory 3g --cpus 1.5` | `limits.memory` / `limits.cpu` |
 | `--pids-limit 1024` | the kubelet's `pod_pids_limit` |
-| `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer-wipe sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
+| `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
 | `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
 | `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal`, on the **dev-stack's** ports (results-api `:2000`, db-api `:8080`) and not the manifest's — locally `:4000` is chat-api (`4h6.49`) | the same two variables at cluster FQDNs pinned by `hostAliases` |
 | `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 300s |
@@ -2239,7 +2336,7 @@ up, because a fidelity gap nobody reads is the same as no fidelity gap at all:
 `terminationGracePeriodSeconds: 130` **is** reproduced, via `--stop-timeout 130` plus a `--stop`
 that calls `docker stop` rather than `docker rm -f` — see the table above. It is named here only
 because getting it wrong is silent: `docker kill`, `docker rm -f` or Ctrl-C on the daemon all
-SIGKILL immediately and skip the drain-reap-answer-wipe the 130s exists for.
+SIGKILL immediately and skip the drain-reap-answer sequence the 130s exists for.
 
 Also not reproduced, and worth naming because it is a difference in **behaviour** rather than
 configuration: the audit stream goes to the container's stdout, collected by `docker logs`
@@ -4006,13 +4103,19 @@ because the sandbox is the one caller whose input is attacker-influenced. Concre
    structured log line that feeds the `genetics_api_logs` sink — whose production table is
    `phewas-development.genetics_api_logs.stdout` (named after the log ID, not the service; the
    similarly named `genetics_api_logs.genetics_results_api` is a developer VM's test output).
-   **Caveat: those three fields are not queryable in BigQuery today.** That table's
-   `jsonPayload` schema has no `sid`, `sub` or `jti` column, because no sandbox-authorized
-   request has ever reached the sink to grow it — no sandbox Deployment is applied (the manifest
-   exists since `4h6.7`, gated off) and
-   `SANDBOX_ENABLED` is `"false"` on both services. Until one lands, sandbox attribution is
-   readable in Cloud Logging and container stdout only, and any claim here about attributing an
-   execution must be checked against the schema rather than assumed.
+   **Caveat: whether those three fields are queryable in BigQuery has to be checked, not
+   assumed — and the reason this document once gave for their absence has expired.** That
+   `jsonPayload` schema grows a `sid`, `sub` or `jti` column only once a sandbox-authorized
+   request reaches the sink, and the premise stated here was that none ever had, because no
+   sandbox Deployment was applied and `SANDBOX_ENABLED` was `"false"`. Neither half survives the
+   manifests: `SANDBOX_ENABLED` is `"true"` in **all three** deployments that carry it —
+   `k8s/deployments/db-api.yaml`, `results-api.yaml` and `chat-backend.yaml`, flipped together by
+   `genetics-results-suite-5r2` — and `sandbox_pool_enabled = true` in
+   `terraform/terraform.tfvars.daly-staging` opens `deploy.sh`'s gate on `sandbox.yaml`. What a
+   given deployment's sink actually holds is not derivable from this checkout either way, so
+   query the table's schema before relying on `sid`, `sub` or `jti` being selectable. Sandbox
+   attribution is readable in Cloud Logging and container stdout regardless; in BigQuery it is
+   readable only if those columns are there, and that is a check, not an assumption.
 6. **db-api refuses to start** — `sys.exit(1)`, not a `logger.warning` — when the sandbox
    is deployed and `INTERNAL_API_SECRET` is unset. Rules 1-5 all fire on "a sandbox-shaped
    bearer", and **nothing in this design obliges the sandbox to send one**. A script that
@@ -4101,8 +4204,10 @@ has 120 seconds in which to loop. For the sandbox audience:
 | Response bytes per request | 16 MiB | **results-api only** (`SANDBOX_MAX_RESPONSE_BYTES`). Bounds one response, of **any** status — a non-2xx body is caller-controlled too, since FastAPI's 422 handler echoes the offending input. Which is the point of the next four rows. |
 | Aggregate response bytes per `jti` | 1 GiB | **results-api only** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`). 64 responses at the per-response cap, or ~8.5 MB/s sustained across the whole 120 second wall clock. Charged from bytes actually **sent**, so it agrees with the per-response cap's own buffer rather than re-measuring — and charged for every status, not only 2xx. |
 | Requests per `jti` | 1000 | **both** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses on results-api, nor a loop of *zero-BigQuery* requests on db-api, and every request costs the pod a tabix seek, a GCS range read or a request slot whatever its size. ~8 rps over 120 seconds. db-api gained it in `4h6.61`; see the `4h6.49` comparison above for the measurement that decided it. |
-| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
+| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). On results-api this is reachable in full only by a **lone** execution — the reserve two rows down is paid for out of the incumbents' allowance; measured at 8/4/2, 3 other executions parked on a slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
 | Concurrent sandbox requests per pod | 8 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply either pod's peak load. Refused at import if it is set below the per-`jti` value, on both services. |
+| Pod-wide slots reserved for idle executions | 2 | **results-api only** (`SANDBOX_RESERVED_POD_SLOTS`, `genetics-results-suite-yv4`). The fairness half of the row above: an execution that already holds a pod-wide slot may not take the last 2, so two executions at their per-`jti` allowance can no longer occupy all 8 and refuse every other execution's *first* request — filling all 8 now takes **four** distinct executions, `ceil((TOTAL − RESERVED) / PER) + RESERVED`. Refused at import above `TOTAL − per-jti`, which is exactly the condition under which a lone execution never meets it — so today's `concurrency: 1` behaviour is unchanged. db-api's port does not carry it; see below. |
+| Sandbox request deadline | 120 s | **results-api only** (`SANDBOX_REQUEST_TIMEOUT_SECONDS`, `genetics-results-suite-yv4`). Equal to the sandbox's own hard wall-clock ceiling, so a request outliving it is producing a body no execution is alive to read. Armed **only** for a request carrying an execution token, in the same `try` whose `finally` releases the slot. Answers `504`, not `429`: it is the pod's deadline firing, not a caller quota. |
 | Tracked executions per pod | 4096 | **both** (`SANDBOX_MAX_TRACKED_EXECUTIONS`). A bound on the counter map itself, not on any execution, so a flood of distinct `jti`s cannot grow it without limit; a full map refuses a **new** execution rather than evicting a live one, because an evicted counter is a reset budget. Entries are swept once the token can no longer authenticate **and** nothing is in flight under it. Note this is a *different* eviction policy from db-api's older `_jti_bytes` byte-budget map, which is still a 1024-entry LRU. |
 | Applied row cap, reported | — | **db-api only** (`max_rows_applied` on the `/query` response). Not a limit: the row cap above is invisible in a truncated result, and the two candidate ceilings differ by 4× (25 000 vs the relaxed 100 000), so `/query` reports the ceiling it actually ran under and the SDK's truncation error quotes that number instead of hardcoding one (`4h6.32`). |
 
@@ -4111,7 +4216,7 @@ script cannot widen them by asking. db-api's BigQuery byte and row caps are modu
 the request-count and concurrency limits are env-configurable on **both** services, because
 neither the payload sizes results-api serves nor the load db-api can absorb is a number an
 operator should have to rebuild an image to move — and on both they are declared at their
-in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, five;
+in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, seven;
 `k8s/deployments/db-api.yaml`, four), since a knob no manifest names is env-configurable in the
 code and code-default-only in practice.
 
@@ -4213,11 +4318,18 @@ bounds **one** response; it does not bound a script that issues many in-cap requ
 seconds, and the producer teardown of `4h6.28` bounds what a single *rejected* request costs to
 produce, not a loop of accepted ones. `app/core/sandbox_budget.py` is the analogue of db-api's
 `_jti_bytes`, deliberately shaped like it — one in-process map keyed on `jti`, checked **before**
-the handler runs, answering 429 rather than truncating. The table above has **five** results-api
-rows and this module holds **four** of them — the aggregate byte budget, the request count and
-the two concurrency bounds; the 16 MiB per-response row lives in `app/core/limits.py` and
-`app/middleware.py` instead. It carries a fifth control of its own that is not a table row,
-`SANDBOX_MAX_TRACKED_EXECUTIONS` (below), which is why it emits **five** rejection codes.
+the handler runs, answering 429 rather than truncating. The table above has **eight** results-api
+rows — count them, an earlier draft said seven and also said the tracked-execution bound was not
+one of them, and both were wrong — and this module holds **six**: the aggregate byte budget, the
+request count, the two concurrency bounds, the pod-wide reserve and `SANDBOX_MAX_TRACKED_EXECUTIONS`.
+The other two are the 16 MiB per-response row, which lives in `app/core/limits.py` and
+`app/middleware.py`, and the deadline, whose value is declared in this module but which is armed
+and answered in `app/middleware.py`. Six of those controls refuse an admission, which is why
+`admit` emits **six** rejection codes. Two more are recorded by this module's
+`log_request_timeout` rather than returned by `admit`, for the two ways the deadline can fire:
+`sandbox_request_timeout` (nothing on the wire — the caller gets the 504) and
+`sandbox_request_timeout_after_send` (the response had already begun — no 504 is possible, since
+that would be a second `http.response.start` on a completed response). **Eight** codes in all.
 
 It is admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI
 contract puts after the last byte of the response, a `StreamingResponse` included. An earlier
@@ -4231,14 +4343,81 @@ that concurrency slot permanently — and `_sweep_locked` cannot reclaim the ent
 it refuses to evict anything with `in_flight > 0`. That is the mutation
 `tests/test_sandbox_budget.py::test_an_unmatched_route_releases_its_slot` exists to kill.
 
+*The request deadline, and why it is armed there too* (`genetics-results-suite-yv4`). Nothing
+bounded how long **one** request may hold a slot, and the anti-eviction rule above is what made
+that compound: a request wedged in a GCS read held a per-`jti` slot, a pod-wide slot **and** an
+entry `_sweep_locked` may never reclaim, for as long as the socket stayed open — so a handful of
+hung requests reached the pod-wide bound with no attacker at all. `SANDBOX_REQUEST_TIMEOUT_SECONDS`
+(120 s) is armed with `asyncio.timeout` inside `SandboxResponseCapMiddleware.__call__`, around
+the same `await self.app(...)` the slot is held across. Two placements were rejected: **uvicorn
+has no per-request timeout** — `timeout_keep_alive` bounds an idle connection between requests
+and `timeout_graceful_shutdown` a shutdown, neither touching a request in progress — and an
+**outer ASGI middleware** would cancel this `__call__` from outside, which still runs the
+`finally` but leaves the deadline and the release as two separately-ordered layers a later
+`setup_middleware` edit could reorder with no test noticing. Armed where it is, the `TimeoutError`
+unwinds through the very `finally` that calls `release`, so the timeout path and the happy path
+are the same line rather than two that must be kept in step —
+`tests/test_sandbox_budget.py::test_a_request_that_outlives_the_deadline_is_abandoned_and_releases_its_slot`
+and `::test_a_timed_out_entry_becomes_evictable_again` are what fail if it moves. The answer is a
+**504** carrying the same `code`/`limit`/`observed` shape, except where an *uncapped* response
+already had its start message sent, where the status is spent and the connection simply closes
+incomplete. It is armed only for a request that resolved an execution token: browser and BFF
+traffic holds no slot and pins no entry, and a deadline on it would be a new bound on traffic
+this control is not about.
+
+*The pod-wide bound has a fairness reserve* (`genetics-results-suite-yv4`). At `TOTAL = 8` and
+`per-jti = 4`, two executions at their own allowance occupied every slot, and the party denied
+was a third execution that had done nothing — the pod-wide limit denying exactly the tenants it
+exists to protect. `SANDBOX_RESERVED_POD_SLOTS` (2) makes the last slots reachable only by an
+execution with **nothing in flight**: one already holding a slot stops at `TOTAL − RESERVED`.
+Nothing is preempted — that would corrupt a running execution's accounting the way eviction
+would — and nothing is queued, for the reasons above. What this buys is bounded and worth
+stating exactly: filling the pod takes `ceil((TOTAL − RESERVED) / PER) + RESERVED` distinct
+executions, **four** at the shipped 8/4/2 against two before — by exhaustive search of the
+reachable states, 1 execution reaches 4 in flight, 2 reach 6, 3 reach 7 and 4 reach 8 — so the
+guarantee is "**no execution is denied its first concurrent request until at least
+`SANDBOX_RESERVED_POD_SLOTS` others each hold one**", not "no execution is ever denied".
+**The newcomer's fairness is paid for out of the incumbents' allowance**, which is inherent to a
+reservation and is not visible in the number 4 anywhere that number is advertised: an execution
+reaches its per-`jti` allowance in full only when it is alone. Measured at 8/4/2 — 3 other
+executions parked on one slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The reserve is refused at import above `TOTAL − per-jti`, which is precisely the
+condition under which a lone execution — the only case that exists while the sandbox is
+`concurrency: 1`, since `_in_flight_total` is then that execution's own `in_flight` — never
+meets it. **db-api's port (`api/sandbox_budget.py`) does not carry the reserve or the deadline**:
+its pod-wide bound has the same shape and the same latent unfairness, and closing it there is a
+separate change against a separate service.
+
 *Rejection, not queueing, and the reason.* Queueing an over-concurrency request holds it while
 the sandbox's ~120 second clock keeps running, which a script cannot distinguish from slow data
 and cannot act on, and work admitted from a queue can complete after its execution is already
 dead — precisely the wasted production `4h6.28` removed. A fast 429 leaves the script clock to
 narrow the request or back off. Every one of these 429s carries a `code`, a `limit` and an
 `observed` value (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`,
-`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_execution_tracker_full`), so an
-operator reading a log line knows which control fired without inferring it from prose.
+`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`,
+`sandbox_execution_tracker_full`), so an operator reading a log line knows which control fired
+without inferring it from prose. The deadline's two codes carry the same three
+fields but are **not** among these 429s, and are recorded by
+`sandbox_budget.log_request_timeout` rather than returned by `admit`: `sandbox_request_timeout`
+answers **504**, and `sandbox_request_timeout_after_send` answers nothing at all. The second is
+counted rather than swallowed because the slot was pinned for the full deadline either way —
+a request that reaches the deadline is never silent, which is the property an operator needs
+when the alternative is the cheapest slot-pinning primitive in the module going unrecorded.
+
+*Denials are observable, and the counters travel with them* (`genetics-results-suite-yv4`).
+Until this, a rejection produced a `logger.warning` and an admission produced nothing, so a
+denied hour and a quiet hour looked identical in a log and there was no production datum to size
+1000/4/8 against. Three changes, all in `app/core/sandbox_budget.py`: a **pod-wide** denial
+(`sandbox_execution_tracker_full`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`)
+and a `sandbox_request_timeout` log at **ERROR**, because one of those is either an attack or a
+capacity signal, while a per-execution denial and a `sandbox_request_timeout_after_send` stay
+WARNINGs because in neither case was anybody served worse; every such
+line carries process-lifetime counters and high-water marks (`stats()`: admissions, rejections
+by code, tracked entries, peak in-flight pod-wide and per-execution, peak requests per
+execution), so the denial and its denominator arrive together; and **one INFO line per
+execution** — emitted when its map entry is created, not per request, which at the measured 23
+chat turns/hour is the admission signal without 1000× the volume for no extra information.
+There is no metrics endpoint: `stats()` is a dict on a `replicas: 1` process whose uptime is the
+window, and adding a scrape surface is a bigger change than the observability gap warranted.
 
 *Bytes are counted as **sent**, from the cap middleware's own buffer.* The two therefore cannot
 diverge or double-count. **Every status is buffered, capped and charged, not only 2xx.** An
@@ -4261,20 +4440,32 @@ still accept it (`exp` plus the verifier's leeway, so no further request can pre
 **and** it has nothing in flight — the second condition covering a stream that outlives its own
 token. The map is still hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096, swept lazily when
 a new `jti` arrives), but at the bound it is the *new* execution that is refused, never a running
-one that is evicted. Entries live at most one token lifetime (~305 s), so at the measured peak of
-23 chat turns/hour the bound is a backstop rather than a working limit.
+one that is evicted. At the measured peak of 23 chat turns/hour the bound is a backstop rather
+than a working limit. The **deadline** above is the counterpart the anti-eviction rule previously
+lacked: it bounds how long an entry can stay unevictable at `SANDBOX_REQUEST_TIMEOUT_SECONDS`
+rather than at the life of the socket.
+
+*"Entries live at most one token lifetime (~305 s)" is the **minter's** invariant, not the
+verifier's,* and earlier drafts of this section stated it as though results-api enforced it.
+`_Execution.expires_at` is the token's `exp` taken verbatim, and `verify_sandbox_token` bounds
+`iat` in the past (`>= now - 300`) while putting **no ceiling on `exp - now`** — so a token minted
+with a far-future `exp` produces an entry the sweep will not touch for as long as that `exp`
+says. It holds because chat-backend is the only minter and mints 300 s tokens. A ceiling would
+belong in `app/core/sandbox_token.py` (and db-api's `api/sandbox_auth.py`), next to the `iat`
+check; none is asserted today.
 
 *`replicas: 1` is load-bearing here too.* The counters are in-process, so N replicas give one
 execution N × every limit above — and N × the pod-wide concurrency bound that exists to protect
 this pod's 8Gi against buffered response bodies. `k8s/deployments/results-api.yaml` carries a
 comment on `replicas: 1` saying so, matching db-api's.
 
-*Operator-tunable in fact, not only in principle.* All five env vars are declared at their
+*Operator-tunable in fact, not only in principle.* All seven env vars are declared at their
 defaults in `k8s/deployments/results-api.yaml`, so tuning one is an edit and a rollout rather
 than a rebuild. They were code-default-only in the first draft, which made "env-configurable"
 true of the code and false in practice. Each is a ceiling compared with `>=`, so a value below 1
 would silently mean "reject every sandbox request" — results-api therefore refuses to start on
-one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, rather
+one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, and on a
+`SANDBOX_RESERVED_POD_SLOTS` larger than the headroom between those two, rather
 than failing at the first request where no health check would attribute it to a typo.
 
 **Two limitations, stated because as shipped these controls bound less than the rest of this
@@ -4401,27 +4592,43 @@ section implies.**
    limit — held for the per-response byte cap only; for these four counters, omitting it would
    buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
    capped. Both module docstrings now say the partial version.
-   Still deliberately **not** done: no rate limiter, no request timeout, no anonymous-traffic
-   bucket. `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
+   Still deliberately **not** done: no rate limiter and no anonymous-traffic
+   bucket. (A **request** timeout now exists — `SANDBOX_REQUEST_TIMEOUT_SECONDS`, above — but it
+   is armed off the execution token, so it bounds none of the traffic this limitation is about.) `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
    probes bypass NetworkPolicy) and its request rate is unbounded; its handler is a constant
    document on no data path, so that residue is `genetics-results-suite-8zk`'s, not a
    per-execution budget any counter here can hold.
-2. *`sandbox_execution_tracker_full` and the pod-wide concurrency limit are cross-tenant denial
-   surfaces.* Both are pod-wide, so a caller that fills the counter map or holds the pod-wide
-   slots locks *other* executions out; neither is merely a self-limit. The "23 chat turns/hour"
-   sizing above is an argument about honest volume and says nothing about an attacker, and there
-   is no per-tenant fairness behind either number. Limitation 1's sandbox half is now closed —
+2. *`sandbox_execution_tracker_full` is a cross-tenant denial surface; the pod-wide concurrency
+   limit no longer is.* Both are pod-wide, so a caller that fills the counter map or holds the
+   pod-wide slots locks *other* executions out; neither was merely a self-limit. The "23 chat
+   turns/hour" sizing above is an argument about honest volume and says nothing about an
+   attacker. Limitation 1's sandbox half is now closed —
    the SDK sends the per-execution token and nothing else (`4h6.44`) — but the counters were
    never a fairness mechanism, and the intentional internal-secret residue means an
    internal-secret caller inside the namespace still reaches these pod-wide surfaces without
-   being accounted. They are sized far
-   above honest use precisely so an honest execution never meets them, and both fail toward
-   refusing new work rather than corrupting a running execution's accounting.
+   being accounted.
 
-Production impact today is nil for the counters themselves: no sandbox Deployment is applied (the
-manifest exists since `4h6.7`, gated off) and
-`SANDBOX_ENABLED` is `"false"` on both services, so nothing but `tests/test_sandbox_budget.py`
-(30 tests, offline lane) will report a regression in any of this. **The anonymous surface is the
+   The concurrency half is closed by `SANDBOX_RESERVED_POD_SLOTS` (above,
+   `genetics-results-suite-yv4`), with the bounded guarantee stated there. **The tracker bound
+   is not, and the choice is deliberate rather than pending.** The obvious alternative — at a
+   full map, shed the oldest *idle* entry instead of refusing the newcomer — moves the harm from
+   the innocent newcomer to an incumbent, and that trade is worse than it looks: an idle entry is
+   not a finished one. `_sweep_locked` already drops every entry whose token can no longer
+   authenticate, so a map that is full is full of executions that **can** still present their
+   `jti`, and a shed entry returns with `requests`, `bytes_sent` and `in_flight` reset to zero.
+   Shedding-oldest therefore converts a bounded, visible, `429`-with-a-code denial of the
+   newcomer into a silent reset of an incumbent's aggregate budget — the fail-open direction, the
+   exact failure this map is not db-api's LRU in order to avoid — and an attacker who can fill
+   the map can then also mint a fresh `jti` per request to shed its own accounting on demand. It
+   is sized far above honest use precisely so an honest execution never meets it, entries live no
+   longer than the `exp` their minter chose (see above — that is chat-backend's invariant, not one
+   this service enforces), the deadline now bounds how long any one of them can stay unevictable, and it fails toward refusing new work rather than corrupting a running
+   execution's accounting.
+
+Production impact is no longer hypothetical: staging has run the sandbox under gVisor since
+2026-08-26 and `k8s/deployments/results-api.yaml` sets `SANDBOX_ENABLED: "true"`, so these
+counters bind live traffic there. `tests/test_sandbox_budget.py` (44 tests, offline lane) is
+still the only thing that will report a regression in the accounting itself. **The anonymous surface is the
 exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
 answered anonymous callers stop doing so at the next results-api deploy (see the ordering
 constraint on `genetics-results-suite-618` above).
@@ -4491,10 +4698,18 @@ authenticated routes.
 
 Sizes are measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
 (external traffic only — bff and mcp-server reach results-api in-cluster and bypass the
-gateway, so **no response size is logged for the dominant caller**). The middleware emits a
-`jsonPayload`-only record, so `httpRequest.responseSize` is structurally NULL on every row of
-this sink — there is no response-size data in it at all — and `full_path`, which would reveal
-rsid counts, is stripped before Cloud Logging.
+gateway, so **no response size is logged for the dominant caller**). The middleware emitted a
+`jsonPayload`-only record for every row in the measured window, so `httpRequest.responseSize` is
+structurally NULL across all of them — there is no response-size data in it for that period — and
+`full_path`, which would reveal rsid counts, is stripped before Cloud Logging. Rows written from
+2026-08-27 carry a size (`app/middleware_usage_logging.py` emits `response_body_bytes`), but it is
+**not commensurate with `$body_bytes_sent` and cannot be substituted into this table**: it counts
+uncompressed body bytes excluding headers — the usage middleware sits inside `GZipMiddleware` —
+while the gateway counts compressed wire bytes, and for these TSV endpoints the two differ by
+roughly an order of magnitude. Mixing them is exactly the apples-to-oranges comparison this caveat
+exists to prevent; a re-measurement from those rows has to re-derive the whole table in body-byte
+terms rather than swap one column for the other. **Nothing in this analysis is re-derived from
+those rows** — it still rests on the GCS file sizes and the gateway's `$body_bytes_sent`.
 
 *What this table cannot show, and why an earlier draft got it wrong.* An earlier draft sourced
 these counts from `phewas-development.genetics_api_logs.genetics_results_api` and added
@@ -4841,6 +5056,15 @@ unlinks it — and nothing should be designed as if the mode were doing work.
   `get_bearer_token_user`, so a direct caller of that function cannot skip it. A sandbox
   caller holds no shared secret, so it cannot present the trusted-proxy marker and any
   identity header it sets is already discarded by case 5.
+- **results-api's two resolvers disagree on what a *failed* sandbox token means, deliberately.**
+  `app/core/auth.py`'s `get_sandbox_principal` logs the rejection and raises `401` on
+  `SandboxTokenError`; `app/middleware.py`'s `_sandbox_principal` — the non-raising resolver
+  `SandboxResponseCapMiddleware` uses to admit a request *before* the handler runs — returns
+  `None` for the same exception, so a bearer that fails validation is never admitted, charged or
+  capped by the budget middleware and is left to `auth_required` to reject. Its docstring gives
+  the reason (rejecting there would duplicate that 401 silently, from a layer with no route
+  context); the consequence to hold on to is that such a request appears in **no** per-`jti`
+  counter, and its answer is whatever the auth layer writes rather than a capped response.
 
 **No collision with `genetics-results-suite-fdd`.** That bead is about
 `GOOGLE_TOKEN_AUDIENCE` being the public gcloud CLI client id, so the `aud` check on the
@@ -5971,11 +6195,12 @@ closed and **did** ship the SDK — nothing else. Where it was cited as the owne
 | `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
 | `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
 | `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
-| `4h6.39`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** |
+| `4h6.39`, `4h6.41`–`4h6.43`, `4h6.45`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** The two numbers this row does **not** span sit inside the range it used to be titled with: `4h6.40` is the local Docker backend (section 2, "As built") and `4h6.44` the SDK's switch to the per-execution token — neither is supervisor work, so do not re-broaden the title to `4h6.39`–`4h6.46`. |
+| `4h6.48` (`run_analysis`) | Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). Its MCP exclusion is the `4h6.16` row's first correction below. |
 | `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting **user and** chat session — the `(sub, sid)` pair, since `sid` arrives in the request body and authorizes nothing on its own (`genetics-results-suite-dh3`) — and `404` otherwise. The tool carries `run_analysis`'s gateway-asserted gate (`4h6.84`), without which `sub` would be as forgeable as `sid` to any holder of `INTERNAL_API_SECRET`. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti` under the requesting `(sub, sid)` pair; **name collisions within one `(sub, sid)` key resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
 | `4h6.16` (MCP exclusion) | Three independent layers, and the tests must enumerate the live tool list rather than the constant. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. Two things the row previously got wrong, both corrected in section 5: `run_analysis`'s exclusion landed with **`4h6.48`**, not `4h6.16`; and the registration layer has **two** controls, since `run_analysis` has no `@mcp.tool()` block at all and `disabled_tools` can only subtract. The asked-for "no HTTP route reaches the sandbox client" assertion ships as an **import-graph** assertion on `genetics_mcp_server.mcp_server` — equivalent while `chat_api` is a separate app that is never mounted, and it must be rewritten as route enumeration if that ever changes. |
 
-**One finding outside this document's scope that other tasks need.** Five executor methods
+**One finding outside this document's scope that other tasks need.** Several executor methods
 build BigQuery SQL by interpolation, because db-api's `/query` takes a SQL string with no
 parameter-binding channel. Under the tool surface those f-strings receive arguments the
 *model* chose through a typed tool schema; once the SDK is called from inside a script they

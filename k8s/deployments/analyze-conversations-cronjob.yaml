@@ -38,6 +38,23 @@ spec:
                   matchLabels:
                     app: chat-backend
                 topologyKey: kubernetes.io/hostname
+          # THE SAME REASON AS chat-backend, WHICH MOUNTS THIS SAME PVC. The SQLite files on
+          # chat-data are owned by uid 1031 from an earlier image while this container runs as
+          # root; that only worked because root could bypass the permission bits via
+          # CAP_DAC_OVERRIDE, and the drop: ["ALL"] below takes it away. Measured against this
+          # image with a /data whose contents are owned 1031:1032 mode 2775: under
+          # `--cap-drop=ALL` alone every write fails with "attempt to write a readonly
+          # database"; adding the gid as a supplementary group (which is what fsGroup does)
+          # makes the write, the WAL switch and the sidecar creation all succeed. Keep this
+          # value equal to chat-backend's — both pods mount the volume on the same node.
+          # OnRootMismatch because the default (Always) makes the kubelet recursively
+          # chgrp/chmod the whole 10Gi chat-data PVC — attachments and tool-result
+          # downloads, not just the two SQLite DBs — on every daily pod start. The setgid
+          # bit the kubelet sets on /data keeps every new file at gid 1032, so the volume
+          # root's ownership is a sound proxy for the tree's.
+          securityContext:
+            fsGroup: 1032
+            fsGroupChangePolicy: OnRootMismatch
           restartPolicy: OnFailure
           containers:
           - name: analyze-conversations
@@ -62,6 +79,24 @@ spec:
             volumeMounts:
             - name: chat-data
               mountPath: /data
+            # NO runAsUser/runAsNonRoot. This image ships no USER directive — verified, it runs
+            # as uid 0 today — and the files it must write on chat-data are owned by uid 1031.
+            # Pinning any non-root uid here would change who writes them; the group route above
+            # is what makes the write work without a capability. Matching chat-backend, which
+            # is the same image on the same volume, is the point.
+            #
+            # NO readOnlyRootFilesystem. --output-dir defaults to `Path(--db).parent /
+            # "analysis_output"`, i.e. onto the PVC, so the report and eval export are not the
+            # obstacle; the untested part is the real LLM run (polars + the Anthropic client),
+            # which cannot be exercised locally without an API key and live conversation data.
+            # `--help` does load every module under `--read-only`, so this is an unproven field
+            # rather than a known-broken one — see genetics-results-suite-d6n.
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+              seccompProfile:
+                type: RuntimeDefault
             # LLM-bound: the job spends most of its wall time waiting on the Anthropic API,
             # so modest CPU is enough; memory covers loading the conversations into polars.
             resources:

@@ -225,8 +225,8 @@ def sandbox_tells(fname, doc):
     accident, and the third — serviceAccountName, not gVisor-derived — fires on any pod naming a
     service account other than `genetics-suite`, which is the sandbox alone.
 
-    An ABSENT serviceAccountName is not a tell: bff, frontend, keycloak, postgres and
-    oauth2-proxy declare none, and counting absence would fire on all of them.
+    An ABSENT serviceAccountName is not a tell: auth-gateway, bff, frontend, keycloak, postgres
+    and oauth2-proxy declare none, and counting absence would fire on all of them.
     """
     spec = pod_template(fname, doc).get("spec") or {}
     if not isinstance(spec, dict):
@@ -844,7 +844,8 @@ def _():
         live = live_sandbox_deployment()
         assert live != "live", (
             "a sandbox Deployment is LIVE in the cluster but ENABLE_SANDBOX is not true. This "
-            "deploy would leave db-api/results-api with SANDBOX_ENABLED=\"false\" while the "
+            "deploy would leave db-api, results-api and chat-backend with "
+            "SANDBOX_ENABLED=\"false\" while the "
             "sandbox serves, so a script that omits Authorization lands in db-api's unset-"
             "INTERNAL_API_SECRET fail-open branch, authorized with no sub/sid/jti; "
             "chat-backend's copy of the flag would also stay false, withholding run_analysis "
@@ -875,7 +876,8 @@ def _():
             notes.append(
                 "a sandbox workload exists in k8s/deployments/ but ENABLE_SANDBOX is not true "
                 "and no sandbox workload is live in the cluster, so deploy.sh will not apply "
-                "it; the SANDBOX_ENABLED check on db-api/results-api is inert until the gate is "
+                "it; the SANDBOX_ENABLED check on db-api, results-api and chat-backend is "
+                "inert until the gate is "
                 "on (genetics-results-suite-4h6.7)"
             )
         return

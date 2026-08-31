@@ -1,5 +1,20 @@
 # Local benchmark inputs (genetics-results-suite-4h6.23)
 
+> **4h6.23 was descoped on 2026-08-30 without a completed paired A/B run.** Initial
+> benchmarking was done by hand and further benchmarking moves outside that epic. The rollout
+> question this set existed to answer is **settled by the bead's own kill criterion** — *"if
+> the code arm does not beat the baseline on cost AND does not regress quality, keep it behind
+> the profile rather than defaulting it on"* — whose conservative branch is the status quo:
+> **code execution stays opt-in, and `null` remains the default tool profile.** The arms were
+> never compared, so read no result into that; the decision was not taken on numbers. There is
+> no 4h6.23 report and **no paired A/B result exists — no figure below is one.** Individual
+> figures below *were* measured, some of them at real cost; read each for what it says it is.
+>
+> Everything below stands as the design and pre-registration for whoever does the manual
+> benchmarking, which is why it is kept rather than deleted. Note that
+> `genetics-results-suite-b3w` is **deferred** (iced): `replay_benchmark.py` accepts a code arm
+> whose profile resolved without `run_analysis`, so unpark it before reaching for the harness.
+
 `eval_dataset_local.json` is the question set for the paired A/B replay benchmark. It is
 **hand-authored**, not exported from production, and that difference is the most important
 thing on this page.
@@ -56,6 +71,9 @@ excluded from both sides of the rate (4h6.71).
 > Applies to `script_failure_rate` exactly as the harness defines it:
 > `(executed_failed + model_rejected) / (executed_ok + executed_failed + model_rejected)`.
 > `infra` (sandbox faults) and `TurnBudgetExceeded` are in neither half.
+>
+> These gates bind **only if someone reopens the default question** — the shipped default is
+> settled (see the note at the top of this page), so nothing below re-decides it.
 >
 > **At or under 10%** — acceptable; the failure rate does not block defaulting the code arm
 > on, and the decision falls to the cost and quality gates.
