@@ -372,6 +372,8 @@ LAYOUT = {
     "docs/genegenie-migration.md": "record of the legacy-hostname redirect",
     "docs/nginx-setup.md": "notes for the legacy VM nginx setup",
     "docs/postmortem-code-execution-epic.md": "why the sandbox epic took as long as it did",
+    "docs/duplication-baseline.json": "the cross-repo duplication ratchet's last-written "
+                                      "snapshot, read by check-duplication.py --check",
     "k8s": "manifests, applied by deploy.sh",
     "k8s/namespace.yaml": "the `genetics` namespace",
     "k8s/deployments": "one file per workload, CronJobs included",
@@ -413,6 +415,10 @@ LAYOUT = {
     "scripts/gen-doc-blocks.py": "generate the marked blocks in docs/*.md; `--check` is the "
                                  "build gate",
     "scripts/check-doc-drift.sh": "warn when a commit changes code the docs describe",
+    "scripts/check-duplication.py": "ratchet on the cross-repo and intra-repo duplication "
+                                    "count, measured from the trees themselves",
+    "scripts/check-siblings.sh": "run each sibling repo's own discovered test lane from "
+                                 "one place",
     "scripts/check-worktree-paths.sh": "warn when a tool would resolve a path into the main "
                                        "checkout",
     "scripts/test-manifest-render.py": "offline: render every manifest deploy.sh renders and "

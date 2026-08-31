@@ -57,6 +57,7 @@ column descriptions, example queries, and categorical column configuration.
 ```yaml
 tables:
   <table_name>:                    # e.g. "credible_sets_v"
+    exposed: true                  # optional (default: NOT exposed) -- see below
     description: string            # required -- table-level description
 
     columns:                       # optional -- per-column descriptions
@@ -94,6 +95,22 @@ consistency, not for correctness. The one way still to get this wrong is silent 
 loud later: **qualifying the name yourself pins the example to one dataset**, and the
 allow-list compares fully-qualified ids, so an example carrying the wrong project or dataset
 is refused rather than quietly reading the wrong table.
+
+### Field details for `tables.<table>.exposed`
+
+An entry in this block **documents** a view: `scripts/gen-sandbox-docs.py` emits one
+`sandbox/schema/<view>.md` for every entry, exposed or not. `exposed: true` is the separate,
+explicit decision that makes the view **reachable** through db-api's `/query`, `/schema` and
+`/tables/{name}/sample`, and that puts its `dataset` values under the registry cross-check
+(`genetics-results-db`'s `scripts/live_dataset_scope.py`).
+
+It defaults to **not exposed**, and only the literal `true` counts: an allow-list must not
+widen because someone documented a table or mistyped the flag. db-api derives its `VIEWS`
+from it (`api/yaml_loader.py::load_views`) and refuses to start when the result is empty;
+`genetics-results-db/tests/test_exposed_views.py` pins the resulting set by name, so both a
+widening and a narrowing fail that test. Nothing on the deploy path re-checks it.
+
+**Consumers**: db-api (`VIEWS` and the `/query` allow-list), `live_dataset_scope.py`.
 
 ### Field details for `tables.<table>.column_types`
 

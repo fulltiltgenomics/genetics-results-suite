@@ -356,8 +356,8 @@ loader, the schema and the view all land, and that `verify` still passes afterwa
 new views must reference `genetics_results_dev`, and this is the easiest place to get that
 wrong because the view SQL is being written from scratch).
 
-Promotion also needs the `VIEWS` allowlist in `genetics-results-api`'s `api/main.py` and a
-`configs/datasets.yaml` entry — see `docs/adding-datasets.md`.
+Promotion also needs a `configs/datasets.yaml` `tables.<view>` entry carrying
+`exposed: true` — see `docs/adding-datasets.md`.
 
 ### `genetics-results-suite-4ci` — drop the three experiment tables
 

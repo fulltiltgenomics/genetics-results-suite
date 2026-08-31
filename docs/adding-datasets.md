@@ -326,10 +326,10 @@ relation is many-to-many in both directions (`pgc_scz` + `pgc_bip` both ship ins
 key. The loader cross-checks the map against the live views in every direction and **fails the
 build** on any mismatch.
 
-The **scope** of that cross-check is derived from the `VIEWS` list in `genetics-results-db`'s
-`api/main.py` (by `scripts/live_dataset_scope.py`), not from a hardcoded table list. So adding
-a view to `VIEWS` is all it takes to bring its `dataset` values under the check — and a new
-`dataset` value fails the loader until it is mapped. Views opt out only via that script's
+The **scope** of that cross-check is derived from the views marked `exposed: true` in
+`datasets.yaml` (by `genetics-results-db`'s `scripts/live_dataset_scope.py`), not from a
+hardcoded table list. So exposing a view is all it takes to bring its `dataset` values under
+the check — and a new `dataset` value fails the loader until it is mapped. Views opt out only via that script's
 `EXCLUDED_VIEWS`, each entry carrying a reason (`gene_annotations_v` and `variant_annotation_v`
 have no `dataset` column; `phenotypes_v` / `datasets_v` are built from the map under test).
 A view that is neither excluded nor has a `dataset` column fails loudly rather than being
@@ -458,9 +458,9 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
    `genes` filter. No startup-check change: per-phenotype `prefix`+`suffix` files are not
    enumerable and are already excluded there.
 4. `genetics-results-db`: `schemas/hla_associations{,_v}.sql`, `scripts/load_hla.sh`, the
-   `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view added
-   to the `VIEWS` allowlist in `api/main.py` **and** to `ALL_VIEWS` in
-   `generate_resource_sql.py` so the linter covers it. `hla_associations_v` lists its
+   `hla_associations` schema + `CHR_STRING_TABLES` entry in `load_data.py`, and the view
+   exposed in `datasets.yaml` **and** added to `ALL_VIEWS` in `generate_resource_sql.py` so
+   the linter covers it. `hla_associations_v` lists its
    columns explicitly instead of `SELECT *`, because it renames five to the suite's house
    spelling (`mlogp`→`mlog10p`, `sebeta`→`se`, `af_alt`→`af`, `af_alt_cases`→`af_cases`,
    `af_alt_controls`→`af_controls`); a column added to `hla_associations` therefore has to
@@ -491,8 +491,13 @@ convenience mirror.
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
       apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
       decision with a separate consequence:
-      - `VIEWS` (`api/main.py`) — **always**. This is the only list that makes a view
-        queryable; omit it and nothing can reach the view.
+      - `exposed: true` on the view's `tables.<view>` block in `datasets.yaml` — **always**.
+        A `tables:` entry only documents the view (it is what the sandbox schema docs are
+        generated from); this flag is what makes it queryable. db-api derives its `VIEWS`
+        allow-list from the flag (`api/yaml_loader.py`), and `tests/test_exposed_views.py`
+        pins the resulting set by name, so a widened or narrowed allow-list fails that test —
+        note the pin is a test, not a deploy-time gate. Omit the flag and nothing can reach
+        the view.
       - `ALL_VIEWS` (generator/linter) — **only if the view is dataset-discriminated**, i.e.
         its `resource` has to be recovered from a dataset name by a generated `CASE` block.
         A registry-authoritative or single-source-constant view must stay out of it; see
@@ -502,12 +507,11 @@ convenience mirror.
         unnoticed.
       - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
         only for *result* views whose per-resource coverage is meaningful to compare against
-        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Adding a
-        view to `api/main.py`'s `VIEWS` also brings its `dataset` values under the registry
-        cross-check (next item).
+        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Exposing a
+        view also brings its `dataset` values under the registry cross-check (next item).
 - [ ] genetics-results-db: `BQ_DATASETS_BY_DATASET_ID` entry in `scripts/build_phenotypes.py`
-      for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Adding the view to
-      `VIEWS` automatically brings its `dataset` values under the registry cross-check, so the
+      for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Exposing the view
+      automatically brings its `dataset` values under the registry cross-check, so the
       loader will fail until the map covers them. Skipping this leaves the dataset invisible in
       `datasets_v` and its trait codes unresolvable in `phenotypes_v` — exactly what happened
       to `finngen_hla`.
