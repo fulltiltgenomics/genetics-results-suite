@@ -194,10 +194,16 @@ resources:
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
-# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS
+# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS, and by the sandbox schema-doc generator.
+#
+# `exposed: true` is what makes a table reachable through db-api's /query, /schema and
+# /tables/{name}/sample. It is a separate decision from documenting one: an entry without
+# the key is documented everywhere but reachable nowhere, so an allow-list cannot grow by
+# someone adding a table here or forgetting a field.
 # ---------------------------------------------------------------------------
 tables:
   credible_sets_v:
+    exposed: true
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
       Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
@@ -358,6 +364,7 @@ tables:
       most_severe: null
 
   colocalization_v:
+    exposed: true
     description: >-
       Colocalization analysis results (coloc.susie) between pairs of studies.
       PP_H4_abf indicates shared causal variant probability. The view is partitioned by chr,
@@ -496,6 +503,7 @@ tables:
       data_type2: "resource2"
 
   coloc_credsets_v:
+    exposed: true
     description: >-
       Individual credible set variants in colocalized credible sets. Partitioned by chr, so
       add a literal chr predicate whenever the chromosome is known.
@@ -626,6 +634,7 @@ tables:
       data_type: "resource"
 
   exome_variant_results_v:
+    exposed: true
     description: >-
       Single-variant exome association results from multiple resources with different
       significance thresholds. Genebass contains variants filtered to p < 1e-4.
@@ -706,6 +715,7 @@ tables:
       annotation: "resource"
 
   gene_burden_results_v:
+    exposed: true
     description: >-
       Gene-level burden test results from exome sequencing studies
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
@@ -793,6 +803,7 @@ tables:
       annotation: "resource"
 
   asm_qtl_v:
+    exposed: true
     description: >-
       Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics
       (Stefansson et al. 2024, doi:10.1038/s41588-024-01851-2), based on Oxford
@@ -878,6 +889,7 @@ tables:
       vartype: null
 
   open_chromatin_v:
+    exposed: true
     description: >-
       Atlas of accessible/active chromatin regions (peaks) labeled by cell
       type, tissue, and condition. Region-indexed presence/annotation atlas
@@ -954,6 +966,7 @@ tables:
       assay: "resource"
 
   variant_effect_v:
+    exposed: true
     description: >-
       In-silico PREDICTED effects of variants on chromatin accessibility from
       deep-learning models (ChromBPNet and FLARE). Variant-indexed: one row per
@@ -1029,6 +1042,7 @@ tables:
       tissue: "resource"
 
   mpra_v:
+    exposed: true
     description: >-
       MEASURED cis-regulatory allelic activity from a massively parallel reporter
       assay (Siraj et al. 2026 MPRA). Variant x cell_line indexed: one row per variant
@@ -1109,6 +1123,7 @@ tables:
       cohort: null
 
   hla_associations_v:
+    exposed: true
     description: >-
       Classical HLA allele associations from FinnGen R14 — every imputed HLA allele
       tested against every core R14 endpoint (~2,712 phenotypes x 187 alleles across
@@ -1226,6 +1241,7 @@ tables:
       gene: null
 
   gene_annotations_v:
+    exposed: true
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
       GENCODE GRCh38 coordinates, with full-lineage HGNC gene-group arrays
@@ -1331,6 +1347,7 @@ tables:
       strand: null
 
   variant_annotation_v:
+    exposed: true
     description: >-
       Per-variant functional annotation and FinnGen (R14) allele frequencies —
       one row per variant, covering all imputed variants, not only fine-mapped ones.
@@ -1414,6 +1431,7 @@ tables:
       resource: null
 
   peak_to_gene_v:
+    exposed: true
     description: >-
       Open4Gene peak-to-gene links from FinnGen ATAC-seq: which genes a chromatin
       peak's accessibility is associated with, in which cell type. One row per
@@ -1517,6 +1535,7 @@ tables:
       cell_type: "resource"
 
   phenotypes_v:
+    exposed: true
     description: >-
       Trait/phenotype metadata: the human-readable name, trait type, category and
       sample sizes behind the opaque phenotype codes the results tables store.
@@ -1629,6 +1648,7 @@ tables:
       trait_type: null
 
   datasets_v:
+    exposed: true
     description: >-
       Dataset registry: what every `dataset` value appearing in the results views
       actually is — its resource, version, provenance, description and credible-set

@@ -1,8 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-08-31, against commit 00c764709735 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
+  "SNAPSHOT": "Measured on 2026-08-31, against commit b7884294c9c5 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
   "measured_date": "2026-08-31",
-  "measured_commit": "00c764709735347728429b050cbe652193160e8c",
+  "measured_commit": "b7884294c9c5fb56ed833dcced7f509442ae4a68",
   "measured_tree_dirty": true,
+  "reason": "the pin test in genetics-results-db deliberately duplicates the exposed-view enumeration, because a security pin that derives both sides asserts nothing",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -15,7 +16,7 @@
   "intra": {
     "groups": 108,
     "files": 137,
-    "lockstep": 62,
+    "lockstep": 63,
     "by_kind": {
       "bodies-exact": 44,
       "bodies-near": 36,
@@ -24,8 +25,8 @@
   },
   "cross": {
     "groups": 82,
-    "files": 81,
-    "lockstep": 127,
+    "files": 82,
+    "lockstep": 121,
     "by_kind": {
       "bodies-exact": 21,
       "bodies-near": 5,

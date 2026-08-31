@@ -203,6 +203,7 @@ docs/                                everything below, and nothing else
   chat-tool-reference.md             verbatim transcription of what the LLM receives: tool names, descriptions and schemas, the profiles, the system prompt, and the chat surface versus /mcp
   code-execution-security.md         threat model and security design for the sandbox
   datasets-yaml-schema.md            the schema of configs/datasets.yaml
+  duplication-baseline.json          the cross-repo duplication ratchet's last-written snapshot, read by check-duplication.py --check
   environments.md                    the three deployments, DEPLOY_ENV, and the staging runbook
   genegenie-migration.md             record of the legacy-hostname redirect
   keycloak-apple-signin.md           Keycloak broker setup, MCP OAuth clients, backup/restore
@@ -228,6 +229,8 @@ scripts/                             build, deploy and verification scripts
   build.sh                           build and push one service's image
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
+  check-duplication.py               ratchet on the cross-repo and intra-repo duplication count, measured from the trees themselves
+  check-siblings.sh                  run each sibling repo's own discovered test lane from one place
   check-worktree-paths.sh            warn when a tool would resolve a path into the main checkout
   create-secrets.sh                  create the k8s Secrets from environment variables
   deploy.sh                          full deploy: terraform apply, then every manifest

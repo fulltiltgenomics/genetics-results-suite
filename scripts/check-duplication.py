@@ -35,7 +35,8 @@ consolidation is supposed to remove; neither is impressed by a long file.
 Usage:
     scripts/check-duplication.py                    report
     scripts/check-duplication.py --json
-    scripts/check-duplication.py --write-baseline   record docs/duplication-baseline.json
+    scripts/check-duplication.py --write-baseline --reason "..."
+                                                      record docs/duplication-baseline.json
     scripts/check-duplication.py --check            fail if the counts grew past it
 
 Exit 0 = counted (and within the baseline under --check), 1 = a count grew, 2 = could not
@@ -437,10 +438,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--write-baseline", action="store_true")
+    ap.add_argument("--reason", help="why the baseline is being raised or lowered; "
+                                     "required with --write-baseline, recorded in the "
+                                     "snapshot")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--window", type=int, default=WINDOW_DAYS)
     ap.add_argument("--top", type=int, default=12)
     args = ap.parse_args()
+
+    if args.write_baseline and not args.reason:
+        ap.error("--write-baseline requires --reason: a ratchet moved with no reason "
+                  "recorded is a ratchet silenced")
 
     try:
         found = siblings.resolve_all()
@@ -477,6 +485,7 @@ def main():
             "measured_date": date,
             "measured_commit": head,
             "measured_tree_dirty": dirty,
+            "reason": args.reason,
             "repos_present": m["repos_present"],
             "window_days": m["window_days"],
             "intra": m["intra"],
