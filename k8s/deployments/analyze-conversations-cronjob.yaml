@@ -90,7 +90,7 @@ spec:
             # obstacle; the untested part is the real LLM run (polars + the Anthropic client),
             # which cannot be exercised locally without an API key and live conversation data.
             # `--help` does load every module under `--read-only`, so this is an unproven field
-            # rather than a known-broken one — see genetics-results-suite-d6n.
+            # rather than a known-broken one.
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:

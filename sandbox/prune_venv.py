@@ -1,29 +1,21 @@
 """Prune the builder's venv down to what the final image is allowed to contain.
 
-Two independent removals, both of which the final image copies verbatim if they are
-left in place (`COPY --from=builder /opt/venv /opt/venv`):
+Two independent removals, both of which the final image would copy verbatim:
 
-1. **Packaging tooling.** `python -m venv` seeds pip and setuptools; the SDK wheel
-   build seeds nothing else. `docs/code-execution-security.md` claims no package
-   manager in the final image, and until this ran that claim was false —
+1. Packaging tooling. `python -m venv` seeds pip and setuptools, and until this ran
    `python3 -m pip install` worked inside the sandbox against whatever egress the
    NetworkPolicy allows. Nothing in the final image needs them: the entrypoint is the
-   distroless interpreter with PYTHONPATH pointing at site-packages, never
-   `/opt/venv/bin/python3` (a symlink to the builder's interpreter, which does not
-   exist there anyway).
+   distroless interpreter with PYTHONPATH at site-packages, never /opt/venv/bin/python3.
 
-2. **genetics_mcp_server modules outside the SDK's import closure.** `pip install
-   --no-deps` installs the whole distribution — chat_api, llm_service, mcp_server,
-   auth/, routers/, db/, skills/, scripts/ — 40-odd modules the sandbox never imports.
-   They are unimportable there for want of fastapi and anthropic, but *source* is the
-   asset: `auth/core.py` is the identity model of every service in the suite and
-   `tools/executor.py` is a map of the SQL interpolation sites in the one backend the
-   sandbox may talk to. A prompt-injected script reads files; it does not need them to
-   import.
+2. genetics_mcp_server modules outside the SDK's import closure. `pip install --no-deps`
+   installs the whole distribution — 40-odd modules the sandbox never imports. They are
+   unimportable there for want of fastapi and anthropic, but SOURCE is the asset:
+   auth/core.py is the identity model of every service in the suite. A prompt-injected
+   script reads files; it does not need them to import.
 
-SDK_ALLOWLIST is the closure, determined empirically (import the SDK, enumerate
-`sys.modules`) rather than by reading imports — see build-checks.py, which asserts the
-surviving set equals it exactly so the list grows deliberately.
+SDK_ALLOWLIST is the closure, determined empirically (import the SDK, enumerate sys.modules)
+rather than by reading imports. build-checks.py asserts the surviving set equals it exactly,
+so the list grows deliberately.
 """
 
 import os
@@ -35,26 +27,15 @@ SITE = os.path.join(VENV, "lib/python3.11/site-packages")
 PKG = os.path.join(SITE, "genetics_mcp_server")
 
 # The import closure of `genetics_mcp_server.sdk`, as module paths relative to the
-# genetics_mcp_server package root. config/settings.py used to be in it — sdk/client.py
-# imports tools.executor, whose module-level `from genetics_mcp_server.tools.uniprot
-# import UniProtClient` pulled `from genetics_mcp_server.config.settings import
-# Settings` — so the image shipped a file naming every internal env var of the suite.
-# genetics-results-suite-l41 cut that in genetics-mcp-server: the Settings import in
-# uniprot.py is now behind `if TYPE_CHECKING`, and ToolExecutor resolves settings at
-# first use (falling back to Settings' defaults when the module is absent, which is
-# exactly this install) rather than in __init__. That repo's
+# genetics_mcp_server package root. Two modules were cut from it on the OTHER side of the
+# wire, because the closure is what decides what this image ships: config/settings.py named
+# every internal env var of the suite, and tools/definitions.py is a 2600-line catalogue of
+# every tool the suite exposes. Both were pulled in eagerly by tools.executor and are now
+# behind `if TYPE_CHECKING` and a module `__getattr__`; genetics-mcp-server's
 # tests/test_sdk_import_closure.py pins the closure so it cannot regrow silently.
 #
-# tools/definitions.py went the same way in genetics-results-suite-6bv, and for the same
-# reason one module along: `tools/__init__.py` re-exported it eagerly, so importing
-# tools.executor imported it, and its module-level `from pydantic import Field` broke the
-# image's own `import genetics_mcp_server.sdk` check the moment definitions.py grew that
-# import. The re-export is now a module `__getattr__`. Cutting it also stops the image
-# shipping the 2600-line catalogue of every tool the suite exposes.
-#
-# tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK
-# method delegates to it. Its SQL-building methods therefore still ship, guarded by
-# tools/sql_safety.py — see docs/code-execution-security.md, "Handoffs to other tasks".
+# tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK method
+# delegates to it, so its SQL-building methods ship, guarded by tools/sql_safety.py.
 SDK_ALLOWLIST = frozenset(
     {
         "__init__.py",
@@ -70,8 +51,7 @@ SDK_ALLOWLIST = frozenset(
     }
 )
 
-# seeded by `python -m venv` and by the wheel build; nothing in the final image imports
-# them, and `pip` in particular is a package manager the security doc says is absent
+# seeded by `python -m venv` and by the wheel build; nothing in the final image imports them
 PACKAGING_DIRS = ("pip", "setuptools", "pkg_resources", "_distutils_hack", "wheel")
 PACKAGING_FILES = ("distutils-precedence.pth",)
 
@@ -85,8 +65,8 @@ def prune_packaging():
             path = os.path.join(SITE, name)
             (shutil.rmtree if os.path.isdir(path) else os.remove)(path)
             removed.append(name)
-    # console scripts, including pip/pip3/pip3.11 and the wheels' own CLIs; the final
-    # image runs /usr/bin/python3 against site-packages and never enters this directory
+    # console scripts, including pip; the final image runs /usr/bin/python3 against
+    # site-packages and never enters this directory
     binp = os.path.join(VENV, "bin")
     if os.path.isdir(binp):
         removed.append("bin/ (%s)" % ", ".join(sorted(os.listdir(binp))))

@@ -80,7 +80,7 @@ tables:
 ### Field details for `tables.<table>.examples`
 
 `sql:` must name every view by its **bare**, unbackticked name — `FROM credible_sets_v`,
-never `FROM genetics_results.credible_sets_v` (`genetics-results-suite-bee`). These examples
+never `FROM genetics_results.credible_sets_v`. These examples
 are copied verbatim into `sandbox/schema/<view>.md` and are what a sandboxed agent imitates,
 so the convention here becomes the convention in generated queries. db-api sets
 `default_dataset` on the job configs it submits, so **BigQuery** resolves a bare name against

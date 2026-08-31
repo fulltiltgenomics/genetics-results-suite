@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring the five local dev servers up from ONE tree — the main checkouts or the
-# matching git worktrees — and point db-api at one dataset (genetics-results-suite-r9e).
+# matching git worktrees — and point db-api at one dataset.
 #
 # Usage:
 #   scripts/dev-stack.sh up                    worktree trees + genetics_dev  (the default)
@@ -49,14 +49,13 @@
 #                        tokens exist to fix. SANDBOX_ENABLED defaults to false because this
 #                        script starts NO sandbox supervisor: a true default would offer
 #                        run_analysis with nothing behind it, and its failure would misreport
-#                        as a transient SandboxUnavailable (genetics-results-suite-4h6.86).
+#                        as a transient SandboxUnavailable.
 #                        Start one with scripts/run-sandbox-local.sh and set
 #                        SANDBOX_ENABLED=true yourself to exercise the sandboxed path.
 #   SANDBOX_URL          code-execution sandbox (default: http://127.0.0.1:8081, what
 #                        scripts/run-sandbox-local.sh publishes). The client itself has NO
-#                        default and raises SandboxNotConfigured when this is unset
-#                        (genetics-results-suite-6um), so this line is what makes the local
-#                        stack work at all.
+#                        default and raises SandboxNotConfigured when this is unset, so this
+#                        line is what makes the local stack work at all.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -176,23 +175,23 @@ MCP_ENV_FILE="${MCP_ENV_FILE:-$SIBLING_ROOT/genetics-mcp-server/.env}"
 SANDBOX_URL="${SANDBOX_URL:-http://127.0.0.1:8081}"
 
 # --------------------------------------------------------------------------------------
-# The sandbox's per-execution credentials (genetics-results-suite-4h6.49).
+# The sandbox's per-execution credentials.
 #
 # Without these the token path is DEAD LOCALLY AND SILENTLY SO. db-api and results-api read
 # SANDBOX_ENABLED and SANDBOX_TOKEN_SIGNING_KEY from the environment; with neither set,
 # `sandbox_enabled` is false, `verify_sandbox_token` rejects every sandbox-shaped bearer, no
 # `SandboxPrincipal` is ever resolved, and results-api's `sandbox_budget.admit` is never
 # called — so an SDK request is answered 200 with NO accounting at all. That is the exact
-# shape of genetics-results-suite-0lf, and a local run that does not set these cannot tell
+# shape of the fail-open branch, and a local run that does not set these cannot tell
 # the fixed path from the broken one.
 #
 # Generated once and kept in RUN_DIR, which is outside every repo: the key must be STABLE
 # across restarts (rotating it invalidates a token minted seconds earlier) and must never
 # land in a working tree. INTERNAL_API_SECRET is here because both services refuse to start
-# with SANDBOX_ENABLED true and that secret unset — the sandbox itself is NOT given it
-# (genetics-results-suite-4h6.7), so nothing in the sandbox path uses it; it exists so the
-# services' own fail-closed startup check is satisfied by the same configuration the cluster
-# has, rather than by turning the check off locally.
+# with SANDBOX_ENABLED true and that secret unset — the sandbox itself is NOT given it, so
+# nothing in the sandbox path uses it; it exists so the services' own fail-closed startup
+# check is satisfied by the same configuration the cluster has, rather than by turning the
+# check off locally.
 dev_secret() {
     # two statements: `local a=$1 b=$a` expands every word BEFORE the builtin assigns any of
     # them, so `$a` is unbound there and `set -u` kills the script
@@ -222,7 +221,7 @@ if [ "$COMMAND" = up ]; then
     # this script starts no sandbox supervisor, so a true SANDBOX_ENABLED (from the
     # developer's own environment or MCP_ENV_FILE) is a claim this stack cannot back —
     # check it once, non-blocking, rather than let a phantom sandbox surface later as a
-    # SandboxUnavailable that looks transient (genetics-results-suite-4h6.86). A bare 200
+    # SandboxUnavailable that looks transient. A bare 200
     # is not readiness: the supervisor binds before prewarm finishes and answers "starting"
     # until it is done, same as scripts/run-sandbox-local.sh checks.
     if [ "$SANDBOX_ENABLED" = true ] \
@@ -426,7 +425,7 @@ preflight_svc() {
                 # never see, and every execution 401s in a way that reads like a token
                 # bug, not this. Warn here (preflight_svc), not inside start_chat_api's
                 # subshell — that subshell's stderr is redirected into chat-api.log, so a
-                # warning there never reaches the terminal (genetics-results-suite-4h6.67).
+                # warning there never reaches the terminal.
                 if grep -qE '^[[:space:]]*(export[[:space:]]+)?(SANDBOX_TOKEN_SIGNING_KEY|INTERNAL_API_SECRET)=' "$MCP_ENV_FILE"; then
                     echo "  WARN: $MCP_ENV_FILE sets SANDBOX_TOKEN_SIGNING_KEY and/or INTERNAL_API_SECRET — sourced after the generated value, so it wins for chat-api (the minter) only, while db-api/results-api (the verifiers) keep the generated one. Every sandboxed execution will 401 until you remove it from $MCP_ENV_FILE or export the same value before running this script." >&2
                 fi

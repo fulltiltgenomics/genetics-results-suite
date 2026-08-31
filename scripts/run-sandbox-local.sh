@@ -1,12 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and run the sandbox image in plain Docker on a developer machine
-# (genetics-results-suite-4h6.40). The SAME image, the same entrypoint and the same
-# supervisor the pod runs — the local/pod difference is a deployment detail, never a second
-# code path, so nothing here changes what the program does. chat-backend's client
-# (genetics-results-suite-4h6.47) holds one base URL and behaves identically against this
-# container and against the Service.
+# Build and run the sandbox image in plain Docker on a developer machine: the SAME image, the
+# same entrypoint and the same supervisor the pod runs. The local/pod difference is a
+# deployment detail, never a second code path, so nothing here changes what the program does,
+# and chat-backend's client holds one base URL and behaves identically against this container
+# and against the Service.
 #
 # Usage:
 #   scripts/run-sandbox-local.sh              build the image, (re)start the container, wait
@@ -25,7 +24,7 @@ set -euo pipefail
 #                    scripts/build.sh does, because the point of this script is to run what
 #                    is in the working tree.
 #   HOST_PORT        published loopback port (default 8081). NOT 8080: the local db-api
-#                    already holds that (genetics-results-suite-r9e). The CONTAINER port
+#                    already holds that. The CONTAINER port
 #                    stays 8080 so the manifest and the local run agree.
 #   GENETICS_API_URL, BIGQUERY_API_URL  defaults point at host.docker.internal, i.e. the
 #                    local results-api (:2000) and db-api (:8080) that scripts/dev-stack.sh
@@ -49,7 +48,7 @@ HOST_PORT="${HOST_PORT:-8081}"
 # :2000, NOT the manifest's :4000. In the cluster results-api's Service port is 4000; on a
 # developer machine scripts/dev-stack.sh puts results-api on :2000 and CHAT-API on :4000, so
 # the cluster number pointed the SDK at chat-backend, which answers 404 on /api and never
-# looks like an auth or a data problem (measured 2026-08-17, genetics-results-suite-4h6.49).
+# looks like an auth or a data problem (measured 2026-08-17).
 GENETICS_API_URL="${GENETICS_API_URL:-http://host.docker.internal:2000/api}"
 BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://host.docker.internal:8080}"
 # Empty by default, i.e. the supervisor's own 300s. Set only to make the retention deadline
@@ -133,7 +132,7 @@ if [ "${DO_BUILD}" = "1" ]; then
   if [ -z "${MCP_DIR}" ]; then
     echo "ERROR: no genetics-mcp-server checkout with src/genetics_mcp_server/sdk was found."
     echo "       Set MCP_SERVER_DIR to one. The sandbox image is not buildable without the"
-    echo "       genetics SDK (genetics-results-suite-4h6.11)."
+    echo "       genetics SDK."
     exit 1
   fi
   echo "--- SDK source: ${MCP_DIR}"
@@ -190,7 +189,7 @@ docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
 # NO CMD IN THE IMAGE. The ENTRYPOINT is the bare interpreter and the supervisor is supplied
 # HERE, at run time — the same argv k8s/deployments/sandbox.yaml now passes as
-# `args: ["/genetics/supervisor.py"]` (genetics-results-suite-4h6.50), so this run exercises
+# `args: ["/genetics/supervisor.py"]`, so this run exercises
 # the deployed invocation. Baking a CMD into the image instead would make a manifest that has
 # lost its args: start a supervisor anyway, which is what deploy.sh's container-level
 # command:/args: refusal relies on being loud.
@@ -244,7 +243,7 @@ cat <<EOF
   stop     scripts/run-sandbox-local.sh --stop
 
   chat-backend's client needs SANDBOX_URL=${BASE_URL} (there is no default: it refuses to
-  build without one, genetics-results-suite-6um).
+  build without one).
 
 WHAT THIS RUN DOES NOT REPRODUCE — every control whose ONLY enforcement is one of these is
 unexercised here and must be verified at deploy time:
@@ -266,14 +265,14 @@ cat <<'EOF'
                   names. /etc/nsswitch.conf is still asserted at startup.
   /scratch        tmpfs sized 512m. Over-budget writes get ENOSPC; under the emptyDir
                   sizeLimit the KUBELET EVICTS THE POD instead, which is the failure the
-                  supervisor's sub-quotas (4h6.46) exist to prevent and it cannot happen here.
+                  supervisor's sub-quotas exist to prevent and it cannot happen here.
                   WORSE, AND IT CHANGES HOW LIMITS MUST BE SIZED: a tmpfs is page cache in
                   THIS CONTAINER'S OWN memory cgroup, so every byte under /scratch is charged
                   against the SAME 3 GiB as the child's RSS (measured: memory.current 113 MiB
                   -> 414 MiB after writing 300 MiB to /scratch). The pod's emptyDir has no
                   `medium: Memory`, so it is node-disk-backed and charged to a SEPARATE
                   budget, ephemeral-storage (requests 1Gi / limits 2Gi) — never to
-                  limits.memory: 3Gi. Size RLIMIT_AS (4h6.41) or a /scratch quota (4h6.46)
+                  limits.memory: 3Gi. Size RLIMIT_AS or a /scratch quota
                   against this container and it is up to 512 MiB more conservative than the
                   pod needs; a script holding 2.6 GiB RSS beside a 400 MiB /scratch is
                   cgroup-OOM-killed here and fine in the pod.
@@ -292,7 +291,7 @@ echo "                  SIGKILL). \`docker rm -f\` or \`docker kill\` bypasses i
 
 if [ "${DO_TEST}" = "1" ]; then
   echo
-  # --container-name: the audit stream (4h6.45) leaves by the container's STDOUT, not by the
+  # --container-name: the audit stream leaves by the container's STDOUT, not by the
   # wire, so the harness reads it back with `docker logs`. Without the name that whole group
   # skips by name instead of proving nothing quietly.
   exec python3 "${SCRIPT_DIR}/test-supervisor.py" --container "${BASE_URL}" \

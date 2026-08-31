@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of run_analysis against the LOCAL stack (4h6.49).
+"""End-to-end verification of run_analysis against the LOCAL stack.
 
 Run:  scripts/test-e2e-local.py [--retention-s N]
 
@@ -20,7 +20,7 @@ status code alone:
 
   * The SDK's results-api request must appear in `sandbox_budget`'s per-execution map keyed on
     the token's `jti`. A caller presenting INTERNAL_API_SECRET is served 200 with the map
-    EMPTY — that is the shape of genetics-results-suite-0lf — so the check reads results-api's
+    EMPTY — the fail-open shape — so the check reads results-api's
     own log for the `jti` and, separately, drives the per-execution CONCURRENCY limit until it
     answers 429, which only the admit path can produce. The negative control is measured in
     the same run rather than argued WHENEVER THE SECRET IS AVAILABLE AND AUTHENTICATES; when
@@ -58,7 +58,7 @@ WHAT THIS RUN CANNOT PROVE, and does not claim: gVisor syscall behaviour, the Ne
 egress allow-list, the kubelet's pod_pids_limit, RuntimeDefault seccomp, and whether
 oom_score_adj and /proc process-group inspection behave under runsc. Docker gives none of
 those a local form (scripts/run-sandbox-local.sh prints the full list at startup). Nor does
-anything here establish a cross-user isolation property: genetics-results-suite-4h6.55 has
+anything here establish a cross-user isolation property: the isolation work has
 MEASURED that a child can read other executions' tokens out of inherited memory, read and
 overwrite other executions' artifacts, and leave a resident setsid() process. This harness
 measures that last one rather than asserting the comfortable answer — and it REPRODUCES it
@@ -855,7 +855,8 @@ def main():
     # process-group kill runs. The completing path is RECORDED rather than asserted here, and
     # the reason has changed: it used to be that a normal completion signalled nothing at all
     # (there were two _kill_group call sites and a reaped job reached neither), so asserting a
-    # grandchild was gone would have been asserting a wish. Since 4h6.66 and 4h6.83 it DOES
+    # grandchild was gone would have been asserting a wish. Since the completion-path kill
+    # and the fork server's sweep landed it DOES
     # signal — _kill_survivors on the group, then the fork server's subreaper sweep for
     # whatever setsid()'d out of it — and scripts/test-supervisor.py's `survivors` group
     # asserts exactly that, with a negative control. What is not established is the behaviour
@@ -892,7 +893,7 @@ def main():
               "G" not in killed_alive,
               f"still alive: {killed_alive.get('G')} (reaped-away: {sorted(killed_dead)})")
 
-    # NOT PASS/FAIL, EITHER OF THEM. 4h6.55 has measured a setsid() descendant escaping the
+    # NOT PASS/FAIL, EITHER OF THEM. A setsid() descendant was measured escaping the
     # group kill; asserting it does not would assert the comfortable answer, and asserting it
     # does would fail this harness on a property nobody has claimed. The completing path is
     # here for the same reason in reverse: what it shows is a consequence of _kill_group's only
@@ -901,11 +902,11 @@ def main():
           f"{'RESIDENT' if 'D' in killed_alive else 'gone'}: alive={sorted(killed_alive)} "
           f"zombie={sorted(killed_dead)}. A killpg cannot reach it by construction; what is "
           "supposed to reach it now is the fork server's subreaper sweep at the END of the "
-          "execution (genetics-results-suite-4h6.83), so RESIDENT here means the sweep did "
+          "execution, so RESIDENT here means the sweep did "
           "not run or did not take under this runtime — worth chasing, not a pass/fail.")
     print(f"  note  NOT AN ASSERTION — the NORMALLY-COMPLETING execution left "
           f"alive={sorted(done_alive)} zombie={sorted(done_dead)}; status={completed['status']}. "
-          "Since 4h6.66 and 4h6.83 both grandchildren are supposed to be GONE here, which is "
+          "Both grandchildren are supposed to be GONE here, which is "
           "asserted with a negative control in scripts/test-supervisor.py's `survivors` group; "
           "this stays a note only because that behaviour is unverified under this runtime.")
 
