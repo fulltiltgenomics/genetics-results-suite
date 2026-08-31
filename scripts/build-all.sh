@@ -36,6 +36,21 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 echo "--- Checking the generated tables in docs/code-execution-security.md"
 python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check
 
+# The N-copy count against docs/duplication-baseline.json. Warn-only, unlike the block check
+# above: the count is taken over the SIBLING checkouts, whose state this build does not
+# control, so a regrowth has to be loud without being able to stop an image build. Exit 2 is
+# "could not count" (a repo is not checked out) and is reported as such rather than as clean.
+echo "--- Checking duplication against the baseline snapshot"
+DUP_RC=0
+python3 "${SCRIPT_DIR}/check-duplication.py" --check || DUP_RC=$?
+if [ "${DUP_RC}" -ne 0 ]; then
+  echo "!!! duplication check exit ${DUP_RC} (1 = grew past docs/duplication-baseline.json,"
+  echo "!!!  2 = could not count: a repo is not checked out, configs/twins.yaml does not say"
+  echo "!!!  what an entry must, the baseline is missing/malformed or was measured over a"
+  echo "!!!  different set of repos, or the passes now cover less of the trees than the"
+  echo "!!!  baseline recorded). Not blocking the build."
+fi
+
 # product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
 # see build.sh: tfvar() swallows a missing tfvars rather than killing the build under pipefail,
 # which is what the check-worktree-paths warning above already claims happens

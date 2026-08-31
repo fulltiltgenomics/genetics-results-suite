@@ -1,0 +1,199 @@
+# The duplicates the suite keeps ON PURPOSE, and the reason for each.
+#
+# scripts/check-duplication.py nets these out of the counts it ratchets, so what
+# --check measures is UNDECLARED duplication: the copies nobody has accounted for.
+#
+# THIS FILE IS A HAND-MAINTAINED LIST, which is the exact shape the ratchet exists to
+# measure. It carries that hazard in both directions:
+#
+#   a twin nobody declares  is counted, and the ratchet fires on work that was right
+#   a twin declared falsely is not counted, and the check passes green forever
+#
+# The second is the dangerous one, because netting an entry out is precisely how a real
+# finding gets silenced — "these two files contain the same fifteen strings" is true of a
+# deliberate security pin and of a copy-paste defect alike, and only the reason tells them
+# apart. So `reason` is mandatory: an entry without one is a hard error, not a default,
+# and `check-duplication.py --check` refuses to run rather than assume anything about it.
+# Adding an entry also moves the declared count, which is ratcheted too — declaring a twin
+# takes a `--write-baseline --reason` that names it, on the record, in the same commit.
+#
+# GENERATED COPIES NEED NO ENTRY HERE. A file ignored by a TRACKED .gitignore of its own
+# repo and byte-identical to a tracked file in another is recognised mechanically — that is
+# what the scripts/sync-datasets.sh copies of configs/datasets.yaml are, and no list of them
+# is maintained anywhere. An ignore written in .git/info/exclude or a global excludesFile
+# does not count: neither travels with the clone. If a consumer ever commits its copy, git
+# stops calling it ignored and it comes back as undeclared, which is the right direction to
+# fail in.
+#
+# Adding an entry: name the SITES, the PROPERTY that must hold between them, and WHY they
+# are not one thing. `merge: never` is for the ones with counter-evidence — something that
+# would break if they were merged — and the entry has to say what that something is.
+# `merge: open` means only that nobody has done it: a judgement, not a constraint, and it
+# should read like one.
+#
+# `symbols` narrows an entry to named functions or constants per site. Use it wherever the
+# files hold more than the twin: declaring a whole file declares everything that will ever
+# be written in it.
+
+twins:
+  - id: sandbox-wire-contract
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py
+      - genetics-results-suite:sandbox/supervisor.py
+      - genetics-results-suite:scripts/test-e2e-local.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py:
+        - body
+        - _error_fields
+        - _retry_after
+      genetics-results-suite:sandbox/supervisor.py:
+        - parse_execute_request
+        - _response
+        - _default_error_type
+      genetics-results-suite:scripts/test-e2e-local.py:
+        - body
+    property: >-
+      Both ends of the /execute call implement the same wire shape - the request body's
+      key set, the {"error": {"type", "message"}} envelope, retry_after, and the status
+      vocabulary - as written down in prose in docs/code-execution-security.md. A change
+      to one side is a change to that prose and to the other side.
+    reason: >-
+      A shared runtime module is MECHANICALLY PROHIBITED, not merely inconvenient.
+      sandbox/prune_venv.py's prune_sdk() walks only site-packages/genetics_mcp_server and
+      deletes everything outside the SDK import closure, and sandbox/build-checks.py's
+      _sdk_surface asserts over that same directory - so a module distributed any other way
+      is invisible to both and ships into the sandbox image whole, which is the failure that
+      already happened once. The prose-plus-two-implementations shape has taken six commits
+      with zero repeat defects of its class, so the duplication is not costing what this
+      ratchet is built to find. `symbols` pins each side to the names that shape a request
+      or an error response, and two of the sites are in one repo, so an unpinned entry would
+      declare their intra-repo duplication as well: the error carriers' constructors
+      converge because both hold status, type, message and retry_after, and a constructor
+      is not the wire shape.
+    merge: never
+
+  - id: browser-normalized-types
+    sites:
+      - genetics-results-browser:bff/normalize.ts
+      - genetics-results-browser:src/types/types.normalized.ts
+    property: >-
+      The BFF's normalizer produces exactly the shapes the browser's normalized types
+      declare; normalize.ts imports them rather than restating them.
+    reason: >-
+      This is the CONTROL GROUP for the whole duplication epic, and it is here to be left
+      alone. One side imports the other, they have drifted in zero commits this month, and
+      it is the case that makes the epic's diagnosis a diagnosis rather than a preference:
+      what costs is a fact copied by hand, not a fact that appears in two files. Also
+      invisible to check-duplication.py, which reads no TypeScript - recorded anyway,
+      because the reason for not touching it is the point.
+    merge: never
+
+  - id: auth-allow-list-matcher
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/auth/core.py
+      - genetics-results-api:app/core/auth.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/auth/core.py:
+        - _matches_allow_list
+      genetics-results-api:app/core/auth.py:
+        - _email_allowed
+    property: >-
+      The two MATCHERS answer "does this address match ALLOWED_EMAILS /
+      ALLOWED_EMAIL_DOMAINS" identically, in both modes of the allow_wildcard keyword,
+      which both carry with the same default: case-folding, exact address, exact domain,
+      a leading dot, `*.`, and the one deliberate divergence from oauth2-proxy where a
+      bare `*` is refused for an unmarked caller.
+    reason: >-
+      PARITY IS DECLARED ON THE MATCHER ONLY, and the narrowness is the entry. mcp-server's
+      auth/core.py also holds _email_allowed, which adds a fail-open preamble - it returns
+      True when no allow-list is configured at all - and that preamble is safe only on a
+      path carrying the trusted-proxy marker. The MCP bearer and Keycloak paths carry no
+      such marker, which is why the matching half was split out for them in the first place.
+      Declaring one function further would net out exactly the pair whose accidental
+      convergence is an authentication bypass, so `symbols` pins each site to the one name
+      that is in parity and nothing else. Not merged because there is no repo either could
+      import the other from, and because a matcher is the last function in the suite that
+      should acquire a dependency.
+    merge: open
+
+  - id: exposed-views-pin
+    sites:
+      - genetics-results-db:tests/test_exposed_views.py
+      - genetics-results-suite:configs/datasets.yaml
+    property: >-
+      The literal EXPOSED_VIEWS in the test equals the set of tables carrying
+      `exposed: true` in the canonical configs/datasets.yaml. Exposing a further view
+      changes both, and the test failing first is the intended behaviour.
+    reason: >-
+      A PIN THAT DERIVES BOTH SIDES ASSERTS NOTHING. This test is the security pin on an
+      allow-list: the exposed set becomes db-api's VIEWS, which decides reachability for the
+      read endpoints and feeds the _ALLOWED_TABLE_IDS that every query's dry run is checked
+      against. If the expected value were read from the same YAML the code reads, the
+      assertion would pass for any set at all, a widened one included. The whole file is
+      declared because the whole file is the pin.
+    merge: never
+
+  - id: derived-view-lists-pin
+    sites:
+      - genetics-results-db:tests/test_derived_view_lists.py
+      - genetics-results-suite:configs/datasets.yaml
+    property: >-
+      The three literals in the test - the views whose `resource` is generated from a
+      `dataset` discriminator, the ones that store it at load time, and the ones excluded
+      from the dataset cross-check - equal what the canonical configs/datasets.yaml says.
+      A config edit that moves a view between them fails the test.
+    reason: >-
+      The same anti-vacuity reason as exposed-views-pin, applied to three questions that are
+      only accidentally nested. Deriving either side of these assertions from the other would
+      prove nothing, so the expected names are written out by hand, on purpose, and the test
+      says so in its own module docstring.
+    merge: never
+
+  - id: sandbox-token-and-budget
+    sites:
+      - genetics-results-api:app/core/sandbox_token.py
+      - genetics-results-db:api/sandbox_auth.py
+      - genetics-results-api:app/core/sandbox_budget.py
+      - genetics-results-db:api/sandbox_budget.py
+    symbols:
+      genetics-results-api:app/core/sandbox_token.py:
+        - REQUIRED_CLAIMS
+        - is_sandbox_shaped
+      genetics-results-db:api/sandbox_auth.py:
+        - REQUIRED_CLAIMS
+        - is_sandbox_shaped
+      genetics-results-api:app/core/sandbox_budget.py:
+        - _env_int
+        - _sweep_locked
+        - admit
+        - release
+        - snapshot
+      genetics-results-db:api/sandbox_budget.py:
+        - _env_int
+        - _sweep_locked
+        - admit
+        - release
+        - snapshot
+    property: >-
+      results-api and db-api validate the sandbox token and account for a sandbox
+      execution's budget the same way: the same required claims, the same shape test for a
+      sandbox-issued principal, the same per-execution request and byte ceilings read from
+      the same environment variables, and the same eviction rules - the contract
+      docs/code-execution-security.md section 4 describes.
+    reason: >-
+      Both ends already carry the justification in prose: the two sandbox_budget.py
+      docstrings say the shape is deliberate, because an operator debugging a throttled
+      execution should not have to hold two mental models of it, and the token pair cites
+      section 4 of docs/code-execution-security.md as the contract they both implement.
+      HONESTLY, THOUGH - unlike sandbox-wire-contract, NO MECHANISM PREVENTS SHARING HERE.
+      Both services are ordinary Python and either could depend on a package the other
+      publishes. This is a judgement that the coupling would cost more than the copies do,
+      and it should be re-examined rather than treated as settled if these files start
+      drifting - of the entries here, this is the one to re-read first.
+      PARITY IS DECLARED ON NAMED SYMBOLS ONLY: the required claims and the shape test on
+      the token side, and on the budget side the ceilings read from the environment, the
+      admit/release accounting and the eviction sweep. The two tests/test_sandbox_budget.py
+      files also duplicate each other wholesale - pytest fixtures, helpers and whole test
+      bodies that nothing above says anything about - so they are not sites here and that
+      duplication is counted like any other.
+    merge: open

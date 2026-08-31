@@ -440,7 +440,7 @@ See `docs/project-spec.md`, "Worktree path resolution".
 
 This applies any terraform changes, configures kubectl, and deploys all k8s manifests. Use it for both the initial deployment and subsequent updates.
 
-> **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, `${DOMAIN}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
+> **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
 
 > **Note:** the substitution is over the **whole document**, not over selected fields —
 > `deploy.sh` pipes each file in `k8s/configs/`, `k8s/deployments/` and `k8s/cronjobs/` through
@@ -452,7 +452,10 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 > strand a half-finished deploy — and it aborts the deploy when a manifest would misrender.
 > Names deploy.sh deliberately leaves out of the whitelist (`${INTERNAL_API_SECRET}`,
 > `${GATEWAY_IDENTITY_SECRET}`, which a later initContainer renders from a Secret) and nginx's
-> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. It catches the
+> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. The same harness
+> holds every one of `deploy.sh`'s `envsubst` whitelists to the files that call renders, both
+> ways: a whitelisted name no governed file spells substitutes nothing and rots unnoticed, and a
+> placeholder missing from its own directory's whitelist reaches the cluster as literal text. It catches the
 > comment form and structural breakage, not every possible mangling — a multi-line fragment
 > expanded into a scalar position still parses as YAML and is not flagged.
 
@@ -700,6 +703,36 @@ killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **full
 copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) — any gene
 on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
 `docs/project-spec.md`.
+
+### Running the sibling repos' tests
+
+```bash
+./scripts/check-siblings.sh          # every sibling's own test lane, one report
+./scripts/check-duplication.py       # the N-copy count across all six repos
+```
+
+There is no CI, so `check-siblings.sh` is the only trigger those lanes have. It discovers
+each repo's lane rather than hardcoding one, and **never exits 0 when a lane did not
+actually run** — a repo not checked out on this machine, a missing `.venv` or
+`node_modules`, or pytest exiting 2/3/4/5. A lane whose tests failed exits 1; a lane that
+reported setup/collection errors but no failures exits 3. Only a repo that declares an
+`offline` pytest marker is narrowed to it — every other repo runs its **default** lane,
+network- and credential-dependent tests included, and that cost belongs to that repo.
+Repos are located by
+`scripts/lib/siblings.py`, which honours `SUITE_SIBLING_ROOT` and a per-repo
+`SUITE_REPO_<NAME>` override and can find a repo checked out under a different root from
+the others. `check-duplication.py` compares against the dated snapshot in
+`docs/duplication-baseline.json`; `build-all.sh` runs it warn-only. What it ratchets is
+**undeclared** duplication: a copy ignored by a tracked `.gitignore` of its own repo and
+byte-identical to a file committed in another is generated and netted out mechanically (an
+ignore from `.git/info/exclude` or a global excludes file does not count — neither travels
+with the clone), and a group covered by an entry in `configs/twins.yaml` — the sites, the
+property that must hold between them, a mandatory reason, and whether merging them is ruled
+out — is declared and netted out too. Both are reported on their own lines rather than
+folded into a smaller number, and the declared count is ratcheted like the rest, so
+declaring a twin takes a `--write-baseline --reason`; that the reason names the entry is
+convention, non-empty is what the code enforces. See "Sibling repos" and "Duplication
+baseline" in `docs/project-spec.md`.
 
 ## Services
 

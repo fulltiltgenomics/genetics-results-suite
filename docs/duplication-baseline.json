@@ -1,0 +1,212 @@
+{
+  "SNAPSHOT": "Measured on 2026-08-31, against commit 32cfbb593440 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
+  "measured_date": "2026-08-31",
+  "measured_commit": "32cfbb593440b2da961621bc823f9bba489f9f31",
+  "measured_tree_dirty": true,
+  "reason": "intra 118 groups / 139 files -> 109 / 122; cross 34 / 74 unchanged; declared 6 / 8 unchanged; generated 33 / 3 unchanged. Every bit of the movement is intra-repo, and it decomposes exactly with no interaction term - measured by re-running with one repo at a time held at its pre-landing tree (git archive into a scratch dir; no checkout touched): genetics-results-db 00603f3 'scripts/lib/common.sh: share what the 15 loaders each re-typed' -1 group / -15 files; genetics-results-munge fdff638 'peak_utils.py: one output contract for the peak munges' -8 / -2; genetics-results-api b5fc9db + 9a17822 + 6ba183c (session guard, warming declared at registration, stream-iterator collapse) 0 / 0; genetics-results-suite 1d36b6d + 5d886d0 + 32cfbb5 (twins registry, census, whitelist coverage) 0 / 0. 109+1+8 = 118 and 122+15+2 = 139, so the four attributions are the whole delta. The api zero is a property of the metric, not a failed landing: a group needs two distinct FILES, so collapsing three byte-identical tsv_line_iterator variants inside one streams.py and routing six _ensure_storage call sites through one guard are invisible here by construction. The cross row did not move because nothing was merged across repos: the three sandbox_token implementations and the two sandbox_budget implementations are unchanged BY DESIGN, detected rather than merged. NEW FIELD: repo_commits records each scanned repo's own HEAD and tree_dirty, because a cross-repo count can move on a sibling's commit alone with this repo's HEAD unchanged, and the old single measured_commit could not say so.",
+  "repos_present": [
+    "genetics-mcp-server",
+    "genetics-results-api",
+    "genetics-results-browser",
+    "genetics-results-db",
+    "genetics-results-munge",
+    "genetics-results-suite"
+  ],
+  "repo_commits": {
+    "genetics-mcp-server": {
+      "commit": "bb116c8a15b37bb89475ccd04cf48fe0b486aa7d",
+      "tree_dirty": false
+    },
+    "genetics-results-api": {
+      "commit": "6ba183c8081f68d70f2be84ed50ee2a475ff9435",
+      "tree_dirty": false
+    },
+    "genetics-results-browser": {
+      "commit": "1ad0764847ef960ad69b3ccef70ae5272d69a640",
+      "tree_dirty": false
+    },
+    "genetics-results-db": {
+      "commit": "00603f3c1dd10222f17ef3b4f6a0f22af1a334e3",
+      "tree_dirty": false
+    },
+    "genetics-results-munge": {
+      "commit": "fdff638983218b71f579c431a882589aeb19a06d",
+      "tree_dirty": false
+    },
+    "genetics-results-suite": {
+      "commit": "32cfbb593440b2da961621bc823f9bba489f9f31",
+      "tree_dirty": true
+    }
+  },
+  "window_days": 30,
+  "census": {
+    "genetics-mcp-server": {
+      ".sh": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".py": {
+        "read": 104,
+        "parsed": 104,
+        "units": 101,
+        "on_disk": 104
+      },
+      ".yaml": {
+        "read": 0,
+        "parsed": 0,
+        "units": 0,
+        "on_disk": 1
+      }
+    },
+    "genetics-results-api": {
+      ".py": {
+        "read": 173,
+        "parsed": 173,
+        "units": 161,
+        "on_disk": 173
+      },
+      ".yaml": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".sh": {
+        "read": 4,
+        "parsed": 4,
+        "units": 2,
+        "on_disk": 4
+      }
+    },
+    "genetics-results-browser": {
+      ".yaml": {
+        "read": 8,
+        "parsed": 8,
+        "units": 7,
+        "on_disk": 9
+      },
+      ".sh": {
+        "read": 3,
+        "parsed": 3,
+        "units": 1,
+        "on_disk": 3
+      },
+      ".py": {
+        "read": 8,
+        "parsed": 8,
+        "units": 8,
+        "on_disk": 8
+      }
+    },
+    "genetics-results-db": {
+      ".py": {
+        "read": 27,
+        "parsed": 27,
+        "units": 27,
+        "on_disk": 27
+      },
+      ".yaml": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".sh": {
+        "read": 18,
+        "parsed": 18,
+        "units": 4,
+        "on_disk": 18
+      }
+    },
+    "genetics-results-munge": {
+      ".sh": {
+        "read": 23,
+        "parsed": 23,
+        "units": 1,
+        "on_disk": 23
+      },
+      ".py": {
+        "read": 50,
+        "parsed": 50,
+        "units": 48,
+        "on_disk": 50
+      },
+      ".yaml": {
+        "read": 0,
+        "parsed": 0,
+        "units": 0,
+        "on_disk": 1
+      }
+    },
+    "genetics-results-suite": {
+      ".yaml": {
+        "read": 32,
+        "parsed": 32,
+        "units": 31,
+        "on_disk": 33
+      },
+      ".py": {
+        "read": 37,
+        "parsed": 37,
+        "units": 34,
+        "on_disk": 37
+      },
+      ".sh": {
+        "read": 19,
+        "parsed": 19,
+        "units": 14,
+        "on_disk": 19
+      }
+    }
+  },
+  "intra": {
+    "groups": 109,
+    "files": 122,
+    "lockstep": 98,
+    "by_kind": {
+      "bodies-exact": 37,
+      "bodies-near": 34,
+      "enumerations": 38
+    }
+  },
+  "cross": {
+    "groups": 34,
+    "files": 74,
+    "lockstep": 29,
+    "by_kind": {
+      "bodies-exact": 18,
+      "bodies-near": 5,
+      "enumerations": 11
+    }
+  },
+  "declared": {
+    "groups": 6,
+    "files": 8,
+    "lockstep": 7,
+    "by_kind": {
+      "bodies-exact": 3,
+      "bodies-near": 0,
+      "enumerations": 3
+    },
+    "by_twin": {
+      "sandbox-wire-contract": 1,
+      "browser-normalized-types": 0,
+      "auth-allow-list-matcher": 0,
+      "exposed-views-pin": 1,
+      "derived-view-lists-pin": 0,
+      "sandbox-token-and-budget": 4
+    }
+  },
+  "generated": {
+    "groups": 33,
+    "files": 3,
+    "lockstep": 66,
+    "by_kind": {
+      "bodies-exact": 0,
+      "bodies-near": 0,
+      "enumerations": 33
+    }
+  }
+}
