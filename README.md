@@ -440,7 +440,7 @@ See `docs/project-spec.md`, "Worktree path resolution".
 
 This applies any terraform changes, configures kubectl, and deploys all k8s manifests. Use it for both the initial deployment and subsequent updates.
 
-> **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, `${DOMAIN}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
+> **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
 
 > **Note:** the substitution is over the **whole document**, not over selected fields —
 > `deploy.sh` pipes each file in `k8s/configs/`, `k8s/deployments/` and `k8s/cronjobs/` through
@@ -452,7 +452,10 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 > strand a half-finished deploy — and it aborts the deploy when a manifest would misrender.
 > Names deploy.sh deliberately leaves out of the whitelist (`${INTERNAL_API_SECRET}`,
 > `${GATEWAY_IDENTITY_SECRET}`, which a later initContainer renders from a Secret) and nginx's
-> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. It catches the
+> own `$host`/`$scheme` are asserted to survive verbatim rather than flagged. The same harness
+> holds every one of `deploy.sh`'s `envsubst` whitelists to the files that call renders, both
+> ways: a whitelisted name no governed file spells substitutes nothing and rots unnoticed, and a
+> placeholder missing from its own directory's whitelist reaches the cluster as literal text. It catches the
 > comment form and structural breakage, not every possible mangling — a multi-line fragment
 > expanded into a scalar position still parses as YAML and is not flagged.
 
