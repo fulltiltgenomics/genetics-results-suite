@@ -74,7 +74,7 @@ What the script is doing on your behalf, and why each piece matters:
 - **It sets `SANDBOX_URL=http://127.0.0.1:8081` explicitly**, which is what
   `scripts/run-sandbox-local.sh` publishes. The client has **no default**: building a
   `SandboxClient` with `SANDBOX_URL` unset raises `SandboxNotConfigured`
-  (`genetics-results-suite-6um`). It used to default to `127.0.0.1:8080`, which on this
+ . It used to default to `127.0.0.1:8080`, which on this
   machine is **db-api**, so chat-backend posted code executions at the BigQuery proxy and
   got answers that classified as confusing sandbox errors.
 - **`status` reads `DATASET_ID` out of `/proc/<pid>/environ`**, because `/health` does not
@@ -101,7 +101,7 @@ the script does not name is passed through untouched. Put these there rather tha
 (`~/.cache/genetics-dev-stack`) and exports them to db-api, results-api and chat-backend —
 unconditionally, whatever `SANDBOX_ENABLED` is set to — so the minter and both verifiers agree.
 Without them both verifiers resolve **no sandbox principal at all** and serve the SDK with no
-per-execution accounting (`genetics-results-suite-0lf`): that follows from the two credentials
+per-execution accounting: that follows from the two credentials
 and from nothing else, since neither verifier reads `SANDBOX_ENABLED`. They have to be
 stable across restarts — rotating the key invalidates a token minted seconds earlier — and they
 must not land in a repo. Setting either variable yourself still wins — **but be careful where**:
@@ -163,7 +163,7 @@ tables, 115 M rows each, which dev deliberately does not have — they are `4h6.
   returned zero, and the old advice to smoke-test only with a chr22 gene like `SMARCB1`
   no longer applies. Zero rows for a common gene now means a broken stack, not a subset.
 - Two views differ from production on purpose: `hla_associations_v` has different column
-  names (`genetics-results-suite-94c`) and `credible_sets` has a different storage layout
+  names and `credible_sets` has a different storage layout
   (`genetics-results-suite-eyg`, consumer-transparent through `credible_sets_v`). The other
   13 are byte-identical.
 - **`genetics_dev` is the FIXED state for HLA, not the broken one, and the failing
@@ -205,7 +205,7 @@ and `size_bytes` before and after.
 
 `credible_sets` is the one table needing a transform rather than a straight column copy:
 dev's base table **stores** `variant` and `resource`, production's only computes them in
-`credible_sets_v` (`genetics-results-suite-eyg`). Take the two expressions verbatim from
+`credible_sets_v`. Take the two expressions verbatim from
 production's view — `CONCAT(chr,':',pos,':',ref,':',alt)` and its 11-branch resource
 `CASE` — rather than reinventing them. `hla_associations` needs no transform: its base
 table is column-identical to production and the renames live only in dev's view.
@@ -525,8 +525,8 @@ Two things look testable here and are not. Do not record either as verified from
 | Frontend loads but tables are empty | BFF or results-api not running; check `VITE_API_URL` in `.env.local` |
 | Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
 | Every by-gene query returns zero rows | Not the dataset: `genetics_dev` has been full-size since 2026-08-18, so a common gene returning nothing is a real fault. Confirm the dataset with `dev-stack.sh status`, then look at db-api itself |
-| `SandboxNotConfigured: SANDBOX_URL is not set` | Nothing set the variable — the client has no default any more, deliberately (`genetics-results-suite-6um`); set `http://127.0.0.1:8081`, what `run-sandbox-local.sh` publishes |
-| An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names — `genetics-results-suite-94c`'s expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
+| `SandboxNotConfigured: SANDBOX_URL is not set` | Nothing set the variable — the client has no default any more, deliberately; set `http://127.0.0.1:8081`, what `run-sandbox-local.sh` publishes |
+| An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names's expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |
 | db-api logs `bigquery.tables.get` / `bigquery.jobs.create` denied | the VM runs as the default compute service account, which has no roles. Attach one with `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` (`gcloud compute instances set-service-account`, VM stopped) and restart the servers |

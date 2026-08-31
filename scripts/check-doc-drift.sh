@@ -29,7 +29,7 @@ found=0
 #
 # The 4th argument exists because a rule whose path pattern is broader than the doc
 # concern it names fires where it can never apply, and a warning that fires when it
-# cannot apply is how a warn-only check becomes wallpaper (genetics-results-suite-dqa).
+# cannot apply is how a warn-only check becomes wallpaper.
 # Use it only where the named doc demonstrably does not describe the excluded files, and
 # say which property of them makes that true — "generated" is not by itself such a
 # property, since a doc can and does reason about generated content.
@@ -97,7 +97,7 @@ check '^scripts/monitor/' '^docs/project-spec\.md$' \
 # source that sandbox/stubs/*.pyi is generated FROM lives in a different repository
 # (genetics-mcp-server/src/genetics_mcp_server/sdk/). This script reads `git diff --cached`
 # of THIS repo, so an SDK docstring edit that leaves the staged stubs stale never appears in
-# `staged` and no rule here can fire on it — genetics-results-suite-4h6.32 hit exactly that.
+# `staged` and no rule here can fire on it.
 # What does catch it is `gen-sandbox-docs.py --check`, which build.sh, build-all.sh and
 # run-sandbox-local.sh already run against a staged SDK copy; the gap is that nothing runs it
 # at commit time. Closing it needs a cross-repo mechanism, which is a separate decision.
@@ -122,7 +122,7 @@ check "$SANDBOX_PATHS" \
 
 # the generated trees above were mapped to code-execution-security.md while the GENERATOR
 # was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
-# the shipped schema docs with no warning at all (genetics-results-suite-8vn). Named
+# the shipped schema docs with no warning at all. Named
 # literally rather than folded into a scripts/ glob: nothing else under scripts/ owns this
 # contract, and a wider pattern would fire where it cannot apply.
 check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
@@ -149,6 +149,15 @@ check '^scripts/test-network-policies\.py$' \
 check '^scripts/test-network-policies\.py$' \
     '^docs/project-spec\.md$' \
     'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer)'
+
+# The generated tables in code-execution-security.md (the limits, the pod's security context,
+# the allow-lists, the image environment, the reserved error types) are NOT this script's
+# problem: `gen-doc-blocks.py --check` derives them from the code and build-all.sh runs it
+# fatally. This rule covers the PROSE, which no generator can check — a change to the
+# generator itself falsifies both halves at once, which is why it is named here too.
+check '^scripts/gen-security-doc\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/gen-doc-blocks.py -> docs/code-execution-security.md (which blocks are generated, what each derives from, and the build gate that runs it)'
 
 # Only the *static branding assets* under keycloak/themes/ are exempt, and NOT because they are
 # cosmetic — theme.properties records that css/genetics.css hides the username/password form, so a
