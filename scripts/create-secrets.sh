@@ -37,7 +37,7 @@ usage() {
 }
 
 # The context override is a FLAG and deliberately NOT an environment variable
-# (genetics-results-suite-mrg, carried over from -b1r where the difference was measured). An
+# (carried over from rollout.sh, where the difference was measured). An
 # `export` typed alongside one deliberate off-target run outlives that invocation and
 # re-authorises every later one from the same shell; in rollout.sh's case that was driven to a
 # real `kubectl set image` on production. Two things make the override per-invocation HERE, and
@@ -102,9 +102,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/lib/env.sh"
 resolve_deploy_env
 
-# GUARD: refuse to write Secrets into a cluster this deployment's tfvars does not name
-# (genetics-results-suite-mrg). It sits here, immediately after the deployment is resolved and
-# ahead of EVERY cluster-contacting call below — including the `kubectl get secret` reads in
+# GUARD: refuse to write Secrets into a cluster this deployment's tfvars does not name. It
+# sits here, immediately after the deployment is resolved and ahead of EVERY
+# cluster-contacting call below — including the `kubectl get secret` reads in
 # secret_key(), which run long before the first write.
 #
 # IT RUNS BEFORE load_deploy_env, AND THAT ORDER IS THE GUARD'S OWN INTEGRITY RATHER THAN TIDINESS.
@@ -151,7 +151,7 @@ load_deploy_env
 
 # RE-ASSERT THE CONTEXT AFTER SOURCING .env, AND BE HONEST ABOUT WHAT THIS IS.
 # The freeze above stops `.env` REWRITING the guard's verdict. It does nothing about `.env`
-# changing what that verdict MEANS, and three ways were driven (genetics-results-suite-mrg):
+# changing what that verdict MEANS, and three ways were driven:
 #   - a `kubectl() { ... }` shell function in `.env` rewrites the `--context` after the pin has
 #     already expanded faithfully;
 #   - a `PATH=` line puts a different `kubectl` binary in front;
@@ -209,7 +209,7 @@ ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${PROFILE}" = "daly" ] && echo true || 
 
 echo "Creating genetics-secrets in namespace ${NAMESPACE} (env: ${DEPLOY_ENV:-default})..."
 
-# --context is PINNED on every kubectl invocation from here down (genetics-results-suite-mrg),
+# --context is PINNED on every kubectl invocation from here down,
 # the same way rollout.sh pins its three, and it pins ACTING_CONTEXT — the guard's frozen readonly
 # verdict — rather than the plain CURRENT_CONTEXT the guard also leaves behind. The guard above
 # verified the current context, but `kubectl config use-context` from another terminal rewrites the
@@ -300,7 +300,7 @@ INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(openssl rand -base64 32)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(secret_key genetics-secrets sandbox-token-signing-key)}"
 SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(openssl rand -base64 32)}"
 
-# auth-gateway's provenance secret (genetics-results-suite-4h6.84). A THIRD distinct secret,
+# auth-gateway's provenance secret. A THIRD distinct secret,
 # and the distinctness is the security property: auth-gateway sends it on the two locations
 # that proxy to chat-backend, chat-backend gates sandbox dispatch on it, and mcp-server and
 # results-api — which hold internal-api-secret by design and can reach chat-backend:8000 —

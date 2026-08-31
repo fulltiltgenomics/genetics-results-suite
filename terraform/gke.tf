@@ -132,7 +132,7 @@ resource "google_container_node_pool" "sandbox_nodes" {
   node_config {
     # ForceNew: changing this DESTROYS and recreates the pool. A machine-type change has to
     # be a new pool plus cordon/drain, not an edit here.
-    # UNVERIFIED (genetics-results-suite-5r2): that e2-standard-2 satisfies GKE Sandbox's
+    # UNVERIFIED: that e2-standard-2 satisfies GKE Sandbox's
     # machine-type requirements on this cluster's channel/version, and that the runsc
     # sentry's own footprint fits alongside the pod's 3Gi limit. Both are enforced at pool
     # creation / runtime, not at plan, so only a real apply in a non-production project
@@ -194,9 +194,9 @@ resource "google_container_node_pool" "sandbox_nodes" {
     # GKE's documented range for podPidsLimit starts at 1024, so 256 would be rejected at
     # pool creation. NOT established by any tool here: the provider schema is a bare optional
     # number with no range check, so `terraform validate` passes on 256 as readily as on
-    # 1024. UNCONFIRMED against this cluster (genetics-results-suite-5r2). Fork-bomb
+    # 1024. UNCONFIRMED against this cluster. Fork-bomb
     # containment does not rest on this number anyway: the supervisor enforces a child pid
-    # budget far below it (4h6.7/4h6.41). This is the outer backstop.
+    # budget far below it. This is the outer backstop.
     kubelet_config {
       pod_pids_limit = 1024
     }

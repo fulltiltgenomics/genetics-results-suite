@@ -68,7 +68,7 @@ spec:
           value: "30"
         - name: LOG_LEVEL
           value: "INFO"
-        # Keycloak OAuth resource-server (genetics-results-suite-v3n). Optional PUBLIC values
+        # Keycloak OAuth resource-server. Optional PUBLIC values
         # injected per profile by deploy.sh: set for the Keycloak-enabled profile (daly/GeneGenie),
         # empty for profiles with the broker off (finngen) so the OAuth path stays inert. JWKS is
         # derived by the server from OAUTH_ISSUER, so OAUTH_JWKS_URI is intentionally left unset.

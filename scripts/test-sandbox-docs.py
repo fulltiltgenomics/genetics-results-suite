@@ -16,14 +16,14 @@ believes the image. So three things are checked separately:
      worked example in it. A regex-based view list that failed open is exactly how a view
      goes missing, so the list here comes from yaml.safe_load, never from a pattern.
   2. THE RULES ARE IN THE CANONICAL FILE — the hard-won correctness rules named by
-     genetics-results-suite-4h6.13 are asserted to be present *in datasets.yaml*, in a
+     the generator needs are asserted to be present *in datasets.yaml*, in a
      named field. If someone deletes the peak_to_gene warning from the YAML, this fails
      here rather than silently shipping an image that no longer carries it.
   3. THE GENERATOR DOES NOT KNOW THEM — the same rule text must NOT appear in
      gen-sandbox-docs.py, and mutating the YAML must move the generated output. Together
      these are what "generated, never transcribed" means operationally.
 
-Why (3) matters right now rather than in principle: genetics-results-suite-5p5 is an open
+Why (3) matters right now rather than in principle: there is open
 P1 that rewrites credible_sets_v's variant/chr guidance as soon as the clustering swap
 runs. A transcribed copy would keep shipping the old rule and nothing would report it.
 """
@@ -56,7 +56,7 @@ def _load_generator():
     return module
 
 
-# The correctness rules from genetics-results-suite-4h6.13, each located by the datasets.yaml
+# The correctness rules, each located by the datasets.yaml
 # field that must carry it and a phrase that must survive in that field. These strings are
 # deliberately here and NOT in the generator: this file is the tripwire, the generator is
 # the transport. A rule reworded in datasets.yaml fails here loudly, which is a request to
@@ -249,7 +249,7 @@ def main(argv=None):
 
     # resolved by the generator, so the harness and the thing it tests can never read
     # different SDKs — and neither falls back to the stale sandbox/.sdk-src a build left
-    # behind (genetics-results-suite-4h6.60)
+    # behind
     sdk_src = gen.resolve_sdk_src(args.sdk_src)
     sdk_dir = sdk_src and gen.sdk_dir_for(sdk_src)
     if not sdk_dir or not os.path.isdir(sdk_dir):
@@ -298,7 +298,7 @@ def main(argv=None):
 
     @check("every documented column carries a well-formed BigQuery type")
     def _column_types():
-        """genetics-results-suite-4h6.31: a column documented without its type is the
+        """A column documented without its type is the
         defect this field exists to close — an agent writing SQL cannot tell an INT64
         chromosome from a string one, or an ARRAY that needs UNNEST from a scalar.
 
@@ -366,7 +366,7 @@ def main(argv=None):
         """The direction that matters. A guard that only proves the type shows up when it
         is present fails open: the failure mode is a column whose entry was never added,
         and a generator that quietly emitted `| chr |  |` would satisfy every other check
-        in this file while shipping exactly the gap 4h6.31 was filed for. So delete an
+        in this file while shipping exactly the gap this check exists for. So delete an
         entry and require the generator to refuse."""
         view = sorted(tables)[0]
         column = next(iter(tables[view]["columns"]))
@@ -455,9 +455,9 @@ def main(argv=None):
             )
             assert regenerated[doc_name] != schema_files[doc_name], "output identical after mutation"
 
-    @check("no 4h6.6 placeholders survive and neither directory is empty")
+    @check("no placeholders survive and neither directory is empty")
     def _placeholders():
-        """The contract genetics-results-suite-4h6.6 fixed: the build refuses while
+        """The build gate: the build refuses while
         PLACEHOLDER files are staged, and an empty directory would satisfy that check
         while shipping nothing."""
         for directory, suffix in ((SCHEMA_DIR, ".md"), (STUBS_DIR, ".pyi")):
@@ -481,7 +481,7 @@ def main(argv=None):
 
     @check("stubs cover exactly the SDK's exported surface")
     def _stub_surface():
-        """genetics-results-suite-4h6.6 prunes the image to the SDK's import closure
+        """The image is pruned to the SDK's import closure
         and asserts EQUALITY with an allow-list. Documenting a function the package
         does not export, or missing one it does, is the same class of error.
 
@@ -561,7 +561,7 @@ def main(argv=None):
 
     @check("the SDK source is never resolved to the staged sandbox/.sdk-src")
     def _never_the_staged_copy():
-        """genetics-results-suite-4h6.60. build.sh stages sandbox/.sdk-src and deletes it on
+        """build.sh stages sandbox/.sdk-src and deletes it on
         an EXIT trap, so a copy found on disk means an interrupted build — the old default
         was reachable only when it was already stale, and regenerating from it rewrites
         stubs that ship inside the image. Simulate a leftover and assert it is not chosen."""

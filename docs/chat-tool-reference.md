@@ -434,7 +434,7 @@ ways; the rest run with subagents off:
   NORMALISATION: neither sees a plural or suffixed mention (`get_hla_by_alleles` for
   `get_hla_by_allele`), so they would agree while both being wrong. No such mention exists
   today; `_Block`'s docstring carries the instruction to name tools verbatim
-  (`genetics-results-suite-4h6.78`).
+ .
 - **one routing home per surface**
   (`TestRoutingArbitrationHasOneHomePerSurface`) — no arm is told to prefer a path it does
   not have: the database fallback is absent wherever `query_database` is, and the SDK
@@ -450,7 +450,7 @@ ways; the rest run with subagents off:
 - **structure** — no body line may land under a different heading than it has in the
   unfiltered text, and no heading may be emitted with no body under it.
 - **capability gating of guidance keyed on a parameter or an output field**
-  (`genetics-results-suite-4h6.75`) — the gate matches tool NAMES, so a rule resting on a
+  — the gate matches tool NAMES, so a rule resting on a
   `summarize` argument or a `products` field names no tool and was emitted unconditionally.
   Pinned per profile: the `summarize=true` remedy appears exactly on the surfaces carrying a
   tool with that parameter and the generic "Narrow the request" fallback exactly on those
@@ -466,7 +466,7 @@ ways; the rest run with subagents off:
   that reaches the catalog only through the SDK is additionally told which call that is.
   The products-vs-`data_type` knowledge stays on every surface. `_SUMMARIZE_PARAM_TOOLS`
   is itself asserted against the live tool schemas rather than trusted as a constant.
-- **route completeness of the annotation prohibition** (`genetics-results-suite-4h6.76`) —
+- **route completeness of the annotation prohibition** —
   two directions, both parametrised over every profile x `SANDBOX_ENABLED`. **Forward**
   (`test_no_surface_gets_the_prohibition_without_a_route`): wherever the "you must NEVER
   query the database for them" prohibition is emitted, exactly one route accompanies it,
@@ -553,7 +553,7 @@ Emitted when the api tools and `query_database` are both present — profiles `N
 ```
 
 Emitted whenever `run_analysis` is present — every profile except `rag` and `nocode`, and which a
-feature flag in front of that tool (`genetics-results-suite-4h6.56`) would remove with no
+feature flag in front of that tool would remove with no
 edit to the prompt:
 
 ```text
@@ -638,7 +638,7 @@ The prompt also names the database exclusions explicitly:
 It does NOT contain per-variant **consequence / allele-frequency / rsID / pathogenicity** annotations, and you must NEVER query the database for them — it accesses the same underlying data, not extra consequence/frequency columns.
 ```
 
-**Both of the gaps this section used to record are closed** (`genetics-results-suite-4h6.69`).
+**Both of the gaps this section used to record are closed**.
 The prompt's "Choosing How to Get Data" section now names `run_analysis` and
 `list_capabilities` and states the script-vs-tool arbitration that previously lived only
 inside `run_analysis`'s description; and "Subagent Orchestration" is emitted only when

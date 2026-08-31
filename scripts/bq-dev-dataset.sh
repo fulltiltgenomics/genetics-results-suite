@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # stands up a throwaway BigQuery dataset that mirrors the live genetics_results, so the
-# open DDL beads (94c, eyg, 4h6.20, 4h6.21, 4ci) can be rehearsed before they touch
+# open DDL work can be rehearsed before it touches
 # production. See docs/bigquery-dev-dataset.md for the expand/verify/contract cycle.
 #
 # The suite spans three deployments in two projects (docs/environments.md), but none of them
@@ -411,7 +411,7 @@ do_create() {
         if [ "$APPLY" = true ]; then
             echo "Creating dataset ${PROJECT_ID}:${DEV_DATASET} in $SRC_LOCATION"
             bq mk --project_id="$PROJECT_ID" --dataset --location="$SRC_LOCATION" \
-                --description="REHEARSAL COPY of ${SRC_DATASET} (genetics-results-suite-44g). Clones + rewritten views. NOT LIVE. Safe to drop." \
+                --description="REHEARSAL COPY of ${SRC_DATASET}. Clones + rewritten views. NOT LIVE. Safe to drop." \
                 "${PROJECT_ID}:${DEV_DATASET}"
         else
             echo "bq mk --project_id=$PROJECT_ID --dataset --location=$SRC_LOCATION ${PROJECT_ID}:${DEV_DATASET}"

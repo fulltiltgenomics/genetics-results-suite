@@ -57,7 +57,7 @@ echo "Using backend: ${BACKEND_FILE##*/}"
 # field-wise, so a whitelisted name spelled ${...} anywhere in a file is substituted — comments
 # included. LEGACY_REDIRECT and KEYCLOAK_SERVER are multi-line, so such an expansion inside a
 # `#` line breaks out of the comment and the render stops being valid YAML; kubectl apply then
-# fails partway through a deploy (genetics-results-suite-i5v, -puv). This needs no terraform,
+# fails partway through a deploy. This needs no terraform,
 # no cluster and no credentials, so it runs before either, and it derives the whitelists from
 # this script rather than carrying a copy of them.
 # exit 1 = a manifest would misrender, and the deploy aborts before anything is applied.
@@ -127,7 +127,7 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   # SCHEDULES — "Pending forever" above is only the no-pool case — and nothing downstream waits
   # on this rollout, so the deploy would exit 0 and print success over a pod that can never
   # serve. That is the same silent success the gate exists to prevent, so refuse it too. Keyed
-  # on the manifest, not on a ticket number: the check clears itself when 4h6.50 lands `args:`.
+  # on the manifest: the check clears itself once the manifest carries `args:`.
   # PARSED, NOT GREPPED, and scoped to the one container it is about. The indentation-anchored
   # grep this replaced was wrong in both directions, measured end to end: an initContainer or a
   # second document carrying a `command:`/`args:` key at the same column CLEARED it with the
@@ -345,7 +345,7 @@ else
 fi
 export OAUTH2_PROVIDER OIDC_ISSUER_URL OIDC_BACKEND_LOGOUT_URL KEYCLOAK_SERVER
 
-# MCP OAuth resource-server env (genetics-results-suite-v3n). Non-secret PUBLIC values rendered
+# MCP OAuth resource-server env. Non-secret PUBLIC values rendered
 # into the mcp-server Deployment via envsubst; the mcp-server treats them as optional and the
 # whole OAuth path stays inert when they are empty — so profiles without the Keycloak broker
 # (finngen) get no resource-server behaviour. OAUTH_ISSUER reuses OIDC_ISSUER_URL so it exactly

@@ -62,12 +62,10 @@ spec:
 # path, chat-backend and mcp-server through the tool executor, and the sandbox through the
 # genetics SDK. It is a ClusterIP service with no Ingress backend, so no load-balancer or
 # health-check source needs to be admitted.
-# The sandbox entry is REACHABILITY ONLY, and the path is dead today only because no sandbox
-# pod exists yet (genetics-results-suite-4h6.7). The credential it uses landed with
-# genetics-results-suite-4h6.9: a per-execution HS256 token minted by chat-backend with
-# `aud: results-api`, validated in app/core/sandbox_token.py. The sandbox still holds no
-# INTERNAL_API_SECRET by design, and since genetics-results-suite-fad results-api returns 401
-# for a request carrying neither the marker nor a valid bearer (REQUIRE_AUTH=true in prod).
+# The sandbox entry is REACHABILITY ONLY. The credential it uses is a per-execution HS256 token
+# minted by chat-backend with `aud: results-api`, validated in app/core/sandbox_token.py. The
+# sandbox still holds no INTERNAL_API_SECRET by design, and results-api returns 401 for a
+# request carrying neither the marker nor a valid bearer (REQUIRE_AUTH=true in prod).
 # Do not "fix" the sandbox's access by handing it the internal secret.
 # These five are NOT the complete set of callers: the monitor CronJob is admitted by a separate,
 # additive policy (allow-ingress-results-api-from-monitor in monitor-policy.yaml, same port).
@@ -242,9 +240,8 @@ spec:
 # and from the sandbox, whose primary data path this is. WITHOUT THE SANDBOX ENTRY THE SANDBOX'S
 # OWN EGRESS ALLOW-LIST ACHIEVES NOTHING: the namespace-wide default-deny-ingress drops every
 # sandbox -> db-api connection at the receiving end regardless of what sandbox-policy.yaml says.
-# As with results-api, this is reachability only, and the path is dead today only because no
-# sandbox pod exists yet (genetics-results-suite-4h6.7). genetics-results-suite-4h6.9 landed the
-# scoped credential: db-api's middleware still 401s any request without
+# As with results-api, this is reachability only: db-api's middleware still 401s any request
+# without
 # `Authorization: Bearer $INTERNAL_API_SECRET` — which the sandbox deliberately does not hold —
 # or a per-execution HS256 token with `aud: db-api` (api/sandbox_auth.py).
 apiVersion: networking.k8s.io/v1

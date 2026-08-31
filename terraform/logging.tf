@@ -16,7 +16,7 @@ resource "google_logging_project_sink" "endpoint_access" {
   description = "Genetics results API endpoint access logs to BigQuery"
   destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.api_logs[0].dataset_id}"
 
-  # scoped to the in-cluster workloads (genetics-results-suite-re3). The bare
+  # scoped to the in-cluster workloads. The bare
   # jsonPayload.log_type filter is project-wide, and the genetics-results-api-dev1 GCE VM emits the
   # same log_type through the Cloud Logging client library under log name "genetics-results-api".
   # That VM is not a decommissioned server and not real usage: it is a developer machine running

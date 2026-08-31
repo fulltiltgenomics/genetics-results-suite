@@ -28,7 +28,7 @@ RAG_SERVICE_ORG="${RAG_SERVICE_ORG:-https://github.com/ykjain}"
 # product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
 # tfvar() swallows a missing file and a missing key (it is gitignored and main-checkout-only,
 # so in a worktree grep exits 2 — pipefail would otherwise kill the build with no output before
-# the FinnGenie fallback below was ever reached, genetics-results-suite-1xp)
+# the FinnGenie fallback below was ever reached)
 APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
@@ -52,7 +52,7 @@ if [ "${SERVICE}" = "sandbox" ]; then
   if [ ! -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     echo "ERROR: branch ${MCP_BRANCH} of genetics-mcp-server has no"
     echo "       src/genetics_mcp_server/sdk. The sandbox image is not shippable"
-    echo "       without the genetics SDK (genetics-results-suite-4h6.11)."
+    echo "       without the genetics SDK."
     exit 1
   fi
 
@@ -61,7 +61,7 @@ if [ "${SERVICE}" = "sandbox" ]; then
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
 
-  # /genetics/schema and /genetics/sdk (genetics-results-suite-4h6.13). Regenerated from
+  # /genetics/schema and /genetics/sdk. Regenerated from
   # configs/datasets.yaml and from the SDK clone staged above on every build, not read
   # from the committed copies, so the image cannot ship documentation older than the
   # canonical file it is derived from. Under `set -e` a failure aborts the build, which is

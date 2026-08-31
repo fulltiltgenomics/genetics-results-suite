@@ -10,7 +10,7 @@ set -euo pipefail
 # 401s every browser request. The reverse order is safe to sit in. Rollback reverses it
 # (results-api first). See README "Deploying the trusted-proxy marker".
 #
-# ORDERING (the same constraint, now three services — genetics-results-suite-rhh):
+# ORDERING (the same constraint, now three services):
 #   bff  ->  mcp-server  ->  results-api
 # results-api's ANONYMOUS_SURFACE_MINIMAL defaults ON, which stops /api/v1/auth,
 # /api/v1/variant_sets, /api/v1/variant_sets/{name} and /api/v1/rsid/variants (GET+POST) from
@@ -22,7 +22,7 @@ set -euo pipefail
 #     genetics-results-browser's db-only-architecture worktree. Ship that bff first or the
 #     browser 401s on its login-state probe.
 #   * an mcp-server pod whose INTERNAL_API_SECRET is unset (its secretKeyRef is optional: true,
-#     so it starts anyway). genetics-results-suite-618 turned that into a startup failure. Note
+#     so it starts anyway); that is now a startup failure instead. Note
 #     what shipping mcp-server first buys: NOT continued service — that pod crash-loops with a
 #     message naming the variable instead of 401ing every tool call with nothing local saying
 #     why. Diagnosability, not availability.
@@ -33,10 +33,9 @@ usage() {
   echo "Usage: rollout.sh [--context <kubectl-context>] <service-name> [tag]" >&2
 }
 
-# The context override is a FLAG, and that is the fix rather than the style
-# (genetics-results-suite-b1r). It used to be the environment variable ROLLOUT_CONTEXT,
-# cross-checked only against the CURRENT context and never against the context DEPLOY_ENV
-# implies. An `export ROLLOUT_CONTEXT=<prod>` typed alongside one deliberate production rollout
+# The context override is a FLAG, and that is the fix rather than the style. It used to be the
+# environment variable ROLLOUT_CONTEXT, cross-checked only against the CURRENT context and
+# never against the context DEPLOY_ENV implies. An `export ROLLOUT_CONTEXT=<prod>` typed alongside one deliberate production rollout
 # therefore outlived that invocation and re-authorised itself on every later run from the same
 # shell: a subsequent `DEPLOY_ENV=daly-staging ./scripts/rollout.sh bff`, still on the production
 # cluster, was accepted and pushed the STAGING registry's image onto PRODUCTION. A flag cannot be
@@ -96,13 +95,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 resolve_deploy_env
 resolve_registry
 
-# GUARD: refuse to act on a cluster this deployment's tfvars does not name
-# (genetics-results-suite-b1r). It runs here, before every cluster-contacting call below, so
-# nothing has touched a cluster by the time it decides.
+# GUARD: refuse to act on a cluster this deployment's tfvars does not name. It runs here,
+# before every cluster-contacting call below, so nothing has touched a cluster by the time it
+# decides.
 #
 # The implementation — the kube_context reader and the compare-and-refuse — lives in
 # lib/env.sh's require_kube_context, sourced above, because create-secrets.sh needs exactly the
-# same guard and two copies of it would drift (genetics-results-suite-mrg). The rationale for
+# same guard and two copies of it would drift. The rationale for
 # every part of its shape, and the four blind-validation rounds that produced it, are recorded
 # there rather than repeated here. It reads OVERRIDE_CONTEXT (the --context flag parsed above),
 # freezes its verdict into the readonly ACTING_CONTEXT that the three kubectl calls below pin, and

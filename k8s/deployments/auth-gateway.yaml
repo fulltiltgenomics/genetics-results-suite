@@ -11,7 +11,7 @@ data:
   #      NEVER spell a whitelisted name as a ${...} placeholder in a comment in this file:
   #      deploy.sh envsubst's the WHOLE document, not just the nginx.conf value, and both
   #      fragments are multi-line — an expansion inside a `#` line breaks out of the comment
-  #      and the render stops being valid YAML (genetics-results-suite-i5v). That is no longer
+  #      and the render stops being valid YAML. That is no longer
   #      a convention: scripts/test-manifest-render.py renders this file the way deploy.sh does
   #      with both fragments populated and aborts the deploy on a violation (-puv).
   #   2. the render-config initContainer below, which reads INTERNAL_API_SECRET and
@@ -58,8 +58,8 @@ data:
       # dominant term in this pod's disk exposure (see the `cache` volume below).
       #
       # This is a BEHAVIOUR change, not a limit, and it was measured rather than reasoned
-      # (genetics-results-suite-3zi). Past the ceiling nginx stops extending the temp file and
-      # falls back to client-paced streaming; it does NOT truncate and does NOT 502. Measured
+      # about. Past the ceiling nginx stops extending the temp file and falls back to
+      # client-paced streaming; it does NOT truncate and does NOT 502. Measured
       # against this rendered config, one slow client (~5 MB/s) pulling a 100 MB response
       # through /api/:
       #   unset (1024m default)  HTTP 200, all 104857600 bytes, sha256 match, peak 95.6 MiB on disk
@@ -206,13 +206,13 @@ data:
           proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
           proxy_set_header X-Internal-MCP-Call "";
           # trusted-proxy marker: chat-backend honours the identity header above only when the
-          # request also carries the shared secret (genetics-results-suite-th2). It rides its own
+          # request also carries the shared secret. It rides its own
           # header rather than Authorization so that a chat-backend still on the previous image
           # ignores it and keeps today's behaviour instead of resolving every browser user to the
           # single `mcp-tool` service identity while the gateway leads the backend in a rollout.
           # proxy_set_header redefines, so a caller-supplied X-Internal-Auth cannot survive.
           proxy_set_header X-Internal-Auth "${INTERNAL_API_SECRET}";
-          # PROVENANCE, not membership (genetics-results-suite-4h6.84). The marker above says
+          # PROVENANCE, not membership. The marker above says
           # only "some in-cluster service sent this": mcp-server and results-api hold
           # INTERNAL_API_SECRET by design and the NetworkPolicy admits both to chat-backend:8000,
           # so either could send the marker under ANY header name it chooses alongside an
@@ -418,7 +418,7 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
-        # auth-gateway's provenance secret (genetics-results-suite-4h6.84). Mounted here and in
+        # auth-gateway's provenance secret. Mounted here and in
         # chat-backend ONLY — deliberately not in mcp-server or results-api, because the whole
         # point is that those two cannot produce it. NOT optional: an absent key must stop the
         # gateway at CreateContainerConfigError rather than render a blank header.
@@ -531,7 +531,7 @@ spec:
       # image leaves unwritable for uid 101, plus /tmp for the pid file under a read-only rootfs
       #
       # NO sizeLimit, still deliberately, and the arithmetic is recorded here so the next reader
-      # does not rediscover the question (genetics-results-suite-o5i, revisited by -3zi after
+      # does not rediscover the question (revisited after
       # proxy_max_temp_file_size was bounded above). A sizeLimit does not produce ENOSPC inside
       # nginx; the kubelet EVICTS the pod, and this Deployment is replicas: 1 and internet-facing,
       # so every candidate number is a new whole-site outage path.

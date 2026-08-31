@@ -54,7 +54,7 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: sandbox-token-signing-key
-        # flipped to "true" by the deploy that creates the sandbox Deployment (4h6.7). While
+        # flipped to "true" by the deploy that creates the sandbox Deployment. While
         # true, db-api refuses to start if either secret above is unset — a sandbox script can
         # otherwise be served by simply omitting the Authorization header.
         - name: SANDBOX_ENABLED

@@ -29,10 +29,17 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 # — warn before the fallback to FinnGenie happens silently
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
+# The generated tables in docs/code-execution-security.md are derived from supervisor.py, the
+# sandbox manifest and the network policies. FATAL rather than warn-only, and here rather than
+# in the sandbox branch below: it is offline, it costs milliseconds, and a security document
+# whose limits table no longer matches the code is the failure the generator exists to prevent.
+echo "--- Checking the generated tables in docs/code-execution-security.md"
+python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check
+
 # product/brand name: explicit APP_NAME env > app_name in the deployment's tfvars > FinnGenie
 # see build.sh: tfvar() swallows a missing tfvars rather than killing the build under pipefail,
 # which is what the check-worktree-paths warning above already claims happens
-# (genetics-results-suite-1xp)
+#
 APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
 
@@ -117,7 +124,7 @@ build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
 # clone above and pip-installed at build time, so the sandbox and mcp-server can never
 # drift apart. See docs/code-execution-security.md, "Where the image lives".
 MCP_DIR="${WORK_DIR}/genetics-mcp-server"
-# The schema docs and SDK stubs (genetics-results-suite-4h6.13) are generated below rather
+# The schema docs and SDK stubs are generated below rather
 # than taken from the working tree, and they gate the image the same way the SDK does:
 # build-checks.py refuses to build while a placeholder is staged, because a sandbox whose
 # /genetics/schema says "PLACEHOLDER — not the real schema documentation" degrades
@@ -129,7 +136,7 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
   # regenerate /genetics/schema and /genetics/sdk from configs/datasets.yaml and the SDK
-  # clone (genetics-results-suite-4h6.13), so the image never documents a schema older
+  # clone, so the image never documents a schema older
   # than the canonical file. `|| true` under `set -e`: a suite build must not fail on the
   # sandbox, so the outcome is inspected and the sandbox skipped loudly instead — the same
   # shape as the SDK-missing branch. `build.sh sandbox` fails hard on the same condition.
@@ -154,8 +161,8 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     echo "!!! SKIPPING sandbox: could not generate or verify the schema docs and SDK stubs"
     echo "!!! (gen-sandbox-docs.py / test-sandbox-docs.py exit ${SANDBOX_DOCS_OK};"
     echo "!!!  placeholders: ${SANDBOX_PLACEHOLDERS:-none})."
-    echo "!!! The image is not shippable with placeholder or stale schema docs"
-    echo "!!! (genetics-results-suite-4h6.13). Every other image was built."
+    echo "!!! The image is not shippable with placeholder or stale schema docs."
+    echo "!!! Every other image was built."
     rm -rf "${SANDBOX_DIR}/.sdk-src"
   else
     TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
@@ -168,7 +175,7 @@ else
   echo ""
   echo "!!! SKIPPING sandbox: ${MCP_SERVER_BRANCH} of genetics-mcp-server has no"
   echo "!!! src/genetics_mcp_server/sdk. The sandbox image is not shippable without"
-  echo "!!! the SDK (genetics-results-suite-4h6.11). Every other image was built."
+  echo "!!! the SDK. Every other image was built."
 fi
 
 echo ""
@@ -178,7 +185,7 @@ if [ -z "${SANDBOX_SKIPPED}" ]; then
 fi
 
 # THE SUMMARY LINE MUST NOT LIE. Both sandbox skips above are deliberate guards (an image with
-# no SDK or with placeholder schema docs is not shippable — genetics-results-suite-4h6.11/4h6.13)
+# no SDK or with placeholder schema docs is not shippable)
 # and they stay non-fatal for a suite build that does not deploy the sandbox. What was wrong is
 # that the skip was a warning in the middle of a long build log and the script still signed off
 # with "All images built and pushed." That was survivable only while deploy.sh refused to apply

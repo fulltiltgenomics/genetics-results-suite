@@ -64,6 +64,7 @@ repairs it anyway rather than trusting that.
 | `scripts/gen-sandbox-docs.py`, `scripts/test-sandbox-docs.py` | `docs/project-spec.md` | the build-step spec: what the generator emits (one `sandbox/schema/*.md` per view in `configs/datasets.yaml` plus an index, `sandbox/stubs/*.pyi` read out of the staged SDK), what the test asserts (every view, column, enumerable column and worked example reaches a file; every documented column carries a well-formed BigQuery type; the stubs cover exactly the SDK's exported surface), the `--sdk-src` resolution order, the `PLACEHOLDER` build gate, and the shared 0/1/2 exit-code convention |
 | `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
 | `scripts/test-network-policies.py` | `docs/project-spec.md` | the harness's own enumerated spec: the checks it runs, its discovery tells and both locks, the workload kinds it sweeps, and its three-way answer on the live-sandbox probe |
+| `scripts/gen-doc-blocks.py` | `docs/code-execution-security.md`, `docs/project-spec.md` | which blocks are generated, what each derives from, and the build gate that runs it. The blocks themselves need no row: `--check` fails the build when they are stale |
 
 The four rows just added — `gen-sandbox-docs.py`/`test-sandbox-docs.py` and
 `test-network-policies.py`, two docs each — close a gap that ran the other way: the *generated* trees
@@ -94,6 +95,32 @@ A doc is stale the moment it *enumerates* something the code no longer matches.
 Counts and lists rot silently — view lists, endpoint tables, env-var tables,
 service inventories — so re-derive them from the code rather than trusting them.
 
+
+# Comments and documentation
+
+**The code is the source of truth for HOW; a comment or a doc is for WHY.** Both were allowed
+to grow until one document was longer than the code it described, and the postmortem's finding
+was that the prose rotted while the code stayed correct. So:
+
+1. **Say why, briefly.** A comment earns its place by explaining something the code cannot: a
+   constraint, a measurement, a rejected alternative, a hazard at the site. Restating what the
+   line does is noise, and so is a paragraph where a sentence works.
+2. **No history in comments.** "This used to be X", "an earlier version did Y", "fixed in Z" —
+   delete it. Keep the *consequence* if it still binds ("the hard limit is lowered too, or the
+   child can raise the soft one back"), drop the narrative. Git holds the history.
+3. **No tracker ids in code, and none in a doc except where the doc is about the tracker.** A
+   bead id in a comment tells a future reader nothing they can act on and rots the moment the
+   bead closes.
+4. **Anything that ENUMERATES is generated, with a build gate.** Counts, lists, tables of
+   limits, service inventories, env-var tables, directory trees. `scripts/gen-doc-blocks.py`
+   owns the marked blocks in `docs/*.md` and `--check` fails the build when they are stale;
+   `scripts/gen-sandbox-docs.py` owns the shipped schema docs and stubs the same way. Adding a
+   hand-maintained list is adding something nothing will notice going false.
+5. **A doc points at the code rather than restating it.** The one exception is a contract that
+   genuinely cannot be shared — the sandbox wire shape is defined in prose because the two ends
+   cannot import one module — and that exception is stated where it applies.
+6. **Delete rather than annotate.** A section that has become a diary of how the code got here
+   is not improved by a note saying so.
 
 # Cross-repo documentation
 

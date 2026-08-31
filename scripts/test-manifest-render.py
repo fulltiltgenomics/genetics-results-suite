@@ -4,7 +4,7 @@
 Run: python3 scripts/test-manifest-render.py
 Exit 0 = pass, 1 = a rendered manifest is broken, 2 = the harness could not run.
 
-WHAT THIS DEFENDS (genetics-results-suite-i5v, -puv). deploy.sh does not render a *field*,
+WHAT THIS DEFENDS. deploy.sh does not render a *field*,
 it pipes the WHOLE manifest through `envsubst '<whitelist>'`. So a whitelisted name spelled
 `${NAME}` anywhere in the file is substituted — including inside a `#` comment. Two of the
 values are multi-line nginx fragments (LEGACY_REDIRECT, KEYCLOAK_SERVER), and a multi-line
