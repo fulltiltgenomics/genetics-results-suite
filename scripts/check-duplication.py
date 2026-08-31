@@ -595,6 +595,16 @@ def baseline_shape(base):
         for field in ("groups", "files"):
             if not isinstance(block.get(field), int):
                 return f"`{scope}.{field}` is missing or is not a number"
+    commits = base.get("repo_commits")
+    if not isinstance(commits, dict):
+        return "`repo_commits` is not an object"
+    for repo in base["repos_present"]:
+        entry = commits.get(repo)
+        # a repo IS present in this measurement, so a missing or empty sha here is not
+        # "unknown" — it is a hole in the one thing this field exists to make visible
+        if (not isinstance(entry, dict) or not isinstance(entry.get("commit"), str)
+                or not entry["commit"] or not isinstance(entry.get("tree_dirty"), bool)):
+            return f"`repo_commits.{repo}` is missing `commit` or `tree_dirty`"
     return None
 
 
@@ -870,6 +880,19 @@ def render(m, top=12):
     return "\n".join(lines)
 
 
+def git_state(path):
+    """(HEAD sha, tree dirty) for a checkout, derived rather than hand-maintained.
+
+    A cross-repo count can move on a sibling's commit alone with no change in the suite,
+    so every scanned repo needs this, not just the one the baseline file lives in.
+    """
+    sha = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    dirty = bool(subprocess.run(["git", "-C", path, "status", "--porcelain"],
+                                capture_output=True, text=True).stdout.strip())
+    return sha, dirty
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--json", action="store_true")
@@ -911,27 +934,29 @@ def main():
     m = measure(repos, args.window, twins)
 
     if args.write_baseline:
-        head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
+        head, dirty = git_state(ROOT)
         date = subprocess.run(["git", "-C", ROOT, "log", "-1", "--format=%ad",
                                "--date=short"], capture_output=True, text=True).stdout.strip()
         # the measurement is of the WORKING TREE, which is usually not the commit: writing
         # the baseline is itself part of an uncommitted change, so HEAD alone names a
         # commit that does not reproduce these numbers
-        dirty = bool(subprocess.run(["git", "-C", ROOT, "status", "--porcelain"],
-                                    capture_output=True, text=True).stdout.strip())
         against = (f"commit {head[:12]} of genetics-results-suite plus uncommitted changes"
                    if dirty else f"commit {head[:12]} of genetics-results-suite")
+        repo_commits = {repo: dict(zip(("commit", "tree_dirty"), git_state(path)))
+                        for repo, path in sorted(repos.items())}
         snap = {
             "SNAPSHOT": f"Measured on {date}, against {against} and whatever the sibling "
                         "checkouts were at that moment. This is a DATED MEASUREMENT, not a "
                         "claim about today: run scripts/check-duplication.py for current "
-                        "numbers.",
+                        "numbers. repo_commits below carries each scanned repo's own HEAD "
+                        "and dirty state, since a cross-repo count can move on a sibling's "
+                        "commit alone.",
             "measured_date": date,
             "measured_commit": head,
             "measured_tree_dirty": dirty,
             "reason": args.reason,
             "repos_present": m["repos_present"],
+            "repo_commits": repo_commits,
             "window_days": m["window_days"],
             "census": m["census"],
             "intra": m["intra"],
@@ -963,6 +988,12 @@ def main():
                   "intra and cross counts include duplication these do not. Comparing them "
                   "would read as a large improvement nobody made. Rerun --write-baseline "
                   "--reason to record one.", file=sys.stderr)
+            return 2
+        if "repo_commits" not in base:
+            print("cannot run: the baseline predates per-repo commit provenance, so a "
+                  "cross-repo movement in the counts cannot be attributed to the sibling "
+                  "commit that caused it. Rerun --write-baseline --reason to record one.",
+                  file=sys.stderr)
             return 2
         broken = baseline_shape(base)
         if broken:
@@ -1029,6 +1060,11 @@ def main():
                   f"{base['measured_commit'][:12]}"
                   f"{' plus uncommitted changes' if base.get('measured_tree_dirty') else ''}",
                   file=sys.stderr)
+            # the growth can be entirely a sibling's doing with the suite's own commit
+            # unchanged, so the commit above is not enough to say what moved
+            for repo, info in sorted(base.get("repo_commits", {}).items()):
+                print(f"    {repo} at {info.get('commit', '?')[:12]}"
+                      f"{' (dirty)' if info.get('tree_dirty') else ''}", file=sys.stderr)
             print("  run: scripts/check-duplication.py   to see which groups",
                   file=sys.stderr)
             return 1
