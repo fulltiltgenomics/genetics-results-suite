@@ -49,6 +49,34 @@ export REGISTRY="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/genetics-results"
 deployment's tfvars. If you do export it and it disagrees with `DEPLOY_ENV` (below), the scripts
 stop rather than push across deployments; `unset REGISTRY` or set `REGISTRY_FORCE=1`.
 
+`rollout.sh` and `create-secrets.sh` apply the same rule to the *cluster*: they refuse when
+kubectl's current context is not the one the selected deployment's tfvars **states**, in a mandatory
+`kube_context` key. They share one implementation, in `scripts/lib/env.sh`. In both, the override is
+a `--context` flag rather than an environment variable, so it cannot be exported and inherited by a
+later invocation (see [Updating Services](#updating-services) and
+[3. Create secrets](#3-create-secrets)). The guard also **freezes** its verdict — `readonly
+ACTING_CONTEXT` — and that frozen value, not a rewritable variable, is what every `kubectl
+--context` below pins, so nothing sourced after the check (a `.env.<env>` line included) can
+re-aim the calls it authorised. Its accepting line names both of the environment-supplied inputs
+it trusted: the tfvars it read the key from, and the kubeconfig it resolved the current context
+out of — which covers a kubeconfig **inherited from the environment**, not one set by a line inside
+`.env.<env>`, since that file is sourced after the line is printed.
+
+> **The threat model is accident, not attack.** `.env.<env>` holds your own API keys and is written
+> by whoever runs these scripts; it is gitignored because it is *secret*, not because it is
+> *hostile*. `create-secrets.sh` sources it as arbitrary shell in its own process, so nothing
+> written inside that script can bound a hostile `.env` — a line in it can redefine any command or
+> rewrite `PATH`. The guard bounds **mistakes**: a stray `PATH=` line in a deployment `.env` is
+> genuinely plausible, a `KUBECONFIG=` line is possible, and a `kubectl()` shell function is not
+> something anyone writes by accident. This is stated in the code at `require_kube_context`.
+
+> **The tfvars files are gitignored, so this key does not arrive with a clone or with a pull.**
+> **Both** `rollout.sh` and `create-secrets.sh` refuse — by design — in any checkout whose
+> `terraform/terraform.tfvars*` has no `kube_context`, so a fresh checkout can neither roll out a
+> service nor write its Secrets until the line is added. Adding it, copied from
+> `kubectl config get-contexts -o name`, is the whole fix; `terraform/terraform.tfvars.example`
+> carries a commented template.
+
 ## Deployment environments
 
 This repo deploys the suite more than once (`daly`, `daly-staging`, `finngen`). Pick one with
@@ -201,9 +229,12 @@ gcloud container clusters resize "$CLUSTER" \
 ```
 
 > **What the next apply does whether or not you enable the pool.** `workload_identity_config`
-> on the cluster is unconditional now, and the live cluster currently has an **empty**
-> `workloadPool` (verified with `gcloud container clusters list`) because `manage_iam = false`.
-> So the next apply **enables Workload Identity on the live cluster** — an in-place update, very
+> on the cluster is unconditional now, and the target cluster currently has an **empty**
+> `workloadPool` (verified with `gcloud container clusters list` on the two `daly-finngenie`
+> clusters — the `phewas-development` cluster 403s from this checkout, so its `workloadPool`
+> is not observable here) because `manage_iam = false`.
+> So the next apply **enables Workload Identity on whichever cluster the deploy targets**
+> (two of the three are production — see `docs/environments.md`) — an in-place update, very
 > likely inert (no pool is in `GKE_METADATA` mode and no KSA has a WI binding), but it reaches
 > production without anyone opting into it. Two consequences worth knowing before you run it:
 > `terraform.tfvars` is gitignored and lives only in the **main checkout**, so adding
@@ -260,6 +291,12 @@ Create Google OAuth credentials for oauth2-proxy:
 (DB + bootstrap admin passwords, generated) where the identity broker is enabled. Set the relevant
 env vars, then run it once:
 ```bash
+export DEPLOY_ENV=daly-staging            # which deployment. Selects terraform.tfvars.<env>,
+                                          # .env.<env>, and the only kubectl context this
+                                          # script will write to. Omit it ONLY on a
+                                          # single-deployment instance that still keeps a bare
+                                          # terraform/terraform.tfvars — otherwise the script
+                                          # stops in resolve_deploy_env before touching anything.
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
@@ -282,6 +319,50 @@ export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
 # OAUTH2_PROXY_COOKIE_SECRET is generated on first install and reused thereafter (never rotated).
 
 ./scripts/create-secrets.sh
+```
+
+**Before it touches the cluster, `create-secrets.sh` refuses a context that is not the one
+`DEPLOY_ENV` names.** It is the same guard `rollout.sh` has and the same implementation
+(`scripts/lib/env.sh`): the deployment **states** its cluster in a mandatory `kube_context` line in
+its own tfvars, and the script stops unless `kubectl config current-context` is exactly that string.
+The rule for the tfvars line, and the reasoning behind it, is in
+[Updating Services](#updating-services) — it applies verbatim here.
+
+This script has the worse blast radius of the two. It rewrites `genetics-secrets`, and rotating
+`internal-api-secret` against a cluster you did not mean breaks every pod running there; the daly
+production context differs from staging's by a trailing `-staging` alone, and both production
+clusters are named `finngenie`. It used to print the current context one line above writing, which
+is not a guard.
+
+All seven of its `kubectl` invocations then run pinned to the verified context
+(`kubectl --context "${ACTING_CONTEXT}"`), so neither a `kubectl config use-context` from another
+terminal nor a later-sourced shell can retarget them between the check and the write. That
+matters here in a way it does not in `rollout.sh`: this script sources `.env.<env>` immediately
+after the guard, and while the pins read an ordinary variable a single line in that file
+redirected all three Secret writes to another cluster behind an accurate success line.
+
+Freezing the verdict stops that file **rewriting** the pin. It does not stop that file changing
+what the pin **means** — a `PATH=` line putting a different `kubectl` first, or a `KUBECONFIG=`
+line resolving the same context *name* through a different file, both let the pin expand faithfully
+and then be reinterpreted. So after sourcing `.env.<env>` and before the first cluster contact, the
+script **asks `kubectl config current-context` a second time** and refuses unless it still equals
+the frozen context, naming `.env.<env>` as the only thing that ran in between. Treat that as an
+**accident detector, not a security boundary**: it catches the `PATH=` and `KUBECONFIG=` cases,
+and it does *not* catch a `kubectl()` shell function defined in that file, which answers the
+re-check too. Its only cost on a normal run is one extra `kubectl config current-context`.
+`rollout.sh` does not have it, and does not need it — it never sources `.env`.
+
+The context is frozen; the **namespace is not** — `NAMESPACE` remains settable from the environment
+and from `.env`, deliberately, so "right cluster" is guaranteed and "right namespace" is taken on
+trust. For a deliberately off-target run, pass `--context <ctx>`;
+as in `rollout.sh` it is a **flag and not an environment variable**, it must name the context
+kubectl is actually on, and it says so loudly when that context is not the one `DEPLOY_ENV`
+expects. `create-secrets.sh` takes no positional arguments, so anything else on the command line
+is an error rather than something it ignores.
+
+```bash
+kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   # the normal fix
+./scripts/create-secrets.sh --context <the-cluster-you-mean>                    # deliberate
 ```
 
 > **Run it from the main checkout.** It derives the config profile (which decides whether
@@ -423,6 +504,71 @@ Deployment on the current context gets a "Not deployed" message and exit 1 — t
 for `sandbox` and `keycloak`, which are applied only when their gates are on. A query that
 *failed* rather than answered (no context, expired credentials, unreachable API server) is
 reported as "could not ask", with kubectl's own error, instead of as a missing service.
+
+**Before it touches the cluster, `rollout.sh` refuses a context that is not the one `DEPLOY_ENV`
+names.** The expected context is not inferred from anything — the deployment **states** it, in one
+line of its own tfvars:
+
+```hcl
+kube_context = "gke_daly-finngenie_us-central1-a_finngenie-staging"
+```
+
+The script reads that single key, compares it with `kubectl config current-context`, and stops if
+they differ. It does **not** switch your context the way `deploy.sh` does; `deploy.sh` owns the
+whole run, while silently retargeting the shell of a single-service tool is its own hazard, so
+this one stops and prints the `kubectl config use-context` to run. This exists because two of the
+three deployments are production, both production clusters are named `finngenie` (only the project
+distinguishes them, and one of those projects is called `phewas-development`), and the daly
+production context differs from staging's by a trailing `-staging` alone.
+
+The three cluster-contacting `kubectl` calls then run pinned to the context it verified
+(`kubectl --context ...`), so a `kubectl config use-context` from another terminal cannot retarget
+them between the check and the call.
+
+The guard is not `rollout.sh`'s alone. It lives in `scripts/lib/env.sh`, and `create-secrets.sh`
+calls the same code — one implementation rather than two that could drift, since the two scripts
+mutate the same clusters with different blast radii. Everything below about the `kube_context` line
+and the `--context` flag is true of both.
+
+**`kube_context` is mandatory and there is no fallback.** It is stated rather than derived from
+`project_id`/`zone`/`cluster_name` because every attempt to derive it by matching text in the HCL
+broke in a new way, and each break degraded in the same direction: a key that reads as *absent*
+falls back to terraform's defaults, and `zone = europe-west1-b` with `cluster_name = finngenie`
+name a **production** cluster in *both* projects.
+
+So the reader infers nothing, and it does not model HCL either — that was the second half of the
+same lesson. The rule is an occurrence count: the token `kube_context` must appear **exactly once
+in the whole file**, comments and strings included, and that one line must be a column-0
+`kube_context = "..."` with a plain quoted value (a trailing `#` comment is fine). One stateless
+precondition sits in front of that: a tfvars containing `/*` **anywhere** is refused outright, since
+a block comment is the only form that can present a commented-out key as the file's one legal line —
+`#` and `//` comments need no change, and a `/*` block has to be removed or converted. Anything else
+is a refusal naming the file and the line. This is deliberately **stricter than HCL** — a file that
+mentions the key in a comment *and* sets it is refused, one obvious edit that the message names —
+and in exchange no heredoc, block comment or string can change what the reader returns, because
+nothing is being interpreted. A refusal costs one line in a tfvars; a wrong derivation costs a
+production cluster.
+
+> ⚠️ **Every checkout must add this key once.** `terraform/terraform.tfvars*` is **gitignored**
+> (only `terraform.tfvars.example` is tracked), so the key does not travel with the repo:
+> `rollout.sh` **and `create-secrets.sh`** refuse in any checkout that has not added it, including
+> the production checkout, until someone pastes the line in — so an unconfigured checkout can
+> neither roll out a service nor write its Secrets. That is the intended fail-closed behaviour rather than a
+> regression — the script would otherwise have to guess which of two identically-named production
+> clusters it was pointed at. `terraform/variables.tf` declares `variable "kube_context"` so that
+> `terraform plan` does not emit a *"Value for undeclared variable"* warning (measured on Terraform
+> v1.14.8: an undeclared key in a `-var-file` is a **warning**, not an error); no resource reads it.
+
+For a deliberately off-target rollout, pass `--context <ctx>`. It is a **flag and not an
+environment variable** on purpose: an `export` outlives the invocation it was typed for and
+silently re-authorises every later one from the same shell, which is exactly how a staging image
+once reached a production cluster. The flag must name the context kubectl is actually on, and
+when that context also differs from the one `DEPLOY_ENV` expects, the acceptance says so loudly.
+
+```bash
+kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   # the normal fix
+./scripts/rollout.sh --context <the-cluster-you-mean> bff                       # deliberate
+```
 
 ### Deploying the trusted-proxy marker
 
@@ -686,7 +832,7 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 ## Security
 
 - Network policies source-scope **every** service. Rather than trusting the list that follows, re-derive it — `k8s/network-policies/` is the whole inventory and `scripts/test-network-policies.py` asserts the sandbox half of it. As it stands: db-api (8080) from chat-backend, mcp-server and sandbox; rag-service (8000) from chat-backend and mcp-server; results-api (4000) from auth-gateway, bff, chat-backend, mcp-server and sandbox; bff (5000), frontend (3000) and mcp-server (8080) only from auth-gateway; chat-backend (8000) from auth-gateway, results-api and mcp-server; sandbox (8080) from chat-backend and nothing else, and it is the one pod in the namespace with an Egress policy at all (db-api:8080 and results-api:4000, no `ipBlock`, no DNS). The monitor CronJob is admitted separately and additively by `monitor-policy.yaml`. auth-gateway (8080) is the only service reached from outside and the only one using an `ipBlock` — Google's LB/health-check ranges `35.191.0.0/16` and `130.211.0.0/22`; no node CIDR, because it is fronted by a NEG so the load balancer talks to pod IPs directly. The source nginx sees is always the GFE's own address in `35.191.0.0/16`, never the client's (that survives only in `X-Forwarded-For`), so client IPs cannot be filtered at this layer. See `docs/project-spec.md` → Security.
-- The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. The other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) still mount it. Eight third-party and support workloads (frontend, oauth2-proxy, keycloak, postgres, rag-service, and the monitor, analyze-conversations and keycloak-postgres-backup CronJobs) are not hardened this way; the sandbox goes further still (non-root uid 65532, read-only rootfs, a dedicated KSA with no GCP identity, `automountServiceAccountToken: false`, `enableServiceLinks: false`, and one 512Mi `emptyDir` at `/scratch` as its only mount) — its manifest is `k8s/deployments/sandbox.yaml`, applied only when `ENABLE_SANDBOX=true`. See `docs/project-spec.md` → Security.
+- The suite's own service containers — results-api, chat-backend, mcp-server, bff, db-api and both auth-gateway containers — run with `allowPrivilegeEscalation: false`, all capabilities dropped and nothing added back, and the `RuntimeDefault` seccomp profile; db-api, bff and auth-gateway additionally run as non-root (uid 10001 / 1000 / 101), and auth-gateway also sets `readOnlyRootFilesystem` with `emptyDir`s over `/var/cache/nginx` and `/tmp`. Running nginx's *master* as uid 101 rather than root is what let `CHOWN`/`SETUID`/`SETGID` go away — the worker was already unprivileged either way. auth-gateway also sets `automountServiceAccountToken: false`, so the internet-facing pod carries no ServiceAccount token; the namespace `default` SA it would otherwise mount has no RoleBinding anywhere in the cluster and no GCP identity, so this is defence-in-depth against a future grant rather than the closing of a live escalation path. Since `genetics-results-suite-5ho` the other five workloads that name no service account (bff, frontend, keycloak, oauth2-proxy, postgres) set it too, so **no** workload in the namespace now mounts the `default` token. `genetics-results-suite-d6n` then finished the remaining workloads in two tranches, each image measured under the constraint rather than given a uniform block. The three CronJobs first: `monitor` runs non-root (uid 1000, its image's own `USER`) with drop-`ALL`, `readOnlyRootFilesystem` and an `emptyDir` at `/tmp`; `analyze-conversations` drops `ALL` and stays root, with a new pod-level `fsGroup: 1032` — the same value and the same reason as chat-backend, since it writes the same `chat-data` SQLite files; `keycloak-postgres-backup` drops `ALL` and adds back `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID` and `SETUID`, which its run-time `apt-get install postgresql-client` needs and without which the install fails outright. Then a *different* five — the third-party and support workloads frontend, oauth2-proxy, keycloak, keycloak-postgres and rag-service. It is a different set from the 5ho five above, but it overlaps it in **four** of five: frontend, oauth2-proxy, keycloak and keycloak-postgres (`k8s/deployments/postgres.yaml` is the Deployment named `keycloak-postgres`, and it carries `automountServiceAccountToken: false` too) are in both, `bff` is the only member unique to the 5ho list, and `rag-service` the only one unique to this tranche. frontend, oauth2-proxy and keycloak take the full baseline including `runAsNonRoot` and `readOnlyRootFilesystem` (their images already declare a non-root `USER`); keycloak-postgres takes the same full baseline, running as uid 70 — what its entrypoint already `gosu`s to — with a pod `fsGroup: 70` (plus `fsGroupChangePolicy: OnRootMismatch`, a cost optimisation rather than a correctness requirement) whose sole justification is letting a **fresh** PVC bootstrap under a non-root uid — not emptyDir writability, which needs no `fsGroup`; its read-only rootfs costs one `emptyDir` at `/var/run/postgresql` for the unix socket, and the first apply of `fsGroup` permanently re-groups the existing database volume's contents; rag-service keeps uid 0 because it writes the `rag-stores` PVC, and takes the rest including `readOnlyRootFilesystem`. **No workload under `k8s/` runs with the container defaults any more.** The sandbox goes further still (non-root uid 65532, read-only rootfs, a dedicated KSA with no GCP identity, `automountServiceAccountToken: false`, `enableServiceLinks: false`, and one 512Mi `emptyDir` at `/scratch` as its only mount) — its manifest is `k8s/deployments/sandbox.yaml`, applied only when `ENABLE_SANDBOX=true`. See `docs/project-spec.md` → Security.
 - Workload Identity provides read-only GCP access (BigQuery + GCS) without key files
 - HTTPS enforced via FrontendConfig redirect
 - Google-managed SSL certificates

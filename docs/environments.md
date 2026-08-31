@@ -8,7 +8,7 @@ between clusters at runtime except read-only source data (GCS/BigQuery).
 |---|---|---|---|---|---|
 | `daly` | `daly-finngenie` | `finngenie` | `genegenie.broadinstitute.org` (301 from `finngenie.…`) | `master` | `gs://genetics-results-terraform-daly/genetics-results-suite` |
 | `daly-staging` | `daly-finngenie` | `finngenie-staging` | `staging.genegenie.broadinstitute.org` | `staging` | `gs://genetics-results-terraform-daly/genetics-results-suite-staging` |
-| `finngen` | (separate project) | `finngenie` | `finngenie.finngen.fi` | `master` | `gs://genetics-results-terraform/genetics-results-suite` |
+| `finngen` | `phewas-development` | `finngenie` | `finngenie.finngen.fi` | `master` | `gs://genetics-results-terraform/genetics-results-suite` |
 
 `daly` and `daly-staging` are managed from the same admin instance; `finngen` is managed
 elsewhere.
@@ -31,7 +31,9 @@ DEPLOY_ENV=daly-staging ./scripts/deploy.sh
 | `terraform/<name>.tfbackend` | GCS state backend (bucket + prefix) — **committed** |
 | `.env.<name>` | secrets and deploy knobs, sourced with `set -a` |
 
-Three guardrails exist because picking the wrong one silently deploys across environments:
+Four guardrails exist because picking the wrong one silently deploys across environments. All
+four live in `scripts/lib/env.sh`, but an entry point gets one only by **calling** the function
+that holds it, so which apply depends on the script — see `project-spec.md`'s per-call-site table:
 
 - **`.env.<name>` never falls back to `.env`.** A fallback would push one deployment's
   secrets into another's cluster. A missing file warns instead.
@@ -50,6 +52,26 @@ Three guardrails exist because picking the wrong one silently deploys across env
   `REGISTRY` must match the derived one; otherwise the run stops with both values printed.
   `unset REGISTRY` is the usual fix; `REGISTRY_FORCE=1` overrides for a deliberate scratch
   registry.
+- **A kubectl context that disagrees with `DEPLOY_ENV` is refused** — by `rollout.sh` and
+  `create-secrets.sh`, the two `DEPLOY_ENV`-resolving entry points that mutate a cluster without
+  first pointing kubectl at one. They are not the only unguarded cluster mutators in `scripts/`:
+  `keycloak-register-client.sh`, `keycloak-bind-allowlist.sh` and `keycloak-register-brainzzz.sh`
+  each read the Keycloak admin password out of `keycloak-secrets` on the **ambient** context and
+  then `kubectl exec … kcadm.sh` inside the pod to create or rotate OIDC clients, bind the
+  allow-list authenticator and set realm attributes. None of them sources `lib/env.sh`, resolves
+  `DEPLOY_ENV` or even echoes the context, so none can call this guard as it stands; guarding them
+  is separate work. Nothing is derived: the deployment **states** its cluster in a mandatory
+  `kube_context = "<context name>"` line in its own tfvars, and `require_kube_context` refuses
+  unless `kubectl config current-context` is exactly that string, then freezes that verdict
+  (`readonly ACTING_CONTEXT`) and pins it with `--context` on every cluster-contacting call — so
+  the cluster acted on cannot be changed after the check, not by another terminal's
+  `use-context` and not by a `.env.<env>` line sourced afterwards. The **namespace** is
+  deliberately not frozen and not guarded. The override is a per-invocation `--context` flag in
+  both, never an environment variable. **The tfvars are gitignored, so the key does not arrive with a clone**:
+  both scripts refuse in a checkout that has not added the line. That is fail-closed on purpose —
+  two of the three deployments are production and both production clusters are named `finngenie`.
+  `deploy.sh` needs no such guard: it *sets* the context from `terraform output` before its first
+  apply. Details in `project-spec.md`, "The cluster context guard".
 
 With `DEPLOY_ENV` unset the scripts keep the original single-deployment behaviour (bare
 `terraform.tfvars`, backend derived from its `config_profile`), which is what the `finngen`
@@ -133,10 +155,23 @@ which is hardcoded in ~40 manifests.
       the Google-managed certificate cannot provision until the record resolves, and a
       ManagedCertificate that starts in `FAILED_NOT_VISIBLE` takes a delete/recreate to retry.
       Verify: `dig +short staging.genegenie.broadinstitute.org`.
-- [ ] **`staging` branches exist.** `build-all.sh` clones with `--branch staging` and fails
-      outright if the branch is missing. Needed in `genetics-results-browser`,
-      `genetics-results-api`, `genetics-mcp-server`, `genetics-results-db`.
-      (`monitor` and `keycloak` build from this repo's working tree — no branch involved.)
+- [ ] **`staging` branches exist *and* `.env.daly-staging` selects them.** `build-all.sh`
+      does not assume `staging`: each cloned repo takes its branch from its own variable,
+      **defaulting to `master`** (`scripts/build-all.sh`) — `FRONTEND_BRANCH`
+      (`genetics-results-browser`), `RESULTS_API_BRANCH` (`genetics-results-api`),
+      `MCP_SERVER_BRANCH` (`genetics-mcp-server`) and `DB_API_BRANCH`
+      (`genetics-results-db`). All four must be **set to `staging` in `.env.<DEPLOY_ENV>`**
+      (here `.env.daly-staging`); a `staging` branch that exists on GitHub but is not named
+      in that file is simply not built — the run silently builds `master` instead. Once a
+      variable is set, `git clone --depth 1 --branch` fails the build if that branch is
+      missing. (`monitor` and `keycloak` build from this repo's working tree — no branch
+      involved. `genetics-rag-service` has a fifth variable, `RAG_SERVICE_BRANCH`, default
+      `deploy_jk` and not a `staging` branch; it is cloned and built unconditionally.)
+      One absence is deliberately **not** fatal: if the `MCP_SERVER_BRANCH` clone has no
+      `src/genetics_mcp_server/sdk`, or the schema-doc generation fails, `build-all.sh` skips
+      the sandbox image, says so, and still exits 0 — it fails only when the sandbox is
+      enabled for this deployment (`sandbox_pool_enabled = true` in the tfvars, or
+      `ENABLE_SANDBOX=true`).
 - [ ] **Google OAuth client.** Add the staging broker callback to the existing client's
       authorized redirect URIs (or create a separate client):
       `https://staging.genegenie.broadinstitute.org/auth/realms/genetics/broker/google/endpoint`
@@ -178,7 +213,9 @@ export DEPLOY_ENV=daly-staging
 
 Step 1 stops at `ERROR: genetics-secrets not found` because `deploy.sh` checks for secrets
 before applying manifests. That is the intended order: terraform has to create the cluster
-before `create-secrets.sh` has anywhere to write. Confirm the context first:
+before `create-secrets.sh` has anywhere to write. Confirming the context first is no longer left
+to you — step 2 refuses unless it matches this environment's `kube_context` — but it is still the
+fastest way to see where you are:
 
 ```bash
 kubectl config current-context   # ..._us-central1-a_finngenie-staging
@@ -221,8 +258,27 @@ DEPLOY_ENV=daly-staging ./scripts/build.sh chat-backend      # rebuild one servi
 DEPLOY_ENV=daly-staging ./scripts/rollout.sh chat-backend    # roll it out
 ```
 
-`rollout.sh` only sets the image reference; the cluster it acts on is whatever kubectl's
-current context points at, which it now echoes. Switch contexts deliberately:
+`rollout.sh` only sets the image reference, and it no longer acts on whatever kubectl's current
+context happens to be. Each deployment's tfvars **states** its cluster in a mandatory
+`kube_context` key, and `rollout.sh` **refuses** when `kubectl config current-context` is not that
+string, naming the `kubectl config use-context` to run (`genetics-results-suite-b1r`; see README,
+"Updating Services"). Nothing is derived and no HCL is parsed: the token must appear **exactly
+once** in the whole tfvars file, on a column-0 `kube_context = "..."` line, and the file must
+contain no `/*` anywhere (`#` and `//` comments are fine; a block comment could otherwise present a
+commented-out key as the one legal line). A missing, repeated, indented or non-quoted-string key,
+or any `/*`, is a refusal, never a fallback. Because the tfvars files are **gitignored**,
+each checkout has to add the key once or `rollout.sh` stops working there — intended, since the
+alternative is guessing between two production clusters that share a name. A deliberately
+off-target rollout needs the `--context <ctx>` flag, which must spell out the cluster being
+mutated. On acceptance the guard prints the two environment-supplied inputs it trusted —
+`Context: <ctx> (env: <env>, kube_context in <tfvars>, kubeconfig <path>)` — because `ROOT_DIR`
+picks the first and `KUBECONFIG` the second, and an **inherited export** of either (already set
+before the script starts) leaves the guard green while pointing it at another checkout's evidence
+or another kubeconfig's endpoint. That printed kubeconfig covers the inherited export **only**: it
+is printed before `create-secrets.sh` sources `.env.<env>`, so a `KUBECONFIG=` line *in that file*
+makes the printed path accurate about what the guard read and obsolete about what the writes use.
+`create-secrets.sh` re-asserts the context after sourcing for that case; `rollout.sh` never sources
+`.env` and so has no such window. Switch contexts deliberately:
 
 ```bash
 gcloud container clusters get-credentials finngenie-staging --zone us-central1-a --project daly-finngenie

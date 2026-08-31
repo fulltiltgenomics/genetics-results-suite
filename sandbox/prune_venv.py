@@ -45,6 +45,13 @@ PKG = os.path.join(SITE, "genetics_mcp_server")
 # exactly this install) rather than in __init__. That repo's
 # tests/test_sdk_import_closure.py pins the closure so it cannot regrow silently.
 #
+# tools/definitions.py went the same way in genetics-results-suite-6bv, and for the same
+# reason one module along: `tools/__init__.py` re-exported it eagerly, so importing
+# tools.executor imported it, and its module-level `from pydantic import Field` broke the
+# image's own `import genetics_mcp_server.sdk` check the moment definitions.py grew that
+# import. The re-export is now a module `__getattr__`. Cutting it also stops the image
+# shipping the 2600-line catalogue of every tool the suite exposes.
+#
 # tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK
 # method delegates to it. Its SQL-building methods therefore still ship, guarded by
 # tools/sql_safety.py — see docs/code-execution-security.md, "Handoffs to other tasks".
@@ -56,7 +63,6 @@ SDK_ALLOWLIST = frozenset(
         "sdk/client.py",
         "sdk/errors.py",
         "tools/__init__.py",
-        "tools/definitions.py",
         "tools/executor.py",
         "tools/phewas_categories.py",
         "tools/sql_safety.py",

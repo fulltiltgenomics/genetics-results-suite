@@ -62,6 +62,32 @@ spec:
               pg_dump -d keycloak | gzip | \
                 gsutil -q cp - "gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
               echo "backup uploaded: gs://${BACKUP_BUCKET}/keycloak/keycloak-${ts}.sql.gz"
+            # NOT the suite baseline, and the gap is measured, not assumed. The command above
+            # apt-installs postgresql-client at run time, so this container needs a writable
+            # rootfs and root. Under a bare `--cap-drop=ALL` the install fails outright against
+            # this exact image — "setgroups 65534 failed", "seteuid 42 failed",
+            # SetupAPTPartialDirectory chown/chmod denied, and every repository then reports
+            # "no longer has a Release file" — because apt drops to the `_apt` user to download
+            # and dpkg chowns what it unpacks. Dropping ALL and adding back exactly the five
+            # capabilities that needs is the strictest set that works: verified by running the
+            # install under `--cap-drop=ALL --cap-add=CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID
+            # --security-opt no-new-privileges`, which installs cleanly (pg_dump 17.11, gsutil
+            # 5.37 both usable). NET_RAW, NET_BIND_SERVICE, SYS_CHROOT, MKNOD, KILL,
+            # AUDIT_WRITE, SETFCAP and SETPCAP are gone.
+            #
+            # NO readOnlyRootFilesystem and NO runAsNonRoot/runAsUser: apt-get writes
+            # /var/lib/dpkg, /var/lib/apt and /usr, and needs uid 0 to do it. The backup output
+            # itself is not the obstacle — pg_dump is piped through gzip straight into
+            # `gsutil cp -`, so nothing is staged on disk; only mktemp's apt log is, and that
+            # lands in /tmp on the rootfs. Removing the run-time install (baking
+            # postgresql-client into an image) is what would let those fields be set.
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+                add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+              seccompProfile:
+                type: RuntimeDefault
             resources:
               requests:
                 cpu: "100m"

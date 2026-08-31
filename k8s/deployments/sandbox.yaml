@@ -40,7 +40,9 @@ metadata:
   # storage.objectViewer, artifactregistry.reader and logging.viewer) would hand model-authored
   # code direct BigQuery and GCS credentials and make every other control in this file
   # decoration. The namespace `default` SA is equally unacceptable: it is a shared identity this
-  # pod would then have in common with five other workloads (genetics-results-suite-5ho).
+  # pod would then have in common with six other workloads (genetics-results-suite-5ho) — none of
+  # which mounts its token any more, so what is shared is an unattributable identity rather than a
+  # credential, and the sandbox must be attributable to itself alone.
 automountServiceAccountToken: false
 ---
 apiVersion: apps/v1

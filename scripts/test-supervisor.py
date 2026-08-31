@@ -3984,7 +3984,11 @@ def test_survivors(server):
     reaped=True, so it reached neither. The second is 4h6.83 and is not reachable by any
     process-group kill at all; what reaches it is PARENTAGE — the fork server is a
     PR_SET_CHILD_SUBREAPER, so an escapee whose parent exits reparents to it and FS_OP_SWEEP
-    kills and reaps it.
+    kills and reaps it. THAT ATTRIBUTION IS THE BEADS', NOT THIS TEST'S: nothing here
+    separates the two mechanisms. The in-group probe's assertion is satisfied by the sweep
+    alone — an in-group survivor orphaned by its parent reparents to the fork server exactly
+    as an escapee does — and the negative control disables _kill_survivors and _sweep_strays
+    together, so neither half shows which one reached which survivor.
 
     THE NEGATIVE CONTROL IS THE SECOND HALF OF THIS TEST AND IT IS NOT DECORATION. A probe
     whose fork silently failed, or whose survivor exited on its own, would make the positive

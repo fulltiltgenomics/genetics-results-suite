@@ -3,8 +3,10 @@
 # open DDL beads (94c, eyg, 4h6.20, 4h6.21, 4ci) can be rehearsed before they touch
 # production. See docs/bigquery-dev-dataset.md for the expand/verify/contract cycle.
 #
-# There is no development environment in this suite: one cluster, one project, and
-# phewas-development IS production despite its name. This script is the whole of it.
+# The suite spans three deployments in two projects (docs/environments.md), but none of them
+# is a development environment for the data: phewas-development IS production despite its
+# name, and daly-staging is not BigQuery-isolated from daly production. This script is the
+# whole of it.
 #
 # WHY CLONES. `CREATE TABLE ... CLONE` is zero-copy and writable: the dev dataset starts
 # at no additional storage cost and bills only for blocks that stop being shared with the
