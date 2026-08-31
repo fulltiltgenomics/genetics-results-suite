@@ -1249,7 +1249,10 @@ ratchet with no reason recorded at all, and whole-file byte-identity is what bou
 exposure rather than eliminating it.
 
 `docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
-date and commit it was taken at. `--check` ratchets today's counts against it and is wired
+date plus the commit and dirty state of **every** repo it scanned, not only this one — the
+counts are cross-repo, so they move on a sibling's commit with nothing here to explain it,
+and a repo present in the measurement with no commit recorded is a hole rather than an
+unknown. `--check` ratchets today's counts against it and is wired
 into `build-all.sh` warn-only, because the counts are taken over sibling checkouts the
 build does not control. A missing checkout is exit 2, not a pass: it lowers every count.
 
