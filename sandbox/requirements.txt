@@ -18,8 +18,16 @@ scipy==1.17.1
 polars==1.40.1
 matplotlib==3.10.9
 httpx==0.28.1
-# python-dotenv was pinned here purely because config.settings did `from dotenv import
-# load_dotenv` at module level and was in the SDK's import closure. l41 removed
-# config.settings from that closure, and genetics-mcp-server's
-# tests/test_sdk_import_closure.py asserts the SDK imports with dotenv unavailable, so
-# the pin is gone rather than dormant.
+#
+# TWICE NOW a module-level import in genetics-mcp-server has tried to add a line here, and
+# twice the answer was to cut the module out of the SDK's import closure instead:
+#   - python-dotenv, pinned here purely because config.settings did `from dotenv import
+#     load_dotenv` at module level and was in the closure. l41 took config.settings out.
+#   - pydantic, which tools/definitions.py started importing for `Field`; definitions.py was
+#     in the closure only because tools/__init__.py re-exported it eagerly. 6bv made that
+#     re-export lazy. Adding pydantic here instead would have widened a security-boundary
+#     image to satisfy an import the boundary never needed.
+# Neither pin exists, dormant or otherwise. genetics-mcp-server's
+# tests/test_sdk_import_closure.py now asserts the SDK imports with EVERY distribution
+# outside this file's dependency closure unavailable, so a third offender fails there rather
+# than arriving here as a proposed line.
