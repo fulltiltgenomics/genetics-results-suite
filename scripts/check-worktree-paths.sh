@@ -6,19 +6,16 @@
 # found so far, each by accident, each after the silent degradation had already
 # happened:
 #
-#   genetics-results-suite-e47  sync-datasets.sh resolved ../genetics-results-{db,api}
-#                               from the checkout it ran in, found nothing in a worktree,
-#                               warned and exited 0 having copied nothing. FIXED in the
-#                               script itself — it resolves from the git common dir now,
-#                               so this file no longer checks it
-#   genetics-results-suite-82s  terraform.tfvars is gitignored and exists only in the
-#                               main checkout, so terraform from a worktree falls back
-#                               to destructive variable defaults
-#   genetics-results-suite-rxw  core.hooksPath is local git config shared across
-#                               worktrees, so it points at the main checkout's hooks
-#   genetics-results-suite-0xs  bd exports .beads/issues.jsonl next to the Dolt store,
-#                               which lives in the main checkout, so the worktree's
-#                               tracked copy is never written
+#   sync-datasets.sh   resolved ../genetics-results-{db,api} from the checkout it ran in,
+#                      found nothing in a worktree, warned and exited 0 having copied
+#                      nothing. Fixed in the script itself — it resolves from the git common
+#                      dir now, so this file no longer checks it
+#   terraform          terraform.tfvars is gitignored and exists only in the main checkout,
+#                      so terraform from a worktree falls back to destructive defaults
+#   core.hooksPath     local git config shared across worktrees, so it points at the main
+#                      checkout's hooks
+#   bd export          .beads/issues.jsonl is written next to the Dolt store, which lives in
+#                      the main checkout, so the worktree's tracked copy is never written
 #
 # What they share: the tool succeeds, prints nothing alarming, and the operator reads
 # the absence of an error as success. This script makes the divergence explicit before

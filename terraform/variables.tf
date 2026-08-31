@@ -74,7 +74,7 @@ variable "sandbox_pool_enabled" {
 }
 
 variable "sandbox_machine_type" {
-  description = "Machine type for the dedicated gVisor sandbox node pool. ForceNew: changing it destroys and recreates the pool, so migrate via a new pool plus cordon/drain instead. Whether e2-standard-2 meets GKE Sandbox's requirements on this cluster is unverified (genetics-results-suite-5r2)."
+  description = "Machine type for the dedicated gVisor sandbox node pool. ForceNew: changing it destroys and recreates the pool, so migrate via a new pool plus cordon/drain instead. Whether e2-standard-2 meets GKE Sandbox's requirements on this cluster is unverified."
   type        = string
   default     = "e2-standard-2"
 }

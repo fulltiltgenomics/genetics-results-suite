@@ -1,5 +1,5 @@
 # ============================================================================
-# LABEL CONTRACT — read this before writing k8s/deployments/sandbox.yaml (4h6.7)
+# LABEL CONTRACT — read this before writing k8s/deployments/sandbox.yaml
 #
 #   pod label:      app: sandbox      (Deployment .spec.template.metadata.labels)
 #   container port: 8080/TCP
@@ -8,7 +8,7 @@
 # Every rule below selects `app: sandbox`. A NetworkPolicy whose podSelector matches
 # no pod is NOT an error — it is silent no-coverage, and the sandbox would then run
 # with unrestricted egress because nothing else in this namespace declares an Egress
-# policy at all. If 4h6.7 picks a different label or port, this file is decoration.
+# policy at all. If the Deployment picks a different label or port, this file is decoration.
 # scripts/test-network-policies.py asserts the contract against sandbox.yaml once
 # that file exists.
 # ============================================================================
@@ -21,7 +21,7 @@
 # that pod lists `Egress` in policyTypes. That is what the `sandbox-egress` object
 # below does, and it is the sole reason a script cannot `pip install`, cannot fetch a
 # mining payload, and cannot `pl.write_parquet('s3://...')` — polars ships the Rust
-# `object_store` with its own HTTP/TLS stack (4h6.6), so no image-level control closes
+# `object_store` with its own HTTP/TLS stack, so no image-level control closes
 # that path. This policy is the control.
 #
 # NetworkPolicies are ADDITIVE (union). Any future policy that selects `app: sandbox`
@@ -93,10 +93,10 @@ spec:
 # megabytes inside the 120s wall clock, needing no POST and no response. That is a
 # working exfiltration pipe, not a side channel, and it is how a ~1 KB stolen GCP token
 # leaves the cluster in five queries. Name resolution is done with `hostAliases` on the
-# pod instead (4h6.7), pinning db-api and results-api to their ClusterIPs in all four
+# pod instead, pinning db-api and results-api to their ClusterIPs in all four
 # name forms. Two hard consequences of dropping 53/UDP here rather than rejecting it:
 #   - /etc/nsswitch.conf MUST list `files` before `dns` (asserted at image build time,
-#     4h6.6). Absent that file, glibc defaults to DNS-first and every lookup stalls
+#     Absent that file, glibc defaults to DNS-first and every lookup stalls
 #     through the full resolver timeout budget before falling back to /etc/hosts — a
 #     hang, not an error, and unrepairable at runtime under readOnlyRootFilesystem.
 #   - anything reaching google.auth.default() probes metadata.google.internal BY NAME
@@ -121,8 +121,8 @@ spec:
 # this cluster and must not be assumed. Treat this policy as providing NO metadata-server
 # coverage until that is tested. The metadata defence that is actually load-bearing lives
 # elsewhere: the node pool runs in GKE_METADATA mode with no Workload Identity binding
-# for the sandbox KSA (4h6.10), and the pod sets automountServiceAccountToken: false
-# (4h6.7) — note that the last of these is a Kubernetes-API control and has no bearing on
+# for the sandbox KSA, and the pod sets automountServiceAccountToken: false
+# — note that the last of these is a Kubernetes-API control and has no bearing on
 # the metadata server at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

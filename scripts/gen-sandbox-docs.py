@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the sandbox image's on-demand documentation: sandbox/schema/*.md and
-sandbox/stubs/*.pyi (genetics-results-suite-4h6.13).
+sandbox/stubs/*.pyi.
 
-WHY THESE FILES EXIST. The code-execution agent (epic genetics-results-suite-4h6) gets a
-sandbox and an SDK, not 44 tool schemas. It has to learn the BigQuery views and the SDK's
+WHY THESE FILES EXIST. The code-execution agent gets a sandbox and an SDK, not 44 tool
+schemas. It has to learn the BigQuery views and the SDK's
 signatures the way a developer does — by reading documentation when a question needs it —
 because there is no spare prompt-cache breakpoint to front-load a schema block into
 (genetics-mcp-server/docs/project-spec.md:420). The Dockerfile copies these two
@@ -18,8 +18,8 @@ That is the whole design constraint, not a style choice:
   - CLAUDE.md: "A doc is stale the moment it *enumerates* something the code no longer
     matches. Counts and lists rot silently." A transcribed schema is exactly that, and
     inside a container image nothing would ever notice.
-  - genetics-results-suite-5p5 is open and will rewrite credible_sets_v's variant/chr
-    guidance the moment the clustering swap runs. A copy of that guidance baked into this
+  - open work will rewrite credible_sets_v's variant/chr guidance the moment the
+    clustering swap runs. A copy of that guidance baked into this
     script would then ship a rule the canonical file contradicts, and the image would
     still build green.
 
@@ -75,7 +75,7 @@ STUB_BANNER = (
     "# Do not edit: edit genetics-mcp-server/src/genetics_mcp_server/sdk/ and regenerate.\n"
     "# Signature reference only — this file is NOT on PYTHONPATH and is not importable.\n"
     "# The real package lives in /opt/venv; two copies of these names on the path would\n"
-    "# shadow each other silently (genetics-results-suite-4h6.6)."
+    "# shadow each other silently."
 )
 
 
@@ -117,8 +117,7 @@ def render_view(name, table):
     untyped = [col for col in table["columns"] if not types.get(col)]
     if untyped:
         # a column rendered without its BigQuery type is the defect this block exists to
-        # fix (genetics-results-suite-4h6.31), and a missing entry must not degrade to a
-        # blank cell that reads as "no type" to the model
+        # fix, and a missing entry must not degrade to a blank cell that reads as "no type"
         raise SystemExit(
             f"{name}: column_types has no type for {untyped}. Add them from "
             "`genetics_results.INFORMATION_SCHEMA.COLUMNS` in configs/datasets.yaml "
@@ -491,8 +490,7 @@ def render_stubs(sdk_dir):
 def _sync(directory, files, suffixes, check):
     """Write `files` into `directory` and remove anything with a generated suffix that is
     no longer produced — a dropped view must lose its file, or the image documents a view
-    that is not there. PLACEHOLDER files (genetics-results-suite-4h6.6) are swept by the
-    same rule."""
+    that is not there. PLACEHOLDER files are swept by the same rule."""
     stale = []
     if os.path.isdir(directory):
         for existing in sorted(os.listdir(directory)):
@@ -555,9 +553,8 @@ def _live_sdk_candidates():
 def resolve_sdk_src(explicit=None):
     """Where to read the SDK from — and never `sandbox/.sdk-src` by accident.
 
-    That staged copy used to be the default, and that was backwards
-    (genetics-results-suite-4h6.60): scripts/build.sh creates it and removes it on an EXIT
-    trap, so the ONLY way to find one lying around is an INTERRUPTED build — the default
+    That staged copy used to be the default, and that was backwards: scripts/build.sh
+    creates it and removes it on an EXIT trap, so the ONLY way to find one lying around is an INTERRUPTED build — the default
     source was, by construction, reachable only when it was stale. Regenerating from it
     rewrites stubs that are SHIPPED INSIDE THE SANDBOX IMAGE and that
     docs/code-execution-security.md's secrets-in-image analysis reasons about, while
@@ -574,7 +571,7 @@ def resolve_sdk_src(explicit=None):
     if os.path.isdir(STAGED_SDK_SRC):
         print(
             f"note: ignoring {os.path.relpath(STAGED_SDK_SRC, ROOT)} — a leftover from an "
-            "interrupted build, and possibly an OLD SDK (genetics-results-suite-4h6.60). "
+            "interrupted build, and possibly an OLD SDK. "
             "Reading a live checkout instead; pass --sdk-src to override, and delete the "
             "leftover.",
             file=sys.stderr,

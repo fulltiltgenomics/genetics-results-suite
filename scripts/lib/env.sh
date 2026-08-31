@@ -22,7 +22,7 @@ ROOT_DIR="${ROOT_DIR:-$(cd "${_ENV_SH_DIR}/../.." && pwd)}"
 # the trailing `|| true` is load-bearing under `set -euo pipefail`: a missing file or a
 # missing key makes grep exit 1, pipefail propagates it past sed, and every caller here
 # reads the result in an assignment — so the script died with no output before its own
-# fallback or error message was reached (genetics-results-suite-1xp). Callers that need to
+# fallback or error message was reached. Callers that need to
 # distinguish "absent" from "empty" must test the value, not the status.
 #
 # KNOWN WEAK, recorded rather than fixed here: `^[[:space:]]*<key>` plus `head -1` takes the
@@ -32,10 +32,9 @@ ROOT_DIR="${ROOT_DIR:-$(cd "${_ENV_SH_DIR}/../.." && pwd)}"
 # nothing else catches it. read_kube_context below — the cluster context guard, whose wrong
 # answers name a production cluster — therefore has its own column-0-anchored,
 # refuse-on-ambiguity reader in this same file and does NOT call this one. Deliberately left as
-# it is by genetics-results-suite-mrg, which lifted that guard here and reconsidered: hardening
-# tfvar() changes REGISTRY and config_profile resolution for deploy.sh, build.sh, build-all.sh
-# and create-secrets.sh at once, a wider blast radius than the guard's own fix had, and what it
-# still misdirects is the REGISTRY rather than the cluster. File it separately if it is worth
+# it is: hardening tfvar() changes REGISTRY and config_profile resolution for deploy.sh,
+# build.sh, build-all.sh and create-secrets.sh at once — a wider blast radius than the guard's
+# own fix had — and what it still misdirects is the REGISTRY rather than the cluster. File it separately if it is worth
 # doing at all.
 tfvar() {
   grep -E "^[[:space:]]*$1[[:space:]]*=" "${TFVARS}" 2>/dev/null \
@@ -152,7 +151,7 @@ resolve_registry() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# THE CLUSTER CONTEXT GUARD (genetics-results-suite-b1r; lifted here from rollout.sh by -mrg so
+# THE CLUSTER CONTEXT GUARD (lifted here from rollout.sh so
 # create-secrets.sh gets the same guard rather than a second copy of it that can drift).
 #
 # EVIDENCE: the deployment STATES its cluster, in one line of its own tfvars:
@@ -330,7 +329,7 @@ read_kube_context() {
 # ROOT_DIR IS THE SAME SHAPE: it is honoured from the environment (above), so an inherited export
 # relocates the tfvars this guard reads — it re-points the guard's EVIDENCE rather than its code,
 # leaving it green while describing another checkout's cluster. It was DRIVEN, not theorised, by
-# genetics-results-suite-mrg's validation (an earlier revision of this comment called it "not
+# The validation (an earlier revision of this comment called it "not
 # reachable as configured", which was false). It is not guarded because ROOT_DIR is a legitimate
 # knob for running these scripts against another checkout; instead the accepting paths below PRINT
 # the resolved ${TFVARS} they read, so a guard whose evidence came from the wrong tree no longer

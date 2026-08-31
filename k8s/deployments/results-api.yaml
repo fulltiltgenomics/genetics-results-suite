@@ -55,7 +55,7 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: sandbox-token-signing-key
-        # flipped to "true" by the deploy that creates the sandbox Deployment (4h6.7). While
+        # flipped to "true" by the deploy that creates the sandbox Deployment. While
         # true, results-api refuses to start if either secret above is unset.
         - name: SANDBOX_ENABLED
           value: "true"
@@ -63,7 +63,7 @@ spec:
         # tunable without a rebuild) means /healthz is the ONLY route served with no credential;
         # everything else 401s. SEPARATE from SANDBOX_ENABLED on purpose — that one is the
         # incident lever, and while the two were the same switch, turning the sandbox off
-        # re-opened six routes to anonymous callers (genetics-results-suite-rhh).
+        # re-opened six routes to anonymous callers.
         # SANDBOX_ENABLED=true FORCES this on regardless of the value here.
         # Setting it "false" widens the surface back to the full @is_public set; nothing in the
         # cluster needs that (every caller admitted by k8s/network-policies/policies.yaml already
@@ -90,9 +90,9 @@ spec:
           value: "4096"
         # of the 8 pod-wide slots above, the last 2 may only be taken by an execution with
         # nothing in flight. Without it two executions at their per-execution allowance occupy
-        # all 8 and every other execution's FIRST request is refused — a cross-tenant denial
-        # (genetics-results-suite-yv4). Filling all 8 then takes four distinct executions, not
-        # two. The cost falls on incumbents: the per-execution 4 above is reachable in full only
+        # all 8 and every other execution's FIRST request is refused — a cross-tenant denial.
+        # Filling all 8 then takes four distinct executions, not two. The cost falls on
+        # incumbents: the per-execution 4 above is reachable in full only
         # by a lone execution (3 others parked on a slot each cut a tenant to 3, 4 parked to 2).
         # Must be <= TOTAL - per-execution (8 - 4), or a lone execution could not reach its own
         # allowance; results-api refuses to start otherwise. Note this makes TOTAL - per-execution

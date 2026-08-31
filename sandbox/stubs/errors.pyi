@@ -2,7 +2,7 @@
 # Do not edit: edit genetics-mcp-server/src/genetics_mcp_server/sdk/ and regenerate.
 # Signature reference only — this file is NOT on PYTHONPATH and is not importable.
 # The real package lives in /opt/venv; two copies of these names on the path would
-# shadow each other silently (genetics-results-suite-4h6.6).
+# shadow each other silently.
 
 """Errors raised by the genetics SDK.
 """

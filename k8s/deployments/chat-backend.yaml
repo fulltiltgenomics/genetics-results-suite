@@ -46,7 +46,7 @@ spec:
         - containerPort: 8000
         # ALLOWED_EMAILS / ALLOWED_EMAIL_DOMAINS, rendered from the same terraform variables
         # oauth2-proxy itself uses, so the allow-list chat-backend applies to a proxied identity
-        # (genetics-results-suite-th2) cannot refuse anyone oauth2-proxy already admitted.
+        # cannot refuse anyone oauth2-proxy already admitted.
         # Without this the code falls back to its finngen.fi default; it fails open rather than
         # enforcing that, so a pod missing this ConfigMap loses defence in depth but not access.
         envFrom:
@@ -64,7 +64,7 @@ spec:
             secretKeyRef:
               name: genetics-secrets
               key: internal-api-secret
-        # auth-gateway's provenance secret (genetics-results-suite-4h6.84). chat-backend gates
+        # auth-gateway's provenance secret. chat-backend gates
         # sandbox dispatch on this value arriving in X-Gateway-Auth, so only a request relayed
         # by auth-gateway after it verified an oauth2-proxy session can execute code. Mounted
         # into auth-gateway and this pod ONLY: mcp-server and results-api hold
@@ -93,13 +93,13 @@ spec:
         # run_analysis calls to actually exists. Declared explicitly rather than left to
         # settings.py's own "false" default so the value is reviewable here, alongside the
         # same-named flag on db-api and results-api — flipped to "true" only by the deploy
-        # that creates the sandbox Deployment (4h6.50), never on its own.
+        # that creates the sandbox Deployment, never on its own.
         - name: SANDBOX_ENABLED
           value: "true"
         # the sandbox supervisor's in-cluster Service (k8s/deployments/sandbox.yaml: Service
         # `sandbox` in namespace `genetics`, port 8080). NOT optional and there is no client
         # default any more: an unset SANDBOX_URL raises SandboxNotConfigured when the client
-        # is built (genetics-results-suite-6um), so this line is what the first
+        # is built, so this line is what the first
         # SANDBOX_ENABLED="true" deploy depends on. Set even while the flag is false, so
         # flipping the flag is the only change that deploy has to make.
         - name: SANDBOX_URL

@@ -3,9 +3,9 @@
 #
 # The siblings sit next to the MAIN checkout (~/suite/genetics-results-db and so on),
 # never next to a git worktree. Resolving them as "$SUITE_DIR/.." was therefore wrong
-# from a worktree in two ways at once: it found nothing and skipped silently
-# (genetics-results-suite-e47), and if a directory of the sibling's name happened to
-# exist next to the worktree it would have copied into that unrelated tree instead.
+# from a worktree in two ways at once: it found nothing and skipped silently, and if a
+# directory of the sibling's name happened to exist next to the worktree it would have copied
+# into that unrelated tree instead.
 #
 # Failure modes are deliberately split:
 #   - a sibling that is simply not checked out here      -> SKIP, exit 0

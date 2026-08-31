@@ -215,9 +215,8 @@ def sandbox_tells(fname, doc):
     that it is the only pod tolerating that taint. Running as `genetics-suite` would hand the
     sandbox the Workload-Identity-bound GSA the whole isolation story rests on (doc section 2).
 
-    `automountServiceAccountToken: false` USED to be in this list and no longer is
-    (genetics-results-suite-o5i). It stopped being sandbox-only the moment auth-gateway set it:
-    the sandbox needs it, but so does any pod that makes no API-server calls, and it is the
+    `automountServiceAccountToken: false` used to be in this list and no longer is: it stopped
+    being sandbox-only the moment auth-gateway set it. The sandbox needs it, but so does any pod that makes no API-server calls, and it is the
     control we want other workloads to adopt. Leaving it here would have made "I hardened a pod"
     arrive as `refusing to apply network-policies/` — the exact failure mode the KNOWN_APPS
     trigger was deleted for. The THREE remaining tells are unaffected and each is load-bearing:
@@ -247,7 +246,7 @@ def _is_sandbox_doc(fname, doc):
     """Is this doc part of the sandbox workload? A UNION of independent tells.
 
     Each branch is an OR, so adding one can only widen discovery — it can never make a check
-    that fires today go inert. Name alone is not enough: a 4h6.7 landing the workload as
+    that fires today go inert. Name alone is not enough: a manifest landing the workload as
     code-exec.yaml / object `code-exec` / `app: code-exec` would not be found, every sandbox
     check would skip in silence, and the harness would print a reassuring "not landed yet"
     note while the pod ran with unrestricted egress. Labels alone are not enough either: a
@@ -319,7 +318,7 @@ def selects(selector, labels):
 def may_select(selector, known_labels):
     """Could this podSelector select a pod carrying AT LEAST `known_labels`?
 
-    The sandbox pod's full label set is not knowable from the policy directory: until 4h6.7
+    The sandbox pod's full label set is not knowable from the policy directory: until a
     lands a workload manifest, all this harness has is the contract subset sandbox-policy.yaml
     declares. `selects()` answers "does this selector match a pod labelled exactly
     {app: sandbox}", so a policy with matchLabels {app: sandbox, tier: untrusted} — which WOULD
@@ -461,7 +460,7 @@ def sandbox_enabled_values():
     chat-backend is not a verifier — it mints tokens and gates the run_analysis tool rather
     than authorizing requests — but it must track the other two once the sandbox exists:
     left "false" while db-api/results-api flip true, the sandbox deploys and run_analysis
-    stays withheld from every tool list with no signal anywhere (genetics-results-suite-4h6.85).
+    stays withheld from every tool list with no signal anywhere.
     """
     values = {}
     for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
@@ -545,7 +544,7 @@ def rules_reaching(policies, direction, labels, *, widen):
     admit it in the cluster, and layer 2 of the MCP exclusion goes silently uncovered.
 
     widen=False for a must-REACH assertion (`assert hits` — db-api/results-api admitting the
-    sandbox). Widening is fail-OPEN there, and increasingly so once 4h6.7 lands and
+    sandbox). Widening is fail-OPEN there, and increasingly so once a sandbox lands and
     sandbox_pod_labels() is the pod's COMPLETE set: an unknown selector key is then genuinely
     absent from the pod, so may_select() would report a dead path as live.
     """
@@ -636,7 +635,7 @@ def _():
             for rule in p["spec"].get(direction) or []:
                 assert rule.get(key) is not None, (
                     f"{p['metadata']['name']} ({p['__file__']}) has a {direction} rule with no "
-                    f"'{key}:' — that admits ALL peers (the genetics-results-suite-fad bug class)"
+                    f"'{key}:' — that admits ALL peers"
                 )
 
 
@@ -651,15 +650,15 @@ def _():
 @check("sandbox egress allow-list is exactly db-api:8080 and results-api:4000")
 def _():
     # This pins the allow-list in BOTH directions, and the "not narrower" half is the one that
-    # needs explaining. genetics-results-suite-0lf proposed dropping results-api:4000 so that
+    # needs explaining. Dropping results-api:4000 was proposed so that
     # sandbox traffic could be forced down a path that always carries the per-execution token.
     # It cannot be dropped: the SDK's `search(rsids=...)` calls GET /v1/rsid/variants on
     # results-api, 16 of its 25 public functions are results-api-only (census in
-    # genetics-results-suite-6uk), and there is no other path — the sandbox is denied
+    # and there is no other path — the sandbox is denied
     # auth-gateway by design and auth-gateway would not validate a sandbox HS256 token anyway.
     # What makes keeping this entry safe is NOT in this file and cannot be: results-api shrinks
     # its anonymous surface to /healthz whenever ANONYMOUS_SURFACE_MINIMAL is on — which is its
-    # default, and which SANDBOX_ENABLED=true forces regardless (genetics-results-suite-rhh, so
+    # default, and which SANDBOX_ENABLED=true forces regardless (so
     # that turning the sandbox off cannot re-widen it) — so an anonymous request from this pod
     # gets a 401 rather than an unaccounted 200. That control is a route
     # decorator, invisible to a manifest reader, and is pinned by results-api's
@@ -728,14 +727,14 @@ def _():
 
 @check("label contract: the sandbox workload matches the policy selector")
 def _():
-    # discovered, not read from a hard-coded k8s/deployments/sandbox.yaml: 4h6.7 may land the
+    # discovered, not read from a hard-coded k8s/deployments/sandbox.yaml: a deploy may land the
     # workload as sandbox-deployment.yaml or split the Deployment and Service across files, and
     # a check keyed on one filename would then stay inert forever while printing a reassuring
     # note into deploy output — the exact failure mode this check is supposed to prevent
     if not sandbox_is_deployed():
         notes.append(
             "no sandbox Deployment or Service found in k8s/deployments/ "
-            "(genetics-results-suite-4h6.7); the label-contract check is inert until one lands"
+            "; the label-contract check is inert until one lands"
         )
         return
     workloads = sandbox_workloads()
@@ -772,7 +771,7 @@ def _():
 def _():
     """The other half of the discovery lock, for the case where the flag is not yet flipped.
 
-    A 4h6.7 that renames the file, the object AND the pod label at once is invisible to
+    A change that renames the file, the object AND the pod label at once is invisible to
     _is_sandbox_doc(), and an invisible sandbox is indistinguishable from no sandbox: the
     checks above skip, the notes say "inert until one lands", and the pod runs with
     unrestricted egress.
@@ -878,7 +877,7 @@ def _():
                 "and no sandbox workload is live in the cluster, so deploy.sh will not apply "
                 "it; the SANDBOX_ENABLED check on db-api, results-api and chat-backend is "
                 "inert until the gate is "
-                "on (genetics-results-suite-4h6.7)"
+                "on"
             )
         return
     values = sandbox_enabled_values()
@@ -886,7 +885,7 @@ def _():
         # the discovery lock. Every other sandbox check is skipped by this branch, so a
         # workload this harness FAILED TO DISCOVER — renamed file, renamed object, relabelled
         # pod — looks identical to one that has not landed. The deploy-ordering contract
-        # obliges 4h6.7 to flip this flag in the commit that creates the workload, so the flag
+        # obliges a deploy to flip this flag in the commit that creates the workload, so the flag
         # being on with nothing discovered is a contradiction that catches the miss from the
         # other side, and it fails CLOSED.
         on = sorted(f for f, vs in values.items() if any(_is_on(v) for v in vs))
@@ -901,7 +900,7 @@ def _():
         )
         notes.append(
             "no sandbox Deployment or Service found in k8s/deployments/ "
-            "(genetics-results-suite-4h6.7); the SANDBOX_ENABLED check is inert until one lands"
+            "; the SANDBOX_ENABLED check is inert until one lands"
         )
         return
     for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
