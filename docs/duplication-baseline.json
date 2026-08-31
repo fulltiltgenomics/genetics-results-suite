@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-08-31, against commit db8e9f95e32e of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
+  "SNAPSHOT": "Measured on 2026-08-31, against commit a961d7c7d898 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
   "measured_date": "2026-08-31",
-  "measured_commit": "db8e9f95e32e4f742c80ca139576a4a72ab1a038",
+  "measured_commit": "a961d7c7d898ea906db389d8f5945c89d9c19ff5",
   "measured_tree_dirty": true,
-  "reason": "xw3.7 moved three hand-maintained view lists into per-table resource_derivation and dataset_cross_check fields in the canonical configs/datasets.yaml; sync-datasets.sh then generates the -db and -api copies, so each new field adds cross-repo enumeration groups across three copies of one generated file",
+  "reason": "counts unchanged from the xw3.7 measurement: xw3.7 moved three hand-maintained view lists into per-table resource_derivation and dataset_cross_check fields in the canonical configs/datasets.yaml; sync-datasets.sh then generates the -db and -api copies, so each new field adds cross-repo enumeration groups across three copies of one generated file. Rewritten for the census schema, where on_disk is now absent rather than 0 when git cannot answer",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -13,6 +13,128 @@
     "genetics-results-suite"
   ],
   "window_days": 30,
+  "census": {
+    "genetics-mcp-server": {
+      ".sh": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".py": {
+        "read": 104,
+        "parsed": 104,
+        "units": 101,
+        "on_disk": 104
+      },
+      ".yaml": {
+        "read": 0,
+        "parsed": 0,
+        "units": 0,
+        "on_disk": 1
+      }
+    },
+    "genetics-results-api": {
+      ".py": {
+        "read": 171,
+        "parsed": 171,
+        "units": 159,
+        "on_disk": 171
+      },
+      ".yaml": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".sh": {
+        "read": 4,
+        "parsed": 4,
+        "units": 2,
+        "on_disk": 4
+      }
+    },
+    "genetics-results-browser": {
+      ".yaml": {
+        "read": 8,
+        "parsed": 8,
+        "units": 7,
+        "on_disk": 9
+      },
+      ".sh": {
+        "read": 3,
+        "parsed": 3,
+        "units": 1,
+        "on_disk": 3
+      },
+      ".py": {
+        "read": 8,
+        "parsed": 8,
+        "units": 8,
+        "on_disk": 8
+      }
+    },
+    "genetics-results-db": {
+      ".py": {
+        "read": 27,
+        "parsed": 27,
+        "units": 27,
+        "on_disk": 27
+      },
+      ".yaml": {
+        "read": 1,
+        "parsed": 1,
+        "units": 1,
+        "on_disk": 1
+      },
+      ".sh": {
+        "read": 17,
+        "parsed": 17,
+        "units": 17,
+        "on_disk": 17
+      }
+    },
+    "genetics-results-munge": {
+      ".sh": {
+        "read": 23,
+        "parsed": 23,
+        "units": 1,
+        "on_disk": 23
+      },
+      ".py": {
+        "read": 49,
+        "parsed": 49,
+        "units": 47,
+        "on_disk": 49
+      },
+      ".yaml": {
+        "read": 0,
+        "parsed": 0,
+        "units": 0,
+        "on_disk": 1
+      }
+    },
+    "genetics-results-suite": {
+      ".yaml": {
+        "read": 31,
+        "parsed": 31,
+        "units": 30,
+        "on_disk": 32
+      },
+      ".py": {
+        "read": 37,
+        "parsed": 37,
+        "units": 34,
+        "on_disk": 37
+      },
+      ".sh": {
+        "read": 19,
+        "parsed": 19,
+        "units": 14,
+        "on_disk": 19
+      }
+    }
+  },
   "intra": {
     "groups": 108,
     "files": 137,
