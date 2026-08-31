@@ -191,18 +191,20 @@ CLAUDE.md                            the coding and documentation-ownership rule
 LICENSE
 README.md                            deployment and operations guide
 benchmarks/                          inputs for the paired A/B replay benchmark; the harness itself lives in genetics-mcp-server
-configs/                             canonical dataset and resource definitions consumed by results-api and db-api
+configs/                             canonical dataset and resource definitions consumed by results-api and db-api, and the registry of the suite's declared duplicates
   covid_hgi_pheno.json               per-phenotype metadata for external GWAS
   datasets-schema-example.yaml       schema reference with example datasets
   datasets.yaml                      the single source of truth for datasets, resources and views
   ibd_gwas_pheno.json                per-phenotype metadata for external GWAS
   rag/                               RAG experiment configs (not k8s manifests)
+  twins.yaml                         the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
 docs/                                everything below, and nothing else
   adding-datasets.md                 how to add a dataset across the repos and profiles
   bigquery-dev-dataset.md            the BigQuery rehearsal dataset
   chat-tool-reference.md             verbatim transcription of what the LLM receives: tool names, descriptions and schemas, the profiles, the system prompt, and the chat surface versus /mcp
   code-execution-security.md         threat model and security design for the sandbox
   datasets-yaml-schema.md            the schema of configs/datasets.yaml
+  duplication-baseline.json          the duplication ratchet's last-written snapshot, read by check-duplication.py --check
   environments.md                    the three deployments, DEPLOY_ENV, and the staging runbook
   genegenie-migration.md             record of the legacy-hostname redirect
   keycloak-apple-signin.md           Keycloak broker setup, MCP OAuth clients, backup/restore
@@ -228,6 +230,8 @@ scripts/                             build, deploy and verification scripts
   build.sh                           build and push one service's image
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
+  check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
+  check-siblings.sh                  run each sibling repo's own discovered test lane from one place
   check-worktree-paths.sh            warn when a tool would resolve a path into the main checkout
   create-secrets.sh                  create the k8s Secrets from environment variables
   deploy.sh                          full deploy: terraform apply, then every manifest
@@ -239,14 +243,14 @@ scripts/                             build, deploy and verification scripts
   keycloak-get-token.sh              browser auth-code+PKCE flow; prints an access token
   keycloak-register-brainzzz.sh      the brainzzz client specifically
   keycloak-register-client.sh        register or update an MCP OAuth client in the live realm
-  lib/                               shared shell library: DEPLOY_ENV resolution and the kubectl context guard
+  lib/                               shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution
   monitor/                           the monitoring CronJob's Python package
   rollout.sh                         single-service image update
   run-sandbox-local.sh               build and run the sandbox image in plain Docker
   supervisor_tests/                  the check groups scripts/test-supervisor.py runs
   sync-datasets.sh                   copy datasets.yaml to the sibling repos for local dev
   test-e2e-local.py                  end-to-end run_analysis against the live local stack
-  test-manifest-render.py            offline: render every manifest deploy.sh renders and refuse one that is not the YAML the file declares
+  test-manifest-render.py            offline: render every manifest deploy.sh renders, and hold each envsubst whitelist to the files it governs
   test-network-policies.py           offline: the namespace's policies as a whole
   test-sandbox-docs.py               offline: the generated schema docs and SDK stubs
   test-supervisor.py                 offline: the sandbox supervisor, in process or against a container
@@ -1091,7 +1095,7 @@ file it:
 - **derives** the whitelist by parsing `deploy.sh`'s own `envsubst '...' < "$f"` invocations,
   including the `[ "${base}" = "sandbox.yaml" ]` branch that narrows `sandbox.yaml` to its own
   three names, and derives the multi-line values by parsing the `printf -v` lines. Nothing is
-  re-typed: a hand-kept copy of a 19-name whitelist is a second list to rot, and it would rot
+  re-typed: a hand-kept copy of a whitelist is a second list to rot, and it would rot
   *silently*, since a name missing from the copy simply stops being checked;
 - **renders** it exactly as `deploy.sh` does (same whitelist, same `:latest` → `:${TAG}` `sed`)
   with **both** multi-line fragments populated, and requires the result to parse as YAML and to
@@ -1111,7 +1115,18 @@ file it:
   obeyed;
 - **asserts** that every `$NAME`/`${NAME}` the file spells that is *not* in its whitelist
   survives the render verbatim — which covers both later-substituted secrets and nginx's own
-  `$host`, `$remote_addr`, `$scheme`, `$request_uri` without naming any of them.
+  `$host`, `$remote_addr`, `$scheme`, `$request_uri` without naming any of them;
+- **holds each whitelist to the files it governs, in both directions.** A whitelisted name no
+  governed file spells substitutes nothing, so it goes stale in silence — `${DOMAIN}` sat in the
+  deployments whitelist while appearing in zero files under `k8s/`, and this check is what found
+  it. The other way round, a `${...}` a file spells that its own loop's whitelist omits reaches
+  the cluster as literal text; since the whitelist a file gets is decided by the directory it
+  sits in, this is where a manifest copied between `k8s/deployments/` and `k8s/cronjobs/` is
+  caught. Only braced spellings count (nginx's runtime variables are bare), and a name the file
+  itself defines — a container `env` entry, a shell assignment in an embedded script, or an
+  in-manifest `envsubst` such as `auth-gateway.yaml`'s render-config initContainer — is excused
+  unless some *other* whitelist substitutes it, which is what stops an `env` entry from
+  laundering a genuine placeholder. Both sides are derived; nothing here is a list.
 
 What it does **not** prove: a multi-line fragment expanded into a *scalar* position — an
 annotation value, say — still parses as valid YAML, so the render check passes it. The guard
@@ -1124,7 +1139,11 @@ of it: every file it stops accounting for is checked against an empty whitelist,
 vacuously, and is counted in a reassuring summary line. So the harness cross-checks what it
 parsed (globs, number of `envsubst` calls, every `printf -v`) against a deliberately loose
 survey of the same script, and treats any disagreement — or an empty whitelist for a file under
-a rendered glob — as could-not-run. Wrapping the 19-name deployments `envsubst` over two lines,
+a rendered glob, or an `envsubst '...'` call in the script that the coverage check does not
+govern — as could-not-run. That last one is why the coverage check reaches the `keycloak/`
+template renders as well as the three manifest loops: the number of whitelists is counted from
+the script rather than known, so a render the parser cannot follow refuses instead of leaving a
+whitelist quietly unchecked. Wrapping the deployments `envsubst` over two lines,
 renaming the loop variable, or rebuilding a fragment with a double-quoted `printf -v` all warn
 instead of passing.
 
@@ -1136,6 +1155,130 @@ because "cannot tell" is not "broken". An *empty* rendered directory is not drif
 tolerates an empty `k8s/cronjobs/` by design (`[ -e "$f" ] || continue`), so the harness does
 too, and only a missing directory is exit 2. The repo has no CI and the pre-commit hook only
 runs the doc-drift check, so this is the only place it runs.
+
+### Sibling repos: resolution, and the one command that runs their gates
+
+`scripts/lib/siblings.py` is the shared answer to "where is repo X checked out". It exists
+because four scripts here answered that privately and none generally — two share
+`SUITE_SIBLING_ROOT` but cover different repo sets, two resolve only genetics-mcp-server
+through `MCP_SERVER_DIR`, and none can find a repo checked out under a different root from
+the rest. Its docstring holds the resolution order; the short version is per-repo
+`SUITE_REPO_<NAME>` override, then `SUITE_SIBLING_ROOT`, then the parent of the **main**
+checkout, then that parent's own siblings. An auto-discovered candidate is accepted if its
+`origin` names the repo, or — for a checkout with no origin at all — on its directory name
+plus `rev-parse --is-inside-work-tree`. So a same-named *plain* directory cannot become the
+answer, but a same-named originless git checkout can. A `SUITE_REPO_<NAME>` override skips
+the origin test entirely (a fork's origin names something else, and that is what the
+override is for) but must still be a git checkout; when it is not, that is an error naming
+the path and the reason, never the "not checked out on this machine" message.
+The four existing resolvers are deliberately **not** retrofitted onto it yet.
+
+The repos it knows about:
+
+<!-- BEGIN GENERATED: suite-repos -->
+
+- `genetics-results-suite`
+- `genetics-results-api`
+- `genetics-results-db`
+- `genetics-results-browser`
+- `genetics-mcp-server`
+- `genetics-results-munge`
+
+<!-- END GENERATED: suite-repos -->
+
+`scripts/check-siblings.sh` runs each sibling's own test lane. It is a trigger, not a new
+lane: there is no CI anywhere in the suite, so those lanes run only when somebody remembers
+to. Lanes are discovered from each checkout (a `tests/` directory gets pytest, a
+`package.json` gets whichever of its `test`/`bff:test`/`typecheck` scripts exist) rather
+than listed here, and nothing else in a sibling is executed.
+
+It is **not** restricted to offline tests. A repo that declares an `offline` pytest marker
+is run with `-m offline`; a repo that declares none runs its default lane, whatever that
+includes — network, credentials and all. The runtime and flakiness of an unrestricted lane
+are that repo's to fix, by declaring a marker there rather than filtering here.
+
+**When it stays silent, it never exits 0.** A repo that is not checked out, a missing
+`.venv` or `node_modules`, no discoverable lane, or pytest exiting 2/3/4/5 are all
+could-not-run: the lane never got as far as reporting on the code. Failures and errors are
+kept apart from that and from each other — any `N failed` in the summary is a failure
+(exit 1) however many errors accompany it, and setup/collection errors with zero failures
+are their own outcome (exit 3), reported as what was observed rather than as a diagnosed
+cause. The suite's own gates are not run here — `build-all.sh` already runs them.
+
+### Duplication baseline (`scripts/check-duplication.py`)
+
+Counts the one-fact-in-N-copies shape across all six repos, split intra-repo versus
+cross-repo and weighted by lockstep commits rather than by lines. The detector names
+nothing: one holding a list of known copies would be another copy to maintain, so every
+group is found by structure (equal or near-equal function bodies and module-level constant
+expressions, and the same set of four or more strings written out as a literal in two
+files). It is a unit-level detector — a duplicated block that is neither a body nor a
+literal set is outside its reach, TypeScript entirely so.
+
+What it ratchets is **undeclared** duplication, and the report always shows the split
+rather than one smaller number — a count that fell for an unstated reason is the failure
+this gate exists to prevent. A member **ignored by a tracked `.gitignore` of its own repo
+and byte-identical to a file committed in another** is generated, and no list of them
+exists anywhere because git is asked — which members were struck on a given run is in
+`--json` as each group's `generated_files`, and is not written down here. The ignore has to
+come from a file the clone carries: a rule in `.git/info/exclude` or in the user's global
+excludes file is not accepted, or the same file would be netted out on one machine and
+counted on another with nothing in review able to see it. It fails in the right direction:
+the day a consumer commits its copy, `git check-ignore` stops covering it and it is counted
+again. A group whose remaining files fall inside one entry of **`configs/twins.yaml`** is
+declared. Netting is per member, and a struck member leaves the declared row as well as the
+undeclared ones, so no file is counted in two rows; a group can lose its generated edges and
+stay in the count for the hand-maintained pair underneath — which is what the synced copies
+do to the suite-internal copy in `configs/datasets-schema-example.yaml`, cross-repo groups
+that were really intra-repo groups all along.
+
+`configs/twins.yaml` names the sites of each deliberate duplicate, the property that must
+hold between them, and why they are two things; `merge: never` marks the ones with
+counter-evidence against merging. It is itself a hand-maintained list — the shape this gate
+measures — and netting an entry out is exactly how a real finding would be silenced, so:
+`reason` is mandatory and an entry without one, carrying an unreadable field, or naming a
+site that no longer exists is **exit 2** rather than a quieter count; an entry may pin
+parity to named symbols per site, which is how the auth allow-list matcher is declared
+without declaring the neighbouring function whose fail-open preamble must not be; and the
+**declared count is ratcheted alongside the undeclared ones**, so adding an entry takes a
+`--write-baseline --reason` — non-empty is all the code enforces, and naming the entry in it
+is the convention. The generated count is not ratcheted — it moves when a generator gains a
+consumer, which costs nobody anything. What that argument leaves open is written down at the
+site in `check-duplication.py`: untracking a hand-maintained duplicate takes it out of the
+ratchet with no reason recorded at all, and whole-file byte-identity is what bounds the
+exposure rather than eliminating it.
+
+`docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
+date plus the commit and dirty state of **every** repo it scanned, not only this one — the
+counts are cross-repo, so they move on a sibling's commit with nothing here to explain it,
+and a repo present in the measurement with no commit recorded is a hole rather than an
+unknown. `--check` ratchets today's counts against it and is wired
+into `build-all.sh` warn-only, because the counts are taken over sibling checkouts the
+build does not control. A missing checkout is exit 2, not a pass: it lowers every count.
+
+Everything it counts is found by parsing, and a parser that has fallen behind on part of a
+tree is the one failure that would look exactly like success — the sites it dropped are
+reported by nobody while the totals still print. Catching that by finding the same
+duplicates a second way would take a second parser, so the baseline records **coverage**
+instead: per repo and file extension, how many files were read, how many the owning pass
+parsed, how many yielded a unit or an enumeration, and how many `git ls-files` says are
+tracked. `--check` pairs each number against the one above it in the chain tracked → read →
+parsed → units and refuses when the lower one has fallen *further* than the one above it —
+a real deletion moves both by the same amount. The tracked count is never compared on its
+own, only as a pairing partner, and a cell whose baseline has none (git could not answer on
+the machine that recorded it) skips that one pairing rather than reading as zero. Parsed
+dropping further than read is a file that stopped parsing; units dropping further than
+parsed is an extractor that stopped matching; read dropping further than the tracked count
+is discovery that stopped reaching files still on disk — the last is why the tracked count
+comes from git and not from the same walk. A baseline cell with no counterpart in the
+current run at all is drift too, since an extension leaving the scan takes both sides of
+every pairing with it. Each is **exit 2**, not 1: a detector that has stopped seeing a site has not
+measured growth, it has stopped being able to measure. The census measures the detector,
+not the trees, so it says nothing about which duplicates exist and passes a suite where
+every copy has been consolidated away. What it does not cover: a construct no extractor
+ever matched is not a drop from anything; for `.sh`/`.bash` the parse check has no failure
+mode, so parsed equals read by construction and shell drift rests on the units rule alone;
+and TypeScript, which no pass reads, has no census at all.
 
 ### There is no development environment — and the BigQuery rehearsal dataset
 

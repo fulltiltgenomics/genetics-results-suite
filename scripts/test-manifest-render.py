@@ -34,6 +34,17 @@ cross-checked against a deliberately loose survey of the same script (render_loo
 multiline_values), and any disagreement is exit 2 — see main(). Wrapping the deployments
 envsubst over two lines, or renaming the loop variable, warns instead of passing.
 
+A WHITELIST IS ALSO CHECKED AGAINST THE FILES IT GOVERNS, in both directions
+(check_whitelist_coverage). deploy.sh holds one hand-maintained whitelist per envsubst call and
+nothing ever compared them to the manifests: ${DOMAIN} sat in the deployments whitelist while
+appearing in zero files under k8s/, because an unused substitution renders nothing and so goes
+stale in silence. The other direction is louder but just as unnoticed until a deploy — a
+`${NAME}` a manifest spells that its own loop's whitelist omits reaches the cluster as the
+literal text `${NAME}`. Which whitelist a file gets is decided by the directory it sits in, so
+this is where a manifest copied between k8s/deployments/ and k8s/cronjobs/ is caught. Both
+sides are derived: the whitelists are parsed out of deploy.sh, the placeholders are read out of
+the files, and neither is re-typed here.
+
 NOT EVERY ${...} IN A COMMENT IS A DEFECT, and the harness must not say it is. Names that are
 deliberately absent from the whitelist survive verbatim by design — auth-gateway.yaml's
 ${INTERNAL_API_SECRET} is a Secret that a later initContainer substitutes, and baking it into
@@ -43,6 +54,7 @@ the comment rule below fires only for names deploy.sh can give a MULTI-LINE valu
 everything else is judged by whether the render actually parses.
 """
 
+import collections
 import glob as globmod
 import os
 import re
@@ -72,6 +84,17 @@ ENVSUBST_WORD_RE = re.compile(r'\benvsubst\b')
 PRINTF_ANY_RE = re.compile(r'printf\s+-v\s+([A-Za-z_][A-Za-z0-9_]*)')
 TAG_SED_RE = re.compile(r"""sed\s+"s/:latest/:\$\{TAG\}/g\"""")
 NAME_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+# the keycloak realm/IdP renders read a literal path instead of "$f", and the coverage check
+# below covers them too — a dead name rots the same in either shape.
+LITERAL_ENVSUBST_RE = re.compile(r"""envsubst\s+'([^']*)'\s*<\s*"([^"]+)\"""")
+ENVSUBST_CALL_RE = re.compile(r"envsubst[ \t]+'")
+ROOT_DIR_PREFIX_RE = re.compile(r"^\$\{ROOT_DIR\}/")
+# only braced spellings are build-time placeholders; nginx's runtime variables are bare ($host,
+# $request_uri) and policing those here would flag every proxy directive in auth-gateway.yaml.
+BRACED_NAME_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+ENV_ENTRY_RE = re.compile(r"^\s*-\s*name:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$", re.M)
+SHELL_ASSIGN_RE = re.compile(r"^\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=", re.M)
+INNER_ENVSUBST_RE = re.compile(r"envsubst\s+'([^']*)'")
 
 # stand-in values. Deliberately inert tokens: the property under test is what the DOCUMENT
 # does with a substitution, not what any particular value is.
@@ -82,6 +105,164 @@ TAG = "render-check-tag"
 
 class HarnessError(Exception):
     """The harness could not decide the question (exit 2), as distinct from a failure."""
+
+
+Render = collections.namedtuple("Render", "glob guard names lineno")
+# one envsubst call, resolved to the files it governs. `label` and `lineno` exist only so a
+# coverage failure can point at the whitelist a reader has to edit.
+Whitelist = collections.namedtuple("Whitelist", "label lineno names paths")
+
+
+def logical_lines(lines):
+    """[(lineno, text)] with backslash continuations joined and comment-only lines dropped.
+
+    The keycloak renders wrap their whitelist onto a second line, and prose above the render
+    loops uses the word envsubst; both would otherwise miscount in envsubst_call_count.
+    """
+    out, pending, start = [], None, None
+    for lineno, raw in enumerate(lines, 1):
+        text = raw.rstrip("\n")
+        if pending is None and text.lstrip().startswith("#"):
+            continue
+        if pending is None:
+            pending, start = text, lineno
+        else:
+            pending += " " + text.strip()
+        if pending.endswith("\\"):
+            pending = pending[:-1]
+            continue
+        out.append((start, pending))
+        pending = None
+    if pending is not None:
+        out.append((start, pending))
+    return out
+
+
+def envsubst_call_count(lines):
+    """How many `envsubst '<names>'` calls deploy.sh makes, counted as loosely as possible.
+
+    The coverage check has to account for every one of them. It is the same anti-vacuity
+    property render_loop_survey defends for the render loops: a parser that recovers only some
+    of the calls checks fewer whitelists and still prints a pass. This epic's own evidence
+    enumerated the whitelists by hand and came up one short, so the count is derived here
+    rather than written down.
+    """
+    return sum(len(ENVSUBST_CALL_RE.findall(text)) for _, text in logical_lines(lines))
+
+
+def literal_renders(lines):
+    """[(lineno, names, path)] for the envsubst calls that read a literal path, not "$f"."""
+    out = []
+    for lineno, text in logical_lines(lines):
+        for names, target in LITERAL_ENVSUBST_RE.findall(text):
+            if target == "$f":
+                continue
+            rel = ROOT_DIR_PREFIX_RE.sub("", target)
+            if "$" in rel:
+                raise HarnessError(
+                    "scripts/deploy.sh:%d renders %r, whose path this harness cannot resolve "
+                    "without running the script, so it cannot check that whitelist"
+                    % (lineno, target))
+            if not os.path.isfile(os.path.join(ROOT, rel)):
+                raise HarnessError(
+                    "scripts/deploy.sh:%d renders %s, which does not exist — the tree moved "
+                    "out from under the whitelist" % (lineno, rel))
+            out.append((lineno, NAME_RE.findall(names), os.path.join(ROOT, rel)))
+    return out
+
+
+def claimed_bases(plan_for_glob):
+    return {b for entry in plan_for_glob if entry.guard for b in entry.guard}
+
+
+def governs(entry, base, claimed):
+    """Whether this envsubst renders that basename — the directory-and-guard mapping deploy.sh
+    already has, read rather than restated."""
+    if entry.guard is not None:
+        return base in entry.guard
+    return base not in claimed
+
+
+def substitution_whitelists(lines, plan):
+    """Every envsubst whitelist in deploy.sh, paired with the files that call renders.
+
+    A whitelist is identified by its deploy.sh line: two of them share one glob, because the
+    ${base} guard splits k8s/deployments/*.yaml into sandbox.yaml and everything else.
+
+    Two shapes: the render loops (`< "$f"`, narrowed further by a ${base} guard) and the
+    keycloak template renders (`< "<literal path>"`). Both are covered, because here the
+    whitelist itself is under test rather than the YAML it produces.
+    """
+    whitelists = []
+    for pattern in sorted({entry.glob for entry in plan}):
+        plan_for_glob = [entry for entry in plan if entry.glob == pattern]
+        claimed = claimed_bases(plan_for_glob)
+        for entry in plan_for_glob:
+            paths = [path for path in sorted(globmod.glob(os.path.join(K8S_DIR, pattern)))
+                     if governs(entry, os.path.basename(path), claimed)]
+            label = "k8s/" + pattern
+            if entry.guard:
+                label += " (%s)" % ", ".join(sorted(entry.guard))
+            whitelists.append(Whitelist(label, entry.lineno, set(entry.names), paths))
+    for lineno, names, path in literal_renders(lines):
+        whitelists.append(Whitelist(os.path.relpath(path, ROOT), lineno, set(names), [path]))
+    return whitelists
+
+
+def locally_defined(source):
+    """Names the file itself supplies, so deploy.sh is right not to substitute them.
+
+    Three shapes occur: a container env entry (`- name: X`), a shell assignment inside an
+    embedded script (`X=...`), and an in-file envsubst that renders the name later from a
+    Secret — k8s/deployments/auth-gateway.yaml's render-config initContainer is why
+    ${INTERNAL_API_SECRET} must stay OUT of deploy.sh's whitelist. Derived from the file rather
+    than listed here, because a hand-kept exemption list is the rot this check exists to catch.
+    """
+    names = set(ENV_ENTRY_RE.findall(source)) | set(SHELL_ASSIGN_RE.findall(source))
+    for whitelist in INNER_ENVSUBST_RE.findall(source):
+        names.update(NAME_RE.findall(whitelist))
+    return names
+
+
+def check_whitelist_coverage(whitelists, failures):
+    """Both directions between each envsubst whitelist and the files that call renders.
+
+    Forward: a whitelisted name no governed file spells substitutes nothing, so nothing ever
+    notices it going stale.
+
+    Reverse: a `${NAME}` a governed file spells that its whitelist omits reaches the cluster as
+    the literal text `${NAME}`. A name the file defines itself is excused — unless some OTHER
+    whitelist substitutes it, which makes it a build-time placeholder sitting in a directory
+    whose loop will not render it, and an env entry of the same name does not save it.
+    """
+    substituted_somewhere = set()
+    for w in whitelists:
+        substituted_somewhere |= w.names
+    for w in whitelists:
+        if not w.paths:
+            # an empty rendered directory is a state deploy.sh handles by design
+            # (`[ -e "$f" ] || continue`); with no files there is nothing to be dead against.
+            continue
+        used = set()
+        for path in w.paths:
+            with open(path) as fh:
+                source = fh.read()
+            spelled = set(BRACED_NAME_RE.findall(source))
+            used |= spelled
+            local = locally_defined(source)
+            for name in sorted(spelled - w.names):
+                if name in substituted_somewhere or name not in local:
+                    failures.append(
+                        "%s spells ${%s}, which the whitelist at scripts/deploy.sh:%d does not "
+                        "substitute for this file, so it reaches the cluster as the literal "
+                        "text ${%s}. Add it to that whitelist, or define the name in the file."
+                        % (os.path.relpath(path, ROOT), name, w.lineno, name))
+        for name in sorted(w.names - used):
+            failures.append(
+                "scripts/deploy.sh:%d whitelists ${%s} for %s, but no file it renders spells "
+                "it. The substitution does nothing, so nothing notices it going stale — drop "
+                "it from the whitelist, or spell it in one of those files."
+                % (w.lineno, name, w.label))
 
 
 def unescape(fmt):
@@ -135,17 +316,18 @@ def multiline_values(lines):
 
 
 def read_render_plan(lines):
-    """[(glob, base_guard_or_None, whitelist_names)] for every manifest envsubst in deploy.sh.
+    """[Render] for every manifest envsubst in deploy.sh.
 
-    `base_guard` is the set of basenames a `[ "${base}" = "x.yaml" ]` branch narrows the
+    `guard` is the set of basenames a `[ "${base}" = "x.yaml" ]` branch narrows the
     envsubst to (k8s/deployments/sandbox.yaml gets its own, narrower whitelist that way).
+    `lineno` is carried so a coverage failure can name the whitelist that has to change.
     """
     plan = []
     loop_glob = None
     loop_indent = None
     guard = None
     guard_indent = None
-    for line in lines:
+    for lineno, line in enumerate(lines, 1):
         stripped = line.strip()
         indent = len(line) - len(line.lstrip())
         m = FOR_RE.match(line.rstrip("\n"))
@@ -165,7 +347,7 @@ def read_render_plan(lines):
             guard, guard_indent = set(found), indent
             continue
         for names in ENVSUBST_RE.findall(line):
-            plan.append((loop_glob, guard, NAME_RE.findall(names)))
+            plan.append(Render(loop_glob, guard, NAME_RE.findall(names), lineno))
     return plan
 
 
@@ -206,11 +388,11 @@ def render_loop_survey(lines):
 def whitelist_for(path, plan_for_glob):
     """The exact set of names deploy.sh substitutes into THIS file."""
     base = os.path.basename(path)
-    claimed = {b for _, g, _ in plan_for_glob if g for b in g}
+    claimed = claimed_bases(plan_for_glob)
     names = set()
-    for _, g, ns in plan_for_glob:
-        if (g is not None and base in g) or (g is None and base not in claimed):
-            names.update(ns)
+    for entry in plan_for_glob:
+        if governs(entry, base, claimed):
+            names.update(entry.names)
     return names
 
 
@@ -310,7 +492,7 @@ def main():
         return 2
 
     plan = read_render_plan(lines)
-    plan_globs = {g for g, _, _ in plan}
+    plan_globs = {entry.glob for entry in plan}
     survey_globs, survey_calls = render_loop_survey(lines)
     if not plan:
         print("harness cannot run: found no `envsubst '...' < \"$f\"` render in %s — the "
@@ -330,8 +512,18 @@ def main():
         return 2
     try:
         values = multiline_values(lines)
+        whitelists = substitution_whitelists(lines, plan)
     except HarnessError as exc:
         print("harness cannot run: %s" % exc, file=sys.stderr)
+        return 2
+    # every envsubst call deploy.sh makes has to be one this check governs. Recovering only
+    # some of them would check fewer whitelists and still report a pass.
+    calls = envsubst_call_count(lines)
+    if len(whitelists) != calls:
+        print("harness cannot run: scripts/deploy.sh makes %d `envsubst '...'` call(s) but the "
+              "whitelist-coverage check accounts for %d. A render moved out from under the "
+              "parser; refusing rather than checking fewer whitelists." % (calls, len(whitelists)),
+              file=sys.stderr)
         return 2
     rewrite_tag = any(TAG_SED_RE.search(line) for line in lines)
 
@@ -339,7 +531,7 @@ def main():
     failures = []
     checked = 0
     for pattern in sorted(plan_globs):
-        plan_for_glob = [p for p in plan if p[0] == pattern]
+        plan_for_glob = [entry for entry in plan if entry.glob == pattern]
         paths = sorted(globmod.glob(os.path.join(K8S_DIR, pattern)))
         if not paths:
             # an EMPTY rendered directory is a state deploy.sh handles by design
@@ -371,13 +563,15 @@ def main():
               "some rendered file was skipped" % (checked, len(expected)), file=sys.stderr)
         return 2
 
+    check_whitelist_coverage(whitelists, failures)
+
     if failures:
         for f in failures:
             print("FAIL: %s" % f, file=sys.stderr)
         return 1
-    print("manifest render OK: %d manifests, whitelist derived from scripts/deploy.sh, "
-          "multi-line fragments populated (%s)"
-          % (checked, ", ".join(sorted(values)) or "none found"))
+    print("manifest render OK: %d manifests, %d envsubst whitelist(s) covered both ways, "
+          "whitelist derived from scripts/deploy.sh, multi-line fragments populated (%s)"
+          % (checked, len(whitelists), ", ".join(sorted(values)) or "none found"))
     return 0
 
 

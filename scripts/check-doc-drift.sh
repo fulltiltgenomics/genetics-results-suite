@@ -53,7 +53,13 @@ DOCS_SPEC='^(docs/project-spec\.md|README\.md)$'
 
 check '^configs/datasets\.yaml$' \
     '^docs/(datasets-yaml-schema|adding-datasets)\.md$' \
-    'configs/datasets.yaml -> docs/datasets-yaml-schema.md (data_type enum, field lists), docs/adding-datasets.md (ALL_VIEWS list)'
+    'configs/datasets.yaml -> docs/datasets-yaml-schema.md (data_type enum, field lists), docs/adding-datasets.md (per-view resource_derivation / dataset_cross_check decisions)'
+
+# named on its own rather than left to the scripts rule below that covers
+# check-duplication.py: the registry is data that script reads, and an entry added or removed
+# changes what the ratchet nets out without touching a line of the script.
+check '^configs/twins\.yaml$' "$DOCS_SPEC" \
+    'configs/twins.yaml -> docs/project-spec.md + README.md (what is netted out of the duplication ratchet and why: entries, the mandatory reason, merge:never, per-site symbols)'
 
 check '^k8s/' "$DOCS_SPEC" \
     'k8s/ -> docs/project-spec.md + README.md (services table, request routing, PVCs, hardening)'
@@ -61,8 +67,8 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths)\.sh|lib/)' "$DOCS_SPEC" \
-    'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|lib/)' "$DOCS_SPEC" \
+    'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, what the preflights check and when they stay silent)'
 
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
