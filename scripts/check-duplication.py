@@ -24,6 +24,30 @@ WHAT IT DOES NOT SEE. It is a unit-level detector: a duplicated block that is no
 function body and not a literal set is invisible to it, as is anything in TypeScript. A
 count it cannot produce is a target this epic descopes rather than a target it forgets.
 
+WHAT IT MUST NEVER DO IS STOP SEEING SOMETHING QUIETLY. Everything above is found by
+parsing, and a parser that covers PART of a tree is worse than one that covers none of it:
+the sites it dropped are reported by nobody, the totals still print, and the summary reads
+like a clean bill of health. Finding those same sites a second way would need a second
+parser, so this counts COVERAGE rather than duplicates: per repo and extension, how many
+files were read, how many the owning pass parsed, and how many yielded a unit or an
+enumeration. A file that stopped parsing, or an extractor that stopped matching a
+construct, moves one of those numbers without moving the one above it, and --check refuses
+rather than counting fewer sites. Nothing in the census depends on a duplicate existing, so
+a suite with every copy consolidated away still passes.
+
+DISCOVERY IS THE LINK THE CENSUS CANNOT CHECK FROM WITHIN. read, parsed and units all count
+what walk() handed over, so SKIP_DIRS growing lowers all three together and reads as
+deletion. The fourth number is therefore taken from `git ls-files`, whose reach depends on
+neither SKIP_DIRS nor on walk() being able to descend to a file: files read dropping further
+than the tracked count is exit 2. Untracked files sit outside it by construction; they can
+only make files read the larger number, and growth is not a fail condition.
+
+EXTS is the one input both sides do share, so dropping an extension from it takes the cell
+out of walk() and out of the tracked count at once, and no pairing of one number against
+another can see that. A baseline cell with no counterpart in the current run at all is
+therefore drift in its own right. An extension that keeps its place in EXTS but loses its
+dispatch branch in collect() is the other case, and the units rule already catches it.
+
 INTRA VERSUS CROSS. A group whose files all live in one repo is intra-repo; a group
 spanning repos is cross-repo. The two are reported separately because the choice of what to
 consolidate turns on which of them the work actually lands in, and they are weighted by
@@ -40,9 +64,11 @@ Usage:
     scripts/check-duplication.py --check            fail if the counts grew past it
 
 Exit 0 = counted (and within the baseline under --check), 1 = a count grew, 2 = could not
-run: a repo of the suite is not checked out, or the baseline was measured over a different
-set of repos and so cannot be compared. A missing checkout lowers every count, so treating
-it as a pass is the one outcome that would make this useless.
+run: a repo of the suite is not checked out, the baseline was measured over a different set
+of repos and so cannot be compared, or the coverage census fell below the baseline.
+A missing checkout and a stale parser both lower every count, so treating either as a pass
+is the one outcome that would make this useless. Note which one 2 is NOT: a detector that
+has stopped seeing a site has not measured growth, it has stopped being able to measure.
 """
 
 import argparse
@@ -89,12 +115,49 @@ SKIP_DIRS = {
 
 SH_FUNC = re.compile(r"^(?:function\s+)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{\s*$")
 
+EXTS = (".py", ".sh", ".bash", ".yaml", ".yml")
+# on_disk is deliberately not among the fields a cell starts with: absent means "git could
+# not say", which a 0 would spend the rest of the baseline's life claiming was a real count
+WALK_FIELDS = ("read", "parsed", "units")
+CENSUS_FIELDS = WALK_FIELDS + ("on_disk",)
+# each number paired with the one above it in tracked -> read -> parsed -> units
+CHAIN = (("read", "on_disk"), ("parsed", "read"), ("units", "parsed"))
+DRIFT_MESSAGE = {
+    "read": ("{repo} {ext}: read {low} < {base_low} while {high} such files are still "
+             "tracked on disk — discovery stopped reaching files that are still there"),
+    "parsed": ("{repo} {ext}: parsed {low} < {base_low} with {high} still read — a file "
+               "stopped parsing, and every unit in it was dropped without a word"),
+    "units": ("{repo} {ext}: yielding a unit {low} < {base_low} with {high} still parsed — "
+              "an extractor stopped matching a construct it used to see"),
+}
+
 
 def walk(repo_dir):
     for base, dirs, files in os.walk(repo_dir):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".sdk"))
         for f in sorted(files):
             yield os.path.join(base, f)
+
+
+def parses(text, ext):
+    """Did the pass that OWNS this extension get through the file at all?
+
+    Mirrors each extractor's own exception handling exactly, because a file this calls
+    parsed while py_units or yaml_enums silently drops it would make the census agree with
+    nothing. The shell scanner is a line scanner with no failure mode, so for .sh/.bash
+    parsed necessarily equals read and only the units count carries drift there.
+    """
+    if ext == ".py":
+        try:
+            ast.parse(text)
+        except SyntaxError:
+            return False
+    elif ext in (".yaml", ".yml"):
+        try:
+            list(yaml.safe_load_all(text))
+        except Exception:
+            return False
+    return True
 
 
 def read(path):
@@ -227,33 +290,102 @@ def yaml_enums(text):
     yield from seen
 
 
+def _slot(census, repo, ext):
+    return census.setdefault(repo, {}).setdefault(ext, dict.fromkeys(WALK_FIELDS, 0))
+
+
 def collect(repos):
-    """units[(kind, key)] -> [(repo, relpath, name, src)]; enums[set] -> [(repo, rel, name)]"""
+    """units[(kind, key)] -> [(repo, relpath, name, src)]; enums[set] -> [(repo, rel, name)];
+    census[repo][ext] -> how far each file got through the pass that owns it."""
     units = defaultdict(list)
     enums = defaultdict(list)
+    census = {}
     unreadable = 0
     for repo, path in sorted(repos.items()):
         for f in walk(path):
             ext = os.path.splitext(f)[1]
-            if ext not in (".py", ".sh", ".bash", ".yaml", ".yml"):
+            if ext not in EXTS:
                 continue
             text = read(f)
             if text is None:
                 unreadable += 1
                 continue
+            cell = _slot(census, repo, ext)
+            cell["read"] += 1
+            if parses(text, ext):
+                cell["parsed"] += 1
             rel = os.path.relpath(f, path)
+            got = 0
             if ext == ".py":
                 for name, key, src, size in py_units(text):
                     units[key].append((repo, rel, name, src, size))
-                for name, s in py_enums(text):
-                    enums[s].append((repo, rel, name))
+                    got += 1
+                for name, st in py_enums(text):
+                    enums[st].append((repo, rel, name))
+                    got += 1
             elif ext in (".sh", ".bash"):
                 for name, key, src, size in sh_units(text):
                     units[key].append((repo, rel, name, src, size))
+                    got += 1
             else:
-                for name, s in yaml_enums(text):
-                    enums[s].append((repo, rel, name))
-    return units, enums, unreadable
+                for name, st in yaml_enums(text):
+                    enums[st].append((repo, rel, name))
+                    got += 1
+            if got:
+                cell["units"] += 1
+    return units, enums, unreadable, census
+
+
+def tracked_counts(repo_path):
+    """Files per extension straight from `git ls-files` — the census's second opinion.
+
+    walk() is the census's own eyes, so a directory it stops entering lowers read, parsed
+    and units together and the drop reads as an ordinary deletion. This shares no code and
+    no configuration with it. None means git could not answer, which is a could-not-count
+    rather than a zero: a zero would silently disarm the discovery check.
+    """
+    try:
+        out = subprocess.run(["git", "-C", repo_path, "ls-files", "-z"],
+                             capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    counts = defaultdict(int)
+    for f in out.stdout.split("\0"):
+        if f and os.path.splitext(f)[1] in EXTS:
+            counts[os.path.splitext(f)[1]] += 1
+    return dict(counts)
+
+
+def census_drift(base, now):
+    """The drops that mean the detector stopped seeing, not that the tree shrank.
+
+    Each is paired with the number above it in the chain tracked -> read -> parsed -> units,
+    and it is the SIZE of the two drops that decides: a real deletion moves both by the same
+    amount, drift moves the lower one further. Asking only whether the number above also fell
+    is what a single unrelated deletion needs to disarm the rule for the whole run. max(0)
+    keeps growth above from excusing a drop below. That comparison is what makes exact counts
+    workable and a tolerance unwanted — a tuned threshold would be one more arbitrary
+    constant with nothing to check it against.
+    """
+    out = []
+    for repo in sorted(base):
+        for ext in sorted(base[repo]):
+            b = base[repo][ext]
+            n = now.get(repo, {}).get(ext)
+            if n is None:
+                out.append(f"{repo} {ext}: counted at the baseline ({b['read']} files read), "
+                           "counted nowhere now — the extension left EXTS, or the repo left "
+                           "the scan, and no pairing between numbers can see that")
+                continue
+            for low, high in CHAIN:
+                if high not in b or high not in n:
+                    continue
+                if max(0, b[low] - n[low]) > max(0, b[high] - n[high]):
+                    out.append(DRIFT_MESSAGE[low].format(
+                        repo=repo, ext=ext, low=n[low], base_low=b[low], high=n[high]))
+    return out
 
 
 def _group(members, sized=False):
@@ -379,7 +511,17 @@ def weigh(groups, history):
 
 
 def measure(repos, window):
-    units, enums, unreadable = collect(repos)
+    units, enums, unreadable, census = collect(repos)
+    blind = []
+    for repo, path in sorted(repos.items()):
+        tracked = tracked_counts(path)
+        if tracked is None:
+            # leave on_disk out rather than writing 0: a baseline recorded here would
+            # otherwise turn every later committed deletion into a permanent false red
+            blind.append(repo)
+            continue
+        for ext in set(census.get(repo, {})) | set(tracked):
+            _slot(census, repo, ext)["on_disk"] = tracked.get(ext, 0)
     exact = exact_groups(units)
     groups = exact + near_groups(units, exact) + enum_groups(enums)
     history = {r: commit_index(p, window) for r, p in repos.items()}
@@ -400,6 +542,8 @@ def measure(repos, window):
         "repos_present": sorted(repos),
         "window_days": window,
         "unreadable_files": unreadable,
+        "census": census,
+        "census_blind": blind,
         "intra": tally("intra"),
         "cross": tally("cross"),
         "groups": groups,
@@ -421,7 +565,21 @@ def render(m, top=12):
     lines += ["",
               "lockstep = commits touching >=2 files of one intra-repo group; for cross-repo",
               "groups, days on which >=2 repos committed to the group.", "",
-              f"top {top} groups by lockstep evidence:"]
+              "coverage census — what the passes above actually got through, summed over "
+              "repos:",
+              f"{'':10} {'tracked':>8} {'read':>8} {'parsed':>8} {'w/ units':>9}"]
+    per_ext = defaultdict(lambda: dict.fromkeys(CENSUS_FIELDS, 0))
+    for exts in m["census"].values():
+        for ext, cell in exts.items():
+            for k, v in cell.items():
+                per_ext[ext][k] += v
+    for ext in sorted(per_ext):
+        c = per_ext[ext]
+        lines.append(f"{ext:10} {c['on_disk']:>8} {c['read']:>8} {c['parsed']:>8} "
+                     f"{c['units']:>9}")
+    if m["census_blind"]:
+        lines.append("  tracked counts unavailable: " + ", ".join(m["census_blind"]))
+    lines += ["", f"top {top} groups by lockstep evidence:"]
     for g in m["groups"][:top]:
         scope = "intra" if len(g["repos"]) == 1 else "CROSS"
         names = ", ".join(g["names"][:3]) or "-"
@@ -488,6 +646,7 @@ def main():
             "reason": args.reason,
             "repos_present": m["repos_present"],
             "window_days": m["window_days"],
+            "census": m["census"],
             "intra": m["intra"],
             "cross": m["cross"],
         }
@@ -509,6 +668,32 @@ def main():
             print("cannot run: the baseline was measured over a different set of repos "
                   f"({', '.join(base['repos_present'])}); the counts are not comparable.",
                   file=sys.stderr)
+            return 2
+        # coverage before counts: a pass that has gone blind on part of a tree still
+        # produces counts, and they compare clean because the sites it dropped are in
+        # neither number.
+        if m["census_blind"]:
+            print("cannot run: git could not list the tracked files of "
+                  + ", ".join(m["census_blind"])
+                  + ", so a drop in files read cannot be told from a deletion.",
+                  file=sys.stderr)
+            return 2
+        if "census" not in base:
+            print("cannot run: the baseline predates the coverage census and cannot say "
+                  "whether the passes still reach as much of the trees as they did. "
+                  "Rerun --write-baseline --reason to record one.", file=sys.stderr)
+            return 2
+        drift = census_drift(base["census"], m["census"])
+        if drift:
+            print("the duplication passes cover less of the trees than the baseline "
+                  "recorded:", file=sys.stderr)
+            for d in drift:
+                print(f"  {d}", file=sys.stderr)
+            print("  a site nobody parses is in no group, so the counts below would read "
+                  "as a clean bill of health. Refusing rather than counting fewer sites.",
+                  file=sys.stderr)
+            print("  if the drop is real — files deleted, a helper consolidated away — "
+                  "rerun --write-baseline --reason to record it.", file=sys.stderr)
             return 2
         grew = [
             f"{scope}-repo {field}: {m[scope][field]} > {base[scope][field]}"

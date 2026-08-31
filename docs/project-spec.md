@@ -1204,6 +1204,30 @@ date and commit it was taken at. `--check` ratchets today's counts against it an
 into `build-all.sh` warn-only, because the counts are taken over sibling checkouts the
 build does not control. A missing checkout is exit 2, not a pass: it lowers every count.
 
+Everything it counts is found by parsing, and a parser that has fallen behind on part of a
+tree is the one failure that would look exactly like success — the sites it dropped are
+reported by nobody while the totals still print. Catching that by finding the same
+duplicates a second way would take a second parser, so the baseline records **coverage**
+instead: per repo and file extension, how many files were read, how many the owning pass
+parsed, how many yielded a unit or an enumeration, and how many `git ls-files` says are
+tracked. `--check` pairs each number against the one above it in the chain tracked → read →
+parsed → units and refuses when the lower one has fallen *further* than the one above it —
+a real deletion moves both by the same amount. The tracked count is never compared on its
+own, only as a pairing partner, and a cell whose baseline has none (git could not answer on
+the machine that recorded it) skips that one pairing rather than reading as zero. Parsed
+dropping further than read is a file that stopped parsing; units dropping further than
+parsed is an extractor that stopped matching; read dropping further than the tracked count
+is discovery that stopped reaching files still on disk — the last is why the tracked count
+comes from git and not from the same walk. A baseline cell with no counterpart in the
+current run at all is drift too, since an extension leaving the scan takes both sides of
+every pairing with it. Each is **exit 2**, not 1: a detector that has stopped seeing a site has not
+measured growth, it has stopped being able to measure. The census measures the detector,
+not the trees, so it says nothing about which duplicates exist and passes a suite where
+every copy has been consolidated away. What it does not cover: a construct no extractor
+ever matched is not a drop from anything; for `.sh`/`.bash` the parse check has no failure
+mode, so parsed equals read by construction and shell drift rests on the units rule alone;
+and TypeScript, which no pass reads, has no census at all.
+
 ### There is no development environment — and the BigQuery rehearsal dataset
 
 Established read-only on 2026-08-13 and worth stating
