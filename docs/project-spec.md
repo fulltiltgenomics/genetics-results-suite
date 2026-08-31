@@ -239,7 +239,7 @@ scripts/                             build, deploy and verification scripts
   keycloak-get-token.sh              browser auth-code+PKCE flow; prints an access token
   keycloak-register-brainzzz.sh      the brainzzz client specifically
   keycloak-register-client.sh        register or update an MCP OAuth client in the live realm
-  lib/                               shared shell library: DEPLOY_ENV resolution and the kubectl context guard
+  lib/                               shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution
   monitor/                           the monitoring CronJob's Python package
   rollout.sh                         single-service image update
   run-sandbox-local.sh               build and run the sandbox image in plain Docker
@@ -1136,6 +1136,70 @@ because "cannot tell" is not "broken". An *empty* rendered directory is not drif
 tolerates an empty `k8s/cronjobs/` by design (`[ -e "$f" ] || continue`), so the harness does
 too, and only a missing directory is exit 2. The repo has no CI and the pre-commit hook only
 runs the doc-drift check, so this is the only place it runs.
+
+### Sibling repos: resolution, and the one command that runs their gates
+
+`scripts/lib/siblings.py` is the shared answer to "where is repo X checked out". It exists
+because four scripts here answered that privately and none generally — two share
+`SUITE_SIBLING_ROOT` but cover different repo sets, two resolve only genetics-mcp-server
+through `MCP_SERVER_DIR`, and none can find a repo checked out under a different root from
+the rest. Its docstring holds the resolution order; the short version is per-repo
+`SUITE_REPO_<NAME>` override, then `SUITE_SIBLING_ROOT`, then the parent of the **main**
+checkout, then that parent's own siblings. An auto-discovered candidate is accepted if its
+`origin` names the repo, or — for a checkout with no origin at all — on its directory name
+plus `rev-parse --is-inside-work-tree`. So a same-named *plain* directory cannot become the
+answer, but a same-named originless git checkout can. A `SUITE_REPO_<NAME>` override skips
+the origin test entirely (a fork's origin names something else, and that is what the
+override is for) but must still be a git checkout; when it is not, that is an error naming
+the path and the reason, never the "not checked out on this machine" message.
+The four existing resolvers are deliberately **not** retrofitted onto it yet.
+
+The repos it knows about:
+
+<!-- BEGIN GENERATED: suite-repos -->
+
+- `genetics-results-suite`
+- `genetics-results-api`
+- `genetics-results-db`
+- `genetics-results-browser`
+- `genetics-mcp-server`
+- `genetics-results-munge`
+
+<!-- END GENERATED: suite-repos -->
+
+`scripts/check-siblings.sh` runs each sibling's own test lane. It is a trigger, not a new
+lane: there is no CI anywhere in the suite, so those lanes run only when somebody remembers
+to. Lanes are discovered from each checkout (a `tests/` directory gets pytest, a
+`package.json` gets whichever of its `test`/`bff:test`/`typecheck` scripts exist) rather
+than listed here, and nothing else in a sibling is executed.
+
+It is **not** restricted to offline tests. A repo that declares an `offline` pytest marker
+is run with `-m offline`; a repo that declares none runs its default lane, whatever that
+includes — network, credentials and all. The runtime and flakiness of an unrestricted lane
+are that repo's to fix, by declaring a marker there rather than filtering here.
+
+**When it stays silent, it never exits 0.** A repo that is not checked out, a missing
+`.venv` or `node_modules`, no discoverable lane, or pytest exiting 2/3/4/5 are all
+could-not-run: the lane never got as far as reporting on the code. Failures and errors are
+kept apart from that and from each other — any `N failed` in the summary is a failure
+(exit 1) however many errors accompany it, and setup/collection errors with zero failures
+are their own outcome (exit 3), reported as what was observed rather than as a diagnosed
+cause. The suite's own gates are not run here — `build-all.sh` already runs them.
+
+### Duplication baseline (`scripts/check-duplication.py`)
+
+Counts the one-fact-in-N-copies shape across all six repos, split intra-repo versus
+cross-repo and weighted by lockstep commits rather than by lines. It names nothing: a
+detector holding a list of known copies would be another copy to maintain, so every group
+is found by structure (equal or near-equal function bodies and module-level constant
+expressions, and the same set of four or more strings written out as a literal in two
+files). It is a unit-level detector — a duplicated block that is neither a body nor a
+literal set is outside its reach, TypeScript entirely so.
+
+`docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
+date and commit it was taken at. `--check` ratchets today's counts against it and is wired
+into `build-all.sh` warn-only, because the counts are taken over sibling checkouts the
+build does not control. A missing checkout is exit 2, not a pass: it lowers every count.
 
 ### There is no development environment — and the BigQuery rehearsal dataset
 

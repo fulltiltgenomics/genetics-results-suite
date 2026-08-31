@@ -26,11 +26,18 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(ROOT, "sandbox"))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
 
 try:
     import yaml
 except ImportError:
     print("HARNESS: PyYAML is required", file=sys.stderr)
+    raise SystemExit(2)
+
+try:
+    import siblings
+except Exception as exc:  # pragma: no cover
+    print(f"HARNESS: cannot import scripts/lib/siblings.py: {exc}", file=sys.stderr)
     raise SystemExit(2)
 
 try:
@@ -380,7 +387,7 @@ LAYOUT = {
     "sandbox": "sandbox image build context for model-authored Python; the SDK is "
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
-    "scripts/lib": "shared shell library: DEPLOY_ENV resolution and the kubectl context guard",
+    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution",
     "scripts/monitor": "the monitoring CronJob's Python package",
     "scripts/supervisor_tests": "the check groups scripts/test-supervisor.py runs",
     "scripts/deploy.sh": "full deploy: terraform apply, then every manifest",
@@ -485,6 +492,10 @@ def block_structure():
     return "\n".join(out)
 
 
+def block_suite_repos():
+    return "\n".join(f"- `{r}`" for r in siblings.SUITE_REPOS)
+
+
 SECURITY = "docs/code-execution-security.md"
 SPEC = "docs/project-spec.md"
 
@@ -496,6 +507,7 @@ BLOCKS = {
     "image": (SECURITY, block_image),
     "services": (SPEC, block_services),
     "structure": (SPEC, block_structure),
+    "suite-repos": (SPEC, block_suite_repos),
 }
 
 MARKER = re.compile(

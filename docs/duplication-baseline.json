@@ -1,0 +1,35 @@
+{
+  "SNAPSHOT": "Measured on 2026-08-31, against commit 00c764709735 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers.",
+  "measured_date": "2026-08-31",
+  "measured_commit": "00c764709735347728429b050cbe652193160e8c",
+  "measured_tree_dirty": true,
+  "repos_present": [
+    "genetics-mcp-server",
+    "genetics-results-api",
+    "genetics-results-browser",
+    "genetics-results-db",
+    "genetics-results-munge",
+    "genetics-results-suite"
+  ],
+  "window_days": 30,
+  "intra": {
+    "groups": 108,
+    "files": 137,
+    "lockstep": 62,
+    "by_kind": {
+      "bodies-exact": 44,
+      "bodies-near": 36,
+      "enumerations": 28
+    }
+  },
+  "cross": {
+    "groups": 82,
+    "files": 81,
+    "lockstep": 127,
+    "by_kind": {
+      "bodies-exact": 21,
+      "bodies-near": 5,
+      "enumerations": 56
+    }
+  }
+}
