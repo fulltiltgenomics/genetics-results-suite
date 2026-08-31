@@ -61,8 +61,8 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths)\.sh|lib/)' "$DOCS_SPEC" \
-    'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, generated manifests)'
+check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|lib/)' "$DOCS_SPEC" \
+    'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, what the preflights check and when they stay silent)'
 
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'

@@ -701,6 +701,27 @@ copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) �
 on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
 `docs/project-spec.md`.
 
+### Running the sibling repos' tests
+
+```bash
+./scripts/check-siblings.sh          # every sibling's own test lane, one report
+./scripts/check-duplication.py       # the N-copy count across all six repos
+```
+
+There is no CI, so `check-siblings.sh` is the only trigger those lanes have. It discovers
+each repo's lane rather than hardcoding one, and **never exits 0 when a lane did not
+actually run** — a repo not checked out on this machine, a missing `.venv` or
+`node_modules`, or pytest exiting 2/3/4/5. A lane whose tests failed exits 1; a lane that
+reported setup/collection errors but no failures exits 3. Only a repo that declares an
+`offline` pytest marker is narrowed to it — every other repo runs its **default** lane,
+network- and credential-dependent tests included, and that cost belongs to that repo.
+Repos are located by
+`scripts/lib/siblings.py`, which honours `SUITE_SIBLING_ROOT` and a per-repo
+`SUITE_REPO_<NAME>` override and can find a repo checked out under a different root from
+the others. `check-duplication.py` compares against the dated snapshot in
+`docs/duplication-baseline.json`; `build-all.sh` runs it warn-only. See "Sibling repos" in
+`docs/project-spec.md`.
+
 ## Services
 
 | Service | Source Repo | Image | Port | Notes |
