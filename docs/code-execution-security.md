@@ -833,6 +833,68 @@ send. This is a different calculus from `config/settings.py`, which named a doze
 variables and so handed over the shape of the whole internal surface rather than the one
 credential the caller is already using.
 
+**A substantial part of the shipped `ToolExecutor` is INERT in the image, and that is now
+stated rather than discovered at call time** (`genetics-results-suite-tbg`). `executor.py`
+is one file holding both halves of the executor: the data functions the SDK path uses, and
+the orchestration the chat backend and mcp-server call. Five modules the closure reaches at call time are absent from
+this image, and every one of them is reachable — the scope note at the top of this document
+says `GeneticsClient._executor` is one attribute access from a documented entry point, and
+these are exactly the methods that reaches:
+
+| module | absent because | reached from |
+|---|---|---|
+| `ddgs` | not in `sandbox/requirements.txt` — that file declares the closure and is closed at numpy/scipy/polars/matplotlib/httpx | `web_search` → `_search_duckduckgo` |
+| `genetics_mcp_server.sandbox_client` | outside `SDK_ALLOWLIST`, so `prune_venv.py` deletes it | `run_analysis`, `read_artifact`, `_sandbox` |
+| `genetics_mcp_server.auth.core` | outside `SDK_ALLOWLIST` | `run_analysis` |
+| `genetics_mcp_server.sandbox_token` | outside `SDK_ALLOWLIST` | `run_analysis` |
+| `genetics_mcp_server.tools.definitions` | outside `SDK_ALLOWLIST` | **not an executor method** — `tools/__init__.py`'s lazy `__getattr__`, i.e. `from genetics_mcp_server.tools import TOOL_DEFINITIONS` |
+
+The fifth was **created by `6bv`**, the fix immediately above. Making the re-export lazy moved
+that failure from this package's import — where the image's own `import genetics_mcp_server.sdk`
+check would have caught it — to first attribute access, where nothing does. Worth noticing that
+the shape this section is about is partly a *consequence* of the closure cuts rather than an
+accident alongside them: each cut trades a build-time failure for a call-time one, which is the
+right trade only if the call-time failure is legible.
+
+Re-derive that set with an AST walk over the **function-level** imports of all ten closure
+modules — not just `executor.py`, which is where the fifth hides — checked
+against `requirements.txt` and `SDK_ALLOWLIST`; the module-level imports are not where this
+lives, which is the whole reason it survived two guards. `build-checks.py` runs `import
+genetics_mcp_server.sdk` inside the image and a deferred import is never executed by that;
+genetics-mcp-server's `test_sdk_import_closure.py` blocks unpinned distributions and then
+imports the SDK, with the same blind spot. Both stay green.
+
+**What a script sees now.** Each of those import sites in genetics-mcp-server is wrapped in
+`except ModuleNotFoundError` with a name check — the shape `_resolve_settings` already used
+for `config/settings.py`, and the name check is load-bearing: a `ModuleNotFoundError` from
+deeper inside a module that *is* installed is a broken install outside the sandbox and must
+propagate. The guarded methods return a shaped failure with `error_type:
+"CapabilityUnavailable"` and `retryable: false`, saying the module is not installed here and
+no rewrite reaches it, instead of raising a bare `ModuleNotFoundError` in a container with no
+shell and no package manager. `_analysis_hint` no longer answers these with "call
+`list_capabilities` for the exact signatures" — `web_search` and `run_analysis` will never
+appear in that list, so it pointed the model at a catalogue that could not explain the
+failure. `tools/__init__.py`'s `__getattr__` is the one site left **unguarded on purpose**: it
+has no result shape to return, and the `ImportError: cannot import name 'definitions' from
+'genetics_mcp_server.tools'` it already raises names the missing module accurately — the defect
+there was only the hint, so only the hint changed. That error is an `ImportError`, and an
+ImportError of that shape never carries the dotted path, so the hint matches `cannot import
+name 'X' from 'Y'` as well as `No module named '…'`. Outside the sandbox all five modules are
+present and every guard is a pass-through, so chat-backend and mcp-server behaviour is
+unchanged.
+
+**Widening the image was considered and rejected.** Adding `ddgs` to `requirements.txt` buys
+nothing: the sandbox NetworkPolicy has no DNS rule (section 3), so DDGS would stall the glibc
+resolver for the full timeout rather than fail fast — a worse failure than the guarded one.
+Adding `sandbox_client`, `auth/core.py`, `sandbox_token` and `definitions.py` to
+`SDK_ALLOWLIST` would undo `l41` and `6bv` along with it, and would ship a
+confused-deputy surface — a sandboxed script able to construct a supervisor client and mint
+against an identity model — with no egress rule that lets it be used, and `auth/core.py` is
+the one file `prune_venv.py`'s docstring names as the reason the allow-list exists. The
+guards are the containment-preserving answer. The architectural fix — splitting the
+orchestration half of `executor.py` out of the shipped half, so these imports are unreachable
+by construction rather than by a guard — is filed separately.
+
 **The stubs are generated, so this passage is checkable rather than asserted.**
 `scripts/gen-sandbox-docs.py --sdk-src` derives `stubs/client.pyi` and `stubs/genetics.pyi`
 from the SDK source, `scripts/test-sandbox-docs.py` fails if the committed stubs differ from a
