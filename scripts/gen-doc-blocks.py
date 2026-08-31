@@ -425,8 +425,8 @@ LAYOUT = {
                                  "one place",
     "scripts/check-worktree-paths.sh": "warn when a tool would resolve a path into the main "
                                        "checkout",
-    "scripts/test-manifest-render.py": "offline: render every manifest deploy.sh renders and "
-                                       "refuse one that is not the YAML the file declares",
+    "scripts/test-manifest-render.py": "offline: render every manifest deploy.sh renders, and "
+                                       "hold each envsubst whitelist to the files it governs",
     "scripts/test-network-policies.py": "offline: the namespace's policies as a whole",
     "scripts/test-sandbox-docs.py": "offline: the generated schema docs and SDK stubs",
     "scripts/test-supervisor.py": "offline: the sandbox supervisor, in process or against a "

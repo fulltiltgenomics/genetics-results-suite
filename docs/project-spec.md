@@ -250,7 +250,7 @@ scripts/                             build, deploy and verification scripts
   supervisor_tests/                  the check groups scripts/test-supervisor.py runs
   sync-datasets.sh                   copy datasets.yaml to the sibling repos for local dev
   test-e2e-local.py                  end-to-end run_analysis against the live local stack
-  test-manifest-render.py            offline: render every manifest deploy.sh renders and refuse one that is not the YAML the file declares
+  test-manifest-render.py            offline: render every manifest deploy.sh renders, and hold each envsubst whitelist to the files it governs
   test-network-policies.py           offline: the namespace's policies as a whole
   test-sandbox-docs.py               offline: the generated schema docs and SDK stubs
   test-supervisor.py                 offline: the sandbox supervisor, in process or against a container
@@ -1095,7 +1095,7 @@ file it:
 - **derives** the whitelist by parsing `deploy.sh`'s own `envsubst '...' < "$f"` invocations,
   including the `[ "${base}" = "sandbox.yaml" ]` branch that narrows `sandbox.yaml` to its own
   three names, and derives the multi-line values by parsing the `printf -v` lines. Nothing is
-  re-typed: a hand-kept copy of a 19-name whitelist is a second list to rot, and it would rot
+  re-typed: a hand-kept copy of a whitelist is a second list to rot, and it would rot
   *silently*, since a name missing from the copy simply stops being checked;
 - **renders** it exactly as `deploy.sh` does (same whitelist, same `:latest` → `:${TAG}` `sed`)
   with **both** multi-line fragments populated, and requires the result to parse as YAML and to
@@ -1115,7 +1115,18 @@ file it:
   obeyed;
 - **asserts** that every `$NAME`/`${NAME}` the file spells that is *not* in its whitelist
   survives the render verbatim — which covers both later-substituted secrets and nginx's own
-  `$host`, `$remote_addr`, `$scheme`, `$request_uri` without naming any of them.
+  `$host`, `$remote_addr`, `$scheme`, `$request_uri` without naming any of them;
+- **holds each whitelist to the files it governs, in both directions.** A whitelisted name no
+  governed file spells substitutes nothing, so it goes stale in silence — `${DOMAIN}` sat in the
+  deployments whitelist while appearing in zero files under `k8s/`, and this check is what found
+  it. The other way round, a `${...}` a file spells that its own loop's whitelist omits reaches
+  the cluster as literal text; since the whitelist a file gets is decided by the directory it
+  sits in, this is where a manifest copied between `k8s/deployments/` and `k8s/cronjobs/` is
+  caught. Only braced spellings count (nginx's runtime variables are bare), and a name the file
+  itself defines — a container `env` entry, a shell assignment in an embedded script, or an
+  in-manifest `envsubst` such as `auth-gateway.yaml`'s render-config initContainer — is excused
+  unless some *other* whitelist substitutes it, which is what stops an `env` entry from
+  laundering a genuine placeholder. Both sides are derived; nothing here is a list.
 
 What it does **not** prove: a multi-line fragment expanded into a *scalar* position — an
 annotation value, say — still parses as valid YAML, so the render check passes it. The guard
@@ -1128,7 +1139,11 @@ of it: every file it stops accounting for is checked against an empty whitelist,
 vacuously, and is counted in a reassuring summary line. So the harness cross-checks what it
 parsed (globs, number of `envsubst` calls, every `printf -v`) against a deliberately loose
 survey of the same script, and treats any disagreement — or an empty whitelist for a file under
-a rendered glob — as could-not-run. Wrapping the 19-name deployments `envsubst` over two lines,
+a rendered glob, or an `envsubst '...'` call in the script that the coverage check does not
+govern — as could-not-run. That last one is why the coverage check reaches the `keycloak/`
+template renders as well as the three manifest loops: the number of whitelists is counted from
+the script rather than known, so a render the parser cannot follow refuses instead of leaving a
+whitelist quietly unchecked. Wrapping the deployments `envsubst` over two lines,
 renaming the loop variable, or rebuilding a fragment with a double-quoted `printf -v` all warn
 instead of passing.
 
