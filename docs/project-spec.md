@@ -417,7 +417,8 @@ traits by case count or ICD chapter, was a results-api round trip — which is w
 question cost a search call, a lookup call and then the real query. It is now a JOIN inside
 the same query.
 
-- `phenotypes` — one row per `(dataset, trait_original)`, 35,327 rows. **Join on
+- `phenotypes` — one row per `(dataset, trait_original)`. The row count is per deployment (it
+  follows that profile's registry and metadata files) and db-api's `/stats` reports it. **Join on
   `trait_original`, never on `trait`**: in every results view that has both columns
   `trait_original` is the phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
   `Height,_inverse-rank_normalized`; `continuous_30040_both_sexes__irnt` vs `Mean corpuscular
@@ -428,8 +429,8 @@ the same query.
   `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
   (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. Use a `LEFT JOIN` when the dataset
   is not known in advance.
-- `datasets` — one row per results-view `dataset` value (~890, of which 841 are eQTL
-  Catalogue QTD sub-studies), unique on `dataset` so the join never fans results out, plus a
+- `datasets` — one row per results-view `dataset` value, most of them eQTL Catalogue QTD
+  sub-studies, unique on `dataset` so the join never fans results out, plus a
   `dataset IS NULL` row for each registry entry with no BigQuery presence. Carries
   `pseudo_credible_sets`, which must be checked before `pip`/`cs_size` are interpreted.
 
@@ -441,6 +442,12 @@ Both are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh`
 `configs/datasets.yaml` and the `metadata_file` sources it references — see
 [adding-datasets.md](adding-datasets.md) for the registry-key → `dataset`-value map that the
 builder owns and that a new dataset must be added to.
+
+A dataset registered but **not loaded in a given deployment** is suppressed there
+(`build_phenotypes.ABSENT_FROM_RESULTS`), so it gets a `dataset IS NULL` row and no
+`phenotypes` rows rather than pointing agents at an empty result. That suppression is scoped
+per profile, because it describes deployment state and not the dataset: listed globally it
+also drops the rows in a deployment that *has* the data, silently.
 
 ## Authentication
 

@@ -296,6 +296,12 @@ relation is many-to-many in both directions (`pgc_scz` + `pgc_bip` both ship ins
 key. The loader cross-checks the map against the live views in every direction and **fails the
 build** on any mismatch.
 
+A dataset that is registered but **not loaded in one deployment** is declared in
+`build_phenotypes.ABSENT_FROM_RESULTS`, which suppresses its rows there. Entries are scoped to
+the profiles they apply to: the fact recorded is deployment state, not a property of the
+dataset, and a globally-listed name silently drops the rows in a deployment that *does* hold
+the data. Scope a new entry to the profile you measured, not to all of them.
+
 The **scope** of that cross-check is derived from the views marked `exposed: true` in
 `datasets.yaml` (by `genetics-results-db`'s `scripts/live_dataset_scope.py`), not from a
 hardcoded table list. So exposing a view is all it takes to bring its `dataset` values under
