@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # syncs the canonical datasets.yaml to sibling service repos for local dev
 #
+# Usage:
+#   scripts/sync-datasets.sh                       -> the sibling MAIN checkouts (the default)
+#   scripts/sync-datasets.sh --tree worktree       -> <sibling>/.claude/worktrees/<name>
+#   scripts/sync-datasets.sh --tree worktree --worktree db-only-architecture
+#
+# The worktree name defaults to $DEV_WORKTREE, else this checkout's own directory name,
+# which is what dev-stack.sh passes. The SOURCE is always this script's own tree, so the
+# copy a tree receives is the canonical file of the tree the script was run from: the
+# suite's own datasets.yaml differs substantially between branches, and syncing one
+# branch's config into a tree running another's is the failure this flag exists to avoid.
+# Run the sync from the same tree as the services that will read it — `dev-stack.sh up`
+# does exactly that, invoking the sync-datasets.sh of the tree it is bringing up.
+#
 # The siblings sit next to the MAIN checkout (~/suite/genetics-results-db and so on),
 # never next to a git worktree. Resolving them as "$SUITE_DIR/.." was therefore wrong
 # from a worktree in two ways at once: it found nothing and skipped silently, and if a
@@ -18,6 +31,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUITE_DIR="$(dirname "$SCRIPT_DIR")"
 SOURCE="$SUITE_DIR/configs/datasets.yaml"
+
+TREE=main
+WORKTREE_NAME="${DEV_WORKTREE:-$(basename "$SUITE_DIR")}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --tree) shift; TREE="${1:-}" ;;
+        --worktree) shift; WORKTREE_NAME="${1:-}" ;;
+        -h | --help) sed -n '2,/^set -euo pipefail/p' "$0" | sed -n 's/^# \{0,1\}//p'; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+case "$TREE" in
+    main) ;;
+    worktree) [ -n "$WORKTREE_NAME" ] || { echo "ERROR: --worktree needs a name" >&2; exit 2; } ;;
+    *) echo "--tree must be 'main' or 'worktree', got '$TREE'" >&2; exit 2 ;;
+esac
 
 if [ ! -f "$SOURCE" ]; then
     echo "ERROR: source file not found: $SOURCE" >&2
@@ -63,7 +95,12 @@ here_parent="$(dirname "$here")"
 failed=0
 
 for sib in "${SIBLINGS[@]}"; do
-    target_repo="$sibling_root/$sib"
+    main_checkout="$sibling_root/$sib"
+    if [ "$TREE" = worktree ]; then
+        target_repo="$main_checkout/.claude/worktrees/$WORKTREE_NAME"
+    else
+        target_repo="$main_checkout"
+    fi
     target_dir="$target_repo/configs"
     target_file="$target_dir/datasets.yaml"
 
@@ -74,8 +111,13 @@ for sib in "${SIBLINGS[@]}"; do
         echo "NOTE: ignoring $decoy (next to this checkout); siblings resolve next to the main checkout"
     fi
 
+    if [ ! -d "$main_checkout" ]; then
+        echo "SKIP: $sib is not checked out on this machine ($main_checkout)"
+        continue
+    fi
+
     if [ ! -d "$target_repo" ]; then
-        echo "SKIP: $sib is not checked out on this machine ($target_repo)"
+        echo "SKIP: $sib has no '$WORKTREE_NAME' worktree ($target_repo)"
         continue
     fi
 

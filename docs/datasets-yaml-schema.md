@@ -427,7 +427,9 @@ From the suite repo root, run:
 
 This copies `configs/datasets.yaml` to `../genetics-results-db/configs/datasets.yaml`
 and `../genetics-results-api/configs/datasets.yaml`, creating the `configs/` directories
-if needed.
+if needed. To reach the siblings' worktrees instead of their main checkouts, add
+`--tree worktree` (see `--help`); `scripts/dev-stack.sh up` already does this for the tree
+it starts, so the manual form is for a tree you are not running.
 
 **How services load the config**
 

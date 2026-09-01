@@ -45,6 +45,15 @@ What the script is doing on your behalf, and why each piece matters:
   `--tree worktree` means `~/suite/<repo>/.claude/worktrees/<name>` for all four repos at
   once. The worktree name defaults to this checkout's own directory name (`DEV_WORKTREE`
   overrides; `SUITE_SIBLING_ROOT` overrides the root).
+- **It syncs `configs/datasets.yaml` into the tree it is about to run**, by invoking that
+  tree's own `sync-datasets.sh` (`--tree worktree` when applicable), before the preflight
+  reads the file and before any port is freed. This is the one piece of the local setup that
+  nothing else maintains: the sibling copies are gitignored in *every* tree, so `git pull`
+  never updates one and no diff detects one going stale. A tree keeps whatever the last sync
+  left while its code moves on — db-api aborts outright on a copy too old to carry `exposed:`
+  flags, and a milder drift just serves stale dataset metadata. It runs only when db-api or
+  results-api is among the selected services, and a failure joins the preflight gate, so
+  nothing is started or stopped.
 - **It stops whatever holds the port *if the holder is this suite's*, not what it started.**
   Resolution is from the listening socket (`ss`) to the process group, so it takes over
   servers started by hand in the tmux windows of step 6 — which is what the takeover
@@ -311,6 +320,20 @@ when the script is invoked from `<repo>/.claude/worktrees/<name>` — so it work
 worktree and from a normal clone, and it prints the resolved root as its first line. A sibling
 that is not cloned here prints `SKIP:` and the run still exits 0; only an unresolvable sibling
 root, or a directory whose `pyproject.toml` does not name that repo, is an `ERROR:` and exit 1.
+
+By default it writes into the sibling **main checkouts**. `--tree worktree` writes into
+`<sibling>/.claude/worktrees/<name>` instead, taking the name from `--worktree`, else
+`$DEV_WORKTREE`, else the invoking checkout's own directory name:
+
+```bash
+~/suite/genetics-results-suite/.claude/worktrees/my-branch/scripts/sync-datasets.sh --tree worktree
+```
+
+The source is always the invoking script's **own** tree, so run the sync from the tree whose
+services will read it — this repo's `datasets.yaml` differs substantially between branches, and
+a config from the wrong branch is exactly what the flag exists to prevent. `dev-stack.sh up`
+does this for you (below), so the manual form is only needed for a tree you are not starting.
+
 If your layout does not put the siblings next to the main checkout, point it at them:
 
 ```bash
@@ -515,7 +538,9 @@ Two things look testable here and are not. Do not record either as verified from
 | Symptom | Cause |
 |---|---|
 | results-api or db-api aborts complaining about `configs/datasets.yaml` | the file is gitignored in both service repos — sync or copy it (step 3) |
+| db-api exits with `no exposed views in datasets.yaml` | that tree's copy predates the `exposed:` flags. The copy is gitignored, so `git pull` never updates it and nothing diffs it — re-sync the tree (step 3), or just use `dev-stack.sh up`, which syncs before it starts anything |
 | `sync-datasets.sh` prints `SKIP: <repo> is not checked out on this machine` | that sibling really is not cloned here; clone it or ignore the line (it exits 0) |
+| `sync-datasets.sh --tree worktree` prints `SKIP: <repo> has no '<name>' worktree` | the sibling is cloned but has no worktree of that name; create it, or pass the right `--worktree`. `dev-stack.sh up` then fails its own `tree not found` preflight on the same directory |
 | `sync-datasets.sh` exits 1 with `ERROR: cannot resolve where the sibling repos live` | it was run from a directory that is not a git checkout; set `SUITE_SIBLING_ROOT` to the directory holding the sibling repos |
 | `sync-datasets.sh` exits 1 with `ERROR: <path> exists but is not the <repo> repo` | a directory of the right name sits where the sibling should be but its `pyproject.toml` does not name that repo — usually a stale or partial clone, or `SUITE_SIBLING_ROOT` pointing one level off. The script refuses to copy into it; point it at the real checkout |
 | `sync-datasets.sh` exits 1 with `ERROR: SUITE_SIBLING_ROOT is set to '<path>', which is not a directory` | the override is a typo, a file, or a path that does not exist; unset it to fall back to the git-common-dir resolution |

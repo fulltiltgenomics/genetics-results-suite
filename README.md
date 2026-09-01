@@ -420,7 +420,11 @@ does not work is assuming a `git add` from here refreshed anything.
 
 `sync-datasets.sh` used to be a fourth case, but it now resolves the sibling repos from
 the git common dir, so it works from a worktree and fails loudly when it cannot resolve
-them — `check-worktree-paths.sh` no longer reports it.
+them — `check-worktree-paths.sh` no longer reports it. It writes into the siblings' **main
+checkouts** by default and into `<sibling>/.claude/worktrees/<name>` under `--tree worktree`,
+always copying its own tree's canonical file; `scripts/dev-stack.sh up` invokes it for the
+tree it is starting, which is the only thing that keeps those gitignored copies from going
+stale.
 
 To **run** the suite from a worktree rather than build from it, use `scripts/dev-stack.sh`
 (below): the local dev servers otherwise keep serving the main checkouts on `master` while

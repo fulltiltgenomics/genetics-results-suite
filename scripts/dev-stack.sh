@@ -12,6 +12,11 @@
 #   scripts/dev-stack.sh status                what is listening, from which tree, on which dataset
 #   scripts/dev-stack.sh logs chat-api         tail -f a service log
 #
+# `up` first syncs the canonical configs/datasets.yaml into the tree it is about to run,
+# by invoking that tree's own scripts/sync-datasets.sh (see there for why the source tree
+# has to match). The sibling copies are gitignored in every tree, so nothing else — not
+# `git pull`, not a diff — would ever notice one going stale.
+#
 # A port is only freed when its holder belongs to this suite — its working directory is
 # inside the service's repo (either tree) or its command line names that repo. Anything
 # else is printed (pid, cwd, argv) and left alone: :3000 and :8080 are the two most
@@ -403,6 +408,27 @@ check_node_modules() {
     [ -d "$1/node_modules" ] || { echo "ERROR: no node_modules in $1 — run 'npm install' there first" >&2; return 1; }
 }
 
+# db-api and results-api read configs/datasets.yaml from the tree they run in, and that copy
+# is gitignored in both siblings and in every tree of them — so `git pull` never updates it and
+# nothing diffs it. A tree therefore keeps whatever the last sync left, indefinitely, while its
+# code moves on: db-api aborts at startup on a config too old to carry `exposed:` flags, and a
+# subtler drift just serves yesterday's dataset metadata. Sync before the preflight reads it,
+# from the SUITE tree matching --tree, so the config a service gets is the one its own branch
+# ships. Failure joins the preflight's gate: nothing is started or stopped.
+sync_datasets_yaml() {
+    case " ${SERVICES[*]} " in *" db-api "* | *" results-api "*) ;; *) return 0 ;; esac
+    local suite; suite="$(repo_dir genetics-results-suite)"
+    local sync="$suite/scripts/sync-datasets.sh"
+    [ -x "$sync" ] || { echo "ERROR: no sync-datasets.sh in the $TREE suite tree ($sync)" >&2; return 1; }
+    # --tree is passed only for a worktree run: the main-checkout default needs no flag, so a
+    # main tree whose script predates these options still works rather than exiting 2
+    if [ "$TREE" = worktree ]; then
+        "$sync" --tree worktree --worktree "$WORKTREE_NAME" | sed 's/^/  /'
+    else
+        "$sync" | sed 's/^/  /'
+    fi
+}
+
 # Checked for EVERY selected service before the first port is freed. Discovering a missing
 # .venv while starting service four means the first three have already taken their ports
 # from the running stack and the last two are still serving the old tree — half on each,
@@ -416,7 +442,9 @@ preflight_svc() {
     esac
     case "$svc" in
         db-api | results-api)
-            [ -f "$dir/configs/datasets.yaml" ] || echo "  WARN: $dir/configs/datasets.yaml missing — run scripts/sync-datasets.sh" >&2 ;;
+            # sync_datasets_yaml has already run, so a file still missing here means it
+            # SKIPped this tree — the message above says which, and why
+            [ -f "$dir/configs/datasets.yaml" ] || echo "  WARN: $dir/configs/datasets.yaml missing — the sync above did not reach this tree; db-api and results-api abort at startup without it" >&2 ;;
         chat-api)
             if [ -f "$MCP_ENV_FILE" ]; then
                 # sourced AFTER SANDBOX_TOKEN_SIGNING_KEY/INTERNAL_API_SECRET are already
@@ -535,6 +563,7 @@ cmd_up() {
     echo
 
     local svc port failed=0
+    sync_datasets_yaml || failed=1
     for svc in "${ALL_SERVICES[@]}"; do
         case " ${SERVICES[*]} " in *" $svc "*) ;; *) continue ;; esac
         preflight_svc "$svc" || failed=1

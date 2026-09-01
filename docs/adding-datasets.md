@@ -102,8 +102,13 @@ In `genetics-results-suite/configs/datasets.yaml`:
 Then propagate to the sibling repos:
 
 ```bash
-./scripts/sync-datasets.sh
+./scripts/sync-datasets.sh                 # their main checkouts
+./scripts/sync-datasets.sh --tree worktree # their worktrees of this tree's name
 ```
+
+Run it from the tree whose branch the edit belongs to — the source is always the invoking
+script's own tree. `scripts/dev-stack.sh up` runs the sync for the tree it starts, so a
+local stack picks the change up on the next `up` either way.
 
 ## 5. Add the data paths (`genetics-results-api`)
 
