@@ -25,10 +25,11 @@ httpx==0.28.1
 # argument so far has been answerable that way — a lazy re-export, a TYPE_CHECKING guard, a
 # subclass — and no pin proposed by one exists here, dormant or otherwise.
 #
-# genetics-mcp-server's tests/test_sdk_import_closure.py asserts the SDK imports with EVERY
-# distribution outside this file's dependency closure unavailable, so a MODULE-LEVEL offender
-# fails there rather than arriving here as a proposed line. It structurally cannot see a
-# DEFERRED import: that runs at call time, so `import genetics_mcp_server.sdk` proves nothing
-# about it and the failure surfaces in the deployed image instead. Nothing here can be made
-# to catch that, so what has to answer for a deferred import is that the code holding it is
-# not in the image at all — keep it out rather than pinning for it.
+# genetics-mcp-server's tests/test_sdk_import_closure.py asserts the SDK imports with every
+# module outside this file's surface unavailable, so a MODULE-LEVEL offender fails there rather
+# than arriving here as a proposed line. That check runs the import, so it sees only what the
+# import runs; a DEFERRED import executes at call time and is invisible to it. The same test
+# and build-checks.py therefore also PARSE every shipped file and refuse an import of anything
+# outside that surface at any nesting depth, which is what a deferred import fails. Failing the
+# build is the point, not the pin it seems to ask for: the answer to a deferred import is that
+# the code holding it should not be in the image at all.

@@ -7,6 +7,7 @@ builder's own filesystem. Each docstring names the control it stands for, so a c
 starts failing can be judged rather than deleted.
 """
 
+import ast
 import os
 import re
 import subprocess
@@ -172,6 +173,85 @@ def _sdk_surface():
     missing = sorted(set(SDK_ALLOWLIST) - survivors)
     assert not extra, f"outside the allow-list: {extra}"
     assert not missing, f"allow-listed but absent: {missing}"
+
+
+def _image_top_level_names():
+    """Every top-level name importable from the venv, read off the install itself.
+
+    Reading the directory rather than resolving requirements is what makes this answer for the
+    IMAGE: pip has already evaluated the environment markers and the transitive pins by the time
+    this runs, so nothing here has to re-derive `python_version < "3.11"` or guess what a
+    developer's machine happens to have. It reads the venv the final stage copies, so anything
+    an earlier step deleted — pip and setuptools among them — is absent from the answer too.
+    """
+    names = set()
+    for entry in os.listdir(SITE):
+        if entry.endswith((".dist-info", ".egg-info", ".pth", ".egg-link")):
+            continue
+        base = entry if os.path.isdir(os.path.join(SITE, entry)) else entry.split(".")[0]
+        if base.isidentifier():
+            names.add(base)
+    return names
+
+
+def _imported_top_level_names(source):
+    """Top-level module names an import in `source` names, at ANY nesting depth.
+
+    Relative imports resolve inside the package the prune already governs, so they are not this
+    check's question.
+    """
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found += [(alias.name.split(".")[0], node.lineno) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            found.append(((node.module or "").split(".")[0], node.lineno))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name in ("__import__", "import_module") and node.args:
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    found.append((arg.value.split(".")[0], node.lineno))
+    return [(n, line) for n, line in found if n]
+
+
+@check("no shipped source names a module the image does not install")
+def _shipped_imports():
+    """The half of the closure that `import genetics_mcp_server.sdk` cannot reach.
+
+    That import runs module bodies and nothing else, so a function-level `from ddgs import
+    DDGS` in a shipped file survives every runtime check and raises ModuleNotFoundError at CALL
+    time instead — inside a container with no shell and no package manager, where it is
+    expensive rather than cheap. Deferring an import is also the house style for adding
+    capability to these files, so the blind spot sits exactly where new code lands. Reading the
+    source with `ast` is what closes it.
+
+    `if TYPE_CHECKING` and `try/except ImportError` guards count too, for the reason the
+    assertion below states; `typing.get_type_hints()` would resolve a TYPE_CHECKING import for
+    real regardless of the guard.
+    """
+    allowed = set(sys.stdlib_module_names) | _image_top_level_names()
+    # the alias is shipped source too; its presence is the alias check's assertion, not this one
+    alias = os.path.join(SITE, "genetics.py")
+    sources = [alias] if os.path.exists(alias) else []
+    for root, _dirs, files in os.walk(os.path.join(SITE, "genetics_mcp_server")):
+        if "__pycache__" in root.split(os.sep):
+            continue
+        sources += [os.path.join(root, f) for f in files if f.endswith(".py")]
+    offenders = []
+    for path in sorted(sources):
+        with open(path) as fh:
+            for name, line in _imported_top_level_names(fh.read()):
+                if name not in allowed:
+                    offenders.append(f"{os.path.relpath(path, SITE)}:{line} imports {name!r}")
+    assert not offenders, (
+        "the image ships these files, and they name modules it does not install. A "
+        "`TYPE_CHECKING` or `try/except ImportError` guard does not exempt an import — the "
+        "name is in the shipped source whether or not that line runs. Cut the code out of "
+        "the SDK's import closure, or add the pin to requirements.txt deliberately:\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 @check("no placeholders in the staged schema and stubs")
