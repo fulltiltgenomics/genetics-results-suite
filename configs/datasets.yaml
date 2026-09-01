@@ -1278,7 +1278,9 @@ tables:
       reason: >-
         single-source reference table (Ensembl/GENCODE): the view appends the constant
         'hgnc' AS resource, and the base table carries no `dataset` column for a CASE to
-        switch on
+        switch on. `resource` is the routing/grouping tag callers filter on, not a claim
+        about where the rows came from, so the constant does not contradict the sourcing
+        named above
     dataset_cross_check:
       excluded_reason: >-
         gene coordinate reference, has no `dataset` column

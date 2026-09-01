@@ -16,9 +16,10 @@ SDK reaches every method of the `ToolExecutor` the image ships, through
 `GeneticsClient._executor` — the underscore is curation, not enforcement — and httpx is
 present regardless, since it is the SDK's own transport. A script can call anything the egress
 policy permits, whether or not the SDK wraps it. "Absent from the SDK" never means
-"unreachable"; section 3 is what makes a target unreachable, with one exception it does not
-cover (link-local 169.254.169.254, where the defence is the node pool's `GKE_METADATA` mode
-and the missing Workload Identity binding).
+"unreachable"; section 3 is what makes a target unreachable, with one target it is not written
+to cover (link-local 169.254.169.254 — measured unreachable from the pod, but the defence that
+carries the weight there is the node pool's `GKE_METADATA` mode and the missing Workload
+Identity binding, not the policy).
 
 **What the image contains is a different question from what a script can reach, and only the
 first one is settled here.** `genetics_mcp_server/tools/orchestration.py` — the `run_analysis`
@@ -615,11 +616,19 @@ API with the caller's session); and **mcp-server**, which closes the obvious lau
 a script that could reach mcp-server would inherit its permission through
 `allow-ingress-db-api` and its whole registered tool surface.
 
-**169.254.169.254 is not covered by this policy and must not be assumed to be.** Link-local
-traffic is exactly the class already proven exempt from NetworkPolicy on this dataplane in the
-ingress direction, and whether Dataplane V2 enforces *egress* to a link-local address has not
-been tested here. What is load-bearing is the node pool: `GKE_METADATA` mode plus no Workload
-Identity binding for the KSA, so even a policy-engine gap yields no usable GCP credential.
+**169.254.169.254 is not something this policy is written to cover, and the policy is not what
+makes it safe.** Link-local traffic is exactly the class already proven exempt from
+NetworkPolicy on this dataplane in the *ingress* direction, so the egress direction had to be
+measured rather than inferred — and it was, from inside the running sandbox pod on
+daly-staging on 2026-08-31: the metadata root path and the token path (both with
+`Metadata-Flavor: Google`), the link-local kubelet source `169.254.4.6` on 80 and 10250, and
+the node addresses `10.0.0.9` on 80 and 10250 and `10.0.0.8` on 10250 all timed out at a 6 s
+timeout. Read that as a fact about the substrate it was taken on — Cilium v1.18 under
+`datapathProvider: ADVANCED_DATAPATH` — which is also what would invalidate it; re-measure
+after a dataplane change instead of citing this paragraph. What is load-bearing is still the
+node pool: `GKE_METADATA` mode plus no Workload Identity binding for the KSA (the sandbox KSA
+carries no `iam.gke.io/gcp-service-account` annotation), so even a policy-engine gap yields no
+usable GCP credential.
 
 ### On DNS: none, and `hostAliases` instead
 
@@ -944,5 +953,7 @@ driven on a thread with a deadline**, so a regression fails the check rather tha
 harness.
 
 What is **not** covered: the live connection test from the mcp-server pod to the sandbox
-Service, and whether Dataplane V2 enforces egress to a link-local address on this cluster. Both
-need a deployed cluster and neither has been run.
+Service. It needs a deployed cluster and has not been run. The other member of that pair —
+whether this dataplane enforces egress to a link-local address — no longer belongs here: it was
+measured from inside the running pod and the drop held, with the substrate that makes the
+result reproducible recorded beside it in section 3.

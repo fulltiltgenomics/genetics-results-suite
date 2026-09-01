@@ -33,11 +33,18 @@ found=0
 # Use it only where the named doc demonstrably does not describe the excluded files, and
 # say which property of them makes that true — "generated" is not by itself such a
 # property, since a doc can and does reason about generated content.
+#
+# It is matched case-insensitively, and only it: an exclusion is a list of file
+# extensions, and `logo.PNG` is the same kind of file as `logo.png`, so a
+# case-sensitive exclusion warns about the one and not the other. The inclusion
+# pattern stays case-sensitive, so a file reaches this filter only after matching
+# its rule literally — widening the exclusion can therefore only drop warnings the
+# rule's own doc concern does not cover.
 check() {
     matched=$(printf '%s\n' "$staged" | grep -E "$1")
     [ -n "$matched" ] || return 0
     if [ -n "${4:-}" ]; then
-        matched=$(printf '%s\n' "$matched" | grep -vE "$4")
+        matched=$(printf '%s\n' "$matched" | grep -viE "$4")
         [ -n "$matched" ] || return 0
     fi
     if ! hit "$2"; then
