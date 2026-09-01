@@ -33,8 +33,12 @@ spec:
         env:
         - name: PROJECT_ID
           value: "${GCP_PROJECT}"
+        # the dataset this deployment serves, substituted from the same BQ_DATASET the monitor
+        # CronJob gets, so the API and the report that checks it cannot diverge. deploy.sh
+        # refuses an empty value: db-api defaults this to genetics_results, so an empty render
+        # would serve production data from a staging cluster without failing anywhere.
         - name: DATASET_ID
-          value: "genetics_results"
+          value: "${BQ_DATASET}"
         - name: MAX_ROWS
           value: "100000"
         - name: DATASETS_CONFIG_PATH

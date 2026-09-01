@@ -89,7 +89,8 @@ DEPLOY_ENV=daly-staging ./scripts/deploy.sh
 ```
 
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
-resource names carry `resource_suffix`. The setup below describes a single deployment; see
+resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
+tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor). The setup below describes a single deployment; see
 [docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
 against deploying across environments, and the staging bring-up runbook.
 

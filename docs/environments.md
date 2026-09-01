@@ -97,6 +97,12 @@ construction.
 
 Two shared-project hazards are handled explicitly:
 
+- **The dataset the cluster serves.** `bq_dataset` in the tfvars (default `genetics_results`)
+  is rendered by `deploy.sh` into db-api's `DATASET_ID` *and* the monitor CronJob's
+  `BQ_DATASET`, so both readers of a deployment see the same data. daly-staging sets
+  `genetics_results_dev`, the rehearsal clone (`docs/bigquery-dev-dataset.md`). `deploy.sh`
+  refuses an empty value rather than defaulting it: db-api's own fallback is
+  `genetics_results`, so an empty render serves production data from staging without failing.
 - **Log sinks.** `terraform/logging.tf` filters both sinks on
   `resource.labels.cluster_name`. Without it a namespace/container-only filter routes both
   clusters into the same BigQuery dataset, mixing staging traffic into the production chat and
@@ -245,8 +251,14 @@ kubectl config current-context   # ..._us-central1-a_finngenie-staging
 - [ ] **Sign in** at `https://staging.genegenie.broadinstitute.org` with an allow-listed
       account and confirm Google is the only IdP offered.
 - [ ] **Check isolation.** Confirm production is untouched: its monitor should not report
-      staging containers, and `genetics_chat_logs` should contain no staging rows.
-      `SELECT DISTINCT resource.labels.cluster_name FROM genetics_chat_logs.*` after a day.
+      staging containers. Staging's own sinks (`enable_log_sinks = true`) write only
+      `genetics_{api,chat}_logs_staging`, because both filters pin
+      `resource.labels.cluster_name` to `finngenie-staging`. **The reverse does not hold yet**:
+      production's live sinks were created before that pin and still carry none, so staging
+      rows do reach `genetics_chat_logs`/`genetics_api_logs` — measured 2026-09-01, 553 and 519
+      rows. `SELECT DISTINCT resource.labels.cluster_name FROM genetics_chat_logs.*` shows it.
+      The fix is a production `terraform apply`, which re-creates production's sinks with the
+      pin the config already has; nothing in staging can close it.
 - [ ] **Snapshot policy.** `deploy.sh` attaches `chat-data-daily-snapshot-staging` to the
       chat-data disk on the *second* run — the PVC is unbound on the first. It prints
       `PVC chat-data not yet bound, skipping…` when that happens; re-running is the fix.
@@ -291,6 +303,4 @@ gcloud container clusters get-credentials finngenie         --zone us-central1-a
   Developer portal. `APPLE_SERVICES_ID` is empty, so `deploy.sh` renders a Google-only realm.
 - **The `brainzzz` MCP OAuth client** — its redirect URIs point at production. Leave
   `BRAINZZZ_CLIENT_SECRET` unset so the staging realm has no such client.
-- **Log sinks** — `enable_log_sinks = false`. Set it true to get `genetics_api_logs_staging`
-  and `genetics_chat_logs_staging`.
 - **rag-service** — `ENABLE_RAG=false`, as in production.
