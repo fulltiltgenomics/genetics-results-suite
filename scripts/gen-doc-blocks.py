@@ -429,7 +429,8 @@ LAYOUT = {
                                        "checkout",
     "scripts/test-manifest-render.py": "offline: render every manifest deploy.sh renders, and "
                                        "hold each envsubst whitelist to the files it governs",
-    "scripts/test-network-policies.py": "offline: the namespace's policies as a whole",
+    "scripts/test-network-policies.py": "the namespace's policies as a whole: offline by "
+                                        "default, plus an opt-in diff against a live cluster",
     "scripts/test-sandbox-docs.py": "offline: the generated schema docs and SDK stubs",
     "scripts/test-supervisor.py": "offline: the sandbox supervisor, in process or against a "
                                   "container",

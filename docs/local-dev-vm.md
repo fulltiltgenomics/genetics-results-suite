@@ -500,9 +500,10 @@ Two things look testable here and are not. Do not record either as verified from
   "pass" while nothing is enforcing them. Worse, the production cluster runs `ADVANCED_DATAPATH`
   (Dataplane V2), and the finding that kubelet probes bypass NetworkPolicy is specific to that
   datapath — a local Calico or Cilium answer would be a different implementation's behaviour and
-  would mislead rather than inform. The offline parser `scripts/test-network-policies.py` checks
-  the policy *files*; live enforcement is deferred to the deploy window under
-  `genetics-results-suite-4h6.26`.
+  would mislead rather than inform. `scripts/test-network-policies.py` checks the policy
+  *files*, and its `LIVE_POLICY_CHECK=true` mode checks that a cluster is enforcing those same
+  objects — neither answers whether the *datapath* enforces them, which is deferred to the
+  deploy window.
 - **gVisor isolation.** `runsc` is not installed on this VM, so the sandbox image runs under
   plain `runc` locally. Building the image and seeing the ten checks in
   `sandbox/build-checks.py` pass is genuine

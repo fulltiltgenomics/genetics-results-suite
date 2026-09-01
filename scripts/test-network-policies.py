@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
-"""Offline assertions about k8s/network-policies/*.yaml.
+"""Assertions about k8s/network-policies/*.yaml, and optionally about what a cluster enforces.
 
-Every check is decided from the repo alone, with ONE exception: the SANDBOX_ENABLED check
-reads the live cluster (`kubectl get`, over every kind in WORKLOAD_KINDS) to find out whether
-a sandbox is actually
-running, because ENABLE_SANDBOX only says whether this deploy will APPLY one — see
-live_sandbox_deployment(). With no kubectl on PATH the harness still runs end to end and says
-so; a kubectl that is present but cannot answer is refused rather than guessed at.
+Every check is decided from the repo alone, with two exceptions, both of which reach a
+cluster through kubectl_get() and nothing else:
+
+  * the SANDBOX_ENABLED check, to find out whether a sandbox is actually running, because
+    ENABLE_SANDBOX only says whether this deploy will APPLY one — see
+    live_sandbox_deployment();
+  * the drift check, which is opt-in on LIVE_POLICY_CHECK and compares the policies the
+    cluster is enforcing against the committed union — see live_policies().
+
+With no kubectl on PATH the harness still runs end to end and says so; a kubectl that is
+present but cannot answer is refused rather than guessed at.
+
+Validating the committed union says nothing about what is enforced: measured 2026-09-01, a
+checkout that passes every offline check below had six policies in production whose ingress
+rule carried no `from:` at all. That is why the drift check exists and why it reports every
+policy rather than aborting on the first — the drift spanned six objects.
 
 The property under test is the one that cannot be read off a single file: NetworkPolicies
 in a namespace are ADDITIVE (union), so "mcp-server cannot reach the sandbox" is a
@@ -15,6 +25,7 @@ undoes it silently. Each check below names the control it defends in
 docs/code-execution-security.md so a failure can be judged rather than deleted.
 
 Run: python3 scripts/test-network-policies.py
+Live drift check: LIVE_POLICY_CHECK=true [KUBE_CONTEXT=...] python3 scripts/test-network-policies.py
 Exit 0 = pass, 1 = a control is broken, 2 = the harness could not run.
 
 Not covered here, because it needs a live cluster — see the deploy-window verification
@@ -23,6 +34,7 @@ whether ClusterIP->pod translation happens before egress policy evaluation, and 
 connection attempt from the mcp-server pod to the sandbox Service.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -393,14 +405,47 @@ def sandbox_policies():
     return [p for p in POLICIES if may_select(p["spec"].get("podSelector"), sandbox_pod_labels())]
 
 
+def kubectl_argv():
+    """kubectl and the flags every cluster query in this file shares, or None if it is absent.
+
+    KUBE_CONTEXT selects the cluster for the whole harness rather than for one probe, so the
+    drift check and the sandbox probe can never end up answering about different clusters in
+    the same run. Unset means kubectl's own current context, which is what deploy.sh relies on.
+    """
+    exe = shutil.which("kubectl")
+    if exe is None:
+        return None
+    context = os.environ.get("KUBE_CONTEXT", "").strip()
+    return [exe, *(["--context", context] if context else [])]
+
+
+def kubectl_get(args):
+    """One `kubectl get`, or None if it could not answer (no context, unreachable, forbidden).
+
+    The verb is prepended here rather than passed in: this harness is a check, and a check
+    that could reach `apply`, `patch` or `delete` through a caller's argument list is one
+    typo away from mutating the cluster it was asked to inspect.
+    """
+    argv = kubectl_argv()
+    if argv is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [*argv, "get", *args], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc if proc.returncode == 0 else None
+
+
 def live_sandbox_deployment():
     """Is a sandbox workload live in the cluster right now?
 
-    The ONLY thing in this file that touches a cluster, and it exists because one relaxation
-    cannot be decided from the repo: ENABLE_SANDBOX=false means "this run will not apply the
-    sandbox", and deploy.sh SKIPS sandbox.yaml when the gate is off rather than deleting it, so
-    the env var says nothing about whether a sandbox is serving. Every other check here stays
-    offline.
+    The only cluster call in the DEFAULT invocation (live_policies() is the other one, and it
+    runs only when asked). It exists because one relaxation cannot be decided from the repo:
+    ENABLE_SANDBOX=false means "this run will not apply the sandbox", and deploy.sh SKIPS
+    sandbox.yaml when the gate is off rather than deleting it, so the env var says nothing
+    about whether a sandbox is serving. Every other check here stays offline.
 
     Returns one of:
       "live"       a workload whose name mentions the sandbox exists in the namespace
@@ -422,30 +467,170 @@ def live_sandbox_deployment():
     Name matching is a substring, not equality, for the same reason _is_sandbox_doc() unions its
     tells: a live workload called `sandbox-runner` or `code-exec-sandbox` must count.
     """
-    exe = shutil.which("kubectl")
-    if exe is None:
+    if kubectl_argv() is None:
         return "no-kubectl"
     namespace = os.environ.get("NAMESPACE", "genetics")
-
-    def _run(args):
-        try:
-            proc = subprocess.run(
-                [exe, *args], capture_output=True, text=True, timeout=30
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return proc if proc.returncode == 0 else None
-
-    if _run(["get", "namespace", namespace, "-o", "name"]) is None:
+    if kubectl_get(["namespace", namespace, "-o", "name"]) is None:
         return "unknown"
     resources = ",".join(sorted(k.lower() + "s" for k in WORKLOAD_KINDS))
-    proc = _run(["get", resources, "-n", namespace, "-o", "name"])
+    proc = kubectl_get([resources, "-n", namespace, "-o", "name"])
     if proc is None:
         return "unknown"
     for line in proc.stdout.splitlines():
         if "sandbox" in line.rsplit("/", 1)[-1].lower():
             return "live"
     return "absent"
+
+
+def live_policies():
+    """The NetworkPolicies the cluster is actually enforcing, as {name: spec}.
+
+    Returns (state, policies) with the same three-way answer live_sandbox_deployment() gives,
+    for the same reason: a cluster that cannot be read must never be reported as a cluster
+    with nothing wrong.
+
+      ("live", {...})     the namespace was read and its policies returned
+      ("no-kubectl", {})  kubectl is not on PATH
+      ("unknown", {})     kubectl is there and the query failed, or the namespace is absent
+
+    The namespace is verified first because `kubectl get networkpolicies -n nope` exits 0 with
+    empty stdout, which would otherwise read as "the cluster enforces nothing" — a state this
+    check is supposed to SHOUT about — rather than as "wrong namespace".
+    """
+    if kubectl_argv() is None:
+        return "no-kubectl", {}
+    namespace = os.environ.get("NAMESPACE", "genetics")
+    if kubectl_get(["namespace", namespace, "-o", "name"]) is None:
+        return "unknown", {}
+    proc = kubectl_get(["networkpolicies", "-n", namespace, "-o", "json"])
+    if proc is None:
+        return "unknown", {}
+    try:
+        items = json.loads(proc.stdout).get("items") or []
+    except (ValueError, AttributeError):
+        return "unknown", {}
+    live = {}
+    for item in items:
+        name = ((item.get("metadata") or {}).get("name"))
+        spec = item.get("spec")
+        if name and isinstance(spec, dict):
+            live[name] = spec
+    return "live", live
+
+
+def _canon(obj):
+    return json.dumps(obj, sort_keys=True)
+
+
+def _canon_peer(peer):
+    """One from:/to: entry, canonical. Rendered short where it is the ordinary podSelector."""
+    labels = (peer.get("podSelector") or {}).get("matchLabels") if isinstance(peer, dict) else None
+    if isinstance(peer, dict) and set(peer) == {"podSelector"} and labels and set(labels) == {"app"}:
+        return f"app={labels['app']}"
+    return _canon(peer)
+
+
+def _canon_ports(rule):
+    """A rule's ports as sortable "8080/TCP" strings.
+
+    protocol is defaulted on BOTH sides: the API server writes `protocol: TCP` into every port
+    it stores while the manifests mostly omit it, so comparing them raw makes every policy look
+    drifted and hides the ones that really are.
+    """
+    out = []
+    for p in rule.get("ports") or []:
+        if not isinstance(p, dict):
+            out.append(_canon(p))
+            continue
+        port = p.get("port")
+        span = f"{port}-{p['endPort']}" if p.get("endPort") is not None else f"{port}"
+        out.append(f"{span}/{p.get('protocol', 'TCP')}")
+    return sorted(out)
+
+
+def _direction(spec, direction):
+    """What one direction of a policy admits, in the terms drift is judged on."""
+    key = "from" if direction == "ingress" else "to"
+    rules = [r for r in (spec.get(direction) or []) if isinstance(r, dict)]
+    return {
+        "rules": len(rules),
+        # a rule with no from:/to: admits EVERY source, and this is the headline number:
+        # measured 2026-09-01, six production policies had drifted into exactly that shape
+        "open": sum(1 for r in rules if r.get(key) is None),
+        "peers": sorted(_canon_peer(pe) for r in rules for pe in (r.get(key) or [])),
+        "ports": sorted(pt for r in rules for pt in _canon_ports(r)),
+        "rule_set": sorted(
+            "{} {} on {}".format(
+                key,
+                "ANY (no peer list)" if r.get(key) is None
+                else sorted(_canon_peer(pe) for pe in r[key]),
+                _canon_ports(r) or "ANY PORT",
+            )
+            for r in rules
+        ),
+    }
+
+
+def policy_shape(spec):
+    """Everything about a policy that decides what traffic it admits, and nothing else.
+
+    Rules are compared as a SET: NetworkPolicy rules are additive and unordered, so a reorder
+    is not drift and reporting it as such would train people to ignore this check.
+    """
+    return {
+        "podSelector": _canon(spec.get("podSelector") or {}),
+        "policyTypes": sorted(policy_types(spec)),
+        "ingress": _direction(spec, "ingress"),
+        "egress": _direction(spec, "egress"),
+    }
+
+
+def describe_drift(committed, live):
+    """Every way `live` differs from `committed`, as one line each. Never stops at the first."""
+    lines = []
+    if committed["podSelector"] != live["podSelector"]:
+        lines.append(
+            f"    podSelector: committed {committed['podSelector']}, live {live['podSelector']} "
+            "(a changed selector applies the whole policy to different pods)"
+        )
+    if committed["policyTypes"] != live["policyTypes"]:
+        lines.append(
+            f"    policyTypes: committed {committed['policyTypes']}, live {live['policyTypes']} "
+            "(a direction the cluster does not list is not restricted at all)"
+        )
+    for direction in ("ingress", "egress"):
+        c, v = committed[direction], live[direction]
+        if c == v:
+            continue
+        key = "from" if direction == "ingress" else "to"
+        if c["open"] != v["open"]:
+            lines.append(
+                f"    {direction} rules with no '{key}:': committed {c['open']}, live {v['open']}"
+                + (" — the live rule admits EVERY source" if v["open"] > c["open"] else "")
+            )
+        if c["rules"] != v["rules"]:
+            lines.append(
+                f"    {direction} rule count: committed {c['rules']}, live {v['rules']}"
+            )
+        if c["peers"] != v["peers"]:
+            lines.append(
+                f"    {direction} peer selectors: committed {c['peers']}, live {v['peers']}"
+            )
+        if c["ports"] != v["ports"]:
+            lines.append(
+                f"    {direction} ports: committed {c['ports']}, live {v['ports']}"
+            )
+        if c["rule_set"] != v["rule_set"] and all(
+            c[k] == v[k] for k in ("open", "rules", "peers", "ports")
+        ):
+            # every other dimension agrees, so the peers and ports have been REGROUPED across
+            # rules — which changes what is admitted, since a rule pairs its peers with its own
+            # ports. Only reported here because the lines above would otherwise repeat it
+            lines.append(
+                f"    {direction} rules pair peers with ports differently: committed "
+                f"{c['rule_set']}, live {v['rule_set']}"
+            )
+    return lines
 
 
 def _is_on(value):
@@ -924,11 +1109,82 @@ def _():
             )
 
 
+# set by the drift check when it was asked to run and could not; read by the epilogue
+live_check_blocked = None
+
+
+@check("live cluster: the enforced NetworkPolicies are the committed ones")
+def _():
+    """Opt-in on LIVE_POLICY_CHECK, because the default caller has no cluster.
+
+    deploy.sh and build.sh run this harness on hosts that may hold no kubeconfig at all, so
+    the absence of the variable must be a silent pass — a check that fails where it cannot
+    apply is a check that gets removed from deploy.sh.
+
+    The committed side is POLICIES, which is every NetworkPolicy in k8s/network-policies/ and
+    not one file: `kubectl apply -f network-policies/` applies the whole directory
+    unconditionally, so policies.yaml's 10 documents, keycloak-policies.yaml's, the
+    per-service *-from-monitor policies in monitor-policy.yaml and sandbox-policy.yaml's two
+    are all equally committed. Comparing against a subset would report a correct cluster as
+    drifted, which is how this check would come to be disbelieved.
+    """
+    global live_check_blocked
+    if not _is_on(os.environ.get("LIVE_POLICY_CHECK", "")):
+        return
+    state, live = live_policies()
+    if state != "live":
+        live_check_blocked = (
+            "kubectl is not on PATH" if state == "no-kubectl"
+            else "kubectl could not read the namespace's NetworkPolicies (no context, "
+                 "unreachable cluster, no permission, or the namespace does not exist)"
+        )
+        return
+    committed = {p["metadata"]["name"]: p for p in POLICIES}
+    report = []
+    for name in sorted(set(committed) | set(live)):
+        if name not in live:
+            report.append(
+                f"  {name} ({committed[name]['__file__']}) is committed but the cluster is not "
+                "enforcing it"
+            )
+        elif name not in committed:
+            report.append(
+                f"  {name} is enforced by the cluster but no file in k8s/network-policies/ "
+                "declares it; it survives no `kubectl apply` of that directory and nobody can "
+                "review what it admits"
+            )
+        else:
+            lines = describe_drift(
+                policy_shape(committed[name]["spec"]), policy_shape(live[name])
+            )
+            if lines:
+                report.append(f"  {name} ({committed[name]['__file__']}):")
+                report.extend(lines)
+    assert not report, (
+        "the cluster is not enforcing the committed policies. Every policy is listed, not "
+        "just the first — drift is normally spread across objects:\n" + "\n".join(report)
+    )
+
+
 for note in notes:
     print(f"note: {note}")
 if failures:
     print(f"\n{len(failures)} network-policy check(s) FAILED:\n")
     for f in failures:
         print(f"  - {f}\n")
+    if live_check_blocked:
+        print(f"note: the live drift check was requested but could not run: {live_check_blocked}")
+    # 1, not 2, even though the live check could not run: a control IS broken, and downgrading
+    # that to "harness could not run" would turn deploy.sh's abort into "applying unverified"
     sys.exit(1)
+if live_check_blocked:
+    # nothing offline is broken, so the only outcome left is the one the live check was asked
+    # for and did not produce — and an unread cluster must never be reported as a clean one
+    print(
+        f"harness cannot run: LIVE_POLICY_CHECK is set but {live_check_blocked}. The committed "
+        "policies are not evidence about what a cluster enforces. Give this harness a working "
+        "kubectl context (KUBE_CONTEXT selects one) and re-run.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 print(f"network-policy checks passed ({len(POLICIES)} policies across {POLICY_DIR})")

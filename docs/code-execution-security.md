@@ -604,6 +604,22 @@ NetworkPolicies are additive and "mcp-server cannot reach the sandbox" is a prop
 them together, and it fails on any rule that selects the sandbox and admits mcp-server —
 including a from-less rule, which admits everything.
 
+**Committed is not enforced, and the offline guard cannot tell the difference.** Everything
+above is a statement about files. A cluster enforces whatever was last applied to it, and
+nothing in a deploy reconciles the two afterwards, so a policy edited by hand or an apply that
+never happened leaves the guard green over an unenforced control. Measured 2026-09-01 on a
+checkout passing every offline check: the daly-production cluster had six policies —
+`allow-ingress-auth-gateway`, `-bff`, `-chat-backend`, `-frontend`, `-mcp-server`,
+`-results-api` — whose single ingress rule carried no `from:` at all and therefore admitted
+every source in the namespace, and it was not enforcing `allow-ingress-sandbox` or
+`sandbox-egress` at all. `LIVE_POLICY_CHECK=true` turns on the diff that sees this: it reads
+the namespace's NetworkPolicies with `kubectl get` (read-only, and `KUBE_CONTEXT` picks the
+cluster) and compares each against its committed counterpart on podSelector, policyTypes,
+ingress and egress rule count, **rules carrying no `from:`/`to:` at all**, peer selectors and
+ports. It is off by default because `deploy.sh` and `build.sh` run this harness on hosts that
+may hold no kubeconfig; when it is on and the cluster cannot be read, the harness exits 2
+rather than reporting a clean run.
+
 Read the egress table as a statement about **data**, not endpoints: a third-party annotation
 source is unreachable because no rule can match it, whereas **anything results-api serves is
 reachable**, including artefacts it merely relays from GCS, since the sandbox's token is not
@@ -938,7 +954,8 @@ Stated plainly. This design contains code execution; it does not make it safe in
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
-| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract | the manifests; one live cluster call for the sandbox probe |
+| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
+| `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated tables in this document still match the code | nothing |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
