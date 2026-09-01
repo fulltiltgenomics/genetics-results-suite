@@ -27,15 +27,23 @@ SITE = os.path.join(VENV, "lib/python3.11/site-packages")
 PKG = os.path.join(SITE, "genetics_mcp_server")
 
 # The import closure of `genetics_mcp_server.sdk`, as module paths relative to the
-# genetics_mcp_server package root. Two modules were cut from it on the OTHER side of the
-# wire, because the closure is what decides what this image ships: config/settings.py named
-# every internal env var of the suite, and tools/definitions.py is a 2600-line catalogue of
-# every tool the suite exposes. Both were pulled in eagerly by tools.executor and are now
-# behind `if TYPE_CHECKING` and a module `__getattr__`; genetics-mcp-server's
-# tests/test_sdk_import_closure.py pins the closure so it cannot regrow silently.
+# genetics_mcp_server package root. The closure is what decides what this image ships, so a
+# module that discloses more than an SDK caller needs — the suite's internal env vars, its
+# whole tool catalogue, the run_analysis gateway with the identity it refuses to dispatch
+# without and its artifact authorization model — is CUT OUT OF THE CLOSURE on the other side
+# of the wire rather than shipped here and trusted. The cut is `if TYPE_CHECKING` plus a
+# module `__getattr__` where a shipped module imported it eagerly, and a subclass where a
+# shipped module was the base; either way nothing that ships names what was cut.
+# genetics-mcp-server's tests/test_sdk_import_closure.py pins the closure so it cannot
+# regrow silently.
 #
 # tools/executor.py remains: sdk/client.py imports ToolExecutor directly and every SDK method
 # delegates to it, so its SQL-building methods ship, guarded by tools/sql_safety.py.
+#
+# The absences are asserted, not merely arranged. build-checks.py compares the surviving set
+# against this one in BOTH directions, so a module that starts shipping fails the build; and
+# because nothing in the closure names the cut modules, one re-merged into it fails the same
+# build's `import genetics_mcp_server.sdk` instead.
 SDK_ALLOWLIST = frozenset(
     {
         "__init__.py",

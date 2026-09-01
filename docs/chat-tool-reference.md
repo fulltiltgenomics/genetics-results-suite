@@ -459,9 +459,10 @@ ways; the rest run with subagents off:
   neither on `rag`, which has neither; the `products` imperative follows `list_datasets`
   **or** `run_analysis`, because two routes read the field and not one — the SDK's
   `genetics.datasets(resource=..., include_stats=True)` reaches the same executor method
-  `list_datasets` calls (chain verified: this repo's `sandbox/stubs/genetics.pyi:397` →
-  mcp-server `sdk/client.py:897-903` → `tools/executor.py:2491-2503` → results-api
-  `/v1/datasets`, whose per-dataset payload carries `products`), so gating on
+  `list_datasets` calls (chain verified: this repo's `sandbox/stubs/genetics.pyi`'s
+  `datasets` → mcp-server `sdk/client.py`'s `GeneticsClient.datasets` →
+  `tools/executor.py`'s `list_datasets` → results-api `/v1/datasets`, whose per-dataset
+  payload carries `products`), so gating on
   `list_datasets` alone was dropping actionable guidance from the sandboxed arm. A surface
   that reaches the catalog only through the SDK is additionally told which call that is.
   The products-vs-`data_type` knowledge stays on every surface. `_SUMMARIZE_PARAM_TOOLS`
@@ -876,7 +877,7 @@ does not currently match, verified against source on 2026-08-18.
    says the sandbox "is not deployed, so every `run_analysis` call fails at the transport
    today" — yet its definition is still in every chat turn's tool list, with a description
    telling the model to prefer it over chaining data-access tools. The failure is handled
-   (`executor.py:5816-5849` reports `SandboxTokenUnavailable` with `retryable: False` rather
+   (`tools/orchestration.py`'s `run_analysis` reports `SandboxTokenUnavailable` with `retryable: False` rather
    than letting the model loop), but the tool is *offered*. This got sharper once the browser
    made `code` selectable: on a cluster with no deployed sandbox a user can now pick a profile
    whose **primary** tool cannot work at all, and the other six are search tools.
@@ -890,9 +891,9 @@ does not currently match, verified against source on 2026-08-18.
    `ENABLE_PHENOTYPE_REPORT`. See section 4a.
 7. **`read_artifact` is advertised even though its description says it cannot do the thing
    the adjacent tool produces.** It reads `SANDBOX_ARTIFACTS_DIR`, which must resolve under a
-   hardcoded `/scratch/` prefix (`executor.py:392-395`, `5566-5578`) that chat-backend has no
+   hardcoded `/scratch/` prefix (`tools/orchestration.py`, `read_artifact`) that chat-backend has no
    volume for, so in chat-backend it always answers "Code execution is not enabled here"
-   (`executor.py:5662`).
+   (`tools/orchestration.py`).
 8. **Most documented bounds are still prose, and the schema now says which ones are not.**
    Until genetics-results-suite-4h6.70 no schema carried `minimum`/`maximum`/`pattern` at
    all. 12 parameters now do (`timeout_s` 1–120 among them), each mirroring code that

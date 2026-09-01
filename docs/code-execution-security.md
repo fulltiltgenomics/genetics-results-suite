@@ -12,12 +12,22 @@ hand. Everything else should explain a choice, not restate a value the code alre
 `k8s/network-policies/sandbox-policy.yaml` are where the mechanisms live.
 
 **The SDK's public function list is not a containment boundary.** A script that imports the
-SDK reaches the full `ToolExecutor` through `GeneticsClient._executor` — the underscore is
-curation, not enforcement — and httpx is present regardless, since it is the SDK's own
-transport. A script can call anything the egress policy permits, whether or not the SDK wraps
-it. "Absent from the SDK" never means "unreachable"; section 3 is what makes a target
-unreachable, with one exception it does not cover (link-local 169.254.169.254, where the
-defence is the node pool's `GKE_METADATA` mode and the missing Workload Identity binding).
+SDK reaches every method of the `ToolExecutor` the image ships, through
+`GeneticsClient._executor` — the underscore is curation, not enforcement — and httpx is
+present regardless, since it is the SDK's own transport. A script can call anything the egress
+policy permits, whether or not the SDK wraps it. "Absent from the SDK" never means
+"unreachable"; section 3 is what makes a target unreachable, with one exception it does not
+cover (link-local 169.254.169.254, where the defence is the node pool's `GKE_METADATA` mode
+and the missing Workload Identity binding).
+
+**What the image contains is a different question from what a script can reach, and only the
+first one is settled here.** `genetics_mcp_server/tools/orchestration.py` — the `run_analysis`
+gateway, the identity it refuses to dispatch without, and the artifact authorization model —
+subclasses the executor rather than being part of it, so it is outside the import closure and
+the build deletes it. The reason is the one `prune_venv.py` gives for the whole prune: that
+code cannot run in the image (it imports modules the image does not have) and the SDK
+does not need it, so shipping its source only hands a prompt-injected script something to
+read. It is **not** an access control and must not be cited as one.
 
 **Threat actors, in the order they matter:**
 
