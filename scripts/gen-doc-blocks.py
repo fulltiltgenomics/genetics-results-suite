@@ -278,8 +278,10 @@ def block_image():
         "",
         "`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are "
         "deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a "
-        "fixed path here would recreate the cross-execution shared directory removing the "
-        "pod-level `/tmp` was meant to prevent.",
+        "fixed path here would be exactly the cross-execution shared directory the redirect "
+        "exists to prevent. The redirect keeps the supervisor's own path out of the "
+        "runtime-supplied `/tmp` and `/dev/shm`; it does not remove those, and what keeps them "
+        "from carrying bytes between tenants is the wipe before every fork (section 2).",
         "",
         "`prune_venv.py` reduces the installed distribution to the SDK's import closure, and "
         "`build-checks.py` asserts the surviving set is exactly:",
