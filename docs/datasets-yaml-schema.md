@@ -406,11 +406,10 @@ resource definitions, and dataset entries all use consistent identifiers.
 **"Dev environment" here means running the service processes on a workstation, and
 nothing more.** There is no dev namespace and no dev BigQuery dataset for either
 production brand: `phewas-development` *is* production, and so is the daly `finngenie`
-cluster. The suite runs three clusters in two projects (`docs/environments.md`) — the
-`daly-staging` cluster is a rehearsal ground for **manifests and images only**, since its
-db-api points at the same `daly-finngenie:genetics_results` that daly production reads
-(`genetics-results-suite-zaw`). A locally-run service therefore reads a **live**
-`genetics_results` unless it is pointed elsewhere. To rehearse a BigQuery schema or view
+cluster. The suite runs three clusters in two projects (`docs/environments.md`); the
+`daly-staging` cluster serves whatever its `bq_dataset` tfvar names — `genetics_results_dev`,
+the rehearsal clone — while both `daly` and `finngen` production serve `genetics_results`.
+A locally-run service reads a **live** `genetics_results` unless it is pointed elsewhere. To rehearse a BigQuery schema or view
 change against a throwaway dataset instead, see `docs/bigquery-dev-dataset.md` and
 `scripts/bq-dev-dataset.sh`.
 

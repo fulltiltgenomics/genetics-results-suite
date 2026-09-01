@@ -275,7 +275,37 @@ if [ "${ENABLE_SANDBOX}" = "true" ]; then
   fi
 fi
 export LOG_SOURCE="${LOG_SOURCE:-${DOMAIN%%.*}_prod}"
-export BQ_DATASET="${BQ_DATASET:-genetics_results}"
+# THE BIGQUERY DATASET THIS DEPLOYMENT SERVES — one value for both readers, db-api's
+# DATASET_ID and the monitor CronJob's BQ_DATASET. Two deployments share the daly-finngenie
+# project, so "which data does this cluster serve" is a per-deployment fact and cannot stay a
+# literal in the manifest; a monitor reporting on a dataset the API does not serve is the same
+# class of split-brain the K8S_CLUSTER pin exists to prevent.
+# Read from the resolved tfvars rather than a terraform output, for the reason ENABLE_SANDBOX
+# is: with SKIP_TERRAFORM=true an output answers from whatever the last apply left in state.
+# EMPTY IS REFUSED, NEVER DEFAULTED. db-api falls back to genetics_results on its own
+# (genetics-results-db api/main.py), so an empty value here does not fail — it silently serves
+# PRODUCTION data from whichever cluster this is, which is the one outcome this switch exists
+# to prevent. Absent is different from empty: an unset key means the default.
+if [ -n "${BQ_DATASET+x}" ] && [ -z "${BQ_DATASET}" ]; then
+  echo "ERROR: BQ_DATASET is set to the empty string in the environment."
+  echo "       That would render an empty DATASET_ID and db-api would serve genetics_results —"
+  echo "       production data — from this cluster. Unset it to take the default, or name a dataset."
+  exit 1
+fi
+if [ -z "${BQ_DATASET:-}" ]; then
+  if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*bq_dataset[[:space:]]*=' "${TFVARS}"; then
+    BQ_DATASET="$(tfvar bq_dataset)"
+    if [ -z "${BQ_DATASET}" ]; then
+      echo "ERROR: bq_dataset is present but empty in ${TFVARS##*/}."
+      echo "       Delete the line to serve genetics_results, or name the dataset this deployment serves."
+      exit 1
+    fi
+  else
+    BQ_DATASET="genetics_results"
+  fi
+fi
+export BQ_DATASET
+echo "BigQuery dataset: ${BQ_DATASET}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
