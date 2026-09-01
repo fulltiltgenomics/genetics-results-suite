@@ -19,15 +19,16 @@ polars==1.40.1
 matplotlib==3.10.9
 httpx==0.28.1
 #
-# TWICE NOW a module-level import in genetics-mcp-server has tried to add a line here, and
-# twice the answer was to cut the module out of the SDK's import closure instead:
-#   - python-dotenv, pinned here purely because config.settings did `from dotenv import
-#     load_dotenv` at module level and was in the closure. l41 took config.settings out.
-#   - pydantic, which tools/definitions.py started importing for `Field`; definitions.py was
-#     in the closure only because tools/__init__.py re-exported it eagerly. 6bv made that
-#     re-export lazy. Adding pydantic here instead would have widened a security-boundary
-#     image to satisfy an import the boundary never needed.
-# Neither pin exists, dormant or otherwise. genetics-mcp-server's
-# tests/test_sdk_import_closure.py now asserts the SDK imports with EVERY distribution
-# outside this file's dependency closure unavailable, so a third offender fails there rather
-# than arriving here as a proposed line.
+# When a genetics-mcp-server import argues for a line here, the answer is to cut the module
+# that does the importing out of the SDK's import closure, not to add the pin: adding it
+# widens a security-boundary image to satisfy an import the boundary never needed. Every such
+# argument so far has been answerable that way — a lazy re-export, a TYPE_CHECKING guard, a
+# subclass — and no pin proposed by one exists here, dormant or otherwise.
+#
+# genetics-mcp-server's tests/test_sdk_import_closure.py asserts the SDK imports with EVERY
+# distribution outside this file's dependency closure unavailable, so a MODULE-LEVEL offender
+# fails there rather than arriving here as a proposed line. It structurally cannot see a
+# DEFERRED import: that runs at call time, so `import genetics_mcp_server.sdk` proves nothing
+# about it and the failure surfaces in the deployed image instead. Nothing here can be made
+# to catch that, so what has to answer for a deferred import is that the code holding it is
+# not in the image at all — keep it out rather than pinning for it.
