@@ -373,6 +373,19 @@ advertised uids, the absence of placeholder schema docs, and `GCE_METADATA_HOST`
 literal address. That last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
+One of those checks reads source rather than running it, and the reason is the same one that
+makes the prune worth doing at all. `import genetics_mcp_server.sdk` executes module bodies and
+nothing else, so an import deferred into a method — the house style for adding capability to
+these files — survives every runtime check here and in genetics-mcp-server, and then raises
+`ModuleNotFoundError` at call time inside a container with no shell and no package manager.
+A `from ddgs import DDGS` shipped that way. So the build also parses every file the image
+carries and refuses an import of any top-level name outside the standard library and what pip
+actually installed into the venv, at any nesting depth, `if TYPE_CHECKING` included — the file
+names the module either way, which is the disclosure the prune exists to prevent. Reading the
+resolved install rather than the requirement graph is what makes this answer for the image:
+pip has already evaluated the environment markers by then, so nothing has to re-derive which
+side of Python 3.11 a conditional requirement falls on.
+
 <!-- BEGIN GENERATED: image -->
 
 The final stage's environment, all of it:
