@@ -197,3 +197,66 @@ twins:
       bodies that nothing above says anything about - so they are not sites here and that
       duplication is counted like any other.
     merge: open
+
+  - id: schema-example-table-shape
+    sites:
+      - genetics-results-suite:configs/datasets-schema-example.yaml
+      - genetics-results-suite:configs/datasets.yaml
+    symbols:
+      genetics-results-suite:configs/datasets-schema-example.yaml:
+        - credible_sets_v
+        - gene_burden_results_v
+        - colocalization_v
+      genetics-results-suite:configs/datasets.yaml:
+        - asm_qtl_v
+        - coloc_credsets_v
+        - colocalization_v
+        - credible_sets_v
+        - exome_variant_results_v
+        - gene_annotations_v
+        - gene_burden_results_v
+        - hla_associations_v
+        - mpra_v
+        - open_chromatin_v
+        - peak_to_gene_v
+        - variant_effect_v
+    property: >-
+      The example's table entries carry the same per-table key set as the canonical
+      registry's - exposed, resource_derivation, description, columns, column_types,
+      examples, categorical_columns. A key added to or retired from the canonical shape has
+      to appear in, or leave, the example, or the example stops showing what an entry in
+      configs/datasets.yaml looks like.
+    reason: >-
+      AN EXAMPLE OF A SCHEMA NECESSARILY SHARES THAT SCHEMA'S SHAPE, and this group is
+      larger BY CONSTRUCTION than it was: it did not exist while the example was missing
+      `exposed` and `resource_derivation`, which is to say it appeared the moment the
+      example started demonstrating the two mechanisms it exists to document. An example
+      outside this group would be the defect, not the clean state - it was the defect, and
+      it was just fixed. The only way to break the key set without touching the canonical
+      file is to drop `categorical_columns` from every example entry, which is deleting a
+      documented field to move a number, and is refused.
+      NARROWED ON PURPOSE, and the narrowness is the entry. These same two files carry ten
+      further undeclared enumeration groups - the dataset and resource name lists the
+      example copies out of the canonical registry by hand, which are ordinary duplication
+      and are not this - and nine of them would be netted out along with this one by an
+      entry naming the files alone. The example side does that work: three table names, one
+      short of the four the detector needs to see a set at all, and no other group's example
+      names fall inside them.
+      THE CANONICAL SIDE CARRIES A TWELFTH NAME, gene_annotations_v, the fourth table the
+      example shows, whose example key set is today one key short of the canonical one -
+      `categorical_columns` - and so falls just outside this group. It is also what keeps this list from being a third copy
+      of a pinned one: exactly the eleven that share the shape is, name for name, the
+      LINTED_VIEWS literal in genetics-results-db's tests/test_derived_view_lists.py, and
+      writing the eleven out here raised a new cross-repo group on the first run. That is
+      worth knowing beyond this entry - `symbols` was built for function names, three or
+      four to a site, but on an ENUMERATIONS group the names ARE the keys holding a literal,
+      so pinning them restates a list, and the list can be one somebody else has pinned.
+      It rots loudly rather than quietly either way: a canonical table that acquires this
+      shape, or an example table that joins it, puts a name outside these lists and the
+      group comes back undeclared.
+      NOT `never`, and it should not be read as one. The untaken option is to GENERATE the
+      example from configs/datasets.yaml - a few entries cut down and re-commented - which
+      would remove this duplication rather than declare it, and would put the example on the
+      same footing as the sync-datasets.sh copies that need no entry here at all. Nobody has
+      done it, and nothing prevents it.
+    merge: open

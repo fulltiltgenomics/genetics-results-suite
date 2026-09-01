@@ -873,15 +873,20 @@ does not currently match, verified against source on 2026-08-18.
    edited by this document; they are tracked by `genetics-results-suite-5r2`.
 5. **`run_analysis` is advertised with no feature flag.** Unlike `launch_subagents`,
    `get_phenotype_report` and `get_credible_sets_stats`, none of the three code-execution
-   tools appears in `settings.disabled_tools`. `genetics-mcp-server/docs/project-spec.md:230`
-   says the sandbox "is not deployed, so every `run_analysis` call fails at the transport
-   today" — yet its definition is still in every chat turn's tool list, with a description
-   telling the model to prefer it over chaining data-access tools. The failure is handled
+   tools appears in `settings.disabled_tools`, so its definition is in every chat turn's tool
+   list on every deployment, with a description telling the model to prefer it over chaining
+   data-access tools. **Whether the sandbox exists is a per-deployment fact and must be read
+   off the cluster, not off a doc** — `kubectl -n genetics get deploy sandbox`; a sandbox has
+   been serving on daly-staging since 2026-08-26. A copy of this section's original wording
+   quoting `genetics-mcp-server/docs/project-spec.md` for "the sandbox is not deployed" was
+   already false when it was written, which is why the fact is stated as a command here rather
+   than as a value. Deployment is also a separate question from `run_analysis` succeeding
+   end-to-end, which additionally needs chat-backend's reach to the pod and the sandbox token
+   path. Where the sandbox is absent the failure is handled
    (`tools/orchestration.py`'s `run_analysis` reports `SandboxTokenUnavailable` with `retryable: False` rather
-   than letting the model loop), but the tool is *offered*. This got sharper once the browser
-   made `code` selectable: on a cluster with no deployed sandbox a user can now pick a profile
-   whose **primary** tool cannot work at all, and the other six are search tools.
-   `genetics-results-suite-4h6.56` (P1, open) owns it.
+   than letting the model loop), but the tool is still *offered* — which got sharper once the
+   browser made `code` selectable, since a user can then pick a profile whose **primary** tool
+   cannot work at all and whose remaining tools are all search.
 6. ~~**`launch_subagents` is advertised to the model in the base system prompt but is
    disabled in the deployed configuration.**~~ FIXED by `genetics-results-suite-4h6.69`.
    The prompt's "Subagent Orchestration" section and its "the variant_list_analysis skill"

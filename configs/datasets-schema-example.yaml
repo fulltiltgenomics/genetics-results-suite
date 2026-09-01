@@ -36,10 +36,30 @@ resources:
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
-# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS
+# _TABLE_EXAMPLES, _CATEGORICAL_COLUMNS, and by the sandbox schema-doc generator.
+#
+# Three per-table decisions live here, and the entries below exist to show them:
+#   exposed             an entry DOCUMENTS a view; `exposed: true` is the separate
+#                       decision that makes it reachable through db-api's /query,
+#                       /schema and /tables/{name}/sample. Omitting the key leaves the
+#                       view documented everywhere and reachable nowhere, so the
+#                       allow-list cannot widen by someone adding a table here.
+#   resource_derivation how the view's `resource` column is produced -- required on
+#                       every entry, one of view_case / load_time / none, with a
+#                       `reason` unless it is view_case.
+#   dataset_cross_check present only to opt a view out of the registry <-> live
+#                       `dataset` cross-check, and then it must say why.
+# The four entries below cover all three modes; see docs/datasets-yaml-schema.md.
 # ---------------------------------------------------------------------------
 tables:
+  # mode: load_time -- the CASE runs in the loader, so the view SQL must contain none
   credible_sets_v:
+    exposed: true
+    resource_derivation:
+      mode: load_time
+      reason: >-
+        `resource` is a clustering key on the base table and a view-derived column prunes
+        nothing, so the loader applies the rules and stores the value
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
       Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
@@ -85,7 +105,13 @@ tables:
       data_type: "resource"   # values depend on resource
       most_severe: null       # flat list
 
+  # mode: view_case -- the default shape: a generated CASE lives in the view SQL and
+  # `generate_resource_sql.py lint` compares it against dataset_to_resource_rules.
+  # No `reason` is required for this mode.
   gene_burden_results_v:
+    exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Gene-level burden test results from exome sequencing studies
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome).
@@ -125,6 +151,9 @@ tables:
       annotation: "resource"
 
   colocalization_v:
+    exposed: true
+    resource_derivation:
+      mode: view_case
     description: >-
       Colocalization results between pairs of traits/datasets.
       Each row represents a colocalization test between two signals,
@@ -161,6 +190,46 @@ tables:
       resource2: null
       dataset1: "resource1"
       dataset2: "resource2"
+
+  # mode: none + an opt-out from the dataset cross-check. The two are different
+  # predicates and neither implies the other: mode says where `resource` comes from,
+  # the exclusion says whether the view contributes `dataset` values to the registry
+  # cross-check. A reference view happens to need both.
+  gene_annotations_v:
+    exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table: the view appends a constant `resource`, and the
+        base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        gene coordinate reference, has no `dataset` column
+    description: >-
+      Whole-universe gene annotations, one row per gene: symbol, coordinates and gene
+      groups. A reference table, joined against the result views.
+
+    columns:
+      symbol: "HGNC gene symbol"
+      chr: "Chromosome number, INT64 here and in the result views so joins need no cast"
+      gene_start: "Gene start coordinate on GRCh38"
+      gene_end: "Gene end coordinate on GRCh38"
+      resource: "Constant for this view — see resource_derivation above"
+
+    column_types:
+      symbol: STRING
+      chr: INT64
+      gene_start: INT64
+      gene_end: INT64
+      resource: STRING
+
+    examples:
+      - description: "Coordinates for a gene, to drive a window query against a result view"
+        sql: >-
+          SELECT symbol, chr, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end
+          FROM gene_annotations_v
+          WHERE symbol = 'PCSK9'
+          GROUP BY symbol, chr
 
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
@@ -303,7 +372,9 @@ profiles:
         metadata_harmonizer: null
 
   daly:
-    # same dataset definitions as finngen but with different GCS bucket paths
+    # A profile is a per-deployment registry, not a second copy of the data: the entries
+    # repeat the finngen ones and differ only in the GCS bucket paths. One is shown; the
+    # rest of this profile is the same shape.
     datasets:
       finngen_gwas:
         resource: finngen
@@ -315,42 +386,6 @@ profiles:
         publication_date: "2025-09-12"
         data_type: gwas
         trait_type: binary
-        # only difference from finngen profile: GCS bucket path
+        # only difference from the finngen profile: GCS bucket path
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_pheno_202509.json"
         metadata_harmonizer: finngen_r13
-
-      finngen_mvp_ukbb:
-        resource: finngen_mvp_ukbb
-        version: "R13"
-        description: >-
-          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
-          Multi-way meta analysis using standard inverse variance weighting.
-        author: "FinnGen Consortium"
-        publication_date: "2025-12-19"
-        data_type: gwas
-        trait_type: mixed
-        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      bipex_gene_based:
-        resource: bipex
-        version: "v2"
-        description: >-
-          BipEx2 gene-level burden test results. Rare variant association testing
-          for bipolar disorder from exome sequencing.
-        author: "Bipolar Exomes"
-        publication_date: "NA"
-        data_type: gene_based
-        trait_type: binary
-        n_samples: 232536
-        n_cases: 64435
-        n_controls: 168101
-        metadata_file: null
-        metadata_harmonizer: null
-        phenotypes:
-          - phenotype_code: "BIP"
-            phenotype_string: "Bipolar disorder"
-            n_cases: 64435
-            n_controls: 168101
-            n_samples: 232536
