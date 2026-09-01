@@ -159,11 +159,19 @@ check '^scripts/test-network-policies\.py$' \
 # The generated tables in code-execution-security.md (the limits, the pod's security context,
 # the allow-lists, the image environment, the reserved error types) are NOT this script's
 # problem: `gen-doc-blocks.py --check` derives them from the code and build-all.sh runs it
-# fatally. This rule covers the PROSE, which no generator can check — a change to the
+# fatally. These rules cover the PROSE, which no generator can check — a change to the
 # generator itself falsifies both halves at once, which is why it is named here too.
-check '^scripts/gen-security-doc\.py$' \
+#
+# Two checks, not one alternation, because the CLAUDE.md row owns two docs and satisfying one
+# does not satisfy the other: code-execution-security.md says which blocks in IT are generated
+# and from what, while project-spec.md carries the build-step entry for the generator itself.
+check '^scripts/gen-doc-blocks\.py$' \
     '^docs/code-execution-security\.md$' \
     'scripts/gen-doc-blocks.py -> docs/code-execution-security.md (which blocks are generated, what each derives from, and the build gate that runs it)'
+
+check '^scripts/gen-doc-blocks\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/gen-doc-blocks.py -> docs/project-spec.md (which blocks are generated, what each derives from, and the build gate that runs it)'
 
 # Only the *static branding assets* under keycloak/themes/ are exempt, and NOT because they are
 # cosmetic — theme.properties records that css/genetics.css hides the username/password form, so a

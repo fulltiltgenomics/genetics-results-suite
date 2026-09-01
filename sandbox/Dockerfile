@@ -114,7 +114,9 @@ ENV GCE_METADATA_HOST=169.254.169.254 \
     SANDBOX_SHARED_GID=65532
 # Deliberately NOT set here because they are per-execution: TMPDIR, HOME, MPLCONFIGDIR,
 # XDG_CACHE_HOME and PYTHONPYCACHEPREFIX all point inside /scratch/<execution-id>. A fixed path
-# would create exactly the cross-execution shared directory removing /tmp was meant to prevent.
+# would create exactly the cross-execution shared directory this redirect exists to prevent. It
+# is not what removes /tmp: gVisor supplies /tmp and /dev/shm whatever the pod declares, and
+# the supervisor wipes both before every fork.
 
 USER 65532:65532
 WORKDIR /genetics

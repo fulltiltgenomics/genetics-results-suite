@@ -762,6 +762,19 @@ tolerate the gVisor taint — so quoting it for this node overstates. And the ru
 memory is charged to the **pod's cgroup**, so it eats the 3Gi limit rather than the node
 headroom: it constrains the `RLIMIT_AS` budget, not this table.
 
+**What the sentry also charges there is the sandbox's temp space, and on-call needs the
+signature.** gVisor supplies `/tmp` and `/dev/shm` inside the container whatever the pod spec
+declares — the manifest mounts neither and cannot take them away — they are **one shared pool**
+whose advertised size is derived from the node's RAM and binds nothing, and the only real bound
+on them is the pod's memory limit. Past it the **host** OOM killer takes the runsc sentry rather
+than a process in the container's cgroup, so the container's `lastState.terminated` reads
+`reason: Error`, `exitCode: 128` with a `SandboxChanged` event and **never** `OOMKilled`: an
+alert or a grep keyed on `OOMKilled` will miss the incident entirely. The supervisor wipes both
+paths before every fork, which is what keeps them from carrying bytes between users; it is not
+what bounds them. `/scratch` is the odd one out and is separately accounted — see
+`docs/code-execution-security.md` → "What actually bounds the sandbox's storage", which also
+records that whether `/scratch` survives a container restart is **unmeasured**.
+
 `workload_metadata_config { mode = "GKE_METADATA" }` on the pool is unconditional, which
 requires the cluster's `workload_identity_config` to be unconditional too — without it the pool
 is rejected **at apply, not at plan**. The pool's own service account is dedicated and minimal
@@ -835,7 +848,8 @@ encryption, the manifest, the child, the fork server, the scheduler, the per-exe
 token delivery, the audit forwarder, HTTP, startup.
 
 What it does per execution: admit or refuse the request against the queue bounds and the
-duplicate-id rule; create `/scratch/<execution-id>`; write the token file; ask the **fork
+duplicate-id rule; empty the runtime-supplied `/tmp` and `/dev/shm`, which no volume declares
+and nothing else sweeps; create `/scratch/<execution-id>`; write the token file; ask the **fork
 server** for a child; watch the wall clock, the process group and the `/scratch` quotas; drain
 three pipes; reap; kill whatever the child left behind; trim, seal and list the artifacts; and
 answer. Every bound it enforces is a constant at the top of the file with its reasoning beside

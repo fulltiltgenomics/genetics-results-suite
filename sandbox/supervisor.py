@@ -331,6 +331,15 @@ ENV_AUDIT_FD = "GENETICS_SDK_AUDIT_FD"
 DEFAULT_SCRATCH_ROOT = "/scratch"
 NSSWITCH_PATH = "/etc/nsswitch.conf"
 
+# The temp directories the RUNTIME supplies, which the pod spec does not declare and cannot
+# take away. Under gVisor the sentry provides both as mode-1777 tmpfs whatever the manifest
+# says, they share one memory pool, and they persist for the pod's life — measured on staging,
+# where a marker written by one execution was read by the next and an `import matplotlib` from
+# a bare `kubectl exec` left a directory behind. This is a gVisor property and not a Kubernetes
+# one: under runc with this pod's read-only rootfs neither path is writable at all. See
+# wipe_shared_tmpfs.
+SHARED_TMPFS_PATHS = ("/tmp", "/dev/shm")
+
 # The one /scratch entry the startup wipe keeps. After a restart the supervisor holds no
 # record of which executions were live or retained, so nothing else under the root belongs to
 # one, and a crash mid-execution must not leave a readable directory behind.
@@ -389,6 +398,33 @@ ORPHAN_REAP_MAX_ROUNDS = 64
 PAYLOAD_MAX_BYTES = MAX_CODE_BYTES + 64 * 1024
 
 LOG = logging.getLogger("sandbox.supervisor")
+
+
+def emit_alertable(text):
+    """One line on STDERR, flushed, for a condition that must reach the on-call alerting path.
+
+    Not through LOG, and the reason is specific to how this pod's lines are graded. main()
+    configures logging onto STDOUT; GKE's agent assigns an entry's severity from the STREAM, so
+    everything the supervisor logs — LOG.error included — is filed INFO. scripts/monitor/alerter.py
+    fetches `severity >= "WARNING"`, so such an entry is never even retrieved, and its fallback
+    that recovers an app-level level from the message text cannot rescue it either: those patterns
+    are anchored at the start of the line and the log format begins with %(asctime)s. Stderr is
+    graded ERROR and is fetched.
+
+    Use it only where the *policy* is to continue: a condition nobody can see is not one the
+    supervisor may reason about as observed. Formatted like main()'s basicConfig so one log
+    stream carrying two writers still parses as one, and written straight to the stream for the
+    same two reasons _audit_emit is — the logging configuration belongs to main(), and a piped
+    stream is block-buffered under both `docker logs` and the kubelet.
+    """
+    now = time.time()
+    stamp = "%s,%03d" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                         int((now % 1) * 1000))
+    try:
+        sys.stderr.write(f"{stamp} ERROR [supervisor] {text}\n")
+        sys.stderr.flush()
+    except Exception:
+        LOG.exception("could not write an alertable record to stderr")
 
 
 # --------------------------------------------------------------------------------------
@@ -733,6 +769,108 @@ def wipe_unrecognised_scratch(root, keep=()):
             LOG.error("could not wipe stale /scratch entry %s: %s", name, exc)
     if removed:
         LOG.warning("wiped %d unrecognised /scratch entries at startup", len(removed))
+    return removed
+
+
+def wipe_shared_tmpfs(paths=None, protect=None):
+    """Empty the runtime-supplied temp directories. Runs before every fork.
+
+    docs/code-execution-security.md section 2 states the obligation and the measurement behind
+    it. Nothing in the supervisor's own path writes there, and the reason is narrower than the
+    per-execution TMPDIR/HOME/MPLCONFIGDIR: those are set for the CHILD (ExecutionDirs.child_env)
+    and say nothing about this process, whose own TMPDIR is unset, so tempfile.gettempdir()
+    here answers /tmp. What actually holds is that THE SUPERVISOR USES NO tempfile: every path
+    it writes it names, and they are all under the scratch root. Add one NamedTemporaryFile and
+    it lands in /tmp and is destroyed by the next fork. So anything found here was put there by
+    code that named the path explicitly, which is exactly the traffic that must not reach the
+    next tenant.
+
+    BEFORE the fork, not after the execution: it is the only placement that also covers what a
+    crash, a `kubectl exec` or a restart left behind, and it is what lets the guarantee be
+    stated over the child ("an execution never observes an earlier one's temp files") rather
+    than over the supervisor's diligence on the completion path.
+
+    Entries only, never the directories themselves: the mount points belong to the runtime, and
+    unlinking a name leaves every open descriptor and mapping already made against it valid, so
+    this cannot pull the floor out from under a live process. That is also its limit on
+    /dev/shm — a survivor holding a segment mapped keeps its BYTES charged after its name is
+    gone, and bytes come back only when the last reference drops. /dev/shm needs no other
+    special handling and gets none: POSIX shared memory and semaphores (multiprocessing's locks,
+    numpy/torch worker buffers) are created fresh by each execution and are only ever re-opened
+    BY NAME across executions, which is the channel being closed. Exempting it would leave the
+    larger half of one shared pool unswept.
+
+    Nothing here can race an execution: concurrency is 1 and this runs on the thread holding the
+    slot. It can race a SURVIVOR from an earlier execution — a setsid() escapee the sweep
+    missed — which keeps its open files and may write new ones straight back. Closing that is
+    the fork server's subreaper sweep, not this; do not read the wipe as bounding a live
+    resident.
+
+    A failure is reported and the execution proceeds. Refusing would hand any user who can leave
+    one undeletable entry a permanent outage for everyone behind them on a single-replica pod,
+    and it would not close anything: the entries predate this request, and not running the
+    script does not remove them. Continuing is only defensible while somebody LEARNS, so the
+    survivor line goes to stderr through emit_alertable rather than LOG — see there for why a
+    LOG.error from this process is invisible to scripts/monitor/alerter.py. The failure is close
+    to unreachable today for the reason that also makes the wipe possible at all — both paths
+    are sticky (mode 1777, owned by the sentry's root: the argument is /dev/shm's as much as
+    /tmp's, and neither is special here), so only the owner of an entry may unlink it, and
+    supervisor and child share uid 65532. GIVING THE CHILD ITS OWN UID WOULD SILENTLY MAKE THIS
+    WIPE PARTIAL: the image advertises SANDBOX_CHILD_UID=65533 and nothing can switch to it
+    today, and this is one of the things that would have to change with it.
+
+    `protect` is the caller's scratch root, and it is a refusal rather than an exclusion: a root
+    holding the supervisor's own live and retained executions is skipped whole. It cannot fire
+    in the pod — but NOT because /scratch is a mount of its own, which is neither necessary nor
+    sufficient: this compares resolved paths, so a bind mount at /tmp/x would still be under
+    /tmp. What makes it true is that the root resolves to /scratch, outside both paths:
+    _scratch_root() returns DEFAULT_SCRATCH_ROOT unless SANDBOX_SCRATCH_ROOT is set, and
+    k8s/deployments/sandbox.yaml never sets it — the override is test-only and logs a warning
+    saying so.
+    """
+    # Resolved at call time rather than bound as a default, so the checks can point it at a
+    # directory they can plant files in and read back.
+    paths = SHARED_TMPFS_PATHS if paths is None else paths
+    protect = os.path.realpath(protect) if protect else None
+    removed, survived = [], []
+    for root in paths:
+        real = os.path.realpath(root)
+        if protect is not None and (protect == real or protect.startswith(real + os.sep)):
+            # In the pod this cannot fire: the scratch root is /scratch, which is under
+            # neither path. Outside it, a development run puts the scratch root wherever it
+            # was told, and a wipe that deletes the live executions it is protecting is worse
+            # than no wipe at all — so the whole root is skipped and said out loud rather than
+            # quietly narrowed.
+            LOG.warning("not wiping %s: the scratch root (%s) lives under it, so this is a "
+                        "development layout and temp entries there are NOT isolated between "
+                        "executions", root, protect)
+            continue
+        try:
+            names = sorted(os.listdir(root))
+        except FileNotFoundError:
+            continue          # not the sandbox image; both paths are runtime-supplied there
+        except OSError as exc:
+            survived.append(root)
+            LOG.warning("could not list %s to wipe it: %s", root, exc)
+            continue
+        for name in names:
+            path = os.path.join(root, name)
+            try:
+                if os.path.islink(path) or not os.path.isdir(path):
+                    os.unlink(path)
+                else:
+                    shutil.rmtree(path)
+                removed.append(path)
+            except OSError as exc:
+                survived.append(path)
+                LOG.warning("could not wipe %s: %s", path, exc)
+    if removed:
+        LOG.info("wiped %d entr%s from the runtime-supplied temp directories",
+                 len(removed), "y" if len(removed) == 1 else "ies")
+    if survived:
+        emit_alertable(
+            "%d temp entr%s survived the wipe and are visible to this execution: %s"
+            % (len(survived), "y" if len(survived) == 1 else "ies", survived))
     return removed
 
 
@@ -3620,6 +3758,11 @@ class Supervisor:
             # is unreachable through the wire contract. It is here so a Supervisor built
             # directly by a unit test fails saying what is missing.
             raise RequestError(503, "NotReady", "the fork server is not running")
+        # Before the fork, because /tmp and /dev/shm are the runtime's rather than the
+        # manifest's and keep whatever an earlier tenant put there until something empties
+        # them. wipe_shared_tmpfs carries the reasoning, including why a failure does not
+        # abort the execution.
+        wipe_shared_tmpfs(protect=self.scratch_root)
         dirs = job.dirs
         seed_mplconfig(dirs.mplconfig)
         _deliver_tokens(job)

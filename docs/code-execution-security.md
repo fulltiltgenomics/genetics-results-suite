@@ -6,7 +6,7 @@ it**, and records the residual risk. Where a decision was a judgement call, the 
 and its trigger condition are here so a later change is a decision rather than a rediscovery.
 
 **The code is the source of truth for how, and this document for why.** The tables marked
-*generated* are rewritten from the code by `scripts/gen-security-doc.py`; do not edit them by
+*generated* are rewritten from the code by `scripts/gen-doc-blocks.py`; do not edit them by
 hand. Everything else should explain a choice, not restate a value the code already computes —
 `sandbox/supervisor.py`, `k8s/deployments/sandbox.yaml` and
 `k8s/network-policies/sandbox-policy.yaml` are where the mechanisms live.
@@ -119,14 +119,26 @@ Four of those need their reason stated, because the value alone does not carry i
   `automountServiceAccountToken: false` is **not** part of that guarantee — it defends the
   Kubernetes API server and does nothing against the metadata server, which is reached over
   the network and needs no mounted token.
-- **One `emptyDir` and no PVC, ever, and no pod-level `/tmp`.** `chat-data` is the crown
-  jewels (section 1). A pod-level `/tmp` outlives an execution, and with one replica and
-  concurrency 1 successive users are *guaranteed* to share the pod, so a shared `/tmp` is a
-  sequential cross-conversation channel. Temp space comes out of the per-execution directory;
-  the `sizeLimit` is therefore the combined artifact-plus-temp budget, which is what makes the
-  supervisor's sub-quotas mandatory rather than nice to have. If some dependency ever requires
-  a writable `/tmp` and cannot be redirected, re-adding the volume is a **recorded
-  degradation** carrying a hard obligation: wipe it completely before every fork.
+- **One `emptyDir` and no PVC, ever, and the pod declares no `/tmp`.** `chat-data` is the crown
+  jewels (section 1). A temp directory that outlives an execution is a sequential
+  cross-conversation channel, because with one replica and concurrency 1 successive users are
+  *guaranteed* to share the pod. **Declaring no volume does not remove one**: gVisor supplies
+  `/tmp` and `/dev/shm` itself, mode 1777, whatever the pod spec says, and on staging a marker
+  written by one execution was read by the next. So the wipe is the design rather than a
+  contingency — the supervisor empties both **before every fork** (`wipe_shared_tmpfs`, whose
+  docstring carries the edge cases), and the per-execution `TMPDIR`, `HOME` and `MPLCONFIGDIR`
+  under `/scratch/<id>` keep its own path out of them in the first place. An entry it cannot
+  remove does **not** abort the execution — one undeletable file would otherwise be a permanent
+  outage for everyone behind it on a single-replica pod — so the whole of the mitigation is that
+  somebody hears about it, and the survivor line goes to **stderr**. That is deliberate rather
+  than incidental: everything this pod writes through `logging` lands on stdout, which GKE
+  grades `INFO`, and `scripts/monitor/alerter.py` only fetches `severity >= WARNING`, so the
+  same line through `LOG.error` would be a record nobody can ever read. The `emptyDir`'s
+  `sizeLimit` is the artifact-plus-per-execution-directory budget and **not** a temp budget:
+  bytes written outside `/scratch` are the sentry's memory, not the volume's — see "What
+  actually bounds the sandbox's storage" below. Mounting bounded `emptyDir`s at those two paths
+  was offered and declined: it would make their exhaustion a kubelet eviction like `/scratch`'s,
+  at the price of rewriting this invariant from one volume to three.
 - **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST`/`_PORT`
   for every Service in the namespace — the whole internal inventory and its ClusterIPs, handed
   to untrusted code for free. Nothing in the egress allow-list becomes reachable through them,
@@ -177,7 +189,7 @@ and with `capabilities.drop: ["ALL"]` the container holds no `CAP_SETUID`, `CAP_
 would mean adding those capabilities back to the one workload that executes
 attacker-influenceable code by design.
 
-Two costs follow, and both are load-bearing elsewhere in this document:
+Three costs follow, and all three are load-bearing elsewhere in this document:
 
 - **`RLIMIT_NPROC` is not a per-execution control.** It is per *real uid* across the pid
   namespace, so a child forking to its limit also stops the supervisor forking — the fork bomb
@@ -187,6 +199,11 @@ Two costs follow, and both are load-bearing elsewhere in this document:
 - **The token file is within the child's same-uid reach.** `/proc/<pid>/environ` is readable by
   any process at the same uid, and mode `0600` on a supervisor-owned file excludes neither the
   child nor any helper it spawns. The mitigation is lifetime, not permissions (section 4).
+- **The pre-fork wipe of `/tmp` and `/dev/shm` depends on it.** Both are sticky (mode 1777), so
+  only an entry's owner may unlink it. Sharing the uid is what lets `wipe_shared_tmpfs` remove
+  what the last execution wrote; a distinct child uid would make that wipe **partial and
+  silent**, reopening the cross-execution channel section 2 closes. Anyone implementing a
+  distinct uid has to solve this as well as the two above.
 
 The image still *advertises* a second uid (`SANDBOX_CHILD_UID=65533`) in `/etc/passwd`.
 Nothing can switch to it, `build-checks.py` keeps the entry consistent with the variable, and
@@ -247,6 +264,50 @@ What that arithmetic does **not** prove: the reserve is a margin, not a bound. A
 a few hundred MiB of writes and a child that traps `SIGTERM` keeps writing for the grace
 period. What bounds those is how fast the writer is stopped and `_retain` deleting what the
 overshoot produced. The steady state is exact; a hostile burst's transient peak is not.
+
+### What actually bounds the sandbox's storage, and how it dies
+
+Three writable paths, two mechanisms — and reading the first one's `statvfs` is how you get the
+second one wrong. All of the below was measured against the live staging pod.
+
+**`/scratch` — the `emptyDir`, and its `sizeLimit` binds.** From inside the container it looks
+unbounded: gVisor serves it as a **sentry-internal tmpfs**, so the mount is a plain tmpfs rather
+than a gofer mount, its root is `0:0` mode 1777, and `statvfs` answers with the sentry's
+no-limit sentinel (~8 EiB). **Do not read that as "no limit".** The sentry backs that tmpfs with
+a **single filestore file inside the host `emptyDir` directory**, so the kubelet counts every
+byte the container writes — 128 MiB written as two files was reported as `usedBytes`
+134217728 with `inodesUsed` 2, the directory plus that one file — and the eviction above is
+enforced exactly. Deletion releases host bytes as well (the filestore is hole-punched), which is
+what makes the supervisor's retention trims reduce kubelet-observed usage and not merely its own
+accounting. None of it is charged to `limits.memory`.
+
+Two consequences of that mechanism belong here, because from inside the container each looks
+like a defect: the pod's `fsGroup` is **inert** for this volume — the kubelet chowns a host
+directory the container never sees, and mode 1777 on the sentry's tmpfs is what a non-root uid
+actually writes through — and the container's `/scratch` tree is **invisible on the host**,
+where only the filestore file appears.
+
+**`/tmp` and `/dev/shm` — supplied by the runtime, bounded only by the pod's memory limit.**
+Neither appears in the pod spec, neither can be taken out of it, and both are mode 1777. Their
+`statvfs` advertises a figure derived from the **node's** physical RAM, unrelated to any pod
+limit and larger than the whole pod may use, so it never binds. **They are one pool**: filling
+either exhausts both, and `statvfs` will not show that — accounting is per mount and blind to
+the shared backing, so one mount's advertised free space sits frozen while the other's falls.
+What bounds them is the pod's `limits.memory` in the table above and nothing else, which is why
+the supervisor wipes them before every fork rather than trying to budget them.
+
+**Past that pool the signature is not `OOMKilled`.** The **host** OOM killer takes the runsc
+**sentry**, not a process inside the container's cgroup, so the container reports
+`lastState.terminated` with `reason: Error` and `exitCode: 128`, alongside a `SandboxChanged`
+event. An operator grepping for `OOMKilled` will not find the incident; `SandboxChanged` and
+that exit code are what to search on. Recovery is a fresh sandbox within seconds.
+
+**Whether `/scratch` survives that restart is unknown**, and no doc here should be read as
+saying it does. The sentry is recreated, so its filestore file most likely is too, which would
+mean retained artifacts do **not** survive a container restart the way a normal `emptyDir`'s
+contents would. Both restarts observed during the measurement had a near-empty `/scratch`, so
+there was no signal either way. Until someone measures it, treat a restart as losing the
+retention window — which is what `read_artifact` already answers for anyway, with a `404`.
 
 ### Concurrency, and what it does not remove
 
@@ -329,7 +390,7 @@ The final stage's environment, all of it:
 - `SANDBOX_SHARED_GID=65532`
 - `SANDBOX_SUPERVISOR_UID=65532`
 
-`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a fixed path here would recreate the cross-execution shared directory removing the pod-level `/tmp` was meant to prevent.
+`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a fixed path here would be exactly the cross-execution shared directory the redirect exists to prevent. The redirect keeps the supervisor's own path out of the runtime-supplied `/tmp` and `/dev/shm`; it does not remove those, and what keeps them from carrying bytes between tenants is the wipe before every fork (section 2).
 
 `prune_venv.py` reduces the installed distribution to the SDK's import closure, and `build-checks.py` asserts the surviving set is exactly:
 
@@ -713,7 +774,7 @@ and fails every invocation with a connection error — noisy, visible, and not c
 | Resource exhaustion starving chat-backend | separate pod, separate node pool, its own cgroup limits; the queue is bounded in depth *and* wait |
 | Reading another user's data on disk | retained artifacts are sealed under a per-execution key; the live window is not closed |
 | Serving another user attacker-controlled bytes | the manifest's digests, re-checked on the way out |
-| Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the fork server sweeps what reparents to it |
+| Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the runtime-supplied `/tmp` and `/dev/shm` — which the pod spec neither declares nor can remove — are wiped before every fork; the fork server sweeps what reparents to it |
 | Executing code via MCP | section 5's three layers |
 
 ### `read_artifact`: lifecycle, authorization, and what the retention window serves
@@ -857,7 +918,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract | the manifests; one live cluster call for the sandbox probe |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
-| `scripts/gen-security-doc.py --check` | the generated tables in this document still match the code | nothing |
+| `scripts/gen-doc-blocks.py --check` | the generated tables in this document still match the code | nothing |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
