@@ -461,25 +461,35 @@ What bounds the delegation, all in `app/routers/ld.py` and `app/services/ld_serv
   per-execution request and byte counters as every other results-api call, but it is **not
   zero** and should not be described as such.
 
-### The house plot style, and the standard plots
+### Render density, the opt-in style, and the standard plots
 
 Two additions to the image that are about output rather than confinement, recorded here
 because both widen what it carries.
 
+`sandbox/gen_mplrc.py` writes the baked `matplotlibrc` and it carries **render density and
+nothing else** — `figure.dpi` and `savefig.dpi` at 200. That is a property of the delivery
+channel rather than a taste: a figure is handed to the user as a PNG in a chat window, and at
+matplotlib's default 100 dpi a default-sized figure arrives too small to read. The supervisor
+seeds every `MPLCONFIGDIR` from that directory including its own and imports matplotlib before
+the first fork, so every child resolves the same density with no cooperation from the script.
+
 `scienceplots` is the one deliberate opening of `sandbox/requirements.txt`'s closed set, and
 the test it was admitted under is that file's own: it ships stylesheets and a registration, no
-native code and no import beyond matplotlib, so it does not widen what the image can *do*.
-`sandbox/gen_mplrc.py` composes `science` with `no-latex` at build time and writes the result
-into the baked `mplcache`. The pairing is not a preference — `science.mplstyle` sets
-`text.usetex: True` and this image has no LaTeX and no shell to run one, so unpaired it raises
-at draw time in every execution that plots.
+native code and no import beyond matplotlib, so it does not widen what the image can *do*. It
+is **opt-in**: a script that wants it writes `plt.style.use(["science", "no-latex"])`. Imposed
+as a default it made some figures worse rather than better — a locuszoom reads by its LD ramp
+and its marker shapes, not by journal typography — and a default a caller has to notice and
+undo is worse than one they ask for. The `no-latex` half is not optional when it is asked for:
+`science.mplstyle` sets `text.usetex: True` and this image has no LaTeX and no shell to run
+one, so unpaired it raises at draw time. That pairing is now the script's to write, which is
+the price of the style being opt-in.
 
-The style is a **default, not an instruction**: the supervisor seeds every `MPLCONFIGDIR` from
-that directory including its own, and imports matplotlib before the first fork, so the resolved
-rcParams are inherited by every child whether or not a script asks. A script can still override
-with `plt.style.use(...)`; nothing has to remember to opt in. `prewarm.py` also imports
-`scienceplots` so the style *names* resolve in a child — a script writing
-`plt.style.use("science")` from memory would otherwise get `OSError`.
+`prewarm.py` imports `scienceplots` in the supervisor before the first fork, which is now the
+*only* route by which it reaches a figure: the import is what registers the style names, so
+`plt.style.use("science")` written from memory resolves in a child instead of raising
+`OSError`. `build-checks.py` asserts both directions — that the density is in effect, and that
+two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
+a style back in fails the build rather than quietly restyling every figure.
 
 `genetics.plots` is a second SDK surface: standard figures — a locuszoom today — as functions
 rather than as instructions a script rederives. It is shipped by `prune_venv.py`'s

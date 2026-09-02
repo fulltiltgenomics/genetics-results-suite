@@ -17,10 +17,11 @@ PREWARM_MODULES = (
     "polars",
     "matplotlib",
     "matplotlib.pyplot",
-    # registers the scienceplots stylesheets in plt.style.library. The house style already
-    # applies through the baked matplotlibrc without this, so what the import buys is that
-    # `plt.style.use("science")` written from memory RESOLVES in a child rather than raising
-    # OSError — the registration happens once in the supervisor and every fork inherits it.
+    # registers the scienceplots stylesheets in plt.style.library. This is the ONLY route by
+    # which scienceplots reaches a figure — the baked matplotlibrc carries density and no
+    # style — so the import is what makes `plt.style.use("science")`, written from memory,
+    # resolve in a child instead of raising OSError. Registered once in the supervisor; every
+    # fork inherits it.
     "scienceplots",
     "httpx",
     "genetics_mcp_server.sdk",

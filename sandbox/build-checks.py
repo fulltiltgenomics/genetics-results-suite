@@ -334,16 +334,19 @@ def _fontcache():
     assert any(f.startswith("fontlist-") for f in files), f"no fontlist in {files}"
 
 
-@check("the house plot style is the resolved default, and needs no LaTeX")
+@check("the baked rc sets render density and imposes no style")
 def _house_style():
-    """The style is REQUIRED, not offered, so what has to be asserted is that a figure drawn
-    by a script that never mentions it comes out styled. Reading the rc file back would only
-    prove the file exists; this imports matplotlib the way the supervisor does — with
-    MPLCONFIGDIR at the baked cache — and asks the resolved rcParams.
+    """Both halves are asserted, and the second is the one that would regress silently.
 
-    text.usetex is checked separately from the rest because it is the one key whose wrong
-    value is not a cosmetic difference: this image is distroless, so a True here raises at
-    draw time in every execution that plots."""
+    The density has to be in effect for a script that never mentions it, so this imports
+    matplotlib the way the supervisor does — MPLCONFIGDIR at the baked cache — and asks the
+    resolved rcParams rather than reading the file back, which would only prove it exists.
+
+    The style has to be ABSENT. scienceplots stays installed and a script may ask for it, but
+    imposing it made some figures worse; two keys it would have set are checked against
+    matplotlib's own defaults so that re-baking a style into the image fails here rather than
+    quietly changing every figure. text.usetex is checked for the separate reason that this
+    image is distroless: a True raises at draw time in every execution that plots."""
     probe = (
         "import matplotlib, json; "
         "print(json.dumps({"
@@ -362,20 +365,24 @@ def _house_style():
         f"matplotlib read {got['rcfile']!r}, not the generated one — the style is not in effect"
     )
     assert got["usetex"] is False, "text.usetex is on in an image with no LaTeX"
-    # values that come from science.mplstyle and from nowhere else, so they fail if the rc is
-    # present but empty or parsed to defaults
-    assert got["linewidth"] == 0.5, f"axes.linewidth {got['linewidth']} is not the style's"
-    assert got["direction"] == "in", f"xtick.direction {got['direction']!r} is not the style's"
-    assert got["dpi"] == 200, f"savefig.dpi {got['dpi']} is not the local override's"
+    assert got["dpi"] == 200, f"savefig.dpi {got['dpi']} is not the baked density"
+    # matplotlib's own defaults. science.mplstyle sets these to 0.5 and "in", so a style baked
+    # back into the rc fails here instead of silently restyling every figure in the image.
+    assert got["linewidth"] == 0.8, (
+        f"axes.linewidth {got['linewidth']} is not matplotlib's default — a style is baked in"
+    )
+    assert got["direction"] == "out", (
+        f"xtick.direction {got['direction']!r} is not matplotlib's default — a style is baked in"
+    )
 
 
 @check("the scienceplots style names resolve for a script that asks for them by name")
 def _style_names_registered():
-    """The rc above styles a figure with no cooperation from the script. This is the other
-    half: `plt.style.use("science")` is what a model writes from memory, and it raises OSError
-    unless scienceplots has been imported. prewarm.py imports it in the supervisor before the
-    first fork so every child inherits the registration — assert the import works at all in
-    the final layout, since prewarm treats a failure as a crash-loop."""
+    """This is now the ONLY way scienceplots reaches a figure, which makes it load-bearing
+    rather than a convenience. `plt.style.use("science")` is what a model writes from memory
+    and it raises OSError unless scienceplots has been imported; prewarm.py imports it in the
+    supervisor before the first fork so every child inherits the registration. Assert the
+    import works at all in the final layout, since prewarm treats a failure as a crash-loop."""
     probe = (
         "import matplotlib; matplotlib.use('Agg'); "
         "import scienceplots, matplotlib.pyplot as plt; "

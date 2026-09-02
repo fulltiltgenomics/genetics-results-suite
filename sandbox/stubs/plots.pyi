@@ -20,11 +20,12 @@ so a script can take the axes back and add to them, or call it for each of sever
 in one execution and lay the results out itself. Every function here takes `ax=` for that
 reason and returns what it drew rather than only a path.
 
-STYLE IS NOT SET HERE. The sandbox image applies the house matplotlib style to every figure
-through the rcParams the supervisor seeds (genetics-results-suite sandbox/gen_mplrc.py), so
-these functions inherit it like any other script would, and a change to the house style
-changes them with no edit. The one thing they DO set is the LD colour ramp, because those
-colours are semantic — a reader decodes r² from them — and must not follow a style's cycle.
+STYLE IS NOT SET HERE. These draw under whatever rcParams are in force — matplotlib's own
+defaults plus the render density the sandbox bakes (genetics-results-suite
+sandbox/gen_mplrc.py) — so a caller who prefers another style sets it and these follow. What
+they DO set is the LD colour ramp and the two marker shapes, because both are semantic: a
+reader decodes r² from the colours and consequence from the shapes, so neither may follow a
+style's prop_cycle.
 
 ADDING A PLOT. Write the function, export it in `__all__`, and give it a docstring whose first
 line reads as a description: `list_capabilities(module="plots")` and the generated
@@ -47,6 +48,7 @@ def locuszoom(
     ld: bool = True,
     ld_panel: str = 'sisu42',
     genes: bool = True,
+    coding: bool = True,
     data: pl.DataFrame | None = None,
     path: str | None = None,
     title: str | None = None,
@@ -59,9 +61,16 @@ def locuszoom(
     centred with `flank` either side. `lead` defaults to the strongest association in the
     window, and LD is taken against it from the FinnGen LD server.
 
-    Grey means "no r² to show" — either the LD panel does not carry the variant or its r² is
-    below the floor these plots colour at. Only the correlated variants are coloured, so the
-    ramp reads at a glance instead of painting the whole cloud navy.
+    Colour is LD and shape is consequence, so a coding variant in high LD reads as both at
+    once: a square sits in a coding sequence or changes the protein, a circle does not, and
+    the lead takes whichever shape its own consequence gives it. Grey means "no r² to show" —
+    either the LD panel does not carry the variant or its r² is below the floor these plots
+    colour at. Only the correlated variants are coloured, so the ramp reads at a glance
+    instead of painting the whole cloud navy.
+
+    The gene track draws gene bodies only. The annotation this SDK can reach is GENCODE
+    gene-level — start, end, strand, biotype — with no transcript or exon structure, so there
+    are no exon boxes to draw.
 
     Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
     `phenotype`, `n_variants`, `n_genes`, plus two worth reading every time.
@@ -77,6 +86,9 @@ def locuszoom(
     window is too narrow for the locus — the signal has support the plot does not show — and
     the fix is to redraw with a larger `flank` or an explicit `region`. The figure carries
     the same warning so a reader who never sees this dict is not misled.
+
+    `coding_marked` is False when the consequence lookup did not answer, in which case every
+    point is a circle and shape means nothing; set `coding=False` to skip that fetch outright.
 
     `path` may be relative, in which case it is written inside the execution's artifacts
     directory and returned to the user automatically; that is also where the default goes.
