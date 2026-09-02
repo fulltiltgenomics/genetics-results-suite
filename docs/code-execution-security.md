@@ -432,6 +432,35 @@ something nothing would ever notice going stale. Shipping the placeholders degra
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
 
+### The LD proxy: one third-party call the sandbox can cause
+
+A `run_analysis` script cannot reach the internet, and that has not changed. What changed is
+that it can now cause **results-api** to make one specific outbound request on its behalf:
+`GET /api/v1/ld/{variant}` fronts the FinnGen LD server, because `genetics.ld(...)` resolved
+nothing from inside the sandbox and every locuszoom came back uncoloured.
+
+State the delegation plainly rather than treating it as unchanged, because it is a new shape:
+a confined caller reaching a third party through an unconfined one. What it is not is a
+widening of the sandbox's egress — the NetworkPolicy is untouched, no DNS rule was added, and
+`sandbox-policy.yaml`'s "no ipBlock of any kind" still holds. The sandbox talks to
+results-api, as it already did for summary statistics.
+
+What bounds the delegation, all in `app/routers/ld.py` and `app/services/ld_service.py`:
+
+- the caller controls **three** values and each is shape-checked before the outbound request:
+  the variant (`chr:pos:ref:alt`), the panel (a name), and the window (a bounded integer). The
+  destination URL is configuration, never a caller input, so this is not an SSRF surface;
+- the outbound request carries **no credential of ours** — the LD server is public — so a
+  script cannot use this path to spend an identity it does not hold;
+- nothing of the upstream's response body is forwarded on a failure. The caller gets a status
+  and this service's own wording;
+- the exfiltration question, asked directly: the outbound query carries a variant id, a panel
+  name and a window. A script can encode a little in those, at one bounded request per LD call,
+  to a third party that logs queries. That is a far narrower channel than the DNS pipe
+  `sandbox-policy.yaml` exists to close (~200 KB/s), and it is bounded by the same
+  per-execution request and byte counters as every other results-api call, but it is **not
+  zero** and should not be described as such.
+
 ### The house plot style, and the standard plots
 
 Two additions to the image that are about output rather than confinement, recorded here

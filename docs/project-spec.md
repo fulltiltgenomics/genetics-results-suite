@@ -842,6 +842,45 @@ Two things a `run_analysis` script gets without asking, both detailed in
   calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow.
+- **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
+  results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
+  `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
+  layer's two LD methods now take this path instead of calling the LD server themselves, which
+  also puts LD under the same credential and the same per-execution accounting as every other
+  results-api call. See "The LD proxy" below.
+
+### The LD proxy (`GET /api/v1/ld/{variant}`)
+
+`app/routers/ld.py` and `app/services/ld_service.py` in genetics-results-api. It exists for
+reachability and nothing else: the LD is the upstream's, not ours, and results-api adds no
+interpretation — the upstream's `ld` entries come back under their own field names, trimmed to
+the four this service documents (`variation1`, `variation2`, `r2`, `d_prime`), so the semantics
+stay in the one caller that already knew them (`tools/executor.py`, which keeps its "other
+variant" extraction and its r² sort).
+
+**It is results-api's first live third-party dependency on the request path**, and that is the
+cost being accepted for the reachability. What bounds it:
+
+- the query variant is shape-checked (`chr:pos:ref:alt`) and the panel is shape-checked as a
+  name, so no caller-supplied string reaches the outbound query unshaped. The panel is
+  deliberately **not** membership-checked: the set is the upstream's and a list here would go
+  stale silently, so an unknown-but-well-formed name is the upstream's 4xx to give;
+- `window` is refused outside `1..LD_MAX_WINDOW` (11 Mb, the largest any current caller
+  computes) rather than clamped — a silently narrowed window returns fewer variants and reads
+  as a sparse locus rather than as a limit;
+- the upstream's response body is never forwarded. It is a third party's text and the caller
+  may be a model-authored script;
+- an upstream failure is **502**, never 4xx: nothing the caller sent was wrong, and a script
+  that reads it as its own fault rewrites a correct request instead of backing off;
+- the sandbox's per-execution counters apply unchanged, because this is an ordinary results-api
+  request carrying the ordinary credential.
+
+`LD_UPSTREAM_URL`, `LD_UPSTREAM_TIMEOUT_SECONDS`, `LD_MAX_WINDOW`, `LD_DEFAULT_WINDOW` and
+`LD_DEFAULT_PANEL` are env-overridable, because the upstream is someone else's service and a
+move or an outage must not need a rebuild. There is **no cache**, deliberately and
+provisionally: a re-run locuszoom asks for the same window twice and would benefit, but a cache
+needs an eviction policy and a memory bound on a `replicas: 1` pod that already holds the gene
+maps and the search index.
 
 ### The sandbox HTTP contract
 
