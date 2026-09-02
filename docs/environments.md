@@ -122,7 +122,15 @@ Two shared-project hazards are handled explicitly:
   deployment, so a tfvars or manifest copied from production produces it verbatim and
   survives review.
   Two components set cookies on this host. `k8s/deployments/oauth2-proxy.yaml` passes
-  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` and no `--cookie-domain`.
+  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` / `--cookie-refresh=2m`
+  and no `--cookie-domain`. `--cookie-refresh` is coupled to the realm rather than to the
+  cookie: it must stay below the realm's `accessTokenLifespan`, or oauth2-proxy stops
+  refreshing and `/oauth2/auth` answers 401 once the access token expires. That lifespan is
+  not in `realm-genetics.json.template` — it is Keycloak's own default, so it is whatever the
+  running realm says (`kcadm.sh get realms/genetics --fields accessTokenLifespan`) and a realm
+  edit in the admin console can change it with nothing in this repo moving. The gateway then 302s to `/oauth2/start`, which a GET survives invisibly and a
+  POST does not — the redirect strips the body. Lowering the realm's lifespan without
+  lowering this flag reintroduces that.
   Keycloak is served on the *same* host under `/auth` (`deploy.sh` builds `KEYCLOAK_HOST` from
   `DOMAIN` + `KEYCLOAK_PATH`); `k8s/deployments/keycloak.yaml` sets no cookie attributes at
   all, and the gateway nginx block rewrites them with `proxy_cookie_flags ~ secure
