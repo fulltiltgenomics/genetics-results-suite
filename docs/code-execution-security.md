@@ -517,11 +517,17 @@ signal. **And the gene track draws one transcript per gene, not all of them.** r
 the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
 gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
 of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
-solid band. A consequence to state rather than hide: the gene body is drawn from the gene's own
-start and end, which reach beyond the canonical transcript's first and last exon wherever another
-transcript does, so a bare stretch of body line is real and not a gap in the data. `n_exons` in
-the returned dict is 0 when the API served no exon structure at all, which is how a bodies-only
-track is told apart from a gene that genuinely has one exon.
+solid band. **The body drawn is that transcript's span, not the gene record's**, and the two are
+not close: a GENCODE gene record spans every transcript it has, so on v49 the canonical
+transcript covers under a quarter of the record for 641 protein-coding genes and under a tenth
+for 185 — TUBA1C's record runs 86 kb against a 9.5 kb MANE transcript. Drawing the record put
+four exons in the right-hand tenth of a long bare line, which reads as exons in the wrong place;
+this was shipped that way and corrected against a PheWeb reference. A gene the API sent no exons
+for keeps the record, because that is all there is to draw it from. **And a gene GENCODE names
+only by an ENSG is left out of the track**, rather than drawn under a label nobody can look up.
+`n_exons` in the returned dict is 0 when the API served no exon structure at all, which is how a
+bodies-only track is told apart from a gene that genuinely has one exon; `n_genes` counts what
+was drawn, so it can fall short of the genes in the window.
 
 ### The HTTP contract between chat-backend and the supervisor
 

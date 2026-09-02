@@ -849,9 +849,11 @@ Two things a `run_analysis` script gets without asking, both detailed in
   query. It returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
   default nobody chose per locus and a correlated variant just past its edge is the difference
   between a lone signal and a supported one. Its gene track draws a model per gene — a hairline
-  over the gene body, a bar per exon, and a thicker bar over each exon's translated part — from
-  the exon arrays `genes_in_region` returns for the GENCODE releases that have an exon file, and
-  reports `n_exons` so a caller can tell a bodies-only track from one with structure.
+  over the Ensembl-canonical transcript, a bar per exon, and a thicker bar over each exon's
+  translated part — from the exon arrays `genes_in_region` returns for the GENCODE releases that
+  have an exon file. The hairline spans that transcript rather than the gene record, which is
+  often far longer, and genes GENCODE names only by an ENSG are left out. It reports `n_exons`
+  so a caller can tell a bodies-only track from one with structure.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
