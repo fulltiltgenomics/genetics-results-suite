@@ -841,7 +841,10 @@ Two things a `run_analysis` script gets without asking, both detailed in
 - **`genetics.plots` holds the standard figures**, a locuszoom today, as functions a script
   calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
-  is a function plus an `__all__` entry, and both surfaces follow.
+  is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` returns
+  `ld_partners_outside_window` alongside `ld_joined`, because the window is a default nobody
+  chose per locus and a correlated variant just past its edge is the difference between a lone
+  signal and a supported one.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool

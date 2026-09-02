@@ -491,6 +491,20 @@ in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
+Two choices inside `locuszoom` are worth stating, because from the outside each looks like the
+defect it replaced. **LD is asked for above a floor rather than at r²≥0.** The LD server answers
+an r²≥0 request with the whole panel, which buries the correlated points in a navy `< 0.2`
+cloud and is truncated positionally: measured at `12:49272869:C:T`, a ±250 kb request came back
+with 3000 entries stopping 19 kb short of the window's right edge, leaving 97 panel variants
+unanswered and that edge of the plot grey with nothing to say why. Above the floor the same
+locus returns 17 entries across ±500 kb. Grey therefore means "no r² worth colouring", which is
+what it already meant for a variant the panel does not carry. **And LD is asked for over more
+than the plotted span**, so a correlated partner just outside the window is named — in the
+returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
+same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
+it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
+signal.
+
 ### The HTTP contract between chat-backend and the supervisor
 
 **This subsection is the interface, because there cannot be a shared module.** The image
