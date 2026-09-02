@@ -60,7 +60,10 @@ def locuszoom(
     window, and LD is taken against it from the FinnGen LD server.
 
     Returns a dict describing what was drawn — path, lead, n_variants, region, and
-    `ld_joined`, which is False when the LD server returned nothing for the lead. That case
+    `ld_joined`, which is False when the LD server returned nothing for the lead. IN THE
+    DEPLOYED SANDBOX IT IS ALWAYS FALSE: the LD server is on the public internet and the
+    sandbox has no DNS and no internet egress, by design, so `ld=True` costs one fast
+    resolver failure and the points come out grey. That case
     is a plot with grey points rather than an error, because a locuszoom without LD is still
     the right picture of the locus; check the flag rather than assuming the colours mean
     something.
