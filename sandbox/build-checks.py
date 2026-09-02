@@ -8,6 +8,7 @@ starts failing can be judged rather than deleted.
 """
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -331,6 +332,62 @@ def _fontcache():
     cold pod's first execution does not pay for it. See prewarm.py."""
     files = os.listdir("/out/mplcache")
     assert any(f.startswith("fontlist-") for f in files), f"no fontlist in {files}"
+
+
+@check("the house plot style is the resolved default, and needs no LaTeX")
+def _house_style():
+    """The style is REQUIRED, not offered, so what has to be asserted is that a figure drawn
+    by a script that never mentions it comes out styled. Reading the rc file back would only
+    prove the file exists; this imports matplotlib the way the supervisor does — with
+    MPLCONFIGDIR at the baked cache — and asks the resolved rcParams.
+
+    text.usetex is checked separately from the rest because it is the one key whose wrong
+    value is not a cosmetic difference: this image is distroless, so a True here raises at
+    draw time in every execution that plots."""
+    probe = (
+        "import matplotlib, json; "
+        "print(json.dumps({"
+        "'usetex': matplotlib.rcParams['text.usetex'],"
+        "'linewidth': matplotlib.rcParams['axes.linewidth'],"
+        "'direction': matplotlib.rcParams['xtick.direction'],"
+        "'dpi': matplotlib.rcParams['savefig.dpi'],"
+        "'rcfile': matplotlib.matplotlib_fname(),"
+        "}))"
+    )
+    env = dict(PY_ENV, MPLCONFIGDIR="/out/mplcache", MPLBACKEND="Agg")
+    r = subprocess.run(PY + ["-c", probe], capture_output=True, env=env, text=True)
+    assert r.returncode == 0, f"matplotlib would not import under the baked config: {r.stderr}"
+    got = json.loads(r.stdout)
+    assert got["rcfile"] == "/out/mplcache/matplotlibrc", (
+        f"matplotlib read {got['rcfile']!r}, not the generated one — the style is not in effect"
+    )
+    assert got["usetex"] is False, "text.usetex is on in an image with no LaTeX"
+    # values that come from science.mplstyle and from nowhere else, so they fail if the rc is
+    # present but empty or parsed to defaults
+    assert got["linewidth"] == 0.5, f"axes.linewidth {got['linewidth']} is not the style's"
+    assert got["direction"] == "in", f"xtick.direction {got['direction']!r} is not the style's"
+    assert got["dpi"] == 200, f"savefig.dpi {got['dpi']} is not the local override's"
+
+
+@check("the scienceplots style names resolve for a script that asks for them by name")
+def _style_names_registered():
+    """The rc above styles a figure with no cooperation from the script. This is the other
+    half: `plt.style.use("science")` is what a model writes from memory, and it raises OSError
+    unless scienceplots has been imported. prewarm.py imports it in the supervisor before the
+    first fork so every child inherits the registration — assert the import works at all in
+    the final layout, since prewarm treats a failure as a crash-loop."""
+    probe = (
+        "import matplotlib; matplotlib.use('Agg'); "
+        "import scienceplots, matplotlib.pyplot as plt; "
+        "plt.style.use(['science', 'no-latex']); "
+        "assert plt.rcParams['text.usetex'] is False; "
+        "print('ok')"
+    )
+    env = dict(PY_ENV, MPLCONFIGDIR="/out/mplcache", MPLBACKEND="Agg")
+    r = subprocess.run(PY + ["-c", probe], capture_output=True, env=env, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", (
+        f"scienceplots styles do not resolve in the shipped layout: {r.stderr}"
+    )
 
 
 print(f"sandbox build checks: {len(failures)} failure(s)")

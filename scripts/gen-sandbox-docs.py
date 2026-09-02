@@ -392,6 +392,21 @@ def _exported_functions(init_tree):
     raise SystemExit("sdk/__init__.py has no _FUNCTIONS tuple to read the surface from")
 
 
+def _module_all(tree, where):
+    """`__all__` as the surface, for a module that is not a set of client wrappers.
+
+    The plots module has no GeneticsClient counterpart to check itself against — its
+    functions draw, they do not fetch — so `__all__` is what stands in for _FUNCTIONS'
+    self-checking property: a function that is not exported does not reach a script, and one
+    that is exported but missing fails here rather than in a stub nobody reads."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
+            return [ast.literal_eval(e) for e in node.value.elts]
+    raise SystemExit(f"{where} has no __all__ to read the surface from")
+
+
 def render_stubs(sdk_dir):
     init_tree = _module(os.path.join(sdk_dir, "__init__.py"))
     client_tree = _module(os.path.join(sdk_dir, "client.py"))
@@ -426,6 +441,9 @@ def render_stubs(sdk_dir):
     header += [
         "from genetics_mcp_server.sdk.client import GeneticsClient",
         "from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError",
+        # re-exported rather than merged into this file: `genetics.plots.locuszoom(...)` is
+        # how a script calls it, and a flat listing would not say that
+        "from genetics_mcp_server.sdk import plots as plots",
         "",
     ]
     body = []
@@ -480,6 +498,30 @@ def render_stubs(sdk_dir):
             lines.append(_docstring(doc, ""))
         lines += ["    ...", ""]
     files["errors.pyi"] = "\n".join(lines).rstrip() + "\n"
+
+    # plots.pyi — the standard figures. A second surface rather than more entries in
+    # genetics.pyi: these are not client wrappers, they take an `ax` and return a summary
+    # dict, and a script reaches them as `genetics.plots.<name>`.
+    plots_path = os.path.join(sdk_dir, "plots.py")
+    if not os.path.isfile(plots_path):
+        raise SystemExit(
+            f"{plots_path} is missing: the sandbox ships the standard plots and the stub "
+            "cannot be invented from anything else"
+        )
+    plots_tree = _module(plots_path)
+    plots_defs = _defs(plots_tree)
+    plots_exported = _module_all(plots_tree, "sdk/plots.py")
+    plots_missing = [name for name in plots_exported if name not in plots_defs]
+    if plots_missing:
+        raise SystemExit(f"exported by sdk/plots.py __all__ but not defined there: {plots_missing}")
+    lines = [STUB_BANNER, ""]
+    plots_doc = ast.get_docstring(plots_tree, clean=True)
+    if plots_doc:
+        lines += [f'"""{plots_doc.rstrip()}\n"""', ""]
+    lines += ["import polars as pl", "from typing import Any", ""]
+    for name in plots_exported:
+        lines += [_render_def(plots_defs[name], drop_self=False), ""]
+    files["plots.pyi"] = "\n".join(lines).rstrip() + "\n"
 
     return files
 

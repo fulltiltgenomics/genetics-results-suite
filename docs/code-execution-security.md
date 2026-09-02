@@ -370,8 +370,8 @@ resolves `metadata.google.internal` by name where the sandbox has no DNS.
 `sandbox/build-checks.py` runs in the builder and asserts the **final** image's properties,
 because the final stage has no shell and nothing can be checked after it is assembled: the
 absent shell and package manager, `/etc/nsswitch.conf` ordering, the pruned SDK surface, the
-advertised uids, the absence of placeholder schema docs, and `GCE_METADATA_HOST` pinned to a
-literal address. That last one is the branch a distribution-name check cannot see: polars links
+advertised uids, the absence of placeholder schema docs, `GCE_METADATA_HOST` pinned to a
+literal address, and the house plot style resolving with `text.usetex` off. That last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
 One of those checks reads source rather than running it, and the reason is the same one that
@@ -413,6 +413,7 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/errors.py`
+- `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/executor.py`
 - `genetics_mcp_server/tools/phewas_categories.py`
@@ -430,6 +431,36 @@ for the reason this document's own tables are: a transcribed schema inside a con
 something nothing would ever notice going stale. Shipping the placeholders degrades silently —
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
+
+### The house plot style, and the standard plots
+
+Two additions to the image that are about output rather than confinement, recorded here
+because both widen what it carries.
+
+`scienceplots` is the one deliberate opening of `sandbox/requirements.txt`'s closed set, and
+the test it was admitted under is that file's own: it ships stylesheets and a registration, no
+native code and no import beyond matplotlib, so it does not widen what the image can *do*.
+`sandbox/gen_mplrc.py` composes `science` with `no-latex` at build time and writes the result
+into the baked `mplcache`. The pairing is not a preference — `science.mplstyle` sets
+`text.usetex: True` and this image has no LaTeX and no shell to run one, so unpaired it raises
+at draw time in every execution that plots.
+
+The style is a **default, not an instruction**: the supervisor seeds every `MPLCONFIGDIR` from
+that directory including its own, and imports matplotlib before the first fork, so the resolved
+rcParams are inherited by every child whether or not a script asks. A script can still override
+with `plt.style.use(...)`; nothing has to remember to opt in. `prewarm.py` also imports
+`scienceplots` so the style *names* resolve in a child — a script writing
+`plt.style.use("science")` from memory would otherwise get `OSError`.
+
+`genetics.plots` is a second SDK surface: standard figures — a locuszoom today — as functions
+rather than as instructions a script rederives. It is shipped by `prune_venv.py`'s
+`SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import closure, resolved through
+a module `__getattr__` so chat-backend and mcp-server never import matplotlib. That has one
+consequence worth stating: genetics-mcp-server's `tests/test_sdk_import_closure.py` measures
+the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OUTSIDE_CLOSURE`
+in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree
+by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
+equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
 ### The HTTP contract between chat-backend and the supervisor
 

@@ -47,10 +47,17 @@ RUN python3 /build/prune_venv.py
 # every execution recompiles. After the prune, so no .pyc outlives the source it came from.
 RUN python3 -m compileall -q /opt/venv/lib >/dev/null
 
+# The house plot style, derived from the pinned scienceplots rather than copied. It goes in
+# the same directory as the font cache because the supervisor seeds EVERY MPLCONFIGDIR from
+# there — its own included, before it imports matplotlib and before the first fork — so the
+# style is the resolved default for every figure instead of something a script opts into.
+# Written before the font cache is baked so the bake runs under the shipped configuration.
+COPY gen_mplrc.py /build/gen_mplrc.py
+RUN python3 /build/gen_mplrc.py /out/mplcache/matplotlibrc
+
 # The matplotlib font cache costs seconds to build. Baked here and shipped read-only; the
 # supervisor copies it into a per-execution writable MPLCONFIGDIR (see prewarm.py).
-RUN mkdir -p /out/mplcache \
-    && MPLBACKEND=Agg MPLCONFIGDIR=/out/mplcache \
+RUN MPLBACKEND=Agg MPLCONFIGDIR=/out/mplcache \
        python3 -c "import matplotlib.font_manager"
 
 # A second non-root uid the image ADVERTISES for the forked child. Nothing switches to it —
