@@ -19,6 +19,21 @@ polars==1.40.1
 matplotlib==3.10.9
 httpx==0.28.1
 #
+# scienceplots is the one deliberate opening of that set, and the test it was admitted under is
+# the one the paragraph above applies: does it widen what the boundary image can DO? It ships 47
+# .mplstyle files and an __init__ that registers them in plt.style.library. No native code, no
+# imports beyond matplotlib (already pinned), nothing that opens a socket or a file outside its
+# own package. That is a different category from pandas, which would have been a second
+# implementation of the thing polars already is. The house plot style is applied to every
+# execution whether or not a script asks (see the matplotlibrc the Dockerfile derives from these
+# styles), so this is load-bearing rather than a convenience.
+#
+# `science` alone CANNOT be used here: it ends with text.usetex:True and this image is
+# distroless with no LaTeX and no shell to run one, so it must always be paired with no-latex.
+# The generated matplotlibrc does that pairing once, centrally, instead of leaving every script
+# to remember it.
+scienceplots==2.2.2
+#
 # When a genetics-mcp-server import argues for a line here, the answer is to cut the module
 # that does the importing out of the SDK's import closure, not to add the pin: adding it
 # widens a security-boundary image to satisfy an import the boundary never needed. Every such
