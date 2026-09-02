@@ -68,12 +68,13 @@ def locuszoom(
     colour at. Only the correlated variants are coloured, so the ramp reads at a glance
     instead of painting the whole cloud navy.
 
-    The gene track draws a gene model per gene: a hairline over the whole gene body, a bar
-    per exon of its GENCODE Ensembl-canonical transcript, and a thicker bar over the part of
-    each exon that is translated, so an untranslated leading or trailing exon reads as such.
-    One transcript per gene, not all of them — a locus is legible with one model per gene and
-    unreadable with twenty. `n_exons` in the returned dict is 0 when the API served no exon
-    structure, in which case the track is gene bodies only.
+    The gene track draws one model per gene: a hairline over the transcript, a bar per exon
+    of it, and a thicker bar over the part of each exon that is translated, so an
+    untranslated leading or trailing exon reads as such. The transcript is GENCODE's
+    Ensembl-canonical one, and the hairline spans IT rather than the gene record, which can
+    be many times longer where a gene has transcripts the canonical one does not reach.
+    Genes GENCODE names only by an ENSG are left out. `n_exons` in the returned dict is 0
+    when the API served no exon structure, in which case the track is gene bodies only.
 
     Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
     `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus two worth reading every time.
