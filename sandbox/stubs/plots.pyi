@@ -59,15 +59,28 @@ def locuszoom(
     centred with `flank` either side. `lead` defaults to the strongest association in the
     window, and LD is taken against it from the FinnGen LD server.
 
-    Returns a dict describing what was drawn — path, lead, n_variants, region, and
-    `ld_joined`, which is False when the LD server returned nothing for the lead — a plot
-    with grey points rather than an error, because a locuszoom without LD is still the right
-    picture of the locus. Check the flag rather than assuming the colours mean something:
-    the LD server is a third party, reached through a proxy, so an outage there costs the
-    colours and nothing else.
+    Grey means "no r² to show" — either the LD panel does not carry the variant or its r² is
+    below the floor these plots colour at. Only the correlated variants are coloured, so the
+    ramp reads at a glance instead of painting the whole cloud navy.
 
-    Writes into the execution's artifacts directory by default, so the figure is returned to
-    the user automatically. Pass `ax` to draw into an existing axis instead, in which case no
-    gene track is added and nothing is saved.
+    Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
+    `phenotype`, `n_variants`, `n_genes`, plus two worth reading every time.
+
+    `ld_joined` is False when the LD server returned nothing for the lead — a plot with grey
+    points rather than an error, because a locuszoom without LD is still the right picture of
+    the locus. Check it rather than assuming the colours mean something: the LD server is a
+    third party, reached through a proxy, so an outage there costs the colours and nothing
+    else.
+
+    `ld_partners_outside_window` lists the variants correlated with the lead that fall
+    outside the window, strongest first, as {variant, pos, r2}. It is non-empty when the
+    window is too narrow for the locus — the signal has support the plot does not show — and
+    the fix is to redraw with a larger `flank` or an explicit `region`. The figure carries
+    the same warning so a reader who never sees this dict is not misled.
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw into an existing axis instead, in which case no gene track is added and
+    nothing is saved.
     """
     ...
