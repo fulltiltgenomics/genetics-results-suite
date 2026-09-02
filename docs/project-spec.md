@@ -843,8 +843,10 @@ Two things a `run_analysis` script gets without asking, both detailed in
   calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
-  colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`),
-  and returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
+  colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`);
+  that one lookup also labels the lead with its gene and consequence and returns them as
+  `lead_gene`/`lead_consequence`, so the strongest variant names what it does without a second
+  query. It returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
   default nobody chose per locus and a correlated variant just past its edge is the difference
   between a lone signal and a supported one. Its gene track draws gene bodies only: the
   annotation this suite carries is GENCODE gene-level, with no transcript or exon structure.
