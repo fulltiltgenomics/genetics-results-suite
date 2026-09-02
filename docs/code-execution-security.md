@@ -501,6 +501,12 @@ in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
+These figures do set one thing for themselves, against the no-style rule above: type sizes and
+rule widths, fixed in points against the figure width they draw at, because matplotlib's
+defaults are sized for a figure twice as wide and a caller who has set no style should not have
+to correct for that. It is done on the artists rather than through rcParams, so nothing about
+the image's baked density changes and `build-checks.py`'s no-style assertions still hold.
+
 Three choices inside `locuszoom` are worth stating, because from the outside each looks like the
 defect it replaced. **LD is asked for above a floor rather than at r²≥0.** The LD server answers
 an r²≥0 request with the whole panel, which buries the correlated points in a navy `< 0.2`
@@ -513,7 +519,9 @@ than the plotted span**, so a correlated partner just outside the window is name
 returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
 same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
 it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
-signal. **And the gene track draws one transcript per gene, not all of them.** results-api serves
+signal. The note fires only above a reporting floor, because what it asks of the reader is a
+redraw at a wider window and that is worth doing where the omitted partner would have carried
+colour worth acting on, not for every partner the search span reaches. **And the gene track draws one transcript per gene, not all of them.** results-api serves
 the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
 gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
 of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
