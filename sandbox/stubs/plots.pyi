@@ -20,12 +20,14 @@ so a script can take the axes back and add to them, or call it for each of sever
 in one execution and lay the results out itself. Every function here takes `ax=` for that
 reason and returns what it drew rather than only a path.
 
-STYLE IS NOT SET HERE. These draw under whatever rcParams are in force — matplotlib's own
-defaults plus the render density the sandbox bakes (genetics-results-suite
-sandbox/gen_mplrc.py) — so a caller who prefers another style sets it and these follow. What
-they DO set is the LD colour ramp and the two marker shapes, because both are semantic: a
-reader decodes r² from the colours and consequence from the shapes, so neither may follow a
-style's prop_cycle.
+STYLE IS MOSTLY NOT SET HERE. These draw under whatever rcParams are in force — matplotlib's
+own defaults plus the render density the sandbox bakes (genetics-results-suite
+sandbox/gen_mplrc.py) — so a caller who prefers another style sets it and these follow. Two
+things are set anyway. The LD colour ramp and the two marker shapes, because both are
+semantic: a reader decodes r² from the colours and consequence from the shapes, so neither
+may follow a style's prop_cycle. And the type sizes and rule widths, because matplotlib's
+defaults are sized for a figure twice as wide as the one these draw on and a caller who has
+set no style should not have to correct for that.
 
 ADDING A PLOT. Write the function, export it in `__all__`, and give it a docstring whose first
 line reads as a description: `list_capabilities(module="plots")` and the generated

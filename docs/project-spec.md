@@ -853,7 +853,11 @@ Two things a `run_analysis` script gets without asking, both detailed in
   translated part — from the exon arrays `genes_in_region` returns for the GENCODE releases that
   have an exon file. The hairline spans that transcript rather than the gene record, which is
   often far longer, and genes GENCODE names only by an ENSG are left out. It reports `n_exons`
-  so a caller can tell a bodies-only track from one with structure.
+  so a caller can tell a bodies-only track from one with structure. The track is a strip under
+  the association panel rather than a second plot: the position scale stays on the panel it is
+  read against, and the models sit below it with no frame of their own. The LD legend names the
+  variant the r² is to and the panel it came from, both of which change between figures and
+  neither of which a bare "r²" carries.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
