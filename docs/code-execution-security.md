@@ -501,7 +501,7 @@ in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
-Two choices inside `locuszoom` are worth stating, because from the outside each looks like the
+Three choices inside `locuszoom` are worth stating, because from the outside each looks like the
 defect it replaced. **LD is asked for above a floor rather than at r²≥0.** The LD server answers
 an r²≥0 request with the whole panel, which buries the correlated points in a navy `< 0.2`
 cloud and is truncated positionally: measured at `12:49272869:C:T`, a ±250 kb request came back
@@ -513,7 +513,15 @@ than the plotted span**, so a correlated partner just outside the window is name
 returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
 same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
 it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
-signal.
+signal. **And the gene track draws one transcript per gene, not all of them.** results-api serves
+the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
+gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
+of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
+solid band. A consequence to state rather than hide: the gene body is drawn from the gene's own
+start and end, which reach beyond the canonical transcript's first and last exon wherever another
+transcript does, so a bare stretch of body line is real and not a gap in the data. `n_exons` in
+the returned dict is 0 when the API served no exon structure at all, which is how a bodies-only
+track is told apart from a gene that genuinely has one exon.
 
 ### The HTTP contract between chat-backend and the supervisor
 

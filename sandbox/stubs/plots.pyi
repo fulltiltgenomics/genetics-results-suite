@@ -68,12 +68,15 @@ def locuszoom(
     colour at. Only the correlated variants are coloured, so the ramp reads at a glance
     instead of painting the whole cloud navy.
 
-    The gene track draws gene bodies only. The annotation this SDK can reach is GENCODE
-    gene-level — start, end, strand, biotype — with no transcript or exon structure, so there
-    are no exon boxes to draw.
+    The gene track draws a gene model per gene: a hairline over the whole gene body, a bar
+    per exon of its GENCODE Ensembl-canonical transcript, and a thicker bar over the part of
+    each exon that is translated, so an untranslated leading or trailing exon reads as such.
+    One transcript per gene, not all of them — a locus is legible with one model per gene and
+    unreadable with twenty. `n_exons` in the returned dict is 0 when the API served no exon
+    structure, in which case the track is gene bodies only.
 
     Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
-    `phenotype`, `n_variants`, `n_genes`, plus two worth reading every time.
+    `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus two worth reading every time.
 
     `ld_joined` is False when the LD server returned nothing for the lead — a plot with grey
     points rather than an error, because a locuszoom without LD is still the right picture of
