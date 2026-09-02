@@ -89,6 +89,8 @@ def locuszoom(
 
     `coding_marked` is False when the consequence lookup did not answer, in which case every
     point is a circle and shape means nothing; set `coding=False` to skip that fetch outright.
+    The same lookup fills `lead_consequence` and `lead_gene`, which the lead's label also
+    carries, so the strongest variant names what it does and where before anyone asks.
 
     `path` may be relative, in which case it is written inside the execution's artifacts
     directory and returned to the user automatically; that is also where the default goes.
