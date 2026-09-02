@@ -834,17 +834,20 @@ enabling deploy makes. Confirmed on the `daly-staging` bring-up: with the addres
 Two things a `run_analysis` script gets without asking, both detailed in
 `docs/code-execution-security.md` → "The house plot style, and the standard plots":
 
-- **Every figure is styled.** `sandbox/gen_mplrc.py` derives a matplotlibrc from the pinned
-  `scienceplots` at build time; the supervisor seeds every `MPLCONFIGDIR` from it and imports
-  matplotlib before the first fork, so the rcParams are the resolved default in every child. A
-  script does not opt in, and one that sets its own style is overriding a deliberate default.
+- **Every figure is legible; none is styled.** `sandbox/gen_mplrc.py` writes a matplotlibrc
+  carrying render density and nothing else, and the supervisor seeds every `MPLCONFIGDIR` from
+  it before the first fork, so 200 dpi is the resolved default in every child. `scienceplots`
+  is installed and its style names are registered, but a script asks for it —
+  `plt.style.use(["science", "no-latex"])` — rather than having it imposed.
 - **`genetics.plots` holds the standard figures**, a locuszoom today, as functions a script
   calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
-  is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` returns
-  `ld_partners_outside_window` alongside `ld_joined`, because the window is a default nobody
-  chose per locus and a correlated variant just past its edge is the difference between a lone
-  signal and a supported one.
+  is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
+  colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`),
+  and returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
+  default nobody chose per locus and a correlated variant just past its edge is the difference
+  between a lone signal and a supported one. Its gene track draws gene bodies only: the
+  annotation this suite carries is GENCODE gene-level, with no transcript or exon structure.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool

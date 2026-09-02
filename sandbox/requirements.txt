@@ -24,14 +24,16 @@ httpx==0.28.1
 # .mplstyle files and an __init__ that registers them in plt.style.library. No native code, no
 # imports beyond matplotlib (already pinned), nothing that opens a socket or a file outside its
 # own package. That is a different category from pandas, which would have been a second
-# implementation of the thing polars already is. The house plot style is applied to every
-# execution whether or not a script asks (see the matplotlibrc the Dockerfile derives from these
-# styles), so this is load-bearing rather than a convenience.
+# implementation of the thing polars already is. It is OPT-IN: the baked matplotlibrc carries
+# render density and no style, and a script that wants one writes plt.style.use("science").
+# Imposed as a default it made some figures worse — a locuszoom reads by its LD ramp and marker
+# shapes, not by journal typography — and a default a caller has to notice and undo is worse
+# than one they ask for.
 #
 # `science` alone CANNOT be used here: it ends with text.usetex:True and this image is
-# distroless with no LaTeX and no shell to run one, so it must always be paired with no-latex.
-# The generated matplotlibrc does that pairing once, centrally, instead of leaving every script
-# to remember it.
+# distroless with no LaTeX and no shell to run one, so a script asking for it must pair it with
+# no-latex: plt.style.use(["science", "no-latex"]). That pairing is now the script's to write,
+# which is the cost of making the style opt-in.
 scienceplots==2.2.2
 #
 # When a genetics-mcp-server import argues for a line here, the answer is to cut the module

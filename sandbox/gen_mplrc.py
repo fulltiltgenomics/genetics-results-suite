@@ -1,113 +1,54 @@
-"""Derive the sandbox's house matplotlibrc from the installed scienceplots styles.
+"""Write the sandbox's baked matplotlibrc.
 
 Builder-stage only; not shipped. Run as: gen_mplrc.py <out-path>
 
-WHY A FILE AND NOT AN INSTRUCTION. The style is meant to apply to every figure the sandbox
-produces, including ones written by a script that never heard of it. matplotlib reads
-$MPLCONFIGDIR/matplotlibrc when it is imported, the supervisor seeds every MPLCONFIGDIR —
-its own included — from the baked cache this file is written into, and the supervisor
-imports matplotlib before the first fork, so every child inherits the resolved rcParams.
-A script can still override deliberately with plt.style.use(...); nothing has to remember to
-opt in.
+WHAT IS IN IT, AND WHY THAT IS ALL. Render density and nothing else. The figures a script
+produces are delivered as PNGs in a chat window, and at matplotlib's default 100 dpi a
+default-sized figure arrives too small to read; that is a property of the delivery channel,
+not a house style, so it belongs to the image. Everything else is matplotlib's own default.
 
-WHY DERIVED AND NOT COPIED. A hand-copied stylesheet is a second copy of values nothing
-checks, which is the failure mode CLAUDE.md's "anything that ENUMERATES is generated" names.
-This reads the .mplstyle files out of the installed distribution, so the shipped rc cannot
-disagree with the pinned scienceplots.
+WHY NO STYLE. `scienceplots` is still installed and its style names still resolve, but it is
+opt-in: a script that wants it writes `plt.style.use("science")`. Imposed as a default it made
+some figures worse rather than better — a locuszoom, whose readability comes from the LD ramp
+and the marker shapes rather than from journal typography, was the case that decided it. A
+default that a caller has to notice and undo is worse than one they have to ask for.
 
-WHY THE PAIRING IS NOT OPTIONAL. science.mplstyle ends with text.usetex:True and this image
-is distroless — no LaTeX, no shell to run one — so science alone raises at draw time. The
-pairing with no-latex happens here, once, rather than in every script.
+WHY A FILE AT ALL. matplotlib reads $MPLCONFIGDIR/matplotlibrc at import. The supervisor seeds
+every execution's MPLCONFIGDIR — its own included — from the baked cache this writes into, and
+imports matplotlib before the first fork, so every child resolves the same density with no
+cooperation from the script.
 """
 
-import importlib.util
 import os
 import sys
 
-# in scienceplots' load order: later wins, which is what makes no-latex an override
-STYLES = ("science.mplstyle", "misc/no-latex.mplstyle")
-
-# Local overrides, applied after the styles. Each needs a reason that is about THIS image.
-LOCAL = {
-    # science sizes a figure for a journal column (3.5 x 2.625 in). At matplotlib's default
-    # 100 dpi that saves a 350x263 px PNG, which is the size the user actually receives in
-    # chat, and it is not legible there. The figure keeps its proportions; only the raster
-    # density changes.
+# Each entry needs a reason that is about THIS image, not a preference.
+DEFAULTS = {
+    # a figure saved at 100 dpi is what the user receives in chat, and it is not legible
+    # there. Proportions are untouched; only the raster density changes.
     "figure.dpi": "200",
     "savefig.dpi": "200",
-    # science sets text.usetex:True and no-latex sets it back. Pinned here as well so that an
-    # upstream reshuffle of which file owns the key cannot ship an image whose every figure
-    # raises for want of a LaTeX binary.
-    "text.usetex": "False",
 }
 
 
-def _strip_comment(line):
-    """Drop a comment, taking `#` as a comment start only at the line's start or after
-    whitespace — a value may legitimately contain one (`#0C5DA5`)."""
-    for i, ch in enumerate(line):
-        if ch == "#" and (i == 0 or line[i - 1].isspace()):
-            return line[:i]
-    return line
-
-
-def read_style(path):
-    entries = {}
-    with open(path, encoding="utf-8") as fh:
-        for raw in fh:
-            line = _strip_comment(raw).strip()
-            if not line or ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            entries[key.strip()] = value.strip()
-    return entries
-
-
-def styles_dir():
-    spec = importlib.util.find_spec("scienceplots")
-    if spec is None or not spec.submodule_search_locations:
-        raise SystemExit(
-            "scienceplots is not installed: the sandbox image cannot be built without the "
-            "house plot style (sandbox/requirements.txt)"
-        )
-    return os.path.join(list(spec.submodule_search_locations)[0], "styles")
-
-
-def compose():
-    root = styles_dir()
-    merged = {}
-    for rel in STYLES:
-        path = os.path.join(root, rel)
-        if not os.path.isfile(path):
-            raise SystemExit(f"scienceplots is installed but {rel} is missing at {path}")
-        entries = read_style(path)
-        if not entries:
-            raise SystemExit(f"{rel} parsed to nothing — the .mplstyle format changed")
-        merged.update(entries)
-    merged.update(LOCAL)
-    return merged
-
-
-def render(merged):
+def render(entries):
     lines = [
         "# GENERATED by sandbox/gen_mplrc.py at image build time. Do not edit.",
-        "# Source: scienceplots " + ", ".join(STYLES) + ", then the local overrides in that",
-        "# script. Seeded into every execution's MPLCONFIGDIR by the supervisor, so it is the",
-        "# default for every figure rather than something a script opts into.",
+        "# Render density only — no style. Seeded into every execution's MPLCONFIGDIR by the",
+        "# supervisor. For a style, a script asks: plt.style.use('science'), or any other.",
         "",
     ]
-    lines += [f"{key}: {value}" for key, value in sorted(merged.items())]
+    lines += [f"{key}: {value}" for key, value in sorted(entries.items())]
     return "\n".join(lines) + "\n"
 
 
 def main(argv):
     if len(argv) != 2:
         raise SystemExit("usage: gen_mplrc.py <out-path>")
-    merged = compose()
     os.makedirs(os.path.dirname(argv[1]), exist_ok=True)
     with open(argv[1], "w", encoding="utf-8") as fh:
-        fh.write(render(merged))
-    print(f"wrote {argv[1]} with {len(merged)} rcParams from {len(STYLES)} styles")
+        fh.write(render(DEFAULTS))
+    print(f"wrote {argv[1]} with {len(DEFAULTS)} rcParams")
 
 
 if __name__ == "__main__":
