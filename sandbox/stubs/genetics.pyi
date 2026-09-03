@@ -337,6 +337,27 @@ def search(
     """
     ...
 
+def phenotypes(
+    *,
+    codes: str | list[str] | None = None,
+    dataset: str | list[str] | None = None,
+    resource: str | None = None,
+) -> pl.DataFrame:
+    """Trait metadata from `phenotypes_v`: name, trait type, source category, sample sizes.
+
+    `codes` are trait codes as the results views' `trait_original` column stores them
+    (`H8_HL_IDIOP`, not the display form in `trait`); `dataset` and `resource` narrow the
+    rows, and at least one of the three is needed. One row per (dataset, code), so a code
+    several datasets share comes back once per dataset — join on both.
+
+    `category` is the source's own grouping — a FinnGen ICD chapter, Kanta's
+    Quantitative/Binary, an Open Targets project id, a Genebass trait type — not one
+    harmonised across resources. Coverage is partial by design: QTL datasets and those
+    whose codes are already readable have no rows, so LEFT JOIN when the dataset is not
+    known in advance.
+    """
+    ...
+
 def lookup_phenotype_names(codes: str | list[str]) -> pl.DataFrame:
     """Resolve trait codes ('I9_CHD') to their human-readable names.
 

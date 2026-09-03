@@ -127,10 +127,13 @@ def phewas(
 
     The associations are the fine-mapped credible sets the variant belongs to, across every
     resource unless `resource=` names one, kept where -log10(p) is at least `min_mlog10p`.
-    Each is one point, coloured by the category its phenotype falls into — an organ system
-    or disease area read off the phenotype's name, or its code when the name does not say —
-    and the categories are the x axis, `Other` last. The strongest associations above the
-    significance line are named on the figure, each phenotype once.
+    Each is one point, grouped along the x axis by the category `phenotypes_v` gives its
+    phenotype — the source's own grouping, so a FinnGen endpoint sits in its ICD chapter and
+    an Open Targets study under its project, and a phewas across resources groups each
+    resource's traits the way that resource does. ICD chapters keep chapter order; a
+    phenotype with no metadata row goes to `Other`, last. The strongest associations above
+    the significance line are named on the figure, each phenotype once, by the name
+    `phenotypes_v` carries or else by the `trait` column read as words.
 
     The title names the variant with its gene and consequence, taken from the rows
     themselves, and the resources the associations came from.
@@ -144,6 +147,7 @@ def phewas(
     directory and returned to the user automatically; that is also where the default goes.
     Pass `ax` to draw into an existing axis instead, in which case nothing is saved. Pass
     `data=` to plot a frame already in hand — credible-set rows, or any frame with a `trait`
-    column and `mlog10p` or `pval`.
+    column and `mlog10p` or `pval`; `trait_original` and `dataset` are what the names and
+    categories are looked up by, and without them every point is `Other`.
     """
     ...

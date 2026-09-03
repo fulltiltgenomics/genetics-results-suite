@@ -865,8 +865,13 @@ Two things a `run_analysis` script gets without asking, both detailed in
   than from a table of names kept here, and every part of it optional so a lookup that fails
   costs a word rather than the figure. `phewas` is the variant-centred counterpart: one point
   per GWAS credible set the variant belongs to, across every resource unless one is named,
-  grouped along x by the organ-system category `sdk/phewas_categories.py` reads off the
-  phenotype's name or code, `Other` last. Both plots draw the significance line through one
+  grouped along x by the category `phenotypes_v` gives the phenotype — the source's own
+  grouping (a FinnGen ICD chapter in chapter order, an Open Targets project id, Kanta's
+  Quantitative/Binary), deliberately not one harmonised across resources — with a phenotype
+  no row covers under `Other`, last. Names and categories are looked up by `trait_original`,
+  the code, because `trait` on a credible-set row is a display form of it that resolves
+  nothing; the lookup is `genetics.phenotypes(codes=…)`, an SDK function over that view
+  with no tool counterpart. Both plots draw the significance line through one
   helper — grey, dashed, labelled `p 5e-8` on the line itself, no legend box — and the phewas
   keeps at least two units of -log10 p between its strongest point and the top of the panel
   so the point labels have somewhere to go. There is no chat tool for either figure: a figure
