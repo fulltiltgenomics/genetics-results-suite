@@ -843,7 +843,9 @@ Two things a `run_analysis` script gets without asking, both detailed in
   calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
-  colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`);
+  colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`,
+  against the suite's shared coding set — the copy in `sdk/plots.py` of the definition
+  results-api, the browser and the chat prompt each also hold);
   that one lookup also labels the lead with its gene and consequence and returns them as
   `lead_gene`/`lead_consequence`, so the strongest variant names what it does without a second
   query. It returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
@@ -857,7 +859,11 @@ Two things a `run_analysis` script gets without asking, both detailed in
   the association panel rather than a second plot: the position scale stays on the panel it is
   read against, and the models sit below it with no frame of their own. The LD legend names the
   variant the r² is to and the panel it came from, both of which change between figures and
-  neither of which a bare "r²" carries.
+  neither of which a bare "r²" carries. Its title names the trait, its code and the release —
+  `Sudden idiopathic hearing loss (H8_HL_IDIOP, FinnGen R14) — 12:49022869-49522869` — with
+  the resource label read from the live schema and the release off the plotted frame rather
+  than from a table of names kept here, and every part of it optional so a lookup that fails
+  costs a word rather than the figure.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
