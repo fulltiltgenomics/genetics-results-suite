@@ -413,10 +413,10 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/errors.py`
+- `genetics_mcp_server/sdk/phewas_categories.py`
 - `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/executor.py`
-- `genetics_mcp_server/tools/phewas_categories.py`
 - `genetics_mcp_server/tools/sql_safety.py`
 - `genetics_mcp_server/tools/uniprot.py`
 
@@ -491,14 +491,15 @@ the price of the style being opt-in.
 two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
 a style back in fails the build rather than quietly restyling every figure.
 
-`genetics.plots` is a second SDK surface: standard figures — a locuszoom today — as functions
-rather than as instructions a script rederives. It is shipped by `prune_venv.py`'s
+`genetics.plots` is a second SDK surface: standard figures — a locuszoom and a phewas today —
+as functions rather than as instructions a script rederives. It is shipped by `prune_venv.py`'s
 `SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import closure, resolved through
-a module `__getattr__` so chat-backend and mcp-server never import matplotlib. That has one
-consequence worth stating: genetics-mcp-server's `tests/test_sdk_import_closure.py` measures
-the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OUTSIDE_CLOSURE`
-in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree
-by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
+a module `__getattr__` so chat-backend and mcp-server never import matplotlib; the
+`sdk/phewas_categories.py` it imports for the phewas's category axis rides outside the closure
+with it. That has one consequence worth stating: genetics-mcp-server's
+`tests/test_sdk_import_closure.py` measures the shipped set by importing the SDK, so it cannot
+see either file — `SHIPPED_OUTSIDE_CLOSURE` in that test is the second list that keeps them
+scanned, and it and `SDK_ALLOWLIST` have to agree by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
 What the shipped `plots.pyi` therefore discloses beyond the signatures is the guidance in

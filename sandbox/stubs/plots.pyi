@@ -8,6 +8,7 @@
 
     import genetics
     genetics.plots.locuszoom(phenotype="H8_HEARINGLOSS", variant="12:49578357:C:T")
+    genetics.plots.phewas(variant="19:44908684:T:C")
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -108,5 +109,41 @@ def locuszoom(
     directory and returned to the user automatically; that is also where the default goes.
     Pass `ax` to draw into an existing axis instead, in which case no gene track is added and
     nothing is saved.
+    """
+    ...
+
+def phewas(
+    *,
+    variant: str,
+    resource: str | None = None,
+    min_mlog10p: float = 2.0,
+    data: pl.DataFrame | None = None,
+    path: str | None = None,
+    title: str | None = None,
+    significance: float = 5e-08,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """Phenome-wide association plot: -log10 p of every GWAS association of one variant.
+
+    The associations are the fine-mapped credible sets the variant belongs to, across every
+    resource unless `resource=` names one, kept where -log10(p) is at least `min_mlog10p`.
+    Each is one point, coloured by the category its phenotype falls into — an organ system
+    or disease area read off the phenotype's name, or its code when the name does not say —
+    and the categories are the x axis, `Other` last. The strongest associations above the
+    significance line are named on the figure, each phenotype once.
+
+    The title names the variant with its gene and consequence, taken from the rows
+    themselves, and the resources the associations came from.
+
+    Returns a dict describing what was drawn: `path`, `variant`, `n_associations`,
+    `n_significant`, `categories` in plotting order, `strongest` and `strongest_name` (the
+    phenotype code and name of the top association) with `strongest_mlog10p`, and
+    `variant_consequence` and `variant_gene` as the title shows them.
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw into an existing axis instead, in which case nothing is saved. Pass
+    `data=` to plot a frame already in hand — credible-set rows, or any frame with a `trait`
+    column and `mlog10p` or `pval`.
     """
     ...
