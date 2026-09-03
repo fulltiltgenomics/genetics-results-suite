@@ -839,8 +839,8 @@ Two things a `run_analysis` script gets without asking, both detailed in
   it before the first fork, so 200 dpi is the resolved default in every child. `scienceplots`
   is installed and its style names are registered, but a script asks for it —
   `plt.style.use(["science", "no-latex"])` — rather than having it imposed.
-- **`genetics.plots` holds the standard figures**, a locuszoom today, as functions a script
-  calls rather than conventions it rederives. Discoverable through
+- **`genetics.plots` holds the standard figures**, a locuszoom and a phewas today, as
+  functions a script calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
   colour and consequence in shape (square = coding, from `variant_annotation`'s `most_severe`,
@@ -863,7 +863,14 @@ Two things a `run_analysis` script gets without asking, both detailed in
   `Sudden idiopathic hearing loss (H8_HL_IDIOP, FinnGen R14) — 12:49022869-49522869` — with
   the resource label read from the live schema and the release off the plotted frame rather
   than from a table of names kept here, and every part of it optional so a lookup that fails
-  costs a word rather than the figure.
+  costs a word rather than the figure. `phewas` is the variant-centred counterpart: one point
+  per GWAS credible set the variant belongs to, across every resource unless one is named,
+  grouped along x by the organ-system category `sdk/phewas_categories.py` reads off the
+  phenotype's name or code, `Other` last. Both plots draw the significance line through one
+  helper — grey, dashed, labelled `p 5e-8` on the line itself, no legend box — and the phewas
+  keeps at least two units of -log10 p between its strongest point and the top of the panel
+  so the point labels have somewhere to go. There is no chat tool for either figure: a figure
+  is a `run_analysis` artifact, and the servers do not import matplotlib.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool

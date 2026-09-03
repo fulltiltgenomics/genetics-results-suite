@@ -7,7 +7,9 @@ design overview.
 
 **Derived 2026-08-18** from these commits, with the `run_analysis`, `read_artifact` and
 `list_capabilities` descriptions refreshed 2026-08-19 for `genetics-results-suite-8z1`
-(image artifacts) and `-706` (the `genetics` import name):
+(image artifacts) and `-706` (the `genetics` import name), and the counts re-derived
+2026-09-03 when `create_phewas_plot` was removed in favour of `genetics.plots.phewas`
+(the `definitions.py:` line references below predate that and have not been re-derived):
 
 | repo | worktree | commit |
 |---|---|---|
@@ -43,7 +45,7 @@ All tool definitions are in one file:
 
 | symbol | line | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 15 | 65 tools — 18 `general`, 44 `api`, 3 `orchestration` |
+| `TOOL_DEFINITIONS` | 15 | 64 tools — 17 `general`, 44 `api`, 3 `orchestration` |
 | `BIGQUERY_TOOL_DEFINITIONS` | 1616 | 2 tools — `query_database`, `get_database_schema` (category `bigquery`) |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1669 | 1 tool — `launch_subagents` (category `orchestration`) |
 | `TOOL_PROFILES` | 1724 | 4 category-union profiles: `api`, `bigquery`, `rag`, `nocode` |
@@ -51,7 +53,7 @@ All tool definitions are in one file:
 | `get_anthropic_tools()` | 1748 | builds the Anthropic-format list handed to the chat model |
 | `register_mcp_tools()` | 1824 | registers FastMCP handlers — the `/mcp` surface |
 
-**68 tool definitions in total.** By category across all three lists: `general` 18,
+**67 tool definitions in total.** By category across all three lists: `general` 17,
 `api` 44, `bigquery` 2, `orchestration` 4.
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
@@ -102,7 +104,7 @@ flags, each defaulting to **false**:
 
 `k8s/deployments/chat-backend.yaml:128` sets `ENABLE_SUBAGENTS: "false"` explicitly and does
 not set the other two, so **in the deployed configuration all three are disabled** and the
-chat model at `tool_profile=null` sees **65 local tools**, not 68.
+chat model at `tool_profile=null` sees **64 local tools**, not 67.
 
 `run_analysis`, `read_artifact` and `list_capabilities` have **no** feature flag. They are
 advertised to the chat model on every turn regardless of whether a sandbox exists. See
@@ -110,7 +112,7 @@ section 7.
 
 ### 2b. The MCP surface (`mcp_server.py:84-115`)
 
-`register_mcp_tools()` contains **66** `@mcp.tool()` handlers: 53 unconditional and 13
+`register_mcp_tools()` contains **65** `@mcp.tool()` handlers: 52 unconditional and 13
 wrapped in `if "<name>" not in _disabled:`. Two definitions have **no handler at all** and
 are therefore unreachable over `/mcp` by construction:
 
@@ -148,10 +150,10 @@ in the source comment as a **security control**, not a product decision.
 says padding the set with non-controls would stop the next reader telling which entries are
 load-bearing.
 
-**Effective `/mcp` tool count with the deployed flags: 54.** 66 handlers − 9 of the
+**Effective `/mcp` tool count with the deployed flags: 53.** 65 handlers − 9 of the
 excluded names that have handlers (`run_analysis` has none) − `read_artifact` −
 `get_credible_sets_stats` − `get_phenotype_report`. With both optional flags on it would be
-56. `tests/test_mcp_server.py` pins membership (`read_artifact` absent,
+55. `tests/test_mcp_server.py` pins membership (`read_artifact` absent,
 `list_capabilities` present) but asserts no count.
 
 ### 2c. The subagent surface (`subagent.py:404-435`)
@@ -195,7 +197,7 @@ TOOL_PROFILE_TOOLS: dict[str, set[str]] = {
 
 The second mechanism exists because the `code` surface **cannot** be written as categories:
 its three orchestration tools share a category with `launch_subagents`, which must stay out,
-and its four search tools share `general` with 14 others. Recategorising tools to make it fit
+and its four search tools share `general` with 13 others. Recategorising tools to make it fit
 was ruled out — a tool's `category` also decides what the `api` chat profile advertises and
 what subagent skills declaring `tool_categories={"general","api"}` can call
 (`skills/definitions.py`), so moving one to suit a profile changes live chat behaviour. No
@@ -253,13 +255,13 @@ general-only. Neither may raise, because the value is read back from stored rows
 
 | `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
 |---|---|---|---|---|---|
-| `null` / omitted — **the default** | no filter at all: everything | **68** | **65** | yes | yes |
-| `"api"` | categories: general + api + orchestration | 66 | 63 | yes | no |
-| `"bigquery"` | categories: general + bigquery + orchestration | 24 | 23 | yes | no |
-| `"rag"` | categories: general only | 18 | 18 | **no** | yes |
-| `"nocode"` | categories: general + api + bigquery | 64 | 62 | yes | no |
+| `null` / omitted — **the default** | no filter at all: everything | **67** | **64** | yes | yes |
+| `"api"` | categories: general + api + orchestration | 65 | 62 | yes | no |
+| `"bigquery"` | categories: general + bigquery + orchestration | 23 | 22 | yes | no |
+| `"rag"` | categories: general only | 17 | 17 | **no** | yes |
+| `"nocode"` | categories: general + api + bigquery | 63 | 61 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
-| any other string | not in either dict → general only, plus a warn-once (below) | 18 | 18 | yes | no |
+| any other string | not in either dict → general only, plus a warn-once (below) | 17 | 17 | yes | no |
 
 **The default row above is settled, not provisional.** `null` was to be reconsidered against the
 `code` arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
@@ -275,7 +277,7 @@ numbers, and the default stands unchanged. There is no 4h6.23 figure to cite.
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
 pre-code-execution surface can reach for the mechanism under test. Under the **deployed**
 flags `null` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`
-(65 → 62, measured 2026-08-19).
+(64 → 61; measured 65 → 62 on 2026-08-19, before `create_phewas_plot` was removed).
 
 That equivalence is a property of the deployed flags, **not** of the category. Excluding
 `orchestration` also excludes `launch_subagents`, which is the fourth tool in that category
@@ -393,15 +395,15 @@ unfiltered text is 35,420 chars. Measured 2026-08-22:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default) | 65 | 29,112 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
-| `api` | 63 | 29,109 | the above, plus the `query_database` wording variants; gains the SDK schema route |
-| `bigquery` | 23 | 26,098 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
-| `rag` | 18 | 19,515 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
-| `nocode` | 62 | 28,417 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-22: 29,112 → 28,417 chars) |
+| `None` (default) | 64 | 29,112 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
+| `api` | 62 | 29,109 | the above, plus the `query_database` wording variants; gains the SDK schema route |
+| `bigquery` | 22 | 26,098 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
+| `rag` | 17 | 19,515 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
+| `nocode` | 61 | 28,417 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-22: 29,112 → 28,417 chars) |
 | `code` | 7 | 21,715 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
 
 `bigquery` has two shapes and the row above is the sandbox-on one. With
-`SANDBOX_ENABLED=false` it is 22 tools and 25,253 chars, and the text differs by more than
+`SANDBOX_ENABLED=false` it is 21 tools and 25,253 chars, and the text differs by more than
 the missing `run_analysis` guidance: `query_database` keeps the annotation prohibition
 alive while the flag has taken `run_analysis` and with it the SDK route, so
 `genetics-results-suite-4h6.76` gives it a wording of its own — the prohibition followed by
@@ -414,7 +416,7 @@ surface" wording — which an earlier revision of this section placed on exactly
 surface, where it was false — matches **no shipped profile**: it survives only for a
 database-only shape with `get_variant_protein_effect` removed, which is synthesised in the
 test rather than resolved from a profile (see the route-completeness bullet below). The
-other profiles change with the flag too (`None` 64 tools / 28,417 chars, `api` 62 / 24,745,
+other profiles change with the flag too (`None` 63 tools / 28,417 chars, `api` 61 / 24,745,
 `code` 6 / 14,741; `rag` and `nocode` are unaffected).
 
 `tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
@@ -863,7 +865,8 @@ does not currently match, verified against source on 2026-08-18.
    *reachability*.
 4. **4h6.16's own recorded tool counts are stale, and the bead says so.** Its notes record
    "profile=None 63 defs; 'api' 61; 'bigquery' 21; 'rag' 18" measured 2026-08-07, and warn
-   they are already +2 behind. Re-derived today: **68 / 66 / 24 / 18**. The production log
+   they are already +2 behind. Re-derived 2026-08-18: **68 / 66 / 24 / 18**, and one fewer
+   each since `create_phewas_plot` left `general` for `genetics.plots.phewas`: **67 / 65 / 23 / 17**. The production log
    line quoted there (`Including 80 MCP tools (profile=all, 60 local, 20 external, 0 RAG)`)
    is likewise historical. The bead further claims the same stale counts appear in
    `docs/code-execution-security.md` as "60-tool surface", **twice** — that is no longer true:
@@ -920,7 +923,7 @@ Read a row as: `type` is the JSON-schema type; `req` yes means the name is in
 `input_schema.required`; `default` is emitted into the schema and is **advisory to the
 model**, since the handler applies its own default when the key is absent.
 
-### Category `general` — 18 tools
+### Category `general` — 17 tools
 
 #### `search_phenotypes`
 `TOOL_DEFINITIONS`, `definitions.py:16` — category `general`
@@ -1231,24 +1234,6 @@ Do NOT use this to look up a protein you can already name; resolving a gene symb
 | `count_only` | `boolean` | no | `false` | — | Return only the total number of matching entries, no rows. Cheap way to size a query before enumerating it. |
 
 `required`: []
-
-#### `create_phewas_plot`
-`TOOL_DEFINITIONS`, `definitions.py:1147` — category `general`
-
-Description as sent to the model:
-
-```text
-Create a PheWAS (Phenome-Wide Association Study) plot showing all phenotype associations for a variant. Returns a base64-encoded PNG image with phenotypes grouped by category on the X-axis and -log10(p-value) on the Y-axis.
-```
-
-| parameter | type | req | default | enum / items / bounds | description |
-|---|---|---|---|---|---|
-| `variant` | `string` | yes | — | — | Variant ID (chr:pos:ref:alt, e.g., '19:44908684:T:C') |
-| `resource` | `string` | no | — | — | Data resource: 'finngen', 'ukbb', or omit for all sources |
-| `significance_threshold` | `number` | no | `7.3` | — | Show significance line at this -log10(p) value (default 7.3, genome-wide significance) |
-| `min_mlog10p` | `number` | no | `2.0` | — | Only show associations with -log10(p) above this value (default 2.0) |
-
-`required`: ['variant']
 
 #### `get_gene_group_members`
 `TOOL_DEFINITIONS`, `definitions.py:1478` — category `general`
@@ -2285,7 +2270,7 @@ unreachable over `/mcp` no matter what `disabled_tools` says — today that is
 Counts to re-check whenever `definitions.py` changes: the four category totals, the
 per-profile totals in section 3 (both `TOOL_PROFILES` and `TOOL_PROFILE_TOOLS` — a new tool
 in an existing category silently joins the category profiles but never an explicit one), the
-66 MCP handlers, and the effective `/mcp` count of 54. The profile **key set** does not need
+65 MCP handlers, and the effective `/mcp` count of 53. The profile **key set** does not need
 re-deriving by hand: `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
 fails on any addition or rename, and section 3 says what to update when it does.
 
