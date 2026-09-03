@@ -868,7 +868,9 @@ Two things a `run_analysis` script gets without asking, both detailed in
   grouped along x by the category `phenotypes_v` gives the phenotype — the source's own
   grouping (a FinnGen ICD chapter in chapter order, an Open Targets project id, Kanta's
   Quantitative/Binary), deliberately not one harmonised across resources — with a phenotype
-  no row covers under `Other`, last. Names and categories are looked up by `trait_original`,
+  no row covers under `Other`, last; past ten categories the axis would be a wall of chapter
+  names, so a pleiotropic variant is grouped by resource instead and the returned
+  `grouped_by` says which. Names and categories are looked up by `trait_original`,
   the code, because `trait` on a credible-set row is a display form of it that resolves
   nothing; the lookup is `genetics.phenotypes(codes=…)`, an SDK function over that view
   with no tool counterpart. Both plots draw the significance line through one

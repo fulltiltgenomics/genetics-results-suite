@@ -131,15 +131,18 @@ def phewas(
     phenotype — the source's own grouping, so a FinnGen endpoint sits in its ICD chapter and
     an Open Targets study under its project, and a phewas across resources groups each
     resource's traits the way that resource does. ICD chapters keep chapter order; a
-    phenotype with no metadata row goes to `Other`, last. The strongest associations above
-    the significance line are named on the figure, each phenotype once, by the name
-    `phenotypes_v` carries or else by the `trait` column read as words.
+    phenotype with no metadata row goes to `Other`, last. A variant that answers in more
+    than ten categories — a pleiotropic one, where the axis would be a wall of chapter
+    names over groups of a point or two — is grouped by resource instead. The strongest
+    associations above the significance line are named on the figure, each phenotype once,
+    by the name `phenotypes_v` carries or else by the `trait` column read as words.
 
     The title names the variant with its gene and consequence, taken from the rows
     themselves, and the resources the associations came from.
 
     Returns a dict describing what was drawn: `path`, `variant`, `n_associations`,
-    `n_significant`, `categories` in plotting order, `strongest` and `strongest_name` (the
+    `n_significant`, `grouped_by` ("category" or "resource") with the `groups` in plotting
+    order, `strongest` and `strongest_name` (the
     phenotype code and name of the top association) with `strongest_mlog10p`, and
     `variant_consequence` and `variant_gene` as the title shows them.
 
