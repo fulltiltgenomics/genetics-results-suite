@@ -501,6 +501,13 @@ in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
+What the shipped `plots.pyi` therefore discloses beyond the signatures is the guidance in
+those docstrings, and one line of it is load-bearing rather than descriptive: that the 250 kb
+default window is the house default and is not to be widened as a matter of course. That is
+addressed at a model reading `list_capabilities(module="plots")`, which is the only place it
+can be said — nothing in the code can stop a caller passing a bigger `flank`, and chat
+transcripts show it doing exactly that.
+
 These figures do set one thing for themselves, against the no-style rule above: type sizes and
 rule widths, fixed in points against the figure width they draw at, because matplotlib's
 defaults are sized for a figure twice as wide and a caller who has set no style should not have

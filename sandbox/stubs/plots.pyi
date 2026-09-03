@@ -63,6 +63,12 @@ def locuszoom(
     centred with `flank` either side. `lead` defaults to the strongest association in the
     window, and LD is taken against it from the FinnGen LD server.
 
+    THE DEFAULT WINDOW IS THE RIGHT ONE UNLESS THE QUESTION IS ABOUT THE WINDOW. `flank` is
+    250 kb either side, i.e. a 500 kb plot; pass `variant=` and leave it alone. Widening it as
+    a matter of course spreads the signal over a picture that is mostly empty, and a locus
+    that genuinely needs more says so — `ld_partners_outside_window` names the correlated
+    variants the window excluded, and that is the signal to redraw wider.
+
     Colour is LD and shape is consequence, so a coding variant in high LD reads as both at
     once: a square sits in a coding sequence or changes the protein, a circle does not, and
     the lead takes whichever shape its own consequence gives it. Grey means "no r² to show" —
