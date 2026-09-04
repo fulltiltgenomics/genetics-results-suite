@@ -60,6 +60,7 @@ SDK_ALLOWLIST = frozenset(
         "tools/__init__.py",
         "tools/executor.py",
         "tools/sql_safety.py",
+        "tools/chembl.py",
         "tools/uniprot.py",
     }
 )

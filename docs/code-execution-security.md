@@ -415,6 +415,7 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/errors.py`
 - `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
+- `genetics_mcp_server/tools/chembl.py`
 - `genetics_mcp_server/tools/executor.py`
 - `genetics_mcp_server/tools/sql_safety.py`
 - `genetics_mcp_server/tools/uniprot.py`
