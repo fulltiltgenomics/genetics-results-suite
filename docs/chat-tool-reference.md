@@ -7,9 +7,9 @@ design overview.
 
 **Derived 2026-08-18** from these commits, with the `run_analysis`, `read_artifact` and
 `list_capabilities` descriptions refreshed 2026-08-19 for `genetics-results-suite-8z1`
-(image artifacts) and `-706` (the `genetics` import name), and the counts re-derived
-2026-09-03 when `create_phewas_plot` was removed in favour of `genetics.plots.phewas`
-(the `definitions.py:` line references below predate that and have not been re-derived):
+(image artifacts) and `-706` (the `genetics` import name), and every count re-derived
+2026-09-04 when the three ChEMBL tools landed (the `definitions.py:` line references in
+section 8 predate that and have not been re-derived; section 1's were):
 
 | repo | worktree | commit |
 |---|---|---|
@@ -45,15 +45,15 @@ All tool definitions are in one file:
 
 | symbol | line | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 15 | 64 tools — 17 `general`, 44 `api`, 3 `orchestration` |
-| `BIGQUERY_TOOL_DEFINITIONS` | 1616 | 2 tools — `query_database`, `get_database_schema` (category `bigquery`) |
-| `SUBAGENT_TOOL_DEFINITIONS` | 1669 | 1 tool — `launch_subagents` (category `orchestration`) |
-| `TOOL_PROFILES` | 1724 | 4 category-union profiles: `api`, `bigquery`, `rag`, `nocode` |
-| `TOOL_PROFILE_TOOLS` | 1773 | 1 explicit-allow-list profile: `code` (7 tool names) |
-| `get_anthropic_tools()` | 1748 | builds the Anthropic-format list handed to the chat model |
-| `register_mcp_tools()` | 1824 | registers FastMCP handlers — the `/mcp` surface |
+| `TOOL_DEFINITIONS` | 60 | 67 tools — 20 `general`, 44 `api`, 3 `orchestration` |
+| `BIGQUERY_TOOL_DEFINITIONS` | 1798 | 2 tools — `query_database`, `get_database_schema` (category `bigquery`) |
+| `SUBAGENT_TOOL_DEFINITIONS` | 1851 | 1 tool — `launch_subagents` (category `orchestration`) |
+| `TOOL_PROFILES` | 1895 | 4 category-union profiles: `api`, `bigquery`, `rag`, `nocode` |
+| `TOOL_PROFILE_TOOLS` | 1954 | 1 explicit-allow-list profile: `code` (7 tool names) |
+| `get_anthropic_tools()` | 2014 | builds the Anthropic-format list handed to the chat model |
+| `register_mcp_tools()` | 2102 | registers FastMCP handlers — the `/mcp` surface |
 
-**67 tool definitions in total.** By category across all three lists: `general` 17,
+**70 tool definitions in total.** By category across all three lists: `general` 20,
 `api` 44, `bigquery` 2, `orchestration` 4.
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
@@ -62,7 +62,7 @@ All tool definitions are in one file:
 definition sets `"required": True`. Since genetics-results-suite-4h6.70 the three
 constraint keywords are forwarded, but they appear on a parameter only where the SERVER
 already enforces the bound, derived from the enforcing code rather than the description —
-12 parameters carry one today (section 8 lists them per tool). Where prose and enforcement
+16 parameters carry one today (section 8 lists them per tool). Where prose and enforcement
 disagree the parameter stays bare: `search_scientific_literature.max_results` says "max 25"
 but that clamp exists only on the europepmc path and the default backend is perplexity, and
 `query_database.max_rows` is capped downstream in db-api. No parameter declares a `pattern`
@@ -104,15 +104,15 @@ flags, each defaulting to **false**:
 
 `k8s/deployments/chat-backend.yaml:128` sets `ENABLE_SUBAGENTS: "false"` explicitly and does
 not set the other two, so **in the deployed configuration all three are disabled** and the
-chat model at `tool_profile=null` sees **64 local tools**, not 67.
+chat model at `tool_profile=null` sees **67 local tools**, not 70.
 
 `run_analysis`, `read_artifact` and `list_capabilities` have **no** feature flag. They are
 advertised to the chat model on every turn regardless of whether a sandbox exists. See
 section 7.
 
-### 2b. The MCP surface (`mcp_server.py:84-115`)
+### 2b. The MCP surface (`mcp_server.py:86-119`)
 
-`register_mcp_tools()` contains **65** `@mcp.tool()` handlers: 52 unconditional and 13
+`register_mcp_tools()` contains **68** `@mcp.tool()` handlers: 52 unconditional and 16
 wrapped in `if "<name>" not in _disabled:`. Two definitions have **no handler at all** and
 are therefore unreachable over `/mcp` by construction:
 
@@ -128,32 +128,35 @@ the executor already rejects carry one — the four `window` arguments on
 `get_mpra_by_gene`, plus `get_mpra_pip_concordance_by_gene`'s `window` and `min_pip` and
 `get_hla_by_allele.max_rows` — where the declaration only moves an identical `SqlValueError`
 earlier. The **clamped** parameters (`web_search.max_results`, `search_mgi.max_results`,
-`search_cbioportal.max_results`, `search_uniprot.size`) are left bare here even though they
+`search_cbioportal.max_results`, `search_uniprot.size`,
+`get_drug_targets_for_gene.min_phase` / `.max_results`,
+`get_target_bioactivity.pchembl_min` / `.max_results`) are left bare here even though they
 declare bounds on the Anthropic surface: the server accepts an over-large value today and
 returns the capped count, so a `Field` bound would turn a working MCP call into a
 validation error. This asymmetry is intentional and is stated in `register_mcp_tools`'
 docstring.
 
-`_mcp_disabled` = `_settings.disabled_tools | {` the following 11 names `}`:
+`_mcp_disabled` = `_settings.disabled_tools | {` the following 14 names `}`:
 
 ```text
-search_scientific_literature   web_search                get_myvariant_annotations
-search_mgi                     search_cbioportal         get_protein_annotations
+search_scientific_literature   web_search                 get_myvariant_annotations
+search_mgi                     search_cbioportal          get_protein_annotations
 map_protein_variants           get_variant_protein_effect search_uniprot
+get_drug_targets_for_gene      get_drug_profile           get_target_bioactivity
 read_artifact                  run_analysis
 ```
 
-The first nine are product decisions (literature search needs the Perplexity API key;
-the UniProt tools are chat-only by choice). `read_artifact` and `run_analysis` are stated
+The first twelve are product decisions (literature search needs the Perplexity API key;
+the UniProt and ChEMBL tools are chat-only by choice). `read_artifact` and `run_analysis` are stated
 in the source comment as a **security control**, not a product decision.
-`list_capabilities` is deliberately **not** in the set — the comment at `mcp_server.py:106`
+`list_capabilities` is deliberately **not** in the set — the comment at `mcp_server.py:110`
 says padding the set with non-controls would stop the next reader telling which entries are
 load-bearing.
 
-**Effective `/mcp` tool count with the deployed flags: 53.** 65 handlers − 9 of the
+**Effective `/mcp` tool count with the deployed flags: 53.** 68 handlers − 12 of the
 excluded names that have handlers (`run_analysis` has none) − `read_artifact` −
 `get_credible_sets_stats` − `get_phenotype_report`. With both optional flags on it would be
-55. `tests/test_mcp_server.py` pins membership (`read_artifact` absent,
+55. The three ChEMBL tools left it unchanged: each ships a handler and each is excluded. `tests/test_mcp_server.py` pins membership (`read_artifact` absent,
 `list_capabilities` present) but asserts no count.
 
 ### 2c. The subagent surface (`subagent.py:404-435`)
@@ -255,13 +258,13 @@ general-only. Neither may raise, because the value is read back from stored rows
 
 | `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
 |---|---|---|---|---|---|
-| `null` / omitted — **the default** | no filter at all: everything | **67** | **64** | yes | yes |
-| `"api"` | categories: general + api + orchestration | 65 | 62 | yes | no |
-| `"bigquery"` | categories: general + bigquery + orchestration | 23 | 22 | yes | no |
-| `"rag"` | categories: general only | 17 | 17 | **no** | yes |
-| `"nocode"` | categories: general + api + bigquery | 63 | 61 | yes | no |
+| `null` / omitted — **the default** | no filter at all: everything | **70** | **67** | yes | yes |
+| `"api"` | categories: general + api + orchestration | 68 | 65 | yes | no |
+| `"bigquery"` | categories: general + bigquery + orchestration | 26 | 25 | yes | no |
+| `"rag"` | categories: general only | 20 | 20 | **no** | yes |
+| `"nocode"` | categories: general + api + bigquery | 66 | 64 | yes | no |
 | `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
-| any other string | not in either dict → general only, plus a warn-once (below) | 17 | 17 | yes | no |
+| any other string | not in either dict → general only, plus a warn-once (below) | 20 | 20 | yes | no |
 
 **The default row above is settled, not provisional.** `null` was to be reconsidered against the
 `code` arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
@@ -277,7 +280,7 @@ numbers, and the default stands unchanged. There is no 4h6.23 figure to cite.
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
 pre-code-execution surface can reach for the mechanism under test. Under the **deployed**
 flags `null` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`
-(64 → 61; measured 65 → 62 on 2026-08-19, before `create_phewas_plot` was removed).
+(67 → 64, measured 2026-09-04).
 
 That equivalence is a property of the deployed flags, **not** of the category. Excluding
 `orchestration` also excludes `launch_subagents`, which is the fourth tool in that category
@@ -382,7 +385,7 @@ path has never carried tools.
 Sections in the **unfiltered** text, in order: Core Principles; Analyzing data (the
 three-pass method); Tool Usage Guidelines; Mouse Model Evidence (search_mgi); Variant
 Annotation Sources; Functional / Regulatory Readouts; HLA / the MHC region; Protein
-Annotation (UniProt); Data Sources and Resource Names; Pseudo Credible Sets; Subagent
+Annotation (UniProt); Drug and Target Evidence (ChEMBL); Data Sources and Resource Names; Pseudo Credible Sets; Subagent
 Orchestration; Choosing How to Get Data; Response Style; Handling Uncertainty; Out of Scope
 and Limitations; Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology;
 Phenotype Reports.
@@ -391,19 +394,19 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
 everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
-unfiltered text is 35,420 chars. Measured 2026-08-22:
+unfiltered text is 38,617 chars. Measured 2026-09-04:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default) | 64 | 29,112 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
-| `api` | 62 | 29,109 | the above, plus the `query_database` wording variants; gains the SDK schema route |
-| `bigquery` | 22 | 26,098 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
-| `rag` | 17 | 19,515 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
-| `nocode` | 61 | 28,417 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (measured 2026-08-22: 29,112 → 28,417 chars) |
-| `code` | 7 | 21,715 | every per-tool routing section and Protein Annotation; keeps the science, the grounding rules and the script guidance |
+| `None` (default) | 67 | 31,893 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
+| `api` | 65 | 31,890 | the above, plus the `query_database` wording variants; gains the SDK schema route |
+| `bigquery` | 25 | 28,879 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
+| `rag` | 20 | 22,296 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
+| `nocode` | 64 | 31,198 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (31,893 → 31,198 chars) |
+| `code` | 7 | 21,824 | every per-tool routing section, Protein Annotation and Drug and Target Evidence; keeps the science, the grounding rules and the script guidance |
 
 `bigquery` has two shapes and the row above is the sandbox-on one. With
-`SANDBOX_ENABLED=false` it is 21 tools and 25,253 chars, and the text differs by more than
+`SANDBOX_ENABLED=false` it is 24 tools and 28,034 chars, and the text differs by more than
 the missing `run_analysis` guidance: `query_database` keeps the annotation prohibition
 alive while the flag has taken `run_analysis` and with it the SDK route, so
 `genetics-results-suite-4h6.76` gives it a wording of its own — the prohibition followed by
@@ -416,8 +419,8 @@ surface" wording — which an earlier revision of this section placed on exactly
 surface, where it was false — matches **no shipped profile**: it survives only for a
 database-only shape with `get_variant_protein_effect` removed, which is synthesised in the
 test rather than resolved from a profile (see the route-completeness bullet below). The
-other profiles change with the flag too (`None` 63 tools / 28,417 chars, `api` 61 / 24,745,
-`code` 6 / 14,741; `rag` and `nocode` are unaffected).
+other profiles change with the flag too (`None` 66 tools / 31,198 chars, `api` 64 / 27,526,
+`code` 6 / 14,850; `rag` and `nocode` are unaffected).
 
 `tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
 over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
@@ -769,6 +772,17 @@ is verbatim; the full descriptions are in section 8.
 - `get_variant_protein_effect`: *"Use it instead of asserting an amino-acid change (e.g. G2019S) from memory"* … *"An indel or MNV comes back with a note that it is unsupported here — do not read that as 'no effect'."*
 - `search_uniprot`: *"Use this when the question is 'which proteins ...?' rather than 'what about this protein?' (that is get_protein_annotations)."* … *"Never cite a UniProt accession from memory."*
 
+**The ChEMBL triangle** — the same shape over one source, plus a direction guard: two of the
+three take a gene and one takes a drug, so each description opens by saying which.
+
+- `get_drug_targets_for_gene`: *"`query` is a gene, never a drug name"* … *"For one named drug (its targets, ATC class and indications) use get_drug_profile. For how much medicinal chemistry exists against the target — potency measurements rather than drugs — use get_target_bioactivity."*
+- `get_drug_profile`: *"`query` is a drug, never a gene symbol"* … *"Start from a gene rather than a drug — 'what drugs hit this gene?' — with get_drug_targets_for_gene. For the potency measurements recorded against a target, use get_target_bioactivity."*
+- `get_target_bioactivity`: *"This is a count of assay measurements, not evidence of clinical use. A target with thousands of activities may have no drug in humans"* … *"For drugs and clinical candidates, and their phases, call get_drug_targets_for_gene; for one named drug, call get_drug_profile."*
+
+All three carry the same memory prohibition as the UniProt tools — *"NEVER cite a ChEMBL id,
+max_phase, mechanism or indication from memory"* — and the same `max_phase` warning: *"4
+means approved somewhere in the world, NOT 'FDA-approved'"*.
+
 **Negative constraints on interpretation**
 
 - `search_cbioportal`: *"This is somatic tumour data. It says nothing about germline association — do not read a high mutation frequency here as evidence for a GWAS or disease-association claim"* and the GRCh37/GRCh38 build warning (*"Never compare a coordinate from this tool against a GRCh38 position."*).
@@ -851,7 +865,7 @@ does not currently match, verified against source on 2026-08-18.
    remains an open future decision** — when it happens, the `code` profile's membership is
    one of the things it changes.
 2. **The MCP-exclusion half of 4h6.16 is already done, though the bead is open.**
-   `run_analysis` and `read_artifact` are both in `_mcp_disabled` (`mcp_server.py:104-113`),
+   `run_analysis` and `read_artifact` are both in `_mcp_disabled` (`mcp_server.py:117-118`),
    `run_analysis` additionally has no `register_mcp_tools` block, and
    `tests/test_mcp_server.py:223-234` pins both directions. So the bead's status
    under-reports what has landed; only the profile work remains.
@@ -923,7 +937,7 @@ Read a row as: `type` is the JSON-schema type; `req` yes means the name is in
 `input_schema.required`; `default` is emitted into the schema and is **advisory to the
 model**, since the handler applies its own default when the key is absent.
 
-### Category `general` — 17 tools
+### Category `general` — 20 tools
 
 #### `search_phenotypes`
 `TOOL_DEFINITIONS`, `definitions.py:16` — category `general`
@@ -1234,6 +1248,88 @@ Do NOT use this to look up a protein you can already name; resolving a gene symb
 | `count_only` | `boolean` | no | `false` | — | Return only the total number of matching entries, no rows. Cheap way to size a query before enumerating it. |
 
 `required`: []
+
+#### `get_drug_targets_for_gene`
+`TOOL_DEFINITIONS`, `definitions.py:1224` — category `general`
+
+Description as sent to the model:
+
+```text
+List the drugs and clinical candidates ChEMBL records as acting on a gene's protein target, with each drug's mechanism of action, action type (INHIBITOR, AGONIST, ANTAGONIST, ...), highest clinical phase reached, first approval year, withdrawal flag, ATC codes, and — only with `include_indications=True` — the indications they are developed for, at most 10 per drug with `n_indications` giving the true total.
+
+Use this before calling any gene a promising or novel drug target, and whenever the user asks about drugs, druggability, inhibitors, agonists, repurposing, or clinical phase for a gene. If approved drugs or clinical candidates already exist, say so and frame the finding as supporting a known mechanism rather than as a new opportunity.
+
+`max_phase` is ChEMBL's highest phase reached ANYWHERE, by any regulator, for any indication: 4 means approved somewhere in the world, NOT "FDA-approved" — never write "FDA-approved" on the strength of this field. 0 to 3 are preclinical and clinical stages — 0 is a phase ChEMBL records, distinct from None, which means no phase recorded: unknown rather than zero. `mechanism_max_phase` is the phase of that specific mechanism annotation when it differs from the molecule's.
+
+`query` is a gene, never a drug name: a gene symbol (preferred), a UniProt accession, or a `CHEMBL<number>` target id. A symbol or accession is resolved through UniProt, then to the human ChEMBL target sharing that accession; the SINGLE PROTEIN target is chosen where one exists. Check which target answered before quoting the result — `target_chembl_id`, `target_pref_name` and `target_type` name it, `other_targets` lists any others sharing the accession, and `resolution` carries the `accession`, `n_targets` and a `note`. A gene with no ChEMBL target is a normal result with `count` 0, not an error.
+
+Examples:
+- Does anything drug this gene: get_drug_targets_for_gene(query='PCSK9')
+- Approved drugs only, with what they treat: get_drug_targets_for_gene(query='IL6R', min_phase=4, include_indications=True)
+
+NEVER cite a ChEMBL id, max_phase, mechanism or indication from memory — they must come from a tool result in this conversation. Every successful result carries an `attribution` line; include it when citing ChEMBL content.
+
+For one named drug (its targets, ATC class and indications) use get_drug_profile. For how much medicinal chemistry exists against the target — potency measurements rather than drugs — use get_target_bioactivity.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `query` | `string` | yes | — | — | Gene symbol (preferred, e.g. 'PCSK9'), UniProt accession, or ChEMBL target id ('CHEMBL235'). Never an accession or ChEMBL id recalled from memory. |
+| `min_phase` | `number` | no | `0` | `minimum` 0 / `maximum` 4 | Keep only drugs whose max_phase is at least this (0 keeps everything including unknown-phase rows, 4 keeps only drugs approved somewhere). Default 0. |
+| `include_indications` | `boolean` | no | `false` | — | Also fetch what each drug is developed or approved for (EFO/MeSH terms with a per-indication max phase), at most 10 per drug. Costs an extra request; default false. |
+| `max_results` | `integer` | no | `25` | `minimum` 1 / `maximum` 100 | Maximum drug rows to return, highest phase first (default 25, max 100). `n_matching` reports how many passed the phase filter before this cap. |
+
+`required`: ['query']
+
+#### `get_drug_profile`
+`TOOL_DEFINITIONS`, `definitions.py:1271` — category `general`
+
+Description as sent to the model:
+
+```text
+Get what ChEMBL holds about one drug or compound: its preferred name and ChEMBL id, highest clinical phase, first approval year, withdrawal flag, ATC classification, the targets it acts on with mechanism of action and action type, and the indications it is developed or approved for (EFO and MeSH terms, each with its own max phase), at most 50 of them with `n_indications` giving the true total.
+
+Use this when the user names a drug — "what does metformin target?", "what is CHEMBL1431 approved for?", "is this compound withdrawn?".
+
+`max_phase` is the highest phase reached ANYWHERE, by any regulator, for any indication: 4 means approved somewhere in the world, NOT "FDA-approved". None means ChEMBL records no phase — unknown, not zero.
+
+`query` is a drug, never a gene symbol: a drug name, synonym or trade name, or a `CHEMBL<number>` molecule id. Check which molecule answered before quoting the result: `resolution.kind` says how the name matched (`chembl_id`, `pref_name` or `synonym`), `drug.molecule_chembl_id` says which molecule was chosen, `resolution.n_candidates` how many matched, and `resolution.other_candidates` lists the rest. A name with no ChEMBL molecule returns `drug` None with a note, not an error.
+
+NEVER cite a ChEMBL id, max_phase, mechanism or indication from memory — they must come from a tool result in this conversation. Every successful result carries an `attribution` line; include it when citing ChEMBL content.
+
+Start from a gene rather than a drug — "what drugs hit this gene?" — with get_drug_targets_for_gene. For the potency measurements recorded against a target, use get_target_bioactivity.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `query` | `string` | yes | — | — | Drug name, synonym or trade name (e.g. 'metformin', 'evolocumab'), or a ChEMBL molecule id ('CHEMBL1431'). Never a ChEMBL id recalled from memory. |
+
+`required`: ['query']
+
+#### `get_target_bioactivity`
+`TOOL_DEFINITIONS`, `definitions.py:1293` — category `general`
+
+Description as sent to the model:
+
+```text
+Summarise the medicinal chemistry recorded against a gene's protein target: how many potency measurements exist at or above a pChEMBL threshold, how many distinct compounds they cover, the breakdown by assay type (IC50, Ki, EC50, ...), and the most potent compounds with their best pChEMBL value and clinical phase.
+
+Use this for "how tractable / how well explored is this target?" — whether a chemical series exists at all, and how potent the best compounds are. pChEMBL is -log10 of the molar activity value, so 6 is 1 µM, 7 is 100 nM, 9 is 1 nM; 6 is the usual "active" cut-off.
+
+This is a count of assay measurements, not evidence of clinical use. A target with thousands of activities may have no drug in humans, and a drugged target may have few measurements. For drugs and clinical candidates, and their phases, call get_drug_targets_for_gene; for one named drug, call get_drug_profile.
+
+`query` is a gene, never a drug name: a gene symbol (preferred), a UniProt accession, or a `CHEMBL<number>` target id, resolved the same way as get_drug_targets_for_gene. Check which target answered before quoting the result — `target_chembl_id`, `target_pref_name` and `target_type` name it, `other_targets` lists any others sharing the accession, and `resolution` carries the `accession`, `n_targets` and a `note`. The activity walk is capped, so read `truncated` and `total_count`: when `truncated` is true, `n_activities`, `n_distinct_molecules` and `by_standard_type` count only the rows read, while `total_count` stays ChEMBL's count for the whole filter, so you can say how much was left behind.
+
+NEVER cite a ChEMBL id, pChEMBL value or activity count from memory — they must come from a tool result in this conversation. Every successful result carries an `attribution` line; include it when citing ChEMBL content.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `query` | `string` | yes | — | — | Gene symbol (preferred, e.g. 'PPARG'), UniProt accession, or ChEMBL target id ('CHEMBL235'). Never an accession or ChEMBL id recalled from memory. |
+| `pchembl_min` | `number` | no | `6.0` | `minimum` 0 / `maximum` 14 | Minimum pChEMBL value to count (default 6.0, i.e. 1 µM). Raise to 7 or 8 to look only at potent compounds. |
+| `max_results` | `integer` | no | `25` | `minimum` 1 / `maximum` 100 | Maximum top compounds to return, best pChEMBL first (default 25, max 100). The counts and the assay-type breakdown cover every activity read, not just these. |
+
+`required`: ['query']
 
 #### `get_gene_group_members`
 `TOOL_DEFINITIONS`, `definitions.py:1478` — category `general`
@@ -2270,7 +2366,7 @@ unreachable over `/mcp` no matter what `disabled_tools` says — today that is
 Counts to re-check whenever `definitions.py` changes: the four category totals, the
 per-profile totals in section 3 (both `TOOL_PROFILES` and `TOOL_PROFILE_TOOLS` — a new tool
 in an existing category silently joins the category profiles but never an explicit one), the
-65 MCP handlers, and the effective `/mcp` count of 53. The profile **key set** does not need
+68 MCP handlers, and the effective `/mcp` count of 53. The profile **key set** does not need
 re-deriving by hand: `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
 fails on any addition or rename, and section 3 says what to update when it does.
 
