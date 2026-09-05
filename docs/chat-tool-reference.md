@@ -274,7 +274,10 @@ cost AND does not regress quality, keep it behind the profile rather than defaul
 that conservative branch is exactly the shipped state, so descoping the benchmark **accepts** the
 documented default: **`code` stays opt-in and `null` remains the default profile.** The arms were
 never compared, so this is not a record of the code arm losing — the decision was not taken on
-numbers, and the default stands unchanged. There is no 4h6.23 figure to cite.
+numbers, and the default stands unchanged. There is no 4h6.23 figure to cite. A deployment can
+still start its users on `code` — `DEFAULT_TOOL_PROFILE` is served through the user-settings
+endpoint to anyone who has not chosen, and staging sets it (`docs/project-spec.md`, "Tool
+profiles") — but that moves what the browser sends, not what a null `tool_profile` resolves to.
 
 `"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
 cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
@@ -295,7 +298,9 @@ Three behaviours worth stating plainly:
 - **`profile=None` is not "the union of the profiles" — it is "no filtering".** The
   `if tool_profile is not None` guard at `definitions.py:1777` is skipped entirely, so the
   default surface is every definition in all three lists. `code` **ships dark**: it changes
-  no default, and rolling it back is deleting one dict entry.
+  no default, and rolling it back is deleting one dict entry. `DEFAULT_TOOL_PROFILE` does not
+  touch this either — it is served to the browser as a starting choice, never applied to a
+  request.
 - **An unknown profile name degrades to `general` only** rather than raising. A typo in
   `tool_profile` costs the model 47 tools and the request still succeeds. The degrade was
   kept deliberately when `code` landed — the value is read back from `chat_messages` rows
