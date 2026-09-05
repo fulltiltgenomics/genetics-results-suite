@@ -9,6 +9,7 @@
     import genetics
     genetics.plots.locuszoom(phenotype="H8_HEARINGLOSS", variant="12:49578357:C:T")
     genetics.plots.phewas(variant="19:44908684:T:C")
+    genetics.plots.upset(sets={"Crohn": cd_ids, "UC": uc_ids})
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -152,5 +153,51 @@ def phewas(
     `data=` to plot a frame already in hand — credible-set rows, or any frame with a `trait`
     column and `mlog10p` or `pval`; `trait_original` and `dataset` are what the names and
     categories are looked up by, and without them every point is `Other`.
+    """
+    ...
+
+def upset(
+    *,
+    sets: Any = None,
+    data: pl.DataFrame | None = None,
+    columns: Any = None,
+    count: str | None = None,
+    counts: Any = None,
+    sort_by: str = 'size',
+    min_count: int = 1,
+    max_intersections: int = _UPSET_MAX_INTERSECTIONS,
+    ylabel: str = 'Intersection size',
+    path: str | None = None,
+    title: str | None = None,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """UpSet plot: how many elements fall in each exclusive intersection of some sets.
+
+    Three ways to say what the sets are, for three shapes the data comes in:
+
+    - `sets={"Crohn": ids, "UC": ids}` — each set's members, any hashable values; every
+      element is counted once, in the intersection of exactly the sets that hold it.
+    - `data=frame` with one boolean (or 0/1) column per set and one row per element;
+      `columns=[...]` names the membership columns, else every boolean column is one. With
+      `count="n"` each row is a combination already tallied — the shape a `GROUP BY` over
+      indicator columns returns — and the column is summed rather than the rows counted.
+    - `counts={("CD",): 9, ("UC",): 48, ("CD", "UC"): 4}` — exclusive intersection sizes
+      already known, keyed by the names of the sets in each; a plain string keys one set.
+
+    Sets are rows, largest at the top, with their total size barred to the left; the
+    intersections are columns, largest first (`sort_by="degree"` orders them by how many sets
+    they span instead), each with its count above the bar and the sets it spans marked in the
+    matrix below. Only intersections of at least `min_count` are drawn, and no more than
+    `max_intersections` of them. Nothing is coloured: the bars carry a count and the dots a
+    membership, and a colour would encode nothing a reader decodes.
+
+    Returns a dict describing what was drawn: `path`, `sets` in row order top to bottom with
+    `set_sizes`, `intersections` in column order as `{"sets": [...], "count": n}`,
+    `n_intersections` (non-empty, before the cut) and `n_elements` (their sum).
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw in its place in an existing figure — the axis is replaced by the three
+    panels — in which case nothing is saved.
     """
     ...

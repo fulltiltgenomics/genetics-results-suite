@@ -491,10 +491,11 @@ the price of the style being opt-in.
 two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
 a style back in fails the build rather than quietly restyling every figure.
 
-`genetics.plots` is a second SDK surface: standard figures — a locuszoom and a phewas today —
-as functions rather than as instructions a script rederives. It is shipped by `prune_venv.py`'s
-`SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import closure, resolved through
-a module `__getattr__` so chat-backend and mcp-server never import matplotlib. That has one
+`genetics.plots` is a second SDK surface: standard figures — a locuszoom, a phewas and an
+upset today — as functions rather than as instructions a script rederives. It is shipped by
+`prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import
+closure, resolved through a module `__getattr__` so chat-backend and mcp-server never import
+matplotlib. That has one
 consequence worth stating: genetics-mcp-server's `tests/test_sdk_import_closure.py` measures
 the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OUTSIDE_CLOSURE`
 in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree

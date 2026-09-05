@@ -840,7 +840,7 @@ Two things a `run_analysis` script gets without asking, both detailed in
   it before the first fork, so 200 dpi is the resolved default in every child. `scienceplots`
   is installed and its style names are registered, but a script asks for it —
   `plt.style.use(["science", "no-latex"])` — rather than having it imposed.
-- **`genetics.plots` holds the standard figures**, a locuszoom and a phewas today, as
+- **`genetics.plots` holds the standard figures**, a locuszoom, a phewas and an upset today, as
   functions a script calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
@@ -877,8 +877,21 @@ Two things a `run_analysis` script gets without asking, both detailed in
   with no tool counterpart. Both plots draw the significance line through one
   helper — grey, dashed, labelled `p 5e-8` on the line itself, no legend box — and the phewas
   keeps at least two units of -log10 p between its strongest point and the top of the panel
-  so the point labels have somewhere to go. There is no chat tool for either figure: a figure
-  is a `run_analysis` artifact, and the servers do not import matplotlib.
+  so the point labels have somewhere to go. `upset` is the general one, because what a user
+  wants intersected is not one kind of thing — two phenotypes' credible sets by whether they
+  colocalize, coding variants by which GWAS type fine-mapped them — so it takes the sets in
+  whichever of three shapes the script has: members (`sets={name: ids}`), a frame with one
+  membership column per set and optionally a tallied `count` column (the shape a `GROUP BY`
+  over indicator columns returns), or intersection counts already known
+  (`counts={("CD", "UC"): 4}`). It draws them one way: sets as rows largest first with their
+  size barred to the left, exclusive intersections as columns largest first (or by degree),
+  a dot matrix marking each column's sets, and every count outside the bar it counts — above
+  an intersection bar, beyond the tip of a set bar, with each scale extended to hold them —
+  since the scripts this replaced put the set names under the bars and the intersection
+  names under the dots, where both were overprinted. Nothing on it is coloured: a bar carries
+  a count and a dot a membership, and a hue per bar reads as a categorical the figure never
+  explains. There is no chat tool for any of these figures: a figure is a `run_analysis`
+  artifact, and the servers do not import matplotlib.
 - **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
   results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
   `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
