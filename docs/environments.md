@@ -195,6 +195,13 @@ which is hardcoded in ~40 manifests.
       `oauth2-proxy-secrets` *and* rendered into the realm import, so both sides agree).
       Use a **different `SLACK_WEBHOOK_URL`** than production, or leave it empty; otherwise
       staging's daily monitor report lands in the production alert channel.
+- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging`.** Staging starts its chat users on
+      the `code` profile — the seven-tool code-execution surface — while production leaves the
+      variable unset and starts them on **All**. It is rendered into chat-backend by
+      `scripts/deploy.sh` and served to the browser as the profile of anyone who has not chosen
+      one; a user's own choice still wins and persists (`docs/project-spec.md`, "Tool profiles").
+      Since it is read from `.env.<name>`, a deploy run without the line silently returns staging
+      to All — that is the drift to look for when staging answers with direct tools again.
 - [ ] **Confirm there is no `terraform/terraform.tfvars`.** The daly values now live in
       `terraform/terraform.tfvars.daly`; the scripts refuse to run while both exist.
 - [ ] **`unset REGISTRY`** if your shell profile exports the production one (it currently does:

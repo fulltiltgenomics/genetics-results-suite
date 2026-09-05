@@ -2313,6 +2313,18 @@ code arm was never run against the baseline, so nothing here records it losing; 
 simply not taken on numbers, and the documented default therefore stands. No A/B result exists
 to look up, and none is coming from this epic.
 
+That default is the *request's*: a null `tool_profile` still resolves to the full surface, and
+nothing here changes it. What a deployment can move is what its users **start on**.
+`DEFAULT_TOOL_PROFILE` on chat-backend names a profile that the user-settings endpoint serves as
+`chat_tool_profile` to any user who has not stored one, and the browser adopts it exactly as it
+adopts a stored choice: the **Tools** control shows it, an explicit choice overrides it and
+persists, and a request that omits the field is unchanged. It rides the settings endpoint rather
+than the request because the browser sends null for an explicit **All**, which a request-side
+default could not tell from an omitted field. A value that names no profile is logged once and not
+served, since the browser would flag it and the chat would degrade to general-only. The variable
+is rendered into `k8s/deployments/chat-backend.yaml` from the deployment's `.env.<name>`, empty
+when unset; which deployments set it is in `docs/environments.md`.
+
 `nocode` is the fourth category-union profile, added for the code-versus-tools A/B and,
 like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
 offer it, and its own list does not even contain the name. That is not an oversight to be corrected:
@@ -2339,6 +2351,8 @@ rode along with every request while nothing could change it — which is why the
 a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
 A/B'd against the full one. The default is unchanged: **All** — and, since that A/B was descoped
 without running (see "It **ships dark**" above), that default is settled rather than provisional.
+A deployment that sets `DEFAULT_TOOL_PROFILE` starts its users elsewhere without moving that
+default (see above); staging does.
 
 The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
 backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
