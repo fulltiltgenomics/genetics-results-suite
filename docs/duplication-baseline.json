@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-08-31, against commit 32cfbb593440 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
-  "measured_date": "2026-08-31",
-  "measured_commit": "32cfbb593440b2da961621bc823f9bba489f9f31",
+  "SNAPSHOT": "Measured on 2026-09-01, against commit 8b5ed9988792 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
+  "measured_date": "2026-09-01",
+  "measured_commit": "8b5ed9988792f2b3884913eedb66c425130337aa",
   "measured_tree_dirty": true,
-  "reason": "intra 118 groups / 139 files -> 109 / 122; cross 34 / 74 unchanged; declared 6 / 8 unchanged; generated 33 / 3 unchanged. Every bit of the movement is intra-repo, and it decomposes exactly with no interaction term - measured by re-running with one repo at a time held at its pre-landing tree (git archive into a scratch dir; no checkout touched): genetics-results-db 00603f3 'scripts/lib/common.sh: share what the 15 loaders each re-typed' -1 group / -15 files; genetics-results-munge fdff638 'peak_utils.py: one output contract for the peak munges' -8 / -2; genetics-results-api b5fc9db + 9a17822 + 6ba183c (session guard, warming declared at registration, stream-iterator collapse) 0 / 0; genetics-results-suite 1d36b6d + 5d886d0 + 32cfbb5 (twins registry, census, whitelist coverage) 0 / 0. 109+1+8 = 118 and 122+15+2 = 139, so the four attributions are the whole delta. The api zero is a property of the metric, not a failed landing: a group needs two distinct FILES, so collapsing three byte-identical tsv_line_iterator variants inside one streams.py and routing six _ensure_storage call sites through one guard are invisible here by construction. The cross row did not move because nothing was merged across repos: the three sandbox_token implementations and the two sandbox_budget implementations are unchanged BY DESIGN, detected rather than merged. NEW FIELD: repo_commits records each scanned repo's own HEAD and tree_dirty, because a cross-repo count can move on a sibling's commit alone with this repo's HEAD unchanged, and the old single measured_commit could not say so.",
+  "reason": "intra 109 groups / 122 files unchanged; cross 34 / 74 unchanged; declared 6 / 8 -> 7 / 9; generated 33 / 3 -> 32 / 3. All of it is one file's doing, measured rather than inferred: re-running with configs/datasets-schema-example.yaml alone held at its 8b5ed99 content (written into the working tree, measured, restored byte-identical; no checkout touched) reproduces the previous snapshot's four rows exactly - 109/122, 34/74, 6/8, 33/3 - so no sibling commit is in this delta. That file was brought into line with the canonical registry: 'exposed', 'resource_derivation' and a 'dataset_cross_check' entry across four tables, covering all three derivation modes. It moved intra 109 -> 110 and generated 33 -> 32 in ONE step, not two: the seven-key per-table shape {exposed, resource_derivation, description, columns, column_types, examples, categorical_columns} was already a group of genetics-results-suite:configs/datasets.yaml plus its two sync-datasets.sh copies, netted out whole as generated; the example joining it left two hand-maintained files after the strip, so the group survived netting as undeclared intra-repo. The duplication is larger BECAUSE THE EXAMPLE IS NOW CORRECT - it was missing the very keys it exists to demonstrate - which is why the new configs/twins.yaml entry schema-example-table-shape declares that group rather than this snapshot absorbing it as anonymous growth: the entry takes intra 110 -> 109 and spends declared 6 / 8 -> 7 / 9, which is the ratchet working as designed. It is narrowed with 'symbols' to that one group; the same two files carry ten further undeclared enumeration groups - the dataset and resource name lists the example hand-copies out of the canonical registry - and an entry naming the files alone would net nine of them out. One measurement worth recording beside the numbers: writing the canonical side's symbols as exactly the eleven table entries that share the shape raised a NEW cross-repo group on the first run, cross 34 / 74 -> 35 / 76, because those eleven names are name for name the LINTED_VIEWS literal in genetics-results-db's tests/test_derived_view_lists.py. The entry's twelfth name closes that and its reason says why, so the cross row is unchanged here because it was fixed, not because nothing was tried. Two further edits are in this tree and in none of the counts: configs/datasets.yaml's gene_annotations_v gained a line saying 'resource' is a routing tag rather than a provenance claim (synced to the two gitignored sibling copies with scripts/sync-datasets.sh), and genetics-mcp-server replaced five prose copies of a known-wrong '12x' cache-price figure with the relationship - comments and docstrings only, which the AST comparison strips, and no literal set anywhere.",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -14,8 +14,8 @@
   ],
   "repo_commits": {
     "genetics-mcp-server": {
-      "commit": "bb116c8a15b37bb89475ccd04cf48fe0b486aa7d",
-      "tree_dirty": false
+      "commit": "c04a7635e0684e7f8d5f8393a7b31608464f75d1",
+      "tree_dirty": true
     },
     "genetics-results-api": {
       "commit": "6ba183c8081f68d70f2be84ed50ee2a475ff9435",
@@ -23,18 +23,18 @@
     },
     "genetics-results-browser": {
       "commit": "1ad0764847ef960ad69b3ccef70ae5272d69a640",
-      "tree_dirty": false
+      "tree_dirty": true
     },
     "genetics-results-db": {
       "commit": "00603f3c1dd10222f17ef3b4f6a0f22af1a334e3",
-      "tree_dirty": false
+      "tree_dirty": true
     },
     "genetics-results-munge": {
       "commit": "fdff638983218b71f579c431a882589aeb19a06d",
       "tree_dirty": false
     },
     "genetics-results-suite": {
-      "commit": "32cfbb593440b2da961621bc823f9bba489f9f31",
+      "commit": "8b5ed9988792f2b3884913eedb66c425130337aa",
       "tree_dirty": true
     }
   },
@@ -48,10 +48,10 @@
         "on_disk": 1
       },
       ".py": {
-        "read": 104,
-        "parsed": 104,
-        "units": 101,
-        "on_disk": 104
+        "read": 105,
+        "parsed": 105,
+        "units": 102,
+        "on_disk": 105
       },
       ".yaml": {
         "read": 0,
@@ -148,10 +148,10 @@
         "on_disk": 33
       },
       ".py": {
-        "read": 37,
-        "parsed": 37,
-        "units": 34,
-        "on_disk": 37
+        "read": 38,
+        "parsed": 38,
+        "units": 35,
+        "on_disk": 38
       },
       ".sh": {
         "read": 19,
@@ -164,7 +164,7 @@
   "intra": {
     "groups": 109,
     "files": 122,
-    "lockstep": 98,
+    "lockstep": 99,
     "by_kind": {
       "bodies-exact": 37,
       "bodies-near": 34,
@@ -174,7 +174,7 @@
   "cross": {
     "groups": 34,
     "files": 74,
-    "lockstep": 29,
+    "lockstep": 31,
     "by_kind": {
       "bodies-exact": 18,
       "bodies-near": 5,
@@ -182,13 +182,13 @@
     }
   },
   "declared": {
-    "groups": 6,
-    "files": 8,
-    "lockstep": 7,
+    "groups": 7,
+    "files": 9,
+    "lockstep": 8,
     "by_kind": {
       "bodies-exact": 3,
       "bodies-near": 0,
-      "enumerations": 3
+      "enumerations": 4
     },
     "by_twin": {
       "sandbox-wire-contract": 1,
@@ -196,17 +196,18 @@
       "auth-allow-list-matcher": 0,
       "exposed-views-pin": 1,
       "derived-view-lists-pin": 0,
-      "sandbox-token-and-budget": 4
+      "sandbox-token-and-budget": 4,
+      "schema-example-table-shape": 1
     }
   },
   "generated": {
-    "groups": 33,
+    "groups": 32,
     "files": 3,
-    "lockstep": 66,
+    "lockstep": 64,
     "by_kind": {
       "bodies-exact": 0,
       "bodies-near": 0,
-      "enumerations": 33
+      "enumerations": 32
     }
   }
 }

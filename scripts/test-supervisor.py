@@ -53,6 +53,7 @@ from supervisor_tests.units import test_cap_units, test_hardening_units
 from supervisor_tests.audit import test_audit_units, test_audit_stream
 from supervisor_tests.image import test_container
 from supervisor_tests.startup import test_startup_wipe
+from supervisor_tests.tmpwipe import test_shared_tmp_wipe
 from supervisor_tests.isolation import test_isolation
 from supervisor_tests.forkserver import test_forkserver_units, test_forkserver_lost_fork_reply, test_forkserver_death_mid_execution
 from supervisor_tests.survivors import test_survivors, test_survivor_chain
@@ -64,6 +65,19 @@ from supervisor_tests.reaper import test_orphan_reaper, test_drain_continuous_wr
 
 def run_in_process():
     tmp = tempfile.mkdtemp(prefix="supervisor-test-")
+    # EVERY group below runs the real _execute_inner, which empties SHARED_TMPFS_PATHS before
+    # each fork. Left at its production value that is the INVOKING USER'S OWN /tmp and /dev/shm,
+    # several hundred times over: mkdtemp honours TMPDIR, so the only thing standing between a
+    # test run and the caller's ssh-agent socket is the `protect` refusal happening to fire
+    # because the run's scratch root happened to land under /tmp. Set TMPDIR anywhere else and
+    # it does not fire. Repointed here for the WHOLE run rather than per group, so no group can
+    # reach the real paths whatever TMPDIR says; the group that is ABOUT the wipe repoints it
+    # again to its own pair, and restores it to these.
+    shared_tmpfs = (os.path.join(tmp, "shared-tmp"), os.path.join(tmp, "shared-shm"))
+    for path in shared_tmpfs:
+        os.makedirs(path)
+    real_shared_tmpfs = harness.sup.SHARED_TMPFS_PATHS
+    harness.sup.SHARED_TMPFS_PATHS = shared_tmpfs
     try:
         print("startup assertions")
         test_nsswitch(tmp)
@@ -81,6 +95,8 @@ def run_in_process():
         test_artifact_encryption(tmp)
         print("startup wipe")
         test_startup_wipe(tmp)
+        print("the runtime-supplied temp directories")
+        test_shared_tmp_wipe(tmp)
         print("fork server units")
         test_forkserver_units(tmp)
         print("bounded header reads")
@@ -157,6 +173,7 @@ def run_in_process():
         finally:
             server.close()
     finally:
+        harness.sup.SHARED_TMPFS_PATHS = real_shared_tmpfs
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -220,6 +237,7 @@ def run_container(base_url, retention_s=None, container_name=None):
         "supervisor's pid namespace, and disables the kill and the sweep in the module to get "
         "its negative control",
         "startup wipe (test_startup_wipe) — calls wipe_unrecognised_scratch() directly",
+        "the runtime-supplied temp directories (test_shared_tmp_wipe) — repoints SHARED_TMPFS_PATHS in the module and swaps the wipe for a no-op to get its control, neither of which is reachable over the wire",
         "capping and accounting units (test_cap_units) — calls _cap_output/_dir_usage directly",
         "hardening units (test_hardening_units) — calls _trim_artifacts/_cap_response/_reap directly",
         "audit stream units (test_audit_units) — calls _AuditForwarder and _drain directly",

@@ -34,6 +34,21 @@ variable "kube_context" {
   default     = ""
 }
 
+variable "bq_dataset" {
+  description = <<-EOT
+    The BigQuery dataset this deployment SERVES, in the project named by project_id. One value
+    for every reader: scripts/deploy.sh renders it into db-api's DATASET_ID and the monitor
+    CronJob's BQ_DATASET, so the API and the report that checks the API cannot end up on
+    different data. NO resource reads it; declared here only so terraform does not warn "Value
+    for undeclared variable" on every plan.
+    Leave it out to serve genetics_results. Setting it to the empty string is refused by
+    deploy.sh rather than defaulted, because db-api's own fallback is genetics_results — an
+    empty value would silently serve PRODUCTION data from whichever cluster this is.
+  EOT
+  type        = string
+  default     = "genetics_results"
+}
+
 variable "namespace" {
   description = "Kubernetes namespace"
   default     = "genetics"

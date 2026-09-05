@@ -34,6 +34,13 @@ spec:
         - --cookie-secure=true
         - --cookie-httponly=true
         - --cookie-samesite=lax
+        # must stay below the realm's accessTokenLifespan (300s). Without it oauth2-proxy never
+        # refreshes, so /oauth2/auth starts answering 401 one access-token lifetime after
+        # sign-in and the gateway 302s to /oauth2/start. A GET survives that invisibly — the
+        # Keycloak SSO session is still live, so the browser re-authenticates and retries — but
+        # a redirect strips a POST's body, so the chat message is discarded and the SSE fetch
+        # resolves against the landing page as a 200 text/html.
+        - --cookie-refresh=2m
         - --upstream=static://200
         - --skip-provider-button=true
         ports:

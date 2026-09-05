@@ -157,8 +157,12 @@ Repo-specific consequences:
 
 - **Enumeration and doc-wording findings append; they never get their own bead.** This is
   the single largest class here — the doc-ownership section above exists because these rot
-  silently, and a thorough validator turns up one or two per cycle. `genetics-results-suite-e8e`
-  is the standing batch bead for that; add to its `notes`.
+  silently, and a thorough validator turns up one or two per cycle. Each epic keeps **one**
+  standing batch bead for that, deferred so `bd ready` never serves it; add to its `notes`
+  and unpark it once, at the end, for a single doc-accuracy pass. Find it with
+  `bd list --labels=icebox --json`, and open one with the epic if none exists — this line
+  named a bead that had been closed for weeks, so the append target did not exist and every
+  enumeration finding was headed for a bead of its own.
 - **A latent hazard belongs at the site, not in the tracker.** If the code has a line where
   the hazard lives, a comment there reaches the next person who touches it. A bead does not.
 - **"Found but deliberately not fixed" is a complete outcome.** It does not need a bead to
