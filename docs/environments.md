@@ -97,6 +97,12 @@ construction.
 
 Two shared-project hazards are handled explicitly:
 
+- **The dataset the cluster serves.** `bq_dataset` in the tfvars (default `genetics_results`)
+  is rendered by `deploy.sh` into db-api's `DATASET_ID` *and* the monitor CronJob's
+  `BQ_DATASET`, so both readers of a deployment see the same data. daly-staging sets
+  `genetics_results_dev`, the rehearsal clone (`docs/bigquery-dev-dataset.md`). `deploy.sh`
+  refuses an empty value rather than defaulting it: db-api's own fallback is
+  `genetics_results`, so an empty render serves production data from staging without failing.
 - **Log sinks.** `terraform/logging.tf` filters both sinks on
   `resource.labels.cluster_name`. Without it a namespace/container-only filter routes both
   clusters into the same BigQuery dataset, mixing staging traffic into the production chat and
@@ -116,7 +122,15 @@ Two shared-project hazards are handled explicitly:
   deployment, so a tfvars or manifest copied from production produces it verbatim and
   survives review.
   Two components set cookies on this host. `k8s/deployments/oauth2-proxy.yaml` passes
-  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` and no `--cookie-domain`.
+  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` / `--cookie-refresh=2m`
+  and no `--cookie-domain`. `--cookie-refresh` is coupled to the realm rather than to the
+  cookie: it must stay below the realm's `accessTokenLifespan`, or oauth2-proxy stops
+  refreshing and `/oauth2/auth` answers 401 once the access token expires. That lifespan is
+  not in `realm-genetics.json.template` — it is Keycloak's own default, so it is whatever the
+  running realm says (`kcadm.sh get realms/genetics --fields accessTokenLifespan`) and a realm
+  edit in the admin console can change it with nothing in this repo moving. The gateway then 302s to `/oauth2/start`, which a GET survives invisibly and a
+  POST does not — the redirect strips the body. Lowering the realm's lifespan without
+  lowering this flag reintroduces that.
   Keycloak is served on the *same* host under `/auth` (`deploy.sh` builds `KEYCLOAK_HOST` from
   `DOMAIN` + `KEYCLOAK_PATH`); `k8s/deployments/keycloak.yaml` sets no cookie attributes at
   all, and the gateway nginx block rewrites them with `proxy_cookie_flags ~ secure
@@ -181,6 +195,13 @@ which is hardcoded in ~40 manifests.
       `oauth2-proxy-secrets` *and* rendered into the realm import, so both sides agree).
       Use a **different `SLACK_WEBHOOK_URL`** than production, or leave it empty; otherwise
       staging's daily monitor report lands in the production alert channel.
+- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging`.** Staging starts its chat users on
+      the `code` profile — the seven-tool code-execution surface — while production leaves the
+      variable unset and starts them on **All**. It is rendered into chat-backend by
+      `scripts/deploy.sh` and served to the browser as the profile of anyone who has not chosen
+      one; a user's own choice still wins and persists (`docs/project-spec.md`, "Tool profiles").
+      Since it is read from `.env.<name>`, a deploy run without the line silently returns staging
+      to All — that is the drift to look for when staging answers with direct tools again.
 - [ ] **Confirm there is no `terraform/terraform.tfvars`.** The daly values now live in
       `terraform/terraform.tfvars.daly`; the scripts refuse to run while both exist.
 - [ ] **`unset REGISTRY`** if your shell profile exports the production one (it currently does:
@@ -245,8 +266,14 @@ kubectl config current-context   # ..._us-central1-a_finngenie-staging
 - [ ] **Sign in** at `https://staging.genegenie.broadinstitute.org` with an allow-listed
       account and confirm Google is the only IdP offered.
 - [ ] **Check isolation.** Confirm production is untouched: its monitor should not report
-      staging containers, and `genetics_chat_logs` should contain no staging rows.
-      `SELECT DISTINCT resource.labels.cluster_name FROM genetics_chat_logs.*` after a day.
+      staging containers. Staging's own sinks (`enable_log_sinks = true`) write only
+      `genetics_{api,chat}_logs_staging`, because both filters pin
+      `resource.labels.cluster_name` to `finngenie-staging`. **The reverse does not hold yet**:
+      production's live sinks were created before that pin and still carry none, so staging
+      rows do reach `genetics_chat_logs`/`genetics_api_logs` — measured 2026-09-01, 553 and 519
+      rows. `SELECT DISTINCT resource.labels.cluster_name FROM genetics_chat_logs.*` shows it.
+      The fix is a production `terraform apply`, which re-creates production's sinks with the
+      pin the config already has; nothing in staging can close it.
 - [ ] **Snapshot policy.** `deploy.sh` attaches `chat-data-daily-snapshot-staging` to the
       chat-data disk on the *second* run — the PVC is unbound on the first. It prints
       `PVC chat-data not yet bound, skipping…` when that happens; re-running is the fix.
@@ -291,6 +318,4 @@ gcloud container clusters get-credentials finngenie         --zone us-central1-a
   Developer portal. `APPLE_SERVICES_ID` is empty, so `deploy.sh` renders a Google-only realm.
 - **The `brainzzz` MCP OAuth client** — its redirect URIs point at production. Leave
   `BRAINZZZ_CLIENT_SECRET` unset so the staging realm has no such client.
-- **Log sinks** — `enable_log_sinks = false`. Set it true to get `genetics_api_logs_staging`
-  and `genetics_chat_logs_staging`.
 - **rag-service** — `ENABLE_RAG=false`, as in production.

@@ -163,6 +163,13 @@ spec:
               name: genetics-secrets
               key: admin-users
               optional: true
+        # the profile a user starts on before choosing one, served through the user-settings
+        # endpoint (the browser sends its choice on every turn, null meaning "All", so a
+        # request-side default could not exist). Empty = the browser's own default, the full
+        # surface; a deployment sets it in its .env.<name>. It rides the deployments envsubst
+        # whitelist in scripts/deploy.sh, so an unset variable renders as "".
+        - name: DEFAULT_TOOL_PROFILE
+          value: "${DEFAULT_TOOL_PROFILE}"
         - name: ENABLE_SUBAGENTS
           value: "false"
         - name: SUBAGENT_MODEL

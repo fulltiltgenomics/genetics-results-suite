@@ -53,6 +53,7 @@ from typing import Any
 
 from genetics_mcp_server.sdk.client import GeneticsClient
 from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError
+from genetics_mcp_server.sdk import plots as plots
 
 MAX_ROWS: int = 100000
 
@@ -313,11 +314,15 @@ def ld(
     r2_threshold: float | None = None,
     panel: str = 'sisu42',
 ) -> pl.DataFrame:
-    """LD from the FinnGen LD server.
+    """LD from the FinnGen LD server, proxied rather than called directly.
 
     With `other`, one row for that pair; without it, every variant in LD above the
     threshold. Defaults differ per shape and match the tool layer (0.1 for a named
     pair, 0.6 for a neighbourhood scan).
+
+    The proxy is what makes this callable from a sandbox script at all: the LD server is
+    on the public internet and the sandbox has no DNS and no internet egress, so a direct
+    call resolves nothing. A script does not have to know or do anything about that.
     """
     ...
 
@@ -329,6 +334,27 @@ def search(
     limit: int | None = None,
 ) -> pl.DataFrame:
     """Fuzzy search over the phenotype/gene index, or rsID -> variant id lookup.
+    """
+    ...
+
+def phenotypes(
+    *,
+    codes: str | list[str] | None = None,
+    dataset: str | list[str] | None = None,
+    resource: str | None = None,
+) -> pl.DataFrame:
+    """Trait metadata from `phenotypes_v`: name, trait type, source category, sample sizes.
+
+    `codes` are trait codes as the results views' `trait_original` column stores them
+    (`H8_HL_IDIOP`, not the display form in `trait`); `dataset` and `resource` narrow the
+    rows, and at least one of the three is needed. One row per (dataset, code), so a code
+    several datasets share comes back once per dataset — join on both.
+
+    `category` is the source's own grouping — a FinnGen ICD chapter, Kanta's
+    Quantitative/Binary, an Open Targets project id, a Genebass trait type — not one
+    harmonised across resources. Coverage is partial by design: QTL datasets and those
+    whose codes are already readable have no rows, so LEFT JOIN when the dataset is not
+    known in advance.
     """
     ...
 

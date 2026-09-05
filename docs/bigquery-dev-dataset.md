@@ -21,8 +21,11 @@ been one that is still standing.** A read-only survey on 2026-08-13 established,
   `genetics_dev` — a persistent **full-size** copy the local dev stack points db-api at,
   `genetics-results-suite-g08`, widened from its original chr22-only subset to all
   755,813,602 rows / 136.69 GB on 2026-08-18. It is a different object from the `genetics_results_dev`
-  clone this document builds: that one is created and torn down around a single DDL
-  rehearsal, this one stays. See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
+  clone this document builds. **The daly one now has a second life**: the
+  `daly-staging` cluster serves `daly-finngenie:genetics_results_dev` via `bq_dataset`, so
+  tearing it down takes staging's db-api with it — check what the cluster serves before
+  running `teardown` against that project. In `phewas-development` the clone is still a
+  per-rehearsal object. See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
 - the `daly` profile is a **second production brand** (its own project, region, domain,
   Keycloak realm and real Broad users), not a staging copy. It is not a canary.
 
@@ -46,12 +49,14 @@ Three consequences for this document:
 1. "`phewas-development` IS production" is still true, and it is **no longer the only**
    production project. The daly `finngenie` cluster is production too, with real Broad
    users — it is not a rehearsal ground and must not be mutated as one.
-2. **`daly-staging` is not BigQuery-isolated from `daly` production.** Measured
-   2026-08-30 from db-api's environment on both clusters: `PROJECT_ID=daly-finngenie`,
-   `DATASET_ID=genetics_results` on *both*. A DDL rehearsal run from the staging cluster
-   therefore lands in the daly production dataset. That hazard is filed as
-   `genetics-results-suite-zaw` (deferred) — this document's throwaway-clone workflow
-   below is still the way to rehearse, on either brand.
+2. **`daly-staging` selects its own dataset, but only from its next deploy.** Which dataset
+   a deployment serves is the `bq_dataset` tfvars key, rendered into db-api's `DATASET_ID`
+   and the monitor CronJob's `BQ_DATASET`; `terraform.tfvars.daly-staging` names
+   `genetics_results_dev`. Until a staging deploy applies that render both clusters run
+   `PROJECT_ID=daly-finngenie`, `DATASET_ID=genetics_results` (measured 2026-08-30), and a
+   DDL rehearsal from the staging cluster lands in the daly production dataset. Read the
+   pod's environment before assuming either way. `finngen` sets no `bq_dataset` and is
+   unchanged.
 3. Nothing about `phewas-development` was re-measured. It has **no kubeconfig context on
    the admin instance and `gcloud container clusters list --project phewas-development`
    returns 403**, so its cluster state, node count and dataset contents are **not
@@ -381,30 +386,33 @@ irreversible and rely on the ordering below; `UNDROP` is an emergency, not a rol
 
 ## Do the services need pointing at the dev dataset?
 
-**No, and deliberately do not add the plumbing.** All five beads are SQL against BigQuery
-plus SQL acceptance tests; running the SQL directly, with the dataset name rewritten, is
-the whole rehearsal. Nothing in the rehearsal needs a pod.
-
-What is configurable today, for the record:
+**Not for the DDL beads below** — those are SQL against BigQuery plus SQL acceptance tests,
+and running the SQL directly is the whole rehearsal. Every consumer is pointable anyway,
+because `daly-staging` needed a cluster that serves the clone:
 
 | consumer | dataset name comes from | dev-pointable? |
 |---|---|---|
-| `genetics-results-db` (db-api) | `DATASET_ID` env var | yes, in code — but see below |
-| `k8s/deployments/db-api.yaml` | `value: "genetics_results"`, a **literal** | **no** — unlike the monitor CronJob, which uses `${BQ_DATASET}` |
-| monitor CronJob | `${BQ_DATASET}`, `envsubst`-ed by `deploy.sh` (default `genetics_results`) | yes |
+| `genetics-results-db` (db-api) | `DATASET_ID` env var | yes |
+| `k8s/deployments/db-api.yaml` | `${BQ_DATASET}`, `envsubst`-ed by `deploy.sh` | yes |
+| monitor CronJob | `${BQ_DATASET}`, the same value | yes |
 | `genetics-results-db/scripts/setup_bigquery.sh` | `PROJECT_ID` / `DATASET_ID` / `LOCATION` env vars | yes — this is how DDL is applied to dev |
-| `configs/datasets.yaml` worked examples | the dataset name is **written into the SQL text** | no — must be rewritten textually |
+| `configs/datasets.yaml` worked examples | bare, unqualified view names; db-api sets `default_dataset` | yes, by construction — nothing to rewrite |
 
-Two findings rather than changes:
+`deploy.sh` derives `BQ_DATASET` from `bq_dataset` in the resolved tfvars (absent →
+`genetics_results`; present but empty → refused, because db-api's own fallback is
+`genetics_results` and an empty render would serve production data silently).
+`terraform.tfvars.daly-staging` sets `genetics_results_dev`, so the staging cluster is a
+service-level rehearsal ground and not only a manifest one.
 
-1. `k8s/deployments/db-api.yaml` hardcodes `DATASET_ID: "genetics_results"` even though
-   `deploy.sh` already exports `BQ_DATASET` (line 106) and already lists `${BQ_DATASET}`
-   in its `envsubst` whitelist (line 442). Making db-api dev-pointable is a one-token
-   manifest change, if a future rehearsal ever needs a service in the loop. It is **not**
-   needed for these five beads, so it has not been made.
-2. The `configs/datasets.yaml` worked examples embed the dataset name in the SQL, so no
-   env var can redirect them — hence `bq-dev-dataset.sh rewrite`. This is also why 94c's
-   acceptance test has to go through the rewriter.
+Two further notes:
+
+1. A pod in the loop is still **not** needed for the five DDL beads below: the rehearsal is
+   SQL against BigQuery plus SQL acceptance tests.
+2. The worked examples name views bare (`FROM credible_sets_v`) and BigQuery resolves them
+   against db-api's `default_dataset`, so one binary serves either dataset with the same SQL
+   (`docs/datasets-yaml-schema.md`, "Field details for `tables.<table>.examples`"). The
+   `bq-dev-dataset.sh rewrite` subcommand exists for the **view definitions**, which do embed
+   fully-qualified references.
 
 ## Guards, and what they refuse
 

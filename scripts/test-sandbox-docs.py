@@ -526,6 +526,37 @@ def main(argv=None):
         private = {n for n in methods if n.startswith("_") and n != "__init__"}
         assert not private, f"private methods leaked into the stub: {sorted(private)}"
 
+    @check("the standard plots stub covers exactly what sdk/plots.py exports")
+    def _plots_stub_surface():
+        """Same equality, second surface. The plots module has no GeneticsClient to be
+        checked against, so `__all__` is what it is held to — and it has to be held to
+        something, because a stub is the only description of these functions a script's
+        author gets: a name here the interpreter does not have is a call that fails inside
+        the sandbox, and one missing is a standard figure nobody knows exists and everybody
+        redraws by hand."""
+        plots_source = os.path.join(sdk_dir, "plots.py")
+        assert os.path.isfile(plots_source), f"{plots_source} is missing"
+        plots_tree = ast.parse(open(plots_source).read())
+        exported_plots = set(gen._module_all(plots_tree, "sdk/plots.py"))
+        stubbed_plots = {
+            n.name
+            for n in ast.parse(stub_files["plots.pyi"]).body
+            if isinstance(n, ast.FunctionDef)
+        }
+        assert stubbed_plots == exported_plots, (
+            f"not stubbed: {sorted(exported_plots - stubbed_plots)}; "
+            f"stubbed but not exported: {sorted(stubbed_plots - exported_plots)}"
+        )
+        defined = {
+            n.name for n in plots_tree.body if isinstance(n, ast.FunctionDef)
+        }
+        assert exported_plots <= defined, (
+            f"__all__ names functions sdk/plots.py does not define: "
+            f"{sorted(exported_plots - defined)}"
+        )
+        private = {n for n in stubbed_plots if n.startswith("_")}
+        assert not private, f"private helpers leaked into the stub: {sorted(private)}"
+
     @check("every stub is valid Python")
     def _stub_syntax():
         for name, content in stub_files.items():

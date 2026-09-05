@@ -6,18 +6,29 @@ it**, and records the residual risk. Where a decision was a judgement call, the 
 and its trigger condition are here so a later change is a decision rather than a rediscovery.
 
 **The code is the source of truth for how, and this document for why.** The tables marked
-*generated* are rewritten from the code by `scripts/gen-security-doc.py`; do not edit them by
+*generated* are rewritten from the code by `scripts/gen-doc-blocks.py`; do not edit them by
 hand. Everything else should explain a choice, not restate a value the code already computes —
 `sandbox/supervisor.py`, `k8s/deployments/sandbox.yaml` and
 `k8s/network-policies/sandbox-policy.yaml` are where the mechanisms live.
 
 **The SDK's public function list is not a containment boundary.** A script that imports the
-SDK reaches the full `ToolExecutor` through `GeneticsClient._executor` — the underscore is
-curation, not enforcement — and httpx is present regardless, since it is the SDK's own
-transport. A script can call anything the egress policy permits, whether or not the SDK wraps
-it. "Absent from the SDK" never means "unreachable"; section 3 is what makes a target
-unreachable, with one exception it does not cover (link-local 169.254.169.254, where the
-defence is the node pool's `GKE_METADATA` mode and the missing Workload Identity binding).
+SDK reaches every method of the `ToolExecutor` the image ships, through
+`GeneticsClient._executor` — the underscore is curation, not enforcement — and httpx is
+present regardless, since it is the SDK's own transport. A script can call anything the egress
+policy permits, whether or not the SDK wraps it. "Absent from the SDK" never means
+"unreachable"; section 3 is what makes a target unreachable, with one target it is not written
+to cover (link-local 169.254.169.254 — measured unreachable from the pod, but the defence that
+carries the weight there is the node pool's `GKE_METADATA` mode and the missing Workload
+Identity binding, not the policy).
+
+**What the image contains is a different question from what a script can reach, and only the
+first one is settled here.** `genetics_mcp_server/tools/orchestration.py` — the `run_analysis`
+gateway, the identity it refuses to dispatch without, and the artifact authorization model —
+subclasses the executor rather than being part of it, so it is outside the import closure and
+the build deletes it. The reason is the one `prune_venv.py` gives for the whole prune: that
+code cannot run in the image (it imports modules the image does not have) and the SDK
+does not need it, so shipping its source only hands a prompt-injected script something to
+read. It is **not** an access control and must not be cited as one.
 
 **Threat actors, in the order they matter:**
 
@@ -109,14 +120,26 @@ Four of those need their reason stated, because the value alone does not carry i
   `automountServiceAccountToken: false` is **not** part of that guarantee — it defends the
   Kubernetes API server and does nothing against the metadata server, which is reached over
   the network and needs no mounted token.
-- **One `emptyDir` and no PVC, ever, and no pod-level `/tmp`.** `chat-data` is the crown
-  jewels (section 1). A pod-level `/tmp` outlives an execution, and with one replica and
-  concurrency 1 successive users are *guaranteed* to share the pod, so a shared `/tmp` is a
-  sequential cross-conversation channel. Temp space comes out of the per-execution directory;
-  the `sizeLimit` is therefore the combined artifact-plus-temp budget, which is what makes the
-  supervisor's sub-quotas mandatory rather than nice to have. If some dependency ever requires
-  a writable `/tmp` and cannot be redirected, re-adding the volume is a **recorded
-  degradation** carrying a hard obligation: wipe it completely before every fork.
+- **One `emptyDir` and no PVC, ever, and the pod declares no `/tmp`.** `chat-data` is the crown
+  jewels (section 1). A temp directory that outlives an execution is a sequential
+  cross-conversation channel, because with one replica and concurrency 1 successive users are
+  *guaranteed* to share the pod. **Declaring no volume does not remove one**: gVisor supplies
+  `/tmp` and `/dev/shm` itself, mode 1777, whatever the pod spec says, and on staging a marker
+  written by one execution was read by the next. So the wipe is the design rather than a
+  contingency — the supervisor empties both **before every fork** (`wipe_shared_tmpfs`, whose
+  docstring carries the edge cases), and the per-execution `TMPDIR`, `HOME` and `MPLCONFIGDIR`
+  under `/scratch/<id>` keep its own path out of them in the first place. An entry it cannot
+  remove does **not** abort the execution — one undeletable file would otherwise be a permanent
+  outage for everyone behind it on a single-replica pod — so the whole of the mitigation is that
+  somebody hears about it, and the survivor line goes to **stderr**. That is deliberate rather
+  than incidental: everything this pod writes through `logging` lands on stdout, which GKE
+  grades `INFO`, and `scripts/monitor/alerter.py` only fetches `severity >= WARNING`, so the
+  same line through `LOG.error` would be a record nobody can ever read. The `emptyDir`'s
+  `sizeLimit` is the artifact-plus-per-execution-directory budget and **not** a temp budget:
+  bytes written outside `/scratch` are the sentry's memory, not the volume's — see "What
+  actually bounds the sandbox's storage" below. Mounting bounded `emptyDir`s at those two paths
+  was offered and declined: it would make their exhaustion a kubelet eviction like `/scratch`'s,
+  at the price of rewriting this invariant from one volume to three.
 - **`enableServiceLinks: false`.** Kubernetes otherwise injects `<SERVICE>_SERVICE_HOST`/`_PORT`
   for every Service in the namespace — the whole internal inventory and its ClusterIPs, handed
   to untrusted code for free. Nothing in the egress allow-list becomes reachable through them,
@@ -167,7 +190,7 @@ and with `capabilities.drop: ["ALL"]` the container holds no `CAP_SETUID`, `CAP_
 would mean adding those capabilities back to the one workload that executes
 attacker-influenceable code by design.
 
-Two costs follow, and both are load-bearing elsewhere in this document:
+Three costs follow, and all three are load-bearing elsewhere in this document:
 
 - **`RLIMIT_NPROC` is not a per-execution control.** It is per *real uid* across the pid
   namespace, so a child forking to its limit also stops the supervisor forking — the fork bomb
@@ -177,6 +200,11 @@ Two costs follow, and both are load-bearing elsewhere in this document:
 - **The token file is within the child's same-uid reach.** `/proc/<pid>/environ` is readable by
   any process at the same uid, and mode `0600` on a supervisor-owned file excludes neither the
   child nor any helper it spawns. The mitigation is lifetime, not permissions (section 4).
+- **The pre-fork wipe of `/tmp` and `/dev/shm` depends on it.** Both are sticky (mode 1777), so
+  only an entry's owner may unlink it. Sharing the uid is what lets `wipe_shared_tmpfs` remove
+  what the last execution wrote; a distinct child uid would make that wipe **partial and
+  silent**, reopening the cross-execution channel section 2 closes. Anyone implementing a
+  distinct uid has to solve this as well as the two above.
 
 The image still *advertises* a second uid (`SANDBOX_CHILD_UID=65533`) in `/etc/passwd`.
 Nothing can switch to it, `build-checks.py` keeps the entry consistent with the variable, and
@@ -238,6 +266,50 @@ a few hundred MiB of writes and a child that traps `SIGTERM` keeps writing for t
 period. What bounds those is how fast the writer is stopped and `_retain` deleting what the
 overshoot produced. The steady state is exact; a hostile burst's transient peak is not.
 
+### What actually bounds the sandbox's storage, and how it dies
+
+Three writable paths, two mechanisms — and reading the first one's `statvfs` is how you get the
+second one wrong. All of the below was measured against the live staging pod.
+
+**`/scratch` — the `emptyDir`, and its `sizeLimit` binds.** From inside the container it looks
+unbounded: gVisor serves it as a **sentry-internal tmpfs**, so the mount is a plain tmpfs rather
+than a gofer mount, its root is `0:0` mode 1777, and `statvfs` answers with the sentry's
+no-limit sentinel (~8 EiB). **Do not read that as "no limit".** The sentry backs that tmpfs with
+a **single filestore file inside the host `emptyDir` directory**, so the kubelet counts every
+byte the container writes — 128 MiB written as two files was reported as `usedBytes`
+134217728 with `inodesUsed` 2, the directory plus that one file — and the eviction above is
+enforced exactly. Deletion releases host bytes as well (the filestore is hole-punched), which is
+what makes the supervisor's retention trims reduce kubelet-observed usage and not merely its own
+accounting. None of it is charged to `limits.memory`.
+
+Two consequences of that mechanism belong here, because from inside the container each looks
+like a defect: the pod's `fsGroup` is **inert** for this volume — the kubelet chowns a host
+directory the container never sees, and mode 1777 on the sentry's tmpfs is what a non-root uid
+actually writes through — and the container's `/scratch` tree is **invisible on the host**,
+where only the filestore file appears.
+
+**`/tmp` and `/dev/shm` — supplied by the runtime, bounded only by the pod's memory limit.**
+Neither appears in the pod spec, neither can be taken out of it, and both are mode 1777. Their
+`statvfs` advertises a figure derived from the **node's** physical RAM, unrelated to any pod
+limit and larger than the whole pod may use, so it never binds. **They are one pool**: filling
+either exhausts both, and `statvfs` will not show that — accounting is per mount and blind to
+the shared backing, so one mount's advertised free space sits frozen while the other's falls.
+What bounds them is the pod's `limits.memory` in the table above and nothing else, which is why
+the supervisor wipes them before every fork rather than trying to budget them.
+
+**Past that pool the signature is not `OOMKilled`.** The **host** OOM killer takes the runsc
+**sentry**, not a process inside the container's cgroup, so the container reports
+`lastState.terminated` with `reason: Error` and `exitCode: 128`, alongside a `SandboxChanged`
+event. An operator grepping for `OOMKilled` will not find the incident; `SandboxChanged` and
+that exit code are what to search on. Recovery is a fresh sandbox within seconds.
+
+**Whether `/scratch` survives that restart is unknown**, and no doc here should be read as
+saying it does. The sentry is recreated, so its filestore file most likely is too, which would
+mean retained artifacts do **not** survive a container restart the way a normal `emptyDir`'s
+contents would. Both restarts observed during the measurement had a near-empty `/scratch`, so
+there was no signal either way. Until someone measures it, treat a restart as losing the
+retention window — which is what `read_artifact` already answers for anyway, with a `404`.
+
 ### Concurrency, and what it does not remove
 
 One execution at a time, queued beyond that, at one replica. Measured peak is 23 chat turns an
@@ -298,9 +370,22 @@ resolves `metadata.google.internal` by name where the sandbox has no DNS.
 `sandbox/build-checks.py` runs in the builder and asserts the **final** image's properties,
 because the final stage has no shell and nothing can be checked after it is assembled: the
 absent shell and package manager, `/etc/nsswitch.conf` ordering, the pruned SDK surface, the
-advertised uids, the absence of placeholder schema docs, and `GCE_METADATA_HOST` pinned to a
-literal address. That last one is the branch a distribution-name check cannot see: polars links
+advertised uids, the absence of placeholder schema docs, `GCE_METADATA_HOST` pinned to a
+literal address, and the house plot style resolving with `text.usetex` off. That last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
+
+One of those checks reads source rather than running it, and the reason is the same one that
+makes the prune worth doing at all. `import genetics_mcp_server.sdk` executes module bodies and
+nothing else, so an import deferred into a method — the house style for adding capability to
+these files — survives every runtime check here and in genetics-mcp-server, and then raises
+`ModuleNotFoundError` at call time inside a container with no shell and no package manager.
+A `from ddgs import DDGS` shipped that way. So the build also parses every file the image
+carries and refuses an import of any top-level name outside the standard library and what pip
+actually installed into the venv, at any nesting depth, `if TYPE_CHECKING` included — the file
+names the module either way, which is the disclosure the prune exists to prevent. Reading the
+resolved install rather than the requirement graph is what makes this answer for the image:
+pip has already evaluated the environment markers by then, so nothing has to re-derive which
+side of Python 3.11 a conditional requirement falls on.
 
 <!-- BEGIN GENERATED: image -->
 
@@ -319,7 +404,7 @@ The final stage's environment, all of it:
 - `SANDBOX_SHARED_GID=65532`
 - `SANDBOX_SUPERVISOR_UID=65532`
 
-`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a fixed path here would recreate the cross-execution shared directory removing the pod-level `/tmp` was meant to prevent.
+`TMPDIR`, `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME` and `PYTHONPYCACHEPREFIX` are deliberately absent: they are per-execution and point inside `/scratch/<id>`, and a fixed path here would be exactly the cross-execution shared directory the redirect exists to prevent. The redirect keeps the supervisor's own path out of the runtime-supplied `/tmp` and `/dev/shm`; it does not remove those, and what keeps them from carrying bytes between tenants is the wipe before every fork (section 2).
 
 `prune_venv.py` reduces the installed distribution to the SDK's import closure, and `build-checks.py` asserts the surviving set is exactly:
 
@@ -328,9 +413,10 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/errors.py`
+- `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
+- `genetics_mcp_server/tools/chembl.py`
 - `genetics_mcp_server/tools/executor.py`
-- `genetics_mcp_server/tools/phewas_categories.py`
 - `genetics_mcp_server/tools/sql_safety.py`
 - `genetics_mcp_server/tools/uniprot.py`
 
@@ -345,6 +431,119 @@ for the reason this document's own tables are: a transcribed schema inside a con
 something nothing would ever notice going stale. Shipping the placeholders degrades silently —
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
+
+### The LD proxy: one third-party call the sandbox can cause
+
+A `run_analysis` script cannot reach the internet, and that has not changed. What changed is
+that it can now cause **results-api** to make one specific outbound request on its behalf:
+`GET /api/v1/ld/{variant}` fronts the FinnGen LD server, because `genetics.ld(...)` resolved
+nothing from inside the sandbox and every locuszoom came back uncoloured.
+
+State the delegation plainly rather than treating it as unchanged, because it is a new shape:
+a confined caller reaching a third party through an unconfined one. What it is not is a
+widening of the sandbox's egress — the NetworkPolicy is untouched, no DNS rule was added, and
+`sandbox-policy.yaml`'s "no ipBlock of any kind" still holds. The sandbox talks to
+results-api, as it already did for summary statistics.
+
+What bounds the delegation, all in `app/routers/ld.py` and `app/services/ld_service.py`:
+
+- the caller controls **three** values and each is shape-checked before the outbound request:
+  the variant (`chr:pos:ref:alt`), the panel (a name), and the window (a bounded integer). The
+  destination URL is configuration, never a caller input, so this is not an SSRF surface;
+- the outbound request carries **no credential of ours** — the LD server is public — so a
+  script cannot use this path to spend an identity it does not hold;
+- nothing of the upstream's response body is forwarded on a failure. The caller gets a status
+  and this service's own wording;
+- the exfiltration question, asked directly: the outbound query carries a variant id, a panel
+  name and a window. A script can encode a little in those, at one bounded request per LD call,
+  to a third party that logs queries. That is a far narrower channel than the DNS pipe
+  `sandbox-policy.yaml` exists to close (~200 KB/s), and it is bounded by the same
+  per-execution request and byte counters as every other results-api call, but it is **not
+  zero** and should not be described as such.
+
+### Render density, the opt-in style, and the standard plots
+
+Two additions to the image that are about output rather than confinement, recorded here
+because both widen what it carries.
+
+`sandbox/gen_mplrc.py` writes the baked `matplotlibrc` and it carries **render density and
+nothing else** — `figure.dpi` and `savefig.dpi` at 200. That is a property of the delivery
+channel rather than a taste: a figure is handed to the user as a PNG in a chat window, and at
+matplotlib's default 100 dpi a default-sized figure arrives too small to read. The supervisor
+seeds every `MPLCONFIGDIR` from that directory including its own and imports matplotlib before
+the first fork, so every child resolves the same density with no cooperation from the script.
+
+`scienceplots` is the one deliberate opening of `sandbox/requirements.txt`'s closed set, and
+the test it was admitted under is that file's own: it ships stylesheets and a registration, no
+native code and no import beyond matplotlib, so it does not widen what the image can *do*. It
+is **opt-in**: a script that wants it writes `plt.style.use(["science", "no-latex"])`. Imposed
+as a default it made some figures worse rather than better — a locuszoom reads by its LD ramp
+and its marker shapes, not by journal typography — and a default a caller has to notice and
+undo is worse than one they ask for. The `no-latex` half is not optional when it is asked for:
+`science.mplstyle` sets `text.usetex: True` and this image has no LaTeX and no shell to run
+one, so unpaired it raises at draw time. That pairing is now the script's to write, which is
+the price of the style being opt-in.
+
+`prewarm.py` imports `scienceplots` in the supervisor before the first fork, which is now the
+*only* route by which it reaches a figure: the import is what registers the style names, so
+`plt.style.use("science")` written from memory resolves in a child instead of raising
+`OSError`. `build-checks.py` asserts both directions — that the density is in effect, and that
+two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
+a style back in fails the build rather than quietly restyling every figure.
+
+`genetics.plots` is a second SDK surface: standard figures — a locuszoom, a phewas and an
+upset today — as functions rather than as instructions a script rederives. It is shipped by
+`prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import
+closure, resolved through a module `__getattr__` so chat-backend and mcp-server never import
+matplotlib. That has one
+consequence worth stating: genetics-mcp-server's `tests/test_sdk_import_closure.py` measures
+the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OUTSIDE_CLOSURE`
+in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree
+by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
+equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
+
+What the shipped `plots.pyi` therefore discloses beyond the signatures is the guidance in
+those docstrings, and one line of it is load-bearing rather than descriptive: that the 250 kb
+default window is the house default and is not to be widened as a matter of course. That is
+addressed at a model reading `list_capabilities(module="plots")`, which is the only place it
+can be said — nothing in the code can stop a caller passing a bigger `flank`, and chat
+transcripts show it doing exactly that.
+
+These figures do set one thing for themselves, against the no-style rule above: type sizes and
+rule widths, fixed in points against the figure width they draw at, because matplotlib's
+defaults are sized for a figure twice as wide and a caller who has set no style should not have
+to correct for that. It is done on the artists rather than through rcParams, so nothing about
+the image's baked density changes and `build-checks.py`'s no-style assertions still hold.
+
+Three choices inside `locuszoom` are worth stating, because from the outside each looks like the
+defect it replaced. **LD is asked for above a floor rather than at r²≥0.** The LD server answers
+an r²≥0 request with the whole panel, which buries the correlated points in a navy `< 0.2`
+cloud and is truncated positionally: measured at `12:49272869:C:T`, a ±250 kb request came back
+with 3000 entries stopping 19 kb short of the window's right edge, leaving 97 panel variants
+unanswered and that edge of the plot grey with nothing to say why. Above the floor the same
+locus returns 17 entries across ±500 kb. Grey therefore means "no r² worth colouring", which is
+what it already meant for a variant the panel does not carry. **And LD is asked for over more
+than the plotted span**, so a correlated partner just outside the window is named — in the
+returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
+same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
+it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
+signal. The note fires only above a reporting floor, because what it asks of the reader is a
+redraw at a wider window and that is worth doing where the omitted partner would have carried
+colour worth acting on, not for every partner the search span reaches. **And the gene track draws one transcript per gene, not all of them.** results-api serves
+the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
+gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
+of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
+solid band. **The body drawn is that transcript's span, not the gene record's**, and the two are
+not close: a GENCODE gene record spans every transcript it has, so on v49 the canonical
+transcript covers under a quarter of the record for 641 protein-coding genes and under a tenth
+for 185 — TUBA1C's record runs 86 kb against a 9.5 kb MANE transcript. Drawing the record put
+four exons in the right-hand tenth of a long bare line, which reads as exons in the wrong place;
+this was shipped that way and corrected against a PheWeb reference. A gene the API sent no exons
+for keeps the record, because that is all there is to draw it from. **And a gene GENCODE names
+only by an ENSG is left out of the track**, rather than drawn under a label nobody can look up.
+`n_exons` in the returned dict is 0 when the API served no exon structure at all, which is how a
+bodies-only track is told apart from a gene that genuinely has one exon; `n_genes` counts what
+was drawn, so it can fall short of the genes in the window.
 
 ### The HTTP contract between chat-backend and the supervisor
 
@@ -519,6 +718,22 @@ NetworkPolicies are additive and "mcp-server cannot reach the sandbox" is a prop
 them together, and it fails on any rule that selects the sandbox and admits mcp-server —
 including a from-less rule, which admits everything.
 
+**Committed is not enforced, and the offline guard cannot tell the difference.** Everything
+above is a statement about files. A cluster enforces whatever was last applied to it, and
+nothing in a deploy reconciles the two afterwards, so a policy edited by hand or an apply that
+never happened leaves the guard green over an unenforced control. Measured 2026-09-01 on a
+checkout passing every offline check: the daly-production cluster had six policies —
+`allow-ingress-auth-gateway`, `-bff`, `-chat-backend`, `-frontend`, `-mcp-server`,
+`-results-api` — whose single ingress rule carried no `from:` at all and therefore admitted
+every source in the namespace, and it was not enforcing `allow-ingress-sandbox` or
+`sandbox-egress` at all. `LIVE_POLICY_CHECK=true` turns on the diff that sees this: it reads
+the namespace's NetworkPolicies with `kubectl get` (read-only, and `KUBE_CONTEXT` picks the
+cluster) and compares each against its committed counterpart on podSelector, policyTypes,
+ingress and egress rule count, **rules carrying no `from:`/`to:` at all**, peer selectors and
+ports. It is off by default because `deploy.sh` and `build.sh` run this harness on hosts that
+may hold no kubeconfig; when it is on and the cluster cannot be read, the harness exits 2
+rather than reporting a clean run.
+
 Read the egress table as a statement about **data**, not endpoints: a third-party annotation
 source is unreachable because no rule can match it, whereas **anything results-api serves is
 reachable**, including artefacts it merely relays from GCS, since the sandbox's token is not
@@ -531,11 +746,19 @@ API with the caller's session); and **mcp-server**, which closes the obvious lau
 a script that could reach mcp-server would inherit its permission through
 `allow-ingress-db-api` and its whole registered tool surface.
 
-**169.254.169.254 is not covered by this policy and must not be assumed to be.** Link-local
-traffic is exactly the class already proven exempt from NetworkPolicy on this dataplane in the
-ingress direction, and whether Dataplane V2 enforces *egress* to a link-local address has not
-been tested here. What is load-bearing is the node pool: `GKE_METADATA` mode plus no Workload
-Identity binding for the KSA, so even a policy-engine gap yields no usable GCP credential.
+**169.254.169.254 is not something this policy is written to cover, and the policy is not what
+makes it safe.** Link-local traffic is exactly the class already proven exempt from
+NetworkPolicy on this dataplane in the *ingress* direction, so the egress direction had to be
+measured rather than inferred — and it was, from inside the running sandbox pod on
+daly-staging on 2026-08-31: the metadata root path and the token path (both with
+`Metadata-Flavor: Google`), the link-local kubelet source `169.254.4.6` on 80 and 10250, and
+the node addresses `10.0.0.9` on 80 and 10250 and `10.0.0.8` on 10250 all timed out at a 6 s
+timeout. Read that as a fact about the substrate it was taken on — Cilium v1.18 under
+`datapathProvider: ADVANCED_DATAPATH` — which is also what would invalidate it; re-measure
+after a dataplane change instead of citing this paragraph. What is load-bearing is still the
+node pool: `GKE_METADATA` mode plus no Workload Identity binding for the KSA (the sandbox KSA
+carries no `iam.gke.io/gcp-service-account` annotation), so even a policy-engine gap yields no
+usable GCP credential.
 
 ### On DNS: none, and `hostAliases` instead
 
@@ -703,7 +926,7 @@ and fails every invocation with a connection error — noisy, visible, and not c
 | Resource exhaustion starving chat-backend | separate pod, separate node pool, its own cgroup limits; the queue is bounded in depth *and* wait |
 | Reading another user's data on disk | retained artifacts are sealed under a per-execution key; the live window is not closed |
 | Serving another user attacker-controlled bytes | the manifest's digests, re-checked on the way out |
-| Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the fork server sweeps what reparents to it |
+| Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the runtime-supplied `/tmp` and `/dev/shm` — which the pod spec neither declares nor can remove — are wiped before every fork; the fork server sweeps what reparents to it |
 | Executing code via MCP | section 5's three layers |
 
 ### `read_artifact`: lifecycle, authorization, and what the retention window serves
@@ -845,9 +1068,10 @@ Stated plainly. This design contains code execution; it does not make it safe in
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
-| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract | the manifests; one live cluster call for the sandbox probe |
+| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
+| `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
-| `scripts/gen-security-doc.py --check` | the generated tables in this document still match the code | nothing |
+| `scripts/gen-doc-blocks.py --check` | the generated tables in this document still match the code | nothing |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
@@ -860,5 +1084,7 @@ driven on a thread with a deadline**, so a regression fails the check rather tha
 harness.
 
 What is **not** covered: the live connection test from the mcp-server pod to the sandbox
-Service, and whether Dataplane V2 enforces egress to a link-local address on this cluster. Both
-need a deployed cluster and neither has been run.
+Service. It needs a deployed cluster and has not been run. The other member of that pair —
+whether this dataplane enforces egress to a link-local address — no longer belongs here: it was
+measured from inside the running pod and the drop held, with the substrate that makes the
+result reproducible recorded beside it in section 3.

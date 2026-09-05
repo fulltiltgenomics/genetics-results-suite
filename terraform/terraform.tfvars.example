@@ -45,6 +45,10 @@ sandbox_pool_enabled = false
 sandbox_machine_type = "e2-standard-2"
 # sandbox_node_service_account = "finngenie-sandbox-node@your-gcp-project-id.iam.gserviceaccount.com"
 
+# BigQuery dataset this deployment serves. deploy.sh renders it into db-api's DATASET_ID and
+# the monitor CronJob's BQ_DATASET; omit for genetics_results, and never set it empty.
+# bq_dataset = "genetics_results"
+
 enable_log_sinks = false
 
 # Only needed when this deployment shares a GCP PROJECT with another one (as daly-staging does

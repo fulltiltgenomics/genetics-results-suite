@@ -149,15 +149,24 @@ spec:
         # CAP_SETGID or CAP_CHOWN — setuid(65533) and chown(65533) both return EPERM here.
         # Taking (a) would mean adding those three capabilities back, which contradicts the
         # hardening baseline this manifest exists to establish, so (b) is forced rather than
-        # preferred. THE COST IS REAL AND THE SUPERVISOR CHAIN INHERITS IT: RLIMIT_NPROC is per
-        # real uid, so it
-        # is no longer a per-execution control — the supervisor enforces the pid budget by
-        # watching the child's process group instead — and the per-execution token file sits
-        # within the child's same-uid reach via /proc/<pid>, so it must be read once and
-        # unlinked. The supervisor must not assume it can drop privileges.
-        # fsGroup 65532 is therefore the pod's single gid; it is also what makes the emptyDir
-        # writable by a non-root uid deterministically instead of relying on the kubelet's
-        # default mode.
+        # preferred. THE COSTS ARE REAL AND THE SUPERVISOR CHAIN INHERITS THEM. RLIMIT_NPROC is
+        # per real uid, so it is no longer a per-execution control — the supervisor enforces the
+        # pid budget by watching the child's process group instead. The per-execution token file
+        # sits within the child's same-uid reach via /proc/<pid>, so it must be read once and
+        # unlinked. And the pre-fork wipe of the runtime-supplied /tmp and /dev/shm
+        # (wipe_shared_tmpfs) DEPENDS on the shared uid: both are sticky mode 1777, where only an
+        # entry's owner may unlink it, so a distinct child uid would leave the supervisor unable
+        # to remove what the child wrote and the wipe would go partial silently — a
+        # cross-execution channel, not a performance note. The supervisor must not assume it can
+        # drop privileges.
+        # fsGroup 65532 is therefore the pod's single gid. It does NOT make the emptyDir
+        # writable, though the same line on a runc workload would, and that asymmetry is the
+        # reason to keep it rather than delete it as dead: under gVisor the kubelet's fsGroup
+        # chown lands on a host directory this container never sees, because the sentry serves
+        # /scratch as a tmpfs of its own and backs it with a single file inside that host
+        # directory. Mode 1777 on the sentry's tmpfs is what a non-root uid actually writes
+        # through. Measured on staging; docs/code-execution-security.md section 2 has the
+        # mechanism and what else it explains.
         fsGroup: 65532
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
@@ -192,14 +201,23 @@ spec:
         #
         # SANDBOX_ARTIFACTS_DIR is likewise NOT set here. It is per-execution
         # (/scratch/<execution-id>/artifacts) and set by the supervisor for the child; a fixed
-        # pod-wide value would be the cross-execution shared directory that removing /tmp was
-        # meant to prevent. `read_artifact` refuses any value whose resolved path is
-        # not under the hardcoded `/scratch/` prefix and refuses if it is a symlink, which is
-        # why the volume below mounts exactly there.
+        # pod-wide value would be exactly the cross-execution shared directory the
+        # per-execution redirect exists to prevent. `read_artifact` refuses any value whose
+        # resolved path is not under the hardcoded `/scratch/` prefix and refuses if it is a
+        # symlink, which is why the volume below mounts exactly there.
         volumeMounts:
         # THE ONLY MOUNT IN THIS POD. No PVC, ever — chat-data holds every conversation in the
-        # deployment. No ConfigMap, no Secret, no pod-level /tmp (it outlives an execution, and
-        # with replicas: 1 and concurrency 1 successive users are guaranteed to share this pod).
+        # deployment. No ConfigMap, no Secret, and no volume at /tmp or /dev/shm (a shared temp
+        # directory outlives an execution, and with replicas: 1 and concurrency 1 successive
+        # users are guaranteed to share this pod).
+        #
+        # DECLARING NONE DOES NOT REMOVE THEM: gVisor supplies /tmp and /dev/shm itself, mode
+        # 1777, and they share one memory pool bounded only by limits.memory below — measured
+        # on staging, where a marker written by one execution was read by the next. What closes
+        # that channel is the supervisor emptying both before every fork; this manifest cannot.
+        # Mounting bounded emptyDirs there instead was offered and declined: it would make
+        # their exhaustion a kubelet eviction like /scratch's, at the price of rewriting the
+        # invariant on this line from one volume to three.
         - name: scratch
           mountPath: /scratch
         # No livenessProbe, deliberately. The supervisor enforces its own wall clock, and a
@@ -216,9 +234,13 @@ spec:
           periodSeconds: 10
         securityContext:
           # Exceeds the suite baseline. Nothing in the image needs to write outside /scratch:
-          # the bytecode and the matplotlib font cache are baked at build time. It is also what
-          # makes a hardcoded /tmp in some dependency fail loudly at test time rather than
-          # quietly acquiring a cross-execution channel.
+          # the bytecode and the matplotlib font cache are baked at build time. It does NOT
+          # make a hardcoded /tmp in some dependency fail loudly, and must not be relied on for
+          # that: under gVisor the sentry supplies a writable /tmp regardless, so such a write
+          # succeeds in silence here and fails only under runc — i.e. only in
+          # scripts/run-sandbox-local.sh, where the consequence would not have mattered. What
+          # keeps that write from becoming a cross-execution channel is the supervisor's wipe
+          # before every fork, not this flag.
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
           capabilities:
