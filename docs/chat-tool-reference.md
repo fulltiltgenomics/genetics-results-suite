@@ -74,7 +74,7 @@ The functions over them:
 | symbol | contents |
 |---|---|
 | `resolve_tools(code_execution, disabled)` | the surface a request is handed |
-| `get_anthropic_tools()` | the `tool_profile` shim over `resolve_tools`, in Anthropic format |
+| `get_anthropic_tools(code_execution)` | `resolve_tools`, in Anthropic format |
 | `all_anthropic_tools()` | every local tool, for a caller that narrows by name (subagent skills) |
 | `register_mcp_tools()` | registers FastMCP handlers — the `/mcp` surface |
 
@@ -111,12 +111,19 @@ Assembled per request when `enable_tools` (request field, default `true`) and
 
 1. `disabled = set(settings.disabled_tools)`, plus `launch_subagents` when
    `self.subagent_service is None`.
-2. `get_anthropic_tools(None, tool_profile=<request field>, disabled_tools=disabled)`.
+2. `get_anthropic_tools(None, code_execution=code_execution_requested(<request field>), disabled_tools=disabled)`.
 3. `+ get_external_anthropic_tools()` unless the profile is `"rag"` or `"code"` — a surface
    that names its tools exactly would not mean much with ~20 proxied tools appended. This
    half is still keyed on the profile NAME rather than on the boolean.
 4. `+ get_rag_anthropic_tools()` when the profile is `None` or `"rag"`.
 5. The last entry gets `cache_control: {"type": "ephemeral"}`.
+
+The resolved set from this assembly (local + external/RAG names actually put on the
+request) becomes the `advertised_tools` argument `llm_service._execute_tool` requires.
+Dispatch is not advisory: a `tool_use` naming anything outside that set — after the
+existing `disabled_tools` refusal — is refused as a `ToolNotAvailable` `tool_result` the
+model reads, and the check reads the resolved set rather than re-deriving anything from
+`tool_profile`.
 
 `settings.disabled_tools` (`config/settings.py:341-349`) is a *property*, derived from three
 flags, each defaulting to **false**:
@@ -192,7 +199,7 @@ Each skill names the tools it gets (`skills/definitions.py`), so no tool profile
 orchestration exclusion both still bite whatever a skill lists.
 `tests/test_subagent.py::TestSkillToolSurface` pins every skill's resolved set.
 
-## 3. Tool surfaces and the profile shim
+## 3. Tool surfaces and the profile coercion
 
 There are **two** local tool surfaces, resolved by one function in genetics-mcp-server's
 `tools/definitions.py`. The signature, the two surfaces and the code surface's membership
@@ -235,14 +242,18 @@ skills are unaffected: each names its tools explicitly in `skills/definitions.py
 narrows from `all_anthropic_tools()`, because a skill names `run_analysis` alongside data
 tools and no single surface carries both.
 
-### The `tool_profile` shim
+### `code_execution_requested`, the edge
 
 `POST /chat/v1/chat` still takes a `tool_profile` field, persisted per message in
 `chat_messages.tool_profile` and defaulted per user from the `chat_tool_profile` key of
-`user_settings`. `get_anthropic_tools` maps it onto the boolean: **`"code"` is code
-execution; every other value resolves to the no-code surface** — `None`, the retired
-`api`/`bigquery`/`rag`, `nocode`, and any value this server has never heard of. That is the
-safe direction for a value read back from a row an older client wrote. The browser's
+`user_settings`. `code_execution_requested(tool_profile)`, called once in `chat_api.py` at
+the edge the request arrives on, maps it onto the boolean: **`"code"` is code execution;
+every other value resolves to the no-code surface** — `None`, the retired
+`api`/`bigquery`/`rag`, `nocode`, and any value this server has never heard of, logging one
+WARNING per distinct unknown value seen. That is the safe direction for a value read back
+from a row an older client wrote. Nothing downstream of the edge — `get_anthropic_tools`,
+`resolve_local_tools`, `stream_chat` — takes the profile string at all; each takes the
+already-coerced boolean. The browser's
 **Tools** control still offers All / API / Database / **Code execution**; only the last of
 those now resolves to anything different.
 
@@ -374,7 +385,7 @@ ungated wherever their body is: `## Data Sources and Resource Names` is its own 
 a gated heading over an ungated body reparents the body under the preceding section.
 
 `chat_api.py` resolves the tool set **once**, with `service.resolve_local_tools(
-request.tool_profile, request.enable_tools)` (`llm_service.py`), builds the prompt from that
+code_execution_requested(request.tool_profile), request.enable_tools)` (`llm_service.py`), builds the prompt from that
 object's `.names`, and hands the SAME object to `stream_chat` and on to `_stream_anthropic`
 as the model's tool list. `ResolvedLocalTools` is a frozen dataclass holding `definitions`,
 and `names` is a **computed property** over them rather than a stored copy — so the names the
@@ -2372,7 +2383,7 @@ regenerate by hand with `scripts/gen-doc-blocks.py [--mcp-src DIR]`.
 
 **Everything else is hand-derived**, so re-derive it rather than trusting it: sections 2a, 2b
 and 2c (how each surface is assembled, and the handler and effective `/mcp` counts in them),
-section 3's `tool_profile` shim table and the `KNOWN_TOOL_PROFILES` set quoted beside it,
+section 3's profile-coercion table and the `KNOWN_TOOL_PROFILES` set quoted beside it,
 section 4a (the system prompt and its fragments), and section 8 (the catalogue, its
 per-category headings and the `definitions.py:` line references). To check any of those,
 parse the module rather than importing it (it has no runtime deps at module level, but `ast`
