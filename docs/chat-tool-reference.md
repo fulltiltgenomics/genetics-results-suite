@@ -28,8 +28,8 @@ trust it** — the recipe is in "How to re-derive" at the end.
 Cross-reference these rather than restating them:
 
 - `genetics-mcp-server/docs/project-spec.md` — one-line summaries of every tool grouped by
-  purpose ("Available tools", line 44), the tool-category and profile tables ("Tool Profiles",
-  line 437), response length (line 978), instructions (line 991), the SDK surface (line 463).
+  purpose ("Available tools"), the tool-category table and the surface/profile description
+  ("Tool surfaces"), response length, instructions, the SDK surface.
   That doc is the *behavioural* description; this one is the *verbatim* one.
 - `docs/code-execution-security.md` (this repo) — the threat model behind the MCP exclusion
   set, `list_capabilities`' disclosure analysis, and the three-layer argument for keeping
@@ -45,16 +45,21 @@ All tool definitions are in one file:
 
 | symbol | line | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 60 | 67 tools — 20 `general`, 44 `api`, 3 `orchestration` |
-| `BIGQUERY_TOOL_DEFINITIONS` | 1798 | 2 tools — `query_database`, `get_database_schema` (category `bigquery`) |
-| `SUBAGENT_TOOL_DEFINITIONS` | 1851 | 1 tool — `launch_subagents` (category `orchestration`) |
-| `TOOL_PROFILES` | 1895 | 4 category-union profiles: `api`, `bigquery`, `rag`, `nocode` |
-| `TOOL_PROFILE_TOOLS` | 1954 | 1 explicit-allow-list profile: `code` (7 tool names) |
-| `get_anthropic_tools()` | 2014 | builds the Anthropic-format list handed to the chat model |
-| `register_mcp_tools()` | 2102 | registers FastMCP handlers — the `/mcp` surface |
+| symbol | contents |
+|---|---|
+| `TOOL_DEFINITIONS` | the data tools — 20 `general`, 44 `api` |
+| `CODE_EXECUTION_TOOL_DEFINITIONS` | `run_analysis`, `list_capabilities`, `read_artifact` (category `orchestration`) |
+| `BIGQUERY_TOOL_DEFINITIONS` | `query_database`, `get_database_schema` (category `bigquery`) |
+| `SUBAGENT_TOOL_DEFINITIONS` | `launch_subagents` (category `orchestration`) |
+| `resolve_tools(code_execution, disabled)` | the surface a request is handed |
+| `get_anthropic_tools()` | the `tool_profile` shim over `resolve_tools`, in Anthropic format |
+| `all_anthropic_tools()` | every local tool, for a caller that narrows by name (subagent skills) |
+| `register_mcp_tools()` | registers FastMCP handlers — the `/mcp` surface |
 
-**70 tool definitions in total.** By category across all three lists: `general` 20,
-`api` 44, `bigquery` 2, `orchestration` 4.
+Line numbers are deliberately not quoted — they have drifted repeatedly; locate a symbol
+with `grep -n` from that repo's root. **70 tool definitions in total.** By category across
+the four lists: `general` 20, `api` 44, `bigquery` 2, `orchestration` 4. The resolved sets
+are frozen in `genetics-mcp-server/tests/golden/tool_surface.json`; read them there.
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
 `type` is copied verbatim, `description` / `default` / `items` / `enum` / `minimum` /
@@ -86,10 +91,9 @@ Assembled per request when `enable_tools` (request field, default `true`) and
 1. `disabled = set(settings.disabled_tools)`, plus `launch_subagents` when
    `self.subagent_service is None`.
 2. `get_anthropic_tools(None, tool_profile=<request field>, disabled_tools=disabled)`.
-3. `+ get_external_anthropic_tools()` unless the profile is `"rag"` or an explicit-allow-list
-   profile (`llm_service.py:771` tests membership in `TOOL_PROFILE_TOOLS`, so `"code"` gets
-   none — a profile that names its seven tools would not mean much with ~20 proxied tools
-   appended).
+3. `+ get_external_anthropic_tools()` unless the profile is `"rag"` or `"code"` — a surface
+   that names its tools exactly would not mean much with ~20 proxied tools appended. This
+   half is still keyed on the profile NAME rather than on the boolean.
 4. `+ get_rag_anthropic_tools()` when the profile is `None` or `"rag"`.
 5. The last entry gets `cache_control: {"type": "ephemeral"}`.
 
@@ -104,11 +108,10 @@ flags, each defaulting to **false**:
 
 `k8s/deployments/chat-backend.yaml:128` sets `ENABLE_SUBAGENTS: "false"` explicitly and does
 not set the other two, so **in the deployed configuration all three are disabled** and the
-chat model at `tool_profile=null` sees **67 local tools**, not 70.
+chat model at `tool_profile=null` — the no-code surface — sees **64** local tools.
 
-`run_analysis`, `read_artifact` and `list_capabilities` have **no** feature flag. They are
-advertised to the chat model on every turn regardless of whether a sandbox exists. See
-section 7.
+`read_artifact` and `list_capabilities` have **no** feature flag; `run_analysis` is gated on
+`SANDBOX_ENABLED`. All three reach only the code surface. See section 7.
 
 ### 2b. The MCP surface (`mcp_server.py:86-119`)
 
@@ -168,161 +171,128 @@ Each skill names the tools it gets (`skills/definitions.py`), so no tool profile
 orchestration exclusion both still bite whatever a skill lists.
 `tests/test_subagent.py::TestSkillToolSurface` pins every skill's resolved set.
 
-## 3. Tool profiles
+## 3. Tool surfaces and the profile shim
 
-There are **two** profile mechanisms, both in genetics-mcp-server's `tools/definitions.py`. `TOOL_PROFILES` names
-whole *categories*; `TOOL_PROFILE_TOOLS` names individual *tools* and takes precedence over
-it. Both live in the **genetics-mcp-server** repo; locate them from that repo's root with
-`grep -n '^TOOL_PROFILE' src/genetics_mcp_server/tools/definitions.py` rather than by line
-number — the numbers quoted here have now drifted twice, since both dicts sit under a long
-comment block that grows every time the reasoning is revised. Verbatim:
+There are **two** local tool surfaces, resolved by one function in genetics-mcp-server's
+`tools/definitions.py`:
 
 ```python
-TOOL_PROFILES: dict[str, set[str]] = {
-    "api": {"general", "api", "orchestration"},
-    "bigquery": {"general", "bigquery", "orchestration"},
-    "rag": {"general"},
-    "nocode": {"general", "api", "bigquery"},
-}
-
-TOOL_PROFILE_TOOLS: dict[str, set[str]] = {
-    "code": {
-        "run_analysis",
-        "list_capabilities",
-        "read_artifact",
-        "search_genes",
-        "search_phenotypes",
-        "search_scientific_literature",
-        "lookup_variants_by_rsid",
-    },
-}
+resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> list[dict]
 ```
 
-The second mechanism exists because the `code` surface **cannot** be written as categories:
-its three orchestration tools share a category with `launch_subagents`, which must stay out,
-and its four search tools share `general` with 13 others. Recategorising tools to make it fit
-was ruled out — a tool's `category` also decides what the `api` chat profile advertises and
-so moving one to suit a profile changes live chat behaviour. (Subagent skills are not
-affected: each names its tools explicitly in `skills/definitions.py`.) No
-existing profile's resolved set changed when `code` landed;
-`tests/test_tools.py::test_existing_profiles_unchanged_by_the_code_profile` pins that.
+Membership is one field on each tool definition, `sdk_replaceable`. The line it draws is
+**internal genetics data against outside resources**, not "everything minus run_analysis": a
+script inside the sandbox reaches internal data through the `genetics` SDK and reaches
+nothing else, because the sandbox egress allow-list names db-api and results-api only
+(`docs/code-execution-security.md`). So a tool that fetches internal data is
+`sdk_replaceable: True` and the code surface drops it; a tool that calls an outside host is
+`sdk_replaceable: False` and both surfaces carry it. `get_myvariant_annotations` is the case
+that shows the field is not the category: it is categorised `api` and calls myvariant.info.
 
-Selection: `POST /chat/v1/chat` field `tool_profile` (`chat_api.py:284`), persisted per
-message in `chat_messages.tool_profile`, defaulted per user from the `chat_tool_profile`
-key of `user_settings`. It is also selectable from the browser: genetics-results-browser's
-**Tools** control offers All / API / Database / **Code execution**.
+Three tools are exempt from that rule and say so where they are defined — `search_genes`,
+`search_phenotypes` and `lookup_variants_by_rsid` have SDK routes but stay on the code
+surface, because resolving a symbol or a phenotype name to an id is what the model does
+*before* it writes a script. `CODE_EXECUTION_TOOL_DEFINITIONS` is a list rather than a field
+value: those tools *are* code execution, so the boolean includes them directly.
+`launch_subagents` reaches **neither** surface; which one should carry it is an open
+question, and `ENABLE_SUBAGENTS=false` keeps it out of every deployment meanwhile. Subagent
+skills are unaffected: each names its tools explicitly in `skills/definitions.py` and
+narrows from `all_anthropic_tools()`, because a skill names `run_analysis` alongside data
+tools and no single surface carries both.
 
-**The two lists are not the same list, and that is deliberate.** This server knows **five**
-profiles — `api`, `bigquery`, `rag`, `nocode`, `code`. genetics-results-browser's own
-`TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names **four** — `api`, `bigquery`,
-`rag`, `code` — of which `rag` carries a `null` in `TOOL_PROFILE_LABELS` (`LLMChat.tsx`) and
-so is resolvable but never rendered as a radio. `nocode` is absent from the browser
-altogether **on purpose**: it was the comparator arm for `genetics-results-suite-4h6.23`
-(descoped 2026-08-30 without running — see the note under the profile table below) and must
-not be an option a user can pick. Neither omission is an oversight, and neither list should be
-described as mirroring the other.
+### The `tool_profile` shim
 
-Since `genetics-results-suite-4h6.74` the two are pinned against each other, once per
-direction:
+`POST /chat/v1/chat` still takes a `tool_profile` field, persisted per message in
+`chat_messages.tool_profile` and defaulted per user from the `chat_tool_profile` key of
+`user_settings`. `get_anthropic_tools` maps it onto the boolean: **`"code"` is code
+execution; every other value resolves to the no-code surface** — `None`, the retired
+`api`/`bigquery`/`rag`, `nocode`, and any value this server has never heard of. That is the
+safe direction for a value read back from a row an older client wrote. The browser's
+**Tools** control still offers All / API / Database / **Code execution**; only the last of
+those now resolves to anything different.
+
+| `tool_profile` | resolves to | local tools | external | RAG |
+|---|---|---|---|---|
+| `null` / omitted — **the default** | the no-code surface | every data tool | yes | yes |
+| `"api"`, `"bigquery"`, `"nocode"` | the no-code surface | every data tool | yes | no |
+| `"rag"` | the no-code surface | every data tool | **no** | yes |
+| `"code"` | the code surface | the sandbox's three tools + every tool the SDK cannot replace | **no** | no |
+| any other string | the no-code surface, plus a warn-once (below) | every data tool | yes | no |
+
+Counts are deliberately absent: they move with every tool added and with the three feature
+flags. `genetics-mcp-server/tests/golden/tool_surface.json` records the resolved set for each
+value under the deployed flags, and `tests/test_tool_surface_golden.py` fails when one moves —
+including a test that the four legacy names still collapse onto the no-code surface.
+
+The external and RAG columns are still keyed on the profile NAME rather than on the boolean;
+making them reach both surfaces is separate work, which is why `"rag"` and `"code"` still
+differ from the rest there while their local sets do not.
+
+**The default is settled, not provisional.** `null` was to be reconsidered against the `code`
+arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
+2026-08-30** by user decision — initial benchmarking was done by hand and further
+benchmarking moves outside the epic. Its own kill criterion was *"if the code arm does not
+beat the baseline on cost AND does not regress quality, keep it behind the profile rather
+than defaulting it on"*, and that conservative branch is exactly the shipped state, so
+descoping the benchmark **accepts** the documented default: **`code` stays opt-in.** The arms
+were never compared, so this is not a record of the code arm losing, and there is no 4h6.23
+figure to cite. A deployment can still start its users on `code` — `DEFAULT_TOOL_PROFILE` is
+served through the user-settings endpoint to anyone who has not chosen, and staging sets it.
+
+`"nocode"` was added as the A/B's baseline arm, which `null` could not then be because `null`
+contained `run_analysis`. After the collapse the two resolve identically, so the name survives
+only as a stored value.
+
+### Drift between this server and the browser
+
+genetics-results-browser's own `TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names
+`api`, `bigquery`, `rag` and `code`, of which `rag` carries a `null` in `TOOL_PROFILE_LABELS`
+(`LLMChat.tsx`) and so is resolvable but never rendered as a radio; `nocode` is absent from
+the browser on purpose. Since `genetics-results-suite-4h6.74` the two are pinned against each
+other, once per direction:
 
 - **server → browser, at runtime.** A stored `chat_tool_profile` the browser does not
-  enumerate used to be narrowed to `null` — which is *no filtering*, the full surface, so
-  the user's narrower stored choice silently became the widest one. The browser now probes
+  enumerate used to be narrowed to `null`. The browser probes
   `GET /chat/v1/tools/resolved?tool_profile=<v>` and, on `known_profile: true`, keeps the
   value, labels it from the raw key and sends it (`adoptServerKnownProfile` in
-  `useChatOptions.ts`). This is what lets an already-stored `nocode` behave correctly
-  without advertising it. The value must first look like a profile name at all —
-  non-empty, ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel
-  (`isPlausibleToolProfile` in `chatOptionsApi.ts`) — or it never reaches the URL. The stored
-  setting is not the only source: `tool_profile` is persisted per message, so **reopening a
-  conversation** that ran under a server-only profile narrowed it to `null` too, and
-  `applyFromConversation` probes that value as well. A conversation's name is adopted only while
-  that conversation is on screen and never becomes the user's default; a settled answer is cached,
-  so reopening the same conversation does not re-ask.
-- **browser → server, at runtime.** The same endpoint is called when a profile is selected
-  and when one is restored at page load; an explicit `known_profile: false` puts an amber
-  "not recognised by the server" beside the **Tools** control. **A failed or unanswerable
-  probe shows nothing** — offline, 5xx, or a backend predating the endpoint is not evidence
-  of drift, so only an explicit `false` is a signal.
+  `useChatOptions.ts`). The value must first look like a profile name at all — non-empty,
+  ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel (`isPlausibleToolProfile` in
+  `chatOptionsApi.ts`) — or it never reaches the URL. `tool_profile` is persisted per message,
+  so **reopening a conversation** that ran under a server-only value probes it as well
+  (`applyFromConversation`); a conversation's name is adopted only while that conversation is
+  on screen and never becomes the user's default, and a settled answer is cached.
+- **browser → server, at runtime.** The same endpoint is called when a profile is selected and
+  when one is restored at page load; an explicit `known_profile: false` puts an amber "not
+  recognised by the server" beside the **Tools** control. **A failed or unanswerable probe
+  shows nothing** — offline, 5xx, or a backend predating the endpoint is not evidence of drift.
 - **browser → server, at build time.** `tests/test_unknown_profile_warning.py::
   test_the_profile_key_set_is_pinned_against_the_browsers_copy` asserts
-  `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
-  literal and names the browser file in its failure guidance, so adding or renaming a
-  profile here fails a test until the browser is dealt with. It also asserts the two dicts
-  stay disjoint, since `TOOL_PROFILE_TOOLS` wins where they overlap.
+  `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a literal and names the
+  browser file in its failure guidance, so changing the accepted set fails a test until the
+  browser is dealt with. It also asserts that the legacy names still collapse onto the no-code
+  surface.
 
-The two ends still disagree about a genuinely unknown string, and that stays deliberate:
-the browser resolves it to `null`, the **full** surface; the server degrades to
-general-only. Neither may raise, because the value is read back from stored rows. See
-`docs/project-spec.md` § "Selecting a profile from the browser".
+Since the collapse the drift can only cost a user the **code** surface: every other value
+resolves the same way whichever side invented it. Neither end may raise on an unknown string,
+because the value is read back from stored rows. See `docs/project-spec.md` § "Selecting a
+profile from the browser".
 
-| `tool_profile` | resolves by | local tools (all flags on) | local tools (deployed flags) | external | RAG |
-|---|---|---|---|---|---|
-| `null` / omitted — **the default** | no filter at all: everything | **70** | **67** | yes | yes |
-| `"api"` | categories: general + api + orchestration | 68 | 65 | yes | no |
-| `"bigquery"` | categories: general + bigquery + orchestration | 26 | 25 | yes | no |
-| `"rag"` | categories: general only | 20 | 20 | **no** | yes |
-| `"nocode"` | categories: general + api + bigquery | 66 | 64 | yes | no |
-| `"code"` | the 7 names in `TOOL_PROFILE_TOOLS` | 7 | 7 | **no** | no |
-| any other string | not in either dict → general only, plus a warn-once (below) | 20 | 20 | yes | no |
+Two behaviours worth stating plainly:
 
-**The default row above is settled, not provisional.** `null` was to be reconsidered against the
-`code` arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
-2026-08-30** by user decision — initial benchmarking was done by hand and further benchmarking
-moves outside the epic. Its own kill criterion was *"if the code arm does not beat the baseline on
-cost AND does not regress quality, keep it behind the profile rather than defaulting it on"*, and
-that conservative branch is exactly the shipped state, so descoping the benchmark **accepts** the
-documented default: **`code` stays opt-in and `null` remains the default profile.** The arms were
-never compared, so this is not a record of the code arm losing — the decision was not taken on
-numbers, and the default stands unchanged. There is no 4h6.23 figure to cite. A deployment can
-still start its users on `code` — `DEFAULT_TOOL_PROFILE` is served through the user-settings
-endpoint to anyone who has not chosen, and staging sets it (`docs/project-spec.md`, "Tool
-profiles") — but that moves what the browser sends, not what a null `tool_profile` resolves to.
-
-`"nocode"` exists for the genetics-results-suite-4h6.23 A/B, as the baseline arm `null`
-cannot be: `null` **contains `run_analysis`**, so an arm meant to stand for the
-pre-code-execution surface can reach for the mechanism under test. Under the **deployed**
-flags `null` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`
-(67 → 64, measured 2026-09-04).
-
-That equivalence is a property of the deployed flags, **not** of the category. Excluding
-`orchestration` also excludes `launch_subagents`, which is the fourth tool in that category
-— it just never reaches a request, because `enable_subagents` defaults to false and
-`llm_service._disabled_tools` strips it again when the subagent service did not initialize,
-both *before* the profile filter. With **all flags on** the gap is therefore four tools, not
-three, which is why the two columns above differ by more than the disabled-tool count. Turn
-`ENABLE_SUBAGENTS` on and `nocode` stops being "the old surface" until this row is re-derived.
-
-Three behaviours worth stating plainly:
-
-- **`profile=None` is not "the union of the profiles" — it is "no filtering".** The
-  `if tool_profile is not None` guard at `definitions.py:1777` is skipped entirely, so the
-  default surface is every definition in all three lists. `code` **ships dark**: it changes
-  no default, and rolling it back is deleting one dict entry. `DEFAULT_TOOL_PROFILE` does not
-  touch this either — it is served to the browser as a starting choice, never applied to a
-  request.
-- **An unknown profile name degrades to `general` only** rather than raising. A typo in
-  `tool_profile` costs the model 47 tools and the request still succeeds. The degrade was
-  kept deliberately when `code` landed — the value is read back from `chat_messages` rows
-  written by older clients, so raising would turn a stale row into a 500 — and is pinned by
-  `test_unknown_profile_still_degrades_silently_to_general` (`tests/test_tools.py`) and by
-  `test_the_degrade_itself_is_unchanged` (`tests/test_unknown_profile_warning.py`).
-  It is **no longer silent to an operator**: `genetics-results-suite-4h6.74` split the
-  lookup into `TOOL_PROFILES.get(profile)` plus an explicit `None` branch that calls
-  `_warn_unknown_profile`, logging one WARNING naming the value and the known set — once
-  per **distinct** value, not once per request, because a stored profile is re-sent on
-  every turn of the session that holds it, and bounded at 64 distinct values so a client
-  inventing one per request floods neither the log nor the memo set. It stays silent to
-  the model and to the request itself. The caller-side half of the same signal is
-  `GET /chat/v1/tools/resolved`'s `known_profile: false`.
-  Note the asymmetry in the last table row: an unknown name is not `"rag"`, so it still
-  gets external tools but not RAG tools.
-- **`disabled_tools` is applied *before* the profile filter**, so the three feature flags
-  and the env-driven disable list subtract from an explicit profile too. Only
-  `launch_subagents` of the three is in a category profile other than `api`, which is why
-  `"bigquery"` loses exactly one tool under the deployed flags and `"code"` loses none —
-  under `SANDBOX_ENABLED=true` (§4a below); with it `false`, `bigquery`'s deployed-flags
-  count drops to 22, so it loses two, not one.
+- **An unknown profile name resolves to the no-code surface** rather than raising. The
+  degrade is deliberate — the value is read back from `chat_messages` rows written by older
+  clients, so raising would turn a stale row into a 500 — and is pinned by
+  `test_the_degrade_itself_is_unchanged` (`tests/test_unknown_profile_warning.py`). It is
+  **not silent to an operator**: `_warn_unknown_profile` logs one WARNING naming the value and
+  the known set, once per **distinct** value (a stored profile is re-sent on every turn of its
+  session) and bounded at 64 distinct values. It stays silent to the model and to the request.
+  The caller-side half of the same signal is `GET /chat/v1/tools/resolved`'s
+  `known_profile: false`. Note the asymmetry in the last table row: an unknown name is not
+  `"rag"`, so it still gets external tools but not RAG tools.
+- **`disabled` is applied to the resolved surface**, so the feature flags and the env-driven
+  disable list subtract from either surface. Under the deployed flags the no-code surface
+  loses `get_credible_sets_stats`, `get_phenotype_report` and (already absent) `launch_subagents`;
+  the code surface loses `run_analysis` when `SANDBOX_ENABLED=false` (§4a below).
 
 ## 4. System prompt, verbosity and instruction sets
 
@@ -399,33 +369,25 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
 everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
-unfiltered text is 38,617 chars. Measured 2026-09-04:
+unfiltered text is 40,789 chars. Measured 2026-09-06:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default) | 67 | 31,893 | Subagent Orchestration, Phenotype Reports, the `variant_list_analysis` clause |
-| `api` | 65 | 31,890 | the above, plus the `query_database` wording variants; gains the SDK schema route |
-| `bigquery` | 25 | 28,879 | the above, plus every api-tool routing section and the Variant Annotation Sources table |
-| `rag` | 20 | 22,296 | the above, plus HLA, the credible-set **membership and re-query** rules, the database section and Choosing How to Get Data entirely. It does NOT drop the credible-set guidance wholesale: rendering the profile (2026-08-26) shows `### Pseudo Credible Sets` intact — the labelling obligation, the r² membership criteria, the PIP-assignment and filter facts, and the "interpreted with more caution than formal fine-mapping" key distinction all survive. What goes is the material that can only be obeyed by fetching rows |
-| `nocode` | 64 | 31,198 | the `None` set, plus every mention of `run_analysis` — the word does not appear in this prompt at all (31,893 → 31,198 chars) |
-| `code` | 7 | 21,824 | every per-tool routing section, Protein Annotation and Drug and Target Evidence; keeps the science, the grounding rules and the script guidance |
+| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 64 | 31,980 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
+| `code` | 18 | 29,537 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `list_datasets`, `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces |
 
-`bigquery` has two shapes and the row above is the sandbox-on one. With
-`SANDBOX_ENABLED=false` it is 24 tools and 28,034 chars, and the text differs by more than
-the missing `run_analysis` guidance: `query_database` keeps the annotation prohibition
-alive while the flag has taken `run_analysis` and with it the SDK route, so
-`genetics-results-suite-4h6.76` gives it a wording of its own — the prohibition followed by
-`get_variant_protein_effect`, which this surface still has and which returns the amino-acid
-change with curated ClinVar clinical significance, population frequency and rsID for a
-coding SNV. The model is told to USE that tool, and to fall back on "not available here"
-only for what the tool does not cover (non-coding variants, pathogenicity scores,
-multi-population frequencies). The blanket "there is no variant-annotation tool on this
-surface" wording — which an earlier revision of this section placed on exactly this
-surface, where it was false — matches **no shipped profile**: it survives only for a
-database-only shape with `get_variant_protein_effect` removed, which is synthesised in the
-test rather than resolved from a profile (see the route-completeness bullet below). The
-other profiles change with the flag too (`None` 66 tools / 31,198 chars, `api` 64 / 27,526,
-`code` 6 / 14,850; `rag` and `nocode` are unaffected).
+Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
+tool names, those five resolve to the same 64 tools, and the five prompts are byte-identical
+at 31,980 chars. Only `code` gates differently, and it is now the only value with two shapes.
+`SANDBOX_ENABLED=false` takes `run_analysis` off it, leaving 17 tools and 21,029 chars, and
+the loss is wider than the script guidance: HLA / the MHC region, Choosing How to Get Data
+and the database-routing blocks all go, because `genetics.sql` inside a script was this
+surface's only route to the database. What does NOT go is `get_variant_protein_effect` — it
+survives both `code` shapes and the prompt still names it, so the blanket "there is no
+variant-annotation tool on this surface" wording matches **no shipped profile**. It survives
+only for a database-only shape with `get_variant_protein_effect` removed, which
+`tests/test_system_prompt.py` synthesises rather than resolving from a profile (see the
+route-completeness bullet below).
 
 `tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
 over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
@@ -482,14 +444,15 @@ ways; the rest run with subagents off:
   (`test_no_surface_gets_the_prohibition_without_a_route`): wherever the "you must NEVER
   query the database for them" prohibition is emitted, exactly one route accompanies it,
   and where it is not emitted, no route is either. There are **four** shipped arms, each
-  additionally pinned by its own test: the annotation tools (`None`, `api`); the SDK
-  together with `get_variant_protein_effect` — "Fetch consequence, allele frequency and
-  gene in a script instead", on `bigquery` with the sandbox on, which carries both; the SDK
-  alone — "Fetch them in a script instead: `genetics.variant_annotation(`" — on `code`,
-  whose seven tools include no annotation tool of any kind, so its "not in the database
-  either" clause is true as written there; and the database-only wording, "The database is
-  not an alternative route to them. For a coding SNV …", on `bigquery` with
-  `SANDBOX_ENABLED=false`. A fifth string exists — the blanket "there is no
+  additionally pinned by its own test: the annotation tools (the no-code surface); the code
+  surface's own wording, naming `get_myvariant_annotations` and `get_variant_protein_effect`,
+  which is the shape the collapse created — an outside-resource annotation tool without the
+  FinnGen one; the SDK together with `get_variant_protein_effect` — "Fetch consequence, allele
+  frequency and gene in a script instead"; and the SDK alone — "Fetch them in a script instead:
+  `genetics.variant_annotation(`" — where nothing annotates. Those last two, and the
+  database-only wording "The database is not an alternative route to them. For a coding SNV …",
+  are shapes no surface resolves to today, so their tests build the tool set directly.
+  A further string exists — the blanket "there is no
   variant-annotation tool on this surface" — but it is not a fifth surface: no shipped
   profile has that shape, so its test synthesises one, subtracting
   `get_variant_protein_effect` from the resolved `bigquery`-no-sandbox set and rendering
@@ -875,7 +838,7 @@ tools are written by the external server operator and are not reviewed here.
 The most useful part of this document. Each of these is a doc or bead claim that the code
 does not currently match, verified against source on 2026-08-18.
 
-1. **The `code` profile ships seven tools, not the five the bead names.** Two of the five
+1. **The code surface is not the seven names the bead gives.** Two of the five
    names in `genetics-results-suite-4h6.16` (`search_entities`, `search_literature`) do not
    exist anywhere in `definitions.py` and no bead creates them — they are the consolidation
    from the deferred Alt-1/Alt-2 work. The user's scope decision (2026-08-18) was to ship
