@@ -572,6 +572,14 @@ edit to the prompt:
 - For a question a single tool answers, call the tool. A script is not cheaper than one call.
 ```
 
+Then, gated `requires_any={run_analysis}` so it follows the bullet above onto every surface that
+can run a script — the display rules, which the model otherwise reinvents (78 of 172 scripts in
+benchmark `9c6595ac` set `pl.Config`, none of them reaching the knob that governs column count):
+
+```text
+- **`genetics.show(df)` is the route that prints a frame in full** — every column of every row, one row per line, nothing elided. polars' own repr is built for a terminal and silently drops columns and rows; do not try to widen it with `pl.Config`, use `show()`. If output still looks cut, that is the 64 KiB stdout window — print less rather than printing again wider.
+```
+
 The `api`-only, `bigquery`-only and `code`-only surfaces get one-line variants instead
 ("The API tools are the data path here", "The database is the data path here", "Scripts are
 the only data path on this surface"). Both blocks are followed by:
@@ -607,8 +615,14 @@ all the SQL guidance above with no way to discover a column. It gets the SDK's r
 instead, emitted only there (`excludes={query_database}`, `requires_any={run_analysis}`):
 
 ```text
-`genetics.sql(...)` inside a script is the only route to the database on this surface. Discover the schema before writing a query — `genetics.schema()` returns the column-level schema of every view and `genetics.schema('credible_sets_v')` just one — rather than guessing a column name.
+`genetics.sql(...)` inside a script is the only route to the database on this surface. Discover the schema before writing a query rather than guessing a column name. The sandbox ships the schema as documentation: one markdown file per view under `$GENETICS_SCHEMA_DIR`, named after the view (`credible_sets_v.md`, `colocalization_v.md`, …) with a `README.md` indexing them all. Each file lists the view's columns and their BigQuery types, the allowed values of its categorical columns, and worked example SQL — read the file for the view before writing SQL, e.g. `import os; print(open(os.environ['GENETICS_SCHEMA_DIR'] + '/credible_sets_v.md').read())`. `genetics.schema()` returns the same column-level schema as a live call, for every view, and `genetics.schema('credible_sets_v')` just one.
 ```
+
+Those files are the suite repo's `sandbox/schema/`, generated from `configs/datasets.yaml` by
+`scripts/gen-sandbox-docs.py` and staged at `/genetics/schema` by `sandbox/Dockerfile`. They
+shipped into every execution long before anything model-facing named them, so the model paid for
+a column name it was already carrying — two of the six script failures in the local-20 benchmark
+transcripts are answered verbatim in `colocalization_v.md`.
 
 The routing table for annotation sources, verbatim:
 

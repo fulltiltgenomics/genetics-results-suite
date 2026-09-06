@@ -439,6 +439,15 @@ something nothing would ever notice going stale. Shipping the placeholders degra
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
 
+**On-demand only works if the model knows they are there, and for a long time it did not.** The
+directories were named nowhere a model could read them — not in a tool description, not in the
+system prompt — so every column name was fetched over the network from a container that already
+held the answer. genetics-mcp-server's system prompt now names `$GENETICS_SCHEMA_DIR` and the
+one-file-per-view layout in the block that reaches a surface with `run_analysis` and no
+`query_database`, so what the image discloses to the model is no longer bounded by what the
+model guessed was in it. The stubs are still reached through `list_capabilities` rather than
+by path.
+
 ### The LD proxy: one third-party call the sandbox can cause
 
 A `run_analysis` script cannot reach the internet, and that has not changed. What changed is
