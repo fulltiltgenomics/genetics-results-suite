@@ -2301,11 +2301,22 @@ else, because the sandbox egress allow-list names db-api and results-api only
 (`docs/code-execution-security.md`). A tool that fetches internal data is `sdk_replaceable: True`
 and the code surface drops it; a tool that calls an outside host — UniProt, ChEMBL, myvariant.info,
 MGI, cBioPortal, the literature and web backends — is `sdk_replaceable: False` and **both** surfaces
-carry it. Three tools are exempt and say so where they are defined: `search_genes`,
-`search_phenotypes` and `lookup_variants_by_rsid` have SDK routes but stay on the code surface,
-because resolving a symbol or a phenotype name to an id is what the model does *before* it writes a
-script. `run_analysis`, `list_capabilities` and `read_artifact` are their own list — they *are*
-code execution — and `launch_subagents` reaches neither surface.
+carry it. The entity lookups are exempt and say so where they are defined: they have SDK routes but
+stay on the code surface, because resolving a symbol or a phenotype name to an id is what the model
+does *before* it writes a script. The code-execution tools are their own list — they *are* code
+execution — and `launch_subagents` reaches neither surface. Generated from those definitions by
+`scripts/gen-doc-blocks.py`:
+
+<!-- BEGIN GENERATED: tool-surfaces-spec -->
+
+| surface | local tools |
+|---|---|
+| no-code (`code_execution=False`) | 66 — every data tool |
+| code (`code_execution=True`) | 18 — the 3 code-execution tools, plus the 15 data tools the SDK cannot stand in for |
+
+The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+
+<!-- END GENERATED: tool-surfaces-spec -->
 
 `tool_profile` is now a shim over that boolean: **`"code"` is code execution; every other value —
 `null`, the retired `api`/`bigquery`/`rag`, `nocode`, and anything unrecognised — resolves to the
@@ -2317,9 +2328,10 @@ The proxied surfaces (gnomAD / Open Targets, and RAG) are still keyed on the pro
 than on the boolean.
 
 The code surface **ships dark**: no server-side default moved, so a null `tool_profile` yields the
-no-code surface. Resolved sets, under the deployed feature flags, are frozen in
-`genetics-mcp-server/tests/golden/tool_surface.json` and described in
-`docs/chat-tool-reference.md` § 3 — read them there rather than from a count written here.
+no-code surface. The counts above are the definitions' own; what a deployment's feature flags then
+subtract is in `docs/chat-tool-reference.md` § 3, and the resolved sets under the deployed flags
+are frozen in `genetics-mcp-server/tests/golden/tool_surface.json` — read them there rather than
+from a count written by hand.
 
 **Shipping dark is the settled position, not a holding pattern.** It was to be revisited by the
 paired A/B, which was **descoped on 2026-08-30** by user

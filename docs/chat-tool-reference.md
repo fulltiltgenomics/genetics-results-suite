@@ -23,6 +23,17 @@ by parsing `tools/definitions.py` with `ast`, not read off any existing doc. CLA
 applies to this file more than to most: it is an enumeration, so **re-derive rather than
 trust it** — the recipe is in "How to re-derive" at the end.
 
+The exception is the two `<!-- BEGIN GENERATED -->` blocks in sections 1 and 3: those are
+rewritten by `scripts/gen-doc-blocks.py`, which parses the sibling `tools/definitions.py`
+with `ast` (never importing it, so no mcp-server venv is needed) and applies `resolve_tools`'
+own rules. `scripts/build-all.sh` runs `gen-doc-blocks.py --check` fatally, and checks these
+two blocks against the mcp-server branch it clones rather than a local checkout. **Know what that
+gate does not cover:** `scripts/check-doc-drift.sh` reads `git diff --cached` in *this* repo
+only, so a tool added or a `sdk_replaceable` flipped in genetics-mcp-server produces no
+warning here at commit time — the staleness surfaces at the next build (or at the next
+`gen-doc-blocks.py --check`) in whichever repo runs it, and nothing at all if the suite is
+never built. A cross-repo commit hook is the thing that would close it; there is none.
+
 ## What this document does NOT duplicate
 
 Cross-reference these rather than restating them:
@@ -43,23 +54,33 @@ Cross-reference these rather than restating them:
 All tool definitions are in one file:
 `genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`.
 
-| symbol | line | contents |
+The four definition lists, generated from that file by `scripts/gen-doc-blocks.py`:
+
+<!-- BEGIN GENERATED: tool-lists -->
+
+| symbol | tools | contents |
 |---|---|---|
+| `TOOL_DEFINITIONS` | 64 | the data tools — `api` 44, `general` 20 |
+| `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
+| `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
+| `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
+
+**70 tool definitions in total** across the four lists: `api` 44, `bigquery` 2, `general` 20, `orchestration` 4.
+
+<!-- END GENERATED: tool-lists -->
+
+The functions over them:
+
 | symbol | contents |
 |---|---|
-| `TOOL_DEFINITIONS` | the data tools — 20 `general`, 44 `api` |
-| `CODE_EXECUTION_TOOL_DEFINITIONS` | `run_analysis`, `list_capabilities`, `read_artifact` (category `orchestration`) |
-| `BIGQUERY_TOOL_DEFINITIONS` | `query_database`, `get_database_schema` (category `bigquery`) |
-| `SUBAGENT_TOOL_DEFINITIONS` | `launch_subagents` (category `orchestration`) |
 | `resolve_tools(code_execution, disabled)` | the surface a request is handed |
 | `get_anthropic_tools()` | the `tool_profile` shim over `resolve_tools`, in Anthropic format |
 | `all_anthropic_tools()` | every local tool, for a caller that narrows by name (subagent skills) |
 | `register_mcp_tools()` | registers FastMCP handlers — the `/mcp` surface |
 
 Line numbers are deliberately not quoted — they have drifted repeatedly; locate a symbol
-with `grep -n` from that repo's root. **70 tool definitions in total.** By category across
-the four lists: `general` 20, `api` 44, `bigquery` 2, `orchestration` 4. The resolved sets
-are frozen in `genetics-mcp-server/tests/golden/tool_surface.json`; read them there.
+with `grep -n` from that repo's root. The resolved sets are frozen in
+`genetics-mcp-server/tests/golden/tool_surface.json`; read them there.
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
 `type` is copied verbatim, `description` / `default` / `items` / `enum` / `minimum` /
@@ -174,11 +195,25 @@ orchestration exclusion both still bite whatever a skill lists.
 ## 3. Tool surfaces and the profile shim
 
 There are **two** local tool surfaces, resolved by one function in genetics-mcp-server's
-`tools/definitions.py`:
+`tools/definitions.py`. The signature, the two surfaces and the code surface's membership
+are generated from that file by `scripts/gen-doc-blocks.py`:
+
+<!-- BEGIN GENERATED: tool-surfaces -->
 
 ```python
-resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> list[dict]
+def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> list[dict[str, Any]]
 ```
+
+| `code_execution` | local tools | membership |
+|---|---|---|
+| `False` — the no-code surface | 66 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `True` — the code surface | 18 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 15 data tools whose `sdk_replaceable` is false |
+
+`SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
+
+The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+
+<!-- END GENERATED: tool-surfaces -->
 
 Membership is one field on each tool definition, `sdk_replaceable`. The line it draws is
 **internal genetics data against outside resources**, not "everything minus run_analysis": a
@@ -189,10 +224,10 @@ nothing else, because the sandbox egress allow-list names db-api and results-api
 `sdk_replaceable: False` and both surfaces carry it. `get_myvariant_annotations` is the case
 that shows the field is not the category: it is categorised `api` and calls myvariant.info.
 
-Three tools are exempt from that rule and say so where they are defined — `search_genes`,
-`search_phenotypes` and `lookup_variants_by_rsid` have SDK routes but stay on the code
-surface, because resolving a symbol or a phenotype name to an id is what the model does
-*before* it writes a script. `CODE_EXECUTION_TOOL_DEFINITIONS` is a list rather than a field
+The entity lookups are exempt from that rule and say so where they are defined: they have
+SDK routes but stay on the code surface, because resolving a symbol or a phenotype name to
+an id is what the model does *before* it writes a script.
+`CODE_EXECUTION_TOOL_DEFINITIONS` is a list rather than a field
 value: those tools *are* code execution, so the boolean includes them directly.
 `launch_subagents` reaches **neither** surface; which one should carry it is an open
 question, and `ENABLE_SUBAGENTS=false` keeps it out of every deployment meanwhile. Subagent
@@ -2324,9 +2359,24 @@ Available skills:
 
 ## How to re-derive this document
 
-Nothing here is hand-maintained except the prose. To check it, or to regenerate the
-catalogue after a change to `definitions.py`, parse the module rather than importing it (it
-has no runtime deps at module level, but `ast` avoids needing the venv at all):
+**Generated and gated** are three blocks: `tool-lists` (section 1) and `tool-surfaces`
+(section 3) here, plus `tool-surfaces-spec` in `docs/project-spec.md`.
+`scripts/gen-doc-blocks.py` writes them from the sibling `tools/definitions.py`, parsed with
+`ast` (never imported, so no mcp-server venv is needed) and resolved by `resolve_tools`' own
+rules — mirrored there, with that function's body pinned against a literal, module-level
+mutation of the four definition lists rejected, and the derived code surface cross-checked
+against the server's `tests/golden/tool_surface.json`. A rewrite on the server side stops the
+generator rather than quietly changing these tables. `scripts/build-all.sh` runs
+`gen-doc-blocks.py --check --mcp-src` against the mcp-server branch it is building;
+regenerate by hand with `scripts/gen-doc-blocks.py [--mcp-src DIR]`.
+
+**Everything else is hand-derived**, so re-derive it rather than trusting it: sections 2a, 2b
+and 2c (how each surface is assembled, and the handler and effective `/mcp` counts in them),
+section 3's `tool_profile` shim table and the `KNOWN_TOOL_PROFILES` set quoted beside it,
+section 4a (the system prompt and its fragments), and section 8 (the catalogue, its
+per-category headings and the `definitions.py:` line references). To check any of those,
+parse the module rather than importing it (it has no runtime deps at module level, but `ast`
+avoids needing the venv at all):
 
 ```python
 import ast
@@ -2346,12 +2396,12 @@ nodes whose body holds one (conditional on `_disabled`). A definition with no ha
 unreachable over `/mcp` no matter what `disabled_tools` says — today that is
 `launch_subagents` and `run_analysis`.
 
-Counts to re-check whenever `definitions.py` changes: the four category totals, the
-per-profile totals in section 3 (both `TOOL_PROFILES` and `TOOL_PROFILE_TOOLS` — a new tool
-in an existing category silently joins the category profiles but never an explicit one), the
-68 MCP handlers, and the effective `/mcp` count of 53. The profile **key set** does not need
-re-deriving by hand: `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
-fails on any addition or rename, and section 3 says what to update when it does.
+The profile **key set** does not need re-deriving by hand:
+`tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+fails on any addition or rename, and section 3 says what to update when it does. Neither do
+the per-profile local sets: `tests/golden/tool_surface.json` records them under the deployed
+flags and `tests/test_tool_surface_golden.py` fails when one moves — the same file the
+generated blocks above are cross-checked against.
 
 ## Documentation ownership
 
