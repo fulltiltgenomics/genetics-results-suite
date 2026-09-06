@@ -256,9 +256,9 @@ every other value resolves to the no-code surface** — `None`, the retired
 WARNING per distinct unknown value seen. That is the safe direction for a value read back
 from a row an older client wrote. Nothing downstream of the edge — `get_anthropic_tools`,
 `resolve_local_tools`, `stream_chat` — takes the profile string at all; each takes the
-already-coerced boolean. The browser's
-**Tools** control still offers All / API / Database / **Code execution**; only the last of
-those now resolves to anything different.
+already-coerced boolean. The browser's **Tools** control is a single **Code execution**
+switch — on sends `"code"`, off sends `"nocode"` — so those are the only two values that now
+reach this edge from the UI (`LLMChat.tsx`, `chatOptionsApi.ts` in genetics-results-browser).
 
 | `tool_profile` | resolves to | local tools | external | RAG |
 |---|---|---|---|---|
@@ -294,42 +294,37 @@ figure to cite. A deployment can still start its users on `code` — `DEFAULT_TO
 served through the user-settings endpoint to anyone who has not chosen, and staging sets it.
 
 `"nocode"` was added as the A/B's baseline arm, which `null` could not then be because `null`
-contained `run_analysis`. After the collapse the two resolve identically, so the name survives
-only as a stored value.
+contained `run_analysis`. After the collapse the two resolve identically, and `"nocode"` is what
+the browser now sends with the switch off.
 
-### Drift between this server and the browser
+### What the browser can send
 
-genetics-results-browser's own `TOOL_PROFILES` (`src/features/chat/chat.types.ts`) names
-`api`, `bigquery`, `rag` and `code`, of which `rag` carries a `null` in `TOOL_PROFILE_LABELS`
-(`LLMChat.tsx`) and so is resolvable but never rendered as a radio; `nocode` is absent from
-the browser on purpose. Since `genetics-results-suite-4h6.74` the two are pinned against each
-other, once per direction:
+genetics-results-browser's `ToolProfile` is `"code" | "nocode"`
+(`src/features/chat/chat.types.ts`), and `coerceToolProfile` (`chatOptionsApi.ts`) narrows every
+value it reads back — a stored `chat_tool_profile`, a reopened conversation's `tool_profile` —
+exactly as this edge does: `"code"` is code execution, everything else (`api`, `bigquery`, `rag`,
+the legacy `all` sentinel, `null`, a name neither end knows) is the no-code surface. Both ends
+deciding identically is what makes the browser's narrowing safe to do locally: the control shows
+what the message would actually run with, and nothing is rewritten server-side, so history and
+the `tool_profile IS NULL` analysis still read what the client sent. Neither end may raise on an
+unknown string, because the value comes back from stored rows.
 
-- **server → browser, at runtime.** A stored `chat_tool_profile` the browser does not
-  enumerate used to be narrowed to `null`. The browser probes
-  `GET /chat/v1/tools/resolved?tool_profile=<v>` and, on `known_profile: true`, keeps the
-  value, labels it from the raw key and sends it (`adoptServerKnownProfile` in
-  `useChatOptions.ts`). The value must first look like a profile name at all — non-empty,
-  ≤ 32 chars, `^[a-z][a-z0-9_-]*$`, not the `all` sentinel (`isPlausibleToolProfile` in
-  `chatOptionsApi.ts`) — or it never reaches the URL. `tool_profile` is persisted per message,
-  so **reopening a conversation** that ran under a server-only value probes it as well
-  (`applyFromConversation`); a conversation's name is adopted only while that conversation is
-  on screen and never becomes the user's default, and a settled answer is cached.
-- **browser → server, at runtime.** The same endpoint is called when a profile is selected and
-  when one is restored at page load; an explicit `known_profile: false` puts an amber "not
-  recognised by the server" beside the **Tools** control. **A failed or unanswerable probe
-  shows nothing** — offline, 5xx, or a backend predating the endpoint is not evidence of drift.
-- **browser → server, at build time.** `tests/test_unknown_profile_warning.py::
-  test_the_profile_key_set_is_pinned_against_the_browsers_copy` asserts
-  `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a literal and names the
-  browser file in its failure guidance, so changing the accepted set fails a test until the
-  browser is dealt with. It also asserts that the legacy names still collapse onto the no-code
-  surface.
+One cross-repo pin remains, and it is no longer about a browser list:
+`tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+asserts `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a literal, which is
+what validates an admin-configured `DEFAULT_TOOL_PROFILE`; the browser can only emit `"code"` or
+`"nocode"`, both of which are in that set. The test also asserts that the legacy names still
+collapse onto the no-code surface.
 
-Since the collapse the drift can only cost a user the **code** surface: every other value
-resolves the same way whichever side invented it. Neither end may raise on an unknown string,
-because the value is read back from stored rows. See `docs/project-spec.md` § "Selecting a
-profile from the browser".
+`GET /chat/v1/tools/resolved?tool_profile=<v>` survives as a display detail rather than a
+correctness signal. The browser calls it to caption the switch with the resolved local-tool count,
+reads `known_profile` only as the shape check that separates this endpoint's answer from any other
+200 that happens to parse, and shows nothing for a failed or unanswerable probe
+(`fetchResolvedToolProfile`, `useChatOptions.ts`); `isPlausibleToolProfile` bounds what may enter
+that URL. Shipping the browser ahead of this server degrades nothing: the endpoint was added after
+`nocode` was, so any backend that can answer the probe at all already knows both values, and the
+`nocode` surface before the collapse is the same set as the one after it. See
+`docs/project-spec.md` § "Selecting a profile from the browser".
 
 Two behaviours worth stating plainly:
 

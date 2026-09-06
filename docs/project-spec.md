@@ -2351,80 +2351,59 @@ nothing here changes it. What a deployment can move is what its users **start on
 `chat_tool_profile` to any user who has not stored one, and the browser adopts it exactly as it
 adopts a stored choice: the **Tools** control shows it, an explicit choice overrides it and
 persists, and a request that omits the field is unchanged. It rides the settings endpoint rather
-than the request because the browser sends null for an explicit **All**, which a request-side
-default could not tell from an omitted field. A value that names no profile is logged once and not
-served, since the browser would flag it and the chat would resolve to the no-code surface anyway. The variable
+than the request because an explicit choice is indistinguishable on the wire from a request-side
+default could not tell from a client that omitted the field. A value that names no profile is
+logged once and not served; the chat would resolve it to the no-code surface anyway. The variable
 is rendered into `k8s/deployments/chat-backend.yaml` from the deployment's `.env.<name>`, empty
 when unset; which deployments set it is in `docs/environments.md`.
 
 `nocode` was added for the code-versus-tools A/B as a baseline `null` could not then be, because
 `null` contained `run_analysis` — an arm meant to represent the old surface could reach for the
 mechanism under test. After the collapse the two resolve identically, so the name survives only as
-a stored value. Like `rag` it is **server-side only and never user-facing**: the browser's control
-does not offer it and its own list does not contain the name. A value already sitting in
-`user_settings` (written by a benchmark harness or by hand) is not discarded — the browser probes
-the server for it and keeps it if the server confirms it (see below).
+a stored value — and `nocode` is what the browser now sends with its **Code execution** switch
+off. `api`, `bigquery` and `rag` are the names no UI can produce any more; they survive only
+because stored rows still carry them, and every one of them resolves to the same no-code surface.
 
 #### Selecting a profile from the browser
 
-The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
-execution** (`code`) — of which only **Code execution** now resolves to a different surface from
-the others. The server accepts **five** profile values and the browser's own list names **four**:
-`rag` is in the browser's list but carries a `null` label, so it is resolvable and never rendered;
-`nocode` is not in the browser's list at all. Both omissions are deliberate — do not read the two
-lists as copies of each other. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
-rode along with every request while nothing could change it — which is why the row above described
-a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
-A/B'd against the full one. The default is unchanged: **All** — and, since that A/B was descoped
-without running (see "It **ships dark**" above), that default is settled rather than provisional.
-A deployment that sets `DEFAULT_TOOL_PROFILE` starts its users elsewhere without moving that
-default (see above); staging does.
+The **Tools** control is one **Code execution** switch (`LLMChat.tsx` in
+genetics-results-browser): on sends `code`, off sends `nocode`, and either persists to
+`chat_tool_profile` like any other chat option. Those are the only two values a user can produce,
+and the only two the server resolves differently.
 
-The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
-backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
-an **unrecognised** profile to `null`. Since the collapse both `null` and an unrecognised string
-resolve to the same no-code surface, so the only value a drifting list can now cost a user is
-`code` — unless the adoption path below rescues it first, which it can only do when the server
-answers. Both ends' silence is deliberate — the value comes back from
-`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise.
+Everything the browser reads back is narrowed by `coerceToolProfile`
+(`src/features/chat/chatOptionsApi.ts`) on both paths — the user-settings row and a reopened
+conversation's stored `tool_profile` — under the same rule the server applies at the edge: `code`
+is code execution, and `api`, `bigquery`, `rag`, the legacy `all` sentinel, `null`, a missing key
+and an unknown name all resolve to the no-code surface. Both ends deciding identically is what
+lets the browser decide locally: the switch shows what the message would actually run with, no
+stored row is rewritten, and neither side raises on a name it does not know — the value comes back
+from `user_settings` and from `chat_messages` rows written by older clients. `TOOL_PROFILE_ALL`
+survives read-only, to recognise those legacy `all` rows.
 
-The two lists are pinned together rather than leaving the drift merely
-recorded. Three mechanisms, and it is worth knowing which one catches which direction:
+Two smaller pieces survive:
 
-- **A profile the server added that this browser build predates** is caught at runtime, on the
-  browser side. `getStoredChatOptions` keeps the raw value as `unknownToolProfile` when
-  `coerceToolProfile` rejects it, and `adoptServerKnownProfile` (`useChatOptions.ts`) asks
-  `GET /chat/v1/tools/resolved?tool_profile=<v>`. Only `known_profile: true` changes anything: the
-  value is kept, labelled from the raw key by `toolProfileLabel` (`LLMChat.tsx`), offered as an
-  extra radio and sent on the next message. Nothing is persisted — the settings row already holds
-  it. The stored setting is not the only place such a name arrives from: `tool_profile` is
-  persisted **per message**, so reopening a conversation that ran under a server-only profile
-  narrowed it the same way, and that is the likelier path — `applyFromConversation` probes it too.
-  The answer stays in the layer it came from: a conversation's name is adopted into the control
-  only while that conversation is the one on screen, and never becomes the user's default for new
-  chats. One probe per name per page either way — a settled answer is re-applied from the store's
-  cache, so reopening the same conversation does not re-ask. The value must first pass `isPlausibleToolProfile` (non-empty, ≤ 32 chars,
-  `^[a-z][a-z0-9_-]*$`, not the `all` sentinel) or it is never asked about and never rendered;
-  corruption in a settings row is not drift.
-- **A profile this browser offers that the server no longer knows** is caught at runtime too, by
-  the same endpoint, called whenever a profile is selected and whenever one is restored at load.
-  An explicit `known_profile: false` puts an amber "not recognised by the server" beside the
-  **Tools** control; `true` shows the resolved local-tool count. **A failed or unanswerable probe
-  shows nothing at all** — offline, a 5xx, or a backend predating the endpoint is not evidence of
-  drift, so the check is fire-and-forget, never gates sending, and is left out of the store rather
-  than recorded as "unknown".
-- **A profile added or renamed on the server** is caught at build time, on the server side, by
-  `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`,
-  which asserts `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a
-  literal and names the browser file to update. The two repos cannot import each other, so a literal
-  on each side is the only thing that can pin them.
+- **The `known_profile` probe, for the caption only.**
+  `GET /chat/v1/tools/resolved?tool_profile=<v>` is asked what the current setting resolves to,
+  and the "{count} tools" caption beside the switch is shown only for an answer whose boolean
+  `known_profile` is true. That field is read as the shape check that a real answer came back, not
+  as a version tell: the endpoint post-dates `nocode`, so a backend able to answer it knows both
+  values. Anything else means no caption — offline, a 5xx, a backend predating the endpoint (which
+  404s), or a 200 that merely parses (`fetchResolvedToolProfile`, `useChatOptions.ts`). It is fire-and-forget and never gates
+  sending. `isPlausibleToolProfile` bounds what may enter the probe URL (non-empty, ≤ 32 chars,
+  `^[a-z][a-z0-9_-]*$`, not the `all` sentinel).
+- **One cross-repo pin, on the server side.** genetics-mcp-server's
+  `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+  asserts `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a literal. That set
+  now validates the admin-configured `DEFAULT_TOOL_PROFILE` rather than mirroring a browser list;
+  the browser can only emit `code` or `nocode`, both of which are in it, so there are no longer
+  two lists to keep in step. The two repos cannot import each other, which is why a literal is
+  the only thing that can pin anything here at all.
 
-What keeps the browser side safe underneath all of that is unchanged: `TOOL_PROFILES`
-in `src/features/chat/chat.types.ts` is the single list every narrower reads, `TOOL_PROFILE_LABELS`
-in `LLMChat.tsx` is a `Record<ToolProfile, …>` so a new profile is a **type error** until the UI has
-decided about it (`null` there means "deliberately not offered", which is `rag`), and
-`useChatOptions.test.ts` / `LLMChat.options.test.tsx` / `useChatOptions.profileCheck.test.ts` drive
-their cases off that list and pin the unknown-value and probe behaviour explicitly.
+`DEFAULT_TOOL_PROFILE` decides which position a new chat's switch starts in (see above); staging
+sets it. Deploying the browser ahead of the chat backend has no transient: the resolved-tools
+endpoint post-dates `nocode`, so any backend that can answer the probe already knows the value the
+switch sends, and the `nocode` surface before the collapse is the same set as the one after it.
 
 **Hazard, unresolved**: `run_analysis` is the primary tool of the
 `code` profile and has no feature flag, so on any cluster **without a deployed sandbox** a user can
