@@ -476,3 +476,30 @@ class GeneticsClient:
         against the results views; prefer it when the answer is going into a query anyway.
         """
         ...
+
+    async def resource_metadata(self, resource: str) -> pl.DataFrame:
+        """Harmonized per-trait metadata for one resource — one row per trait it serves.
+
+        `resources()` names the resources and `datasets()` gives the dataset-level
+        aggregates; this is the rows behind them: the trait code, its human-readable name,
+        the sample sizes, and for a collection like `eqtl_catalogue` the sub-study each
+        trait belongs to. The columns are whatever the resource's harmonized metadata
+        carries, so they differ between resources — read them off the frame rather than
+        assuming a fixed schema.
+        """
+        ...
+
+    async def show(self, data: Any) -> None:
+        """Print every column of every row, one row per line. Nothing is elided.
+
+        polars' repr is built for a terminal — 8 columns and 10 rows by default — so a
+        printed frame silently drops columns, and widening the repr only moves the cut to
+        the 64 KiB stdout window. This prints `column=value` pairs instead: nothing is
+        dropped, and a value is findable by the name of its column. Select or filter first
+        when the frame is large; printing everything is the point, not a size guarantee.
+
+        A dict prints one line per key, and a list prints one line per element (a list of
+        row dicts prints as rows), so a `schema()`/`resources()`/`datasets()` payload can
+        be shown without building a frame first. Anything else prints as itself.
+        """
+        ...
