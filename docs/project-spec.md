@@ -1507,9 +1507,16 @@ clustering itself should be asserted from
 
 ### Running the local dev stack (`scripts/dev-stack.sh`)
 
-Five servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
-chat-backend `:4000`, BFF `:5000`, db-api `:8080` — and each lives in a different repo.
-`scripts/dev-stack.sh` starts, stops and switches all five as one unit; the full
+The servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
+chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the standalone mcp-server `:8082` —
+out of four repos, chat-backend and mcp-server being two entrypoints of `genetics-mcp-server`
+with different tool surfaces. mcp-server takes 8082 because the cluster's 8080 is db-api's
+here; it is launched the way `k8s/deployments/mcp-server.yaml` launches it, with the values that
+manifest sets mirrored as overridable defaults; for the tool-surface flags (the `ENABLE_*`
+flags and `SANDBOX_ENABLED`), one the manifest leaves unset is left unset here too, so the
+code default governs cluster and local alike; these flags compute `settings.disabled_tools`
+and select which tool list `/mcp` serves for a given run.
+`scripts/dev-stack.sh` starts, stops and switches them as one unit; the full
 from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
 
 ```
@@ -1521,7 +1528,7 @@ from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
 
 What is load-bearing about it:
 
-- **One tree at a time, by construction.** Both trees want the same five ports (the
+- **One tree at a time, by construction.** Both trees want the same ports (the
   frontend's `VITE_*` URLs, vite's `/api` proxy and the sandbox container's
   `host.docker.internal` targets all name them), so `up` frees each port before starting on
   it. Going back to `master` is `down` then `up --tree main`.
