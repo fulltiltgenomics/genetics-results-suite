@@ -688,19 +688,20 @@ gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` 
 
 ## Running the suite locally
 
-Everything above deploys. To run the five services from source on one machine — results-api
-`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080`, one per repo —
+Everything above deploys. To run the services from source on one machine — results-api
+`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the
+standalone mcp-server `:8082`, out of four repos —
 see [docs/local-dev-vm.md](docs/local-dev-vm.md) for the from-scratch setup and
 `scripts/dev-stack.sh` to drive them:
 
 ```bash
-./scripts/dev-stack.sh up                 # all five from the worktree trees, db-api on genetics_dev
-./scripts/dev-stack.sh up --tree main     # all five from the main checkouts, db-api on genetics_results
+./scripts/dev-stack.sh up                 # all of them from the worktree trees, db-api on genetics_dev
+./scripts/dev-stack.sh up --tree main     # all of them from the main checkouts, db-api on genetics_results
 ./scripts/dev-stack.sh status             # port, health, and which tree each pid is serving
 ./scripts/dev-stack.sh down
 ```
 
-Both trees use the same five ports, so `up` frees each port first and one tree serves at a
+Both trees use the same ports, so `up` frees each port first and one tree serves at a
 time; switching back is `down` then `up --tree main`. A port is only freed when its holder
 is this suite's — checked against `/proc/<pid>/cwd` and the command line — so an unrelated
 app on `:3000` or `:8080` is reported and left alone (`--force` overrides) rather than
