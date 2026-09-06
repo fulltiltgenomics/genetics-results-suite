@@ -46,9 +46,10 @@ read. It is **not** an access control and must not be cited as one.
 
 ## 1. Why in-process execution is unacceptable
 
-The mechanism exists in the codebase and is permanently switched off
-(`ENABLE_SCRIPT_EXECUTION=false` in both chat-backend and mcp-server). The reasons are the
-requirements list for everything below.
+chat-backend once carried a second execution path: a subagent tool that ran `python3`,
+`Rscript` or `bash` as a subprocess of the chat-backend process. It has been deleted — there is
+no in-process interpreter and no flag that restores one. What follows is why it could not be
+made safe, and it is the requirements list for everything below.
 
 **chat-backend runs as root** with the `chat-data` PVC mounted at `/data`. That PVC holds
 `chat_history.db` (every conversation in the deployment, all users) and `llm_config.db`
@@ -56,20 +57,21 @@ requirements list for everything below.
 every other user's conversations and can *write* prompt text that will later be prepended to
 somebody else's chat — a persistence primitive, not just a read.
 
-**The environment allow-list is scar tissue.** `sandbox_tools.py`'s `_ALLOWED_ENV_KEYS`
-carries its own history: it was a deny-list that missed `INTERNAL_API_SECRET` along with the
-internal service URLs. So an earlier version of exactly this feature leaked the suite's
-internal service credential into model-authored scripts. The allow-list is the correct fix for
-the leak, but it is applied inside the same process, uid, network namespace and mounted PVC as
-the credential it is hiding — the script can read `/proc/self/environ` of any sibling, or open
-`/data/chat_history.db` directly, and neither control applies. `execute_script` additionally
-allows `bash`, and enforces nothing beyond a 30-second `asyncio.wait_for`.
+**A process-local control cannot bound a process-local script.** That path scrubbed the child's
+environment against an allow-list, which was itself the fix for a deny-list that had missed
+`INTERNAL_API_SECRET` and the internal service URLs. The allow-list was the correct fix for the
+leak and still no boundary: it applied inside the same process, uid, network namespace and
+mounted PVC as the credential it was hiding, so a script could read `/proc/self/environ` of any
+sibling or open `/data/chat_history.db` directly and meet neither control. The interpreter list
+included `bash`, and nothing else was enforced beyond a 30-second timeout.
 
-**Decision.** In-process execution stays disabled and is not a rollout toggle for this
-feature. Code execution moves to a separate pod, in a separate node pool, with a separate
-identity, reached over HTTP from chat-backend only. `sandbox_tools.py`'s `_validate_path`
-logic is reused by `read_artifact` — but inside the sandbox pod, against a
-`/scratch/<id>/artifacts` allow-list, never against chat-backend's `SUBAGENT_ALLOWED_PATHS`.
+**Decision.** In-process execution is not a rollout toggle for this feature; it is deleted, so
+there is no switch to flip and no path for a future default to turn back on. Code execution
+lives in a separate pod, in a separate node pool, with a separate identity, reached over HTTP
+from chat-backend only. What survives in `sandbox_tools.py` is file *reading* for subagents,
+and its `_validate_path` logic is reused by `read_artifact` — but inside the sandbox pod,
+against a `/scratch/<id>/artifacts` allow-list, never against chat-backend's
+`SUBAGENT_ALLOWED_PATHS`.
 
 ---
 
@@ -357,8 +359,7 @@ forked promptly after the 503.
 
 Built from `sandbox/`, multi-stage: a venv assembled in a slim builder, pruned, byte-compiled
 and copied into `gcr.io/distroless/python3-debian12:nonroot`. No shell, no package manager, no
-`curl` — `execute_script`'s `bash` interpreter is absent from the filesystem rather than
-un-allow-listed. The builder must track the base image's CPython **minor** version, because the
+`curl` — `bash` is absent from the filesystem rather than un-allow-listed. The builder must track the base image's CPython **minor** version, because the
 final stage runs the distroless interpreter against the venv's site-packages.
 
 The genetics SDK is not vendored: it is pip-installed `--no-deps` from a staged

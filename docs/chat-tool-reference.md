@@ -161,12 +161,12 @@ excluded names that have handlers (`run_analysis` has none) − `read_artifact` 
 
 ### 2c. The subagent surface (`subagent.py:404-435`)
 
-Subagents get `get_anthropic_tools(tool_profile=<derived from skill>, disabled_tools=...)`
-where `disabled` is `settings.disabled_tools` **plus all four orchestration tools by name**:
-`launch_subagents`, `run_analysis`, `read_artifact`, `list_capabilities`. The comment is
-explicit that the *category* excludes nothing, because `TOOL_PROFILES` puts `orchestration`
-in both the `api` and `bigquery` profiles. The same `disabled` set is reused in the
-`skill.extra_tools` fallback so that path cannot re-add them.
+Each skill names the tools it gets (`skills/definitions.py`), so no tool profile or tool
+`category` reaches the subagent surface. On top of that, `disabled` is
+`settings.disabled_tools` **plus all four orchestration tools by name**: `launch_subagents`,
+`run_analysis`, `read_artifact`, `list_capabilities`, so an operator's disable list and the
+orchestration exclusion both still bite whatever a skill lists.
+`tests/test_subagent.py::TestSkillToolSurface` pins every skill's resolved set.
 
 ## 3. Tool profiles
 
@@ -202,8 +202,8 @@ The second mechanism exists because the `code` surface **cannot** be written as 
 its three orchestration tools share a category with `launch_subagents`, which must stay out,
 and its four search tools share `general` with 13 others. Recategorising tools to make it fit
 was ruled out — a tool's `category` also decides what the `api` chat profile advertises and
-what subagent skills declaring `tool_categories={"general","api"}` can call
-(`skills/definitions.py`), so moving one to suit a profile changes live chat behaviour. No
+so moving one to suit a profile changes live chat behaviour. (Subagent skills are not
+affected: each names its tools explicitly in `skills/definitions.py`.) No
 existing profile's resolved set changed when `code` landed;
 `tests/test_tools.py::test_existing_profiles_unchanged_by_the_code_profile` pins that.
 
@@ -2322,7 +2322,7 @@ Available skills:
 - **genetics_data_extraction**: Extract genetics data (GWAS, QTL, credible sets, gene expression, LD, etc.)
 - **literature_review**: Search scientific literature and web for relevant publications
 - **database_analysis**: Run complex SQL queries against the genetics database
-- **data_analysis**: Execute Python scripts for statistical analysis or custom visualizations
+- **data_analysis**: Draft a Python script for statistical analysis or custom visualizations — the subagent only writes the script, and you run it yourself afterwards with `run_analysis`
 - **variant_list_analysis**: Analyze a list of variants for phenotype, QTL, and tissue patterns
 ```
 

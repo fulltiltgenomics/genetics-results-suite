@@ -567,8 +567,6 @@ start_mcp_server() {
         export SUBAGENT_MODEL="${SUBAGENT_MODEL:-}"
         export SUBAGENT_TIMEOUT="${SUBAGENT_TIMEOUT:-120}"
         export SUBAGENT_ALLOWED_PATHS="${SUBAGENT_ALLOWED_PATHS:-}"
-        export SUBAGENT_SCRIPT_TIMEOUT="${SUBAGENT_SCRIPT_TIMEOUT:-30}"
-        export ENABLE_SCRIPT_EXECUTION="${ENABLE_SCRIPT_EXECUTION:-false}"
         export LOG_LEVEL="${LOG_LEVEL:-INFO}"
         # the rest of the manifest's environment: the genetics-secrets keys and the
         # bearer-auth-allowed configMap, none of which the local stack can supply. Empty is

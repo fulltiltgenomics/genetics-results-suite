@@ -2306,9 +2306,8 @@ The second mechanism exists for `code`, the minimal code-execution surface: `run
 and no external (gnomAD / Open Targets) or RAG tools either. That set is not expressible as
 categories: its three orchestration tools share a category with `launch_subagents`, which must stay
 out, and its four search tools share `general` with 14 others. Recategorising tools to make it fit
-was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises and what
-subagent skills declaring `tool_categories={"general","api"}` may call — so the profile layer grew
-the ability to name tools instead. No existing profile's resolved set changed.
+was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises
+— so the profile layer grew the ability to name tools instead. No existing profile's resolved set changed.
 
 It **ships dark**: no server-side default moved, so `profile=null` still yields the full surface;
 selection is per request for local A/B work, and rollback is deleting one dict entry. The planned
