@@ -2287,34 +2287,39 @@ one clears it. Both stores live at module scope in the browser
 `LLMChat` on every conversation switch, and each keeps the current value separate from the default
 for the reason above.
 
-### Tool profiles, and the `code` profile
+### The two tool surfaces, and the `tool_profile` shim
 
-The **Tools** option above is the `tool_profile` field, and it is resolved by **two** mechanisms in
-`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
-to whole tool **categories** (`api`, `bigquery`, `rag`, `nocode`); `TOOL_PROFILE_TOOLS` maps a
-profile to an explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
-filtering at all*, not a union of the profiles, and an unrecognised string degrades to
-general-only rather than raising, because the value is read back from `chat_messages` rows written
-by older clients. The degrade is unchanged but no longer silent to an operator: the `None`
-branch logs one WARNING per **distinct** unknown value (bounded at 64, because a stored
-profile is re-sent on every turn), and
+The **Tools** option above is the `tool_profile` field. Behind it there are exactly **two** local
+tool surfaces, resolved by one function in
+`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`:
+`resolve_tools(code_execution, disabled)`.
+
+Membership is one field on each tool definition, `sdk_replaceable`. The line it draws is
+**internal genetics data against outside resources**, not "everything minus `run_analysis`": a
+script inside the sandbox reaches internal data through the `genetics` SDK and reaches nothing
+else, because the sandbox egress allow-list names db-api and results-api only
+(`docs/code-execution-security.md`). A tool that fetches internal data is `sdk_replaceable: True`
+and the code surface drops it; a tool that calls an outside host — UniProt, ChEMBL, myvariant.info,
+MGI, cBioPortal, the literature and web backends — is `sdk_replaceable: False` and **both** surfaces
+carry it. Three tools are exempt and say so where they are defined: `search_genes`,
+`search_phenotypes` and `lookup_variants_by_rsid` have SDK routes but stay on the code surface,
+because resolving a symbol or a phenotype name to an id is what the model does *before* it writes a
+script. `run_analysis`, `list_capabilities` and `read_artifact` are their own list — they *are*
+code execution — and `launch_subagents` reaches neither surface.
+
+`tool_profile` is now a shim over that boolean: **`"code"` is code execution; every other value —
+`null`, the retired `api`/`bigquery`/`rag`, `nocode`, and anything unrecognised — resolves to the
+no-code surface.** That is the safe direction for a value read back from `chat_messages` rows
+written by older clients. The degrade is not silent to an operator: one WARNING per **distinct**
+unknown value (bounded at 64, because a stored profile is re-sent on every turn), and
 `GET /chat/v1/tools/resolved?tool_profile=<v>` answers `known_profile: false` for the same input.
+The proxied surfaces (gnomAD / Open Targets, and RAG) are still keyed on the profile name rather
+than on the boolean.
 
-The second mechanism exists for `code`, the minimal code-execution surface: `run_analysis`,
-`list_capabilities`, `read_artifact`, `search_genes`, `search_phenotypes`,
-`search_scientific_literature`, `lookup_variants_by_rsid` — **seven tools against the default 68**,
-and no external (gnomAD / Open Targets) or RAG tools either. That set is not expressible as
-categories: its three orchestration tools share a category with `launch_subagents`, which must stay
-out, and its four search tools share `general` with 14 others. Recategorising tools to make it fit
-was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises
-— so the profile layer grew the ability to name tools instead. No existing profile's resolved set changed.
-
-It **ships dark**: no server-side default moved, so `profile=null` still yields the full surface;
-selection is per request for local A/B work, and rollback is deleting one dict entry. The planned
-`search_entities` / `search_literature` names do not exist anywhere in the codebase — the
-consolidation that would create them is deferred, and revisiting it is what would change this
-profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
-in `docs/chat-tool-reference.md` § 3.
+The code surface **ships dark**: no server-side default moved, so a null `tool_profile` yields the
+no-code surface. Resolved sets, under the deployed feature flags, are frozen in
+`genetics-mcp-server/tests/golden/tool_surface.json` and described in
+`docs/chat-tool-reference.md` § 3 — read them there rather than from a count written here.
 
 **Shipping dark is the settled position, not a holding pattern.** It was to be revisited by the
 paired A/B, which was **descoped on 2026-08-30** by user
@@ -2327,7 +2332,7 @@ code arm was never run against the baseline, so nothing here records it losing; 
 simply not taken on numbers, and the documented default therefore stands. No A/B result exists
 to look up, and none is coming from this epic.
 
-That default is the *request's*: a null `tool_profile` still resolves to the full surface, and
+That default is the *request's*: a null `tool_profile` resolves to the no-code surface, and
 nothing here changes it. What a deployment can move is what its users **start on**.
 `DEFAULT_TOOL_PROFILE` on chat-backend names a profile that the user-settings endpoint serves as
 `chat_tool_profile` to any user who has not stored one, and the browser adopts it exactly as it
@@ -2335,29 +2340,23 @@ adopts a stored choice: the **Tools** control shows it, an explicit choice overr
 persists, and a request that omits the field is unchanged. It rides the settings endpoint rather
 than the request because the browser sends null for an explicit **All**, which a request-side
 default could not tell from an omitted field. A value that names no profile is logged once and not
-served, since the browser would flag it and the chat would degrade to general-only. The variable
+served, since the browser would flag it and the chat would resolve to the no-code surface anyway. The variable
 is rendered into `k8s/deployments/chat-backend.yaml` from the deployment's `.env.<name>`, empty
 when unset; which deployments set it is in `docs/environments.md`.
 
-`nocode` is the fourth category-union profile, added for the code-versus-tools A/B and,
-like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
-offer it, and its own list does not even contain the name. That is not an oversight to be corrected:
-it is the comparator arm, and a user must not be able to pick it. A value already sitting in
-`user_settings` (written by a benchmark harness or by hand) is no longer discarded, though — the
-browser probes the server for it and keeps it if the server confirms it, which is what makes a
-stored `nocode` behave as stored without ever being advertised (see below).
-It resolves to `{general, api, bigquery}`: `null` minus exactly `run_analysis`,
-`list_capabilities` and `read_artifact` under the deployed flags (65 → 62, measured 2026-08-19).
-It exists because `null` **is not** a pre-code-execution baseline — `null` contains `run_analysis`,
-so an arm meant to represent the old surface could reach for the mechanism under test. Note the
-equivalence rides on a runtime flag, not on the category: excluding `orchestration` also excludes
-`launch_subagents`, which only stays out because `enable_subagents` defaults to false. Turn it on
-and `nocode` is no longer "the old surface".
+`nocode` was added for the code-versus-tools A/B as a baseline `null` could not then be, because
+`null` contained `run_analysis` — an arm meant to represent the old surface could reach for the
+mechanism under test. After the collapse the two resolve identically, so the name survives only as
+a stored value. Like `rag` it is **server-side only and never user-facing**: the browser's control
+does not offer it and its own list does not contain the name. A value already sitting in
+`user_settings` (written by a benchmark harness or by hand) is not discarded — the browser probes
+the server for it and keeps it if the server confirms it (see below).
 
 #### Selecting a profile from the browser
 
 The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
-execution** (`code`). The server knows **five** profiles and the browser's own list names **four**:
+execution** (`code`) — of which only **Code execution** now resolves to a different surface from
+the others. The server accepts **five** profile values and the browser's own list names **four**:
 `rag` is in the browser's list but carries a `null` label, so it is resolvable and never rendered;
 `nocode` is not in the browser's list at all. Both omissions are deliberate — do not read the two
 lists as copies of each other. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
@@ -2370,11 +2369,10 @@ default (see above); staging does.
 
 The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
 backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
-an **unrecognised** profile to `null`, and `null` is the **largest** surface, not the smallest. So a
-list left behind by a new server-side profile does not fail, it runs the maximal arm — a benchmark
-driven through the browser would be invalid with no visible symptom — unless the adoption path
-below rescues the value first, which it can only do when the server answers. The server makes the opposite
-call for the same input (unknown → general-only). Both are deliberate — the value comes back from
+an **unrecognised** profile to `null`. Since the collapse both `null` and an unrecognised string
+resolve to the same no-code surface, so the only value a drifting list can now cost a user is
+`code` — unless the adoption path below rescues it first, which it can only do when the server
+answers. Both ends' silence is deliberate — the value comes back from
 `user_settings` and from `chat_messages` rows written by older clients, so neither side may raise.
 
 The two lists are pinned together rather than leaving the drift merely
@@ -2404,7 +2402,7 @@ recorded. Three mechanisms, and it is worth knowing which one catches which dire
   than recorded as "unknown".
 - **A profile added or renamed on the server** is caught at build time, on the server side, by
   `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`,
-  which asserts `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
+  which asserts `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a
   literal and names the browser file to update. The two repos cannot import each other, so a literal
   on each side is the only thing that can pin them.
 
