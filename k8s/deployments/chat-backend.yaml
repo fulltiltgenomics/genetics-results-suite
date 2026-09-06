@@ -178,10 +178,6 @@ spec:
           value: "120"
         - name: SUBAGENT_ALLOWED_PATHS
           value: "/data"
-        - name: ENABLE_SCRIPT_EXECUTION
-          value: "false"
-        - name: SUBAGENT_SCRIPT_TIMEOUT
-          value: "30"
         - name: LOG_LEVEL
           value: "INFO"
         volumeMounts:
