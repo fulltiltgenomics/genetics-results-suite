@@ -112,10 +112,10 @@ Assembled per request when `enable_tools` (request field, default `true`) and
 1. `disabled = set(settings.disabled_tools)`, plus `launch_subagents` when
    `self.subagent_service is None`.
 2. `get_anthropic_tools(None, code_execution=code_execution_requested(<request field>), disabled_tools=disabled)`.
-3. `+ get_external_anthropic_tools()` unless the profile is `"rag"` or `"code"` — a surface
-   that names its tools exactly would not mean much with ~20 proxied tools appended. This
-   half is still keyed on the profile NAME rather than on the boolean.
-4. `+ get_rag_anthropic_tools()` when the profile is `None` or `"rag"`.
+3. `+ get_external_anthropic_tools()`, unconditionally on profile — whatever
+   `EXTERNAL_MCP_SERVERS` registered, less `EXTERNAL_MCP_EXCLUDE_TOOLS`.
+4. `+ get_rag_anthropic_tools()`, unconditionally on profile — whatever `RAG_MCP_SERVER`
+   registered.
 5. The last entry gets `cache_control: {"type": "ephemeral"}`.
 
 The resolved set from this assembly (local + external/RAG names actually put on the
@@ -143,8 +143,11 @@ chat model at `tool_profile=null` — the no-code surface — sees **64** local 
 
 ### 2b. The MCP surface (`mcp_server.py:86-119`)
 
-`register_mcp_tools()` contains **68** `@mcp.tool()` handlers: 52 unconditional and 16
-wrapped in `if "<name>" not in _disabled:`. Two definitions have **no handler at all** and
+`register_mcp_tools()` contains **68** handlers, every one decorated `@_tool()` — a single
+gate (`_gate(mcp, disabled_tools, code_execution)`) that decides on the handler's own
+`__name__` and returns a withheld handler undecorated, so FastMCP never learns of it. None
+is unconditional and none is wrapped in a scattered `if "<name>" not in _disabled:` guard;
+what is registered today is unchanged. Two definitions have **no handler at all** and
 are therefore unreachable over `/mcp` by construction:
 
 - `launch_subagents` — never had one.
@@ -259,20 +262,25 @@ those now resolves to anything different.
 
 | `tool_profile` | resolves to | local tools | external | RAG |
 |---|---|---|---|---|
-| `null` / omitted — **the default** | the no-code surface | every data tool | yes | yes |
-| `"api"`, `"bigquery"`, `"nocode"` | the no-code surface | every data tool | yes | no |
-| `"rag"` | the no-code surface | every data tool | **no** | yes |
-| `"code"` | the code surface | the sandbox's three tools + every tool the SDK cannot replace | **no** | no |
-| any other string | the no-code surface, plus a warn-once (below) | every data tool | yes | no |
+| `"code"` | the code surface | the sandbox's three tools + every tool the SDK cannot replace | yes | yes |
+| `null` / omitted — **the default**, `"api"`, `"bigquery"`, `"rag"`, `"nocode"` | the no-code surface | every data tool | yes | yes |
+| any other string | the no-code surface, plus a warn-once (below) | every data tool | yes | yes |
 
 Counts are deliberately absent: they move with every tool added and with the three feature
 flags. `genetics-mcp-server/tests/golden/tool_surface.json` records the resolved set for each
 value under the deployed flags, and `tests/test_tool_surface_golden.py` fails when one moves —
 including a test that the four legacy names still collapse onto the no-code surface.
 
-The external and RAG columns are still keyed on the profile NAME rather than on the boolean;
-making them reach both surfaces is separate work, which is why `"rag"` and `"code"` still
-differ from the rest there while their local sets do not.
+The external and RAG columns are constant on purpose, and the two columns are kept rather
+than dropped because that constancy is the answer to a question people ask of this table.
+`resolve_proxied_tools()` takes no surface argument at all: every request is handed whatever
+`EXTERNAL_MCP_SERVERS` and `RAG_MCP_SERVER` registered, less whatever
+`EXTERNAL_MCP_EXCLUDE_TOOLS` removed at registration. The externals are exactly the tools the
+sandbox cannot reach — its egress allow-list admits db-api and results-api only — so denying
+them to the code surface would leave that surface no route to them; and whether the RAG
+column is non-empty is a fact about the deployment's `RAG_MCP_SERVER` (unset in the chat-backend
+manifest, section 6), not about the profile. "yes" here therefore means *whatever is
+configured*, which may be nothing.
 
 **The default is settled, not provisional.** `null` was to be reconsidered against the `code`
 arm by the paired A/B in `genetics-results-suite-4h6.23`; that bead was **descoped on
@@ -333,8 +341,9 @@ Two behaviours worth stating plainly:
   the known set, once per **distinct** value (a stored profile is re-sent on every turn of its
   session) and bounded at 64 distinct values. It stays silent to the model and to the request.
   The caller-side half of the same signal is `GET /chat/v1/tools/resolved`'s
-  `known_profile: false`. Note the asymmetry in the last table row: an unknown name is not
-  `"rag"`, so it still gets external tools but not RAG tools.
+  `known_profile: false`. The last table row carries no asymmetry: external and RAG tools
+  are keyed on `EXTERNAL_MCP_SERVERS`/`RAG_MCP_SERVER` alone, not on the profile, so an
+  unknown name gets both exactly like every other value.
 - **`disabled` is applied to the resolved surface**, so the feature flags and the env-driven
   disable list subtract from either surface. Under the deployed flags the no-code surface
   loses `get_credible_sets_stats`, `get_phenotype_report` and (already absent) `launch_subagents`;
@@ -843,8 +852,8 @@ Two env vars, both read by `mcp_proxy.initialize_external_servers()`
 
 | env var | role | in which profiles |
 |---|---|---|
-| `EXTERNAL_MCP_SERVERS` | comma-separated URLs of always-on servers (gnomAD, Open Targets) | every profile **except** `"rag"` |
-| `RAG_MCP_SERVER` | the RAG server | only when `tool_profile` is `None` or `"rag"` |
+| `EXTERNAL_MCP_SERVERS` | comma-separated URLs of always-on servers (gnomAD, Open Targets) | every profile |
+| `RAG_MCP_SERVER` | the RAG server | every profile |
 | `EXTERNAL_MCP_EXCLUDE_TOOLS` | comma-separated tool names dropped at registration | applies to `EXTERNAL_MCP_SERVERS` and to the RAG server |
 
 Values in this repo:
@@ -2401,11 +2410,11 @@ for node in tree.body:
             print(elt.lineno, d["category"], d["name"])
 ```
 
-The `/mcp` surface is derived separately, from the `@mcp.tool()` handlers inside
-`register_mcp_tools`: walk `fn.body` for `AsyncFunctionDef` (unconditional) and for `If`
-nodes whose body holds one (conditional on `_disabled`). A definition with no handler is
-unreachable over `/mcp` no matter what `disabled_tools` says — today that is
-`launch_subagents` and `run_analysis`.
+The `/mcp` surface is derived separately, from the `@_tool()` handlers inside
+`register_mcp_tools`: walk `fn.body` for `AsyncFunctionDef` nodes decorated `@_tool()` — every
+handler registers through that one gate, so there is no separate `If`-conditional case to
+walk. A definition with no handler is unreachable over `/mcp` no matter what `disabled_tools`
+says — today that is `launch_subagents` and `run_analysis`.
 
 The profile **key set** does not need re-deriving by hand:
 `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
