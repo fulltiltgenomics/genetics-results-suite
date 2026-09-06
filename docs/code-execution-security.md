@@ -895,12 +895,14 @@ independently required: the design assumes any one can be defeated by a future r
 config change or a mistake, and requires that the other two still hold.
 
 **Layer 1 — registration.** `run_analysis` and `read_artifact` are in mcp-server's *hardcoded*
-disabled set, not the env-driven half. `run_analysis` additionally has no `@mcp.tool()` block
-at all, which matters because a disabled set can only subtract. A tool is registered on `/mcp`
-from the moment its definition exists unless it is excluded, so each exclusion landed in the
-same change that defined the tool. `list_capabilities` is deliberately *not* excluded: an
-exclusion set padded with names that are not security controls stops reading as a security
-control.
+disabled set, not the env-driven half. `run_analysis` additionally has no `@_tool()` handler
+at all, which matters because a disabled set can only subtract. Every handler in
+`register_mcp_tools` registers through one gate, `_gate(mcp, disabled_tools, code_execution)`,
+so "a disabled set can only subtract" is now a property of that gate rather than of scattered
+per-site guards. A tool is registered on `/mcp` from the moment its definition exists unless
+it is excluded, so each exclusion landed in the same change that defined the tool.
+`list_capabilities` is deliberately *not* excluded: an exclusion set padded with names that
+are not security controls stops reading as a security control.
 
 **Layer 2 — NetworkPolicy.** The sandbox's ingress rule admits chat-backend only; mcp-server is
 denied at the network layer. Read it as a **hop-level** control, not a capability-level one: the
