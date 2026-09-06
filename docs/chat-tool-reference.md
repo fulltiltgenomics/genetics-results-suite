@@ -585,6 +585,7 @@ The `api`-only, `bigquery`-only and `code`-only surfaces get one-line variants i
 the only data path on this surface"). Both blocks are followed by:
 
 ```text
+- **A follow-up that narrows an earlier result re-runs that retrieval with the filter added.** When the ask is the same table minus a locus, a gene family or a category, add the predicate to the query or script that produced it and run that again, rather than rebuilding the analysis from scratch. Re-running a retrieval you already wrote, with a predicate added, IS the fresh authoritative call the rule above asks for — what that rule forbids is answering from an earlier summary or from a subset you curated, not re-issuing a retrieval. Do not re-issue a schema discovery call for a schema this conversation has already used; that applies to discovery calls only — where the schema ships as files alongside your tools, reading the file for a view still comes before writing SQL.
 - When a follow-up question refers to results from a previous step, think about which of the paths above can answer it.
 - Always review your full set of available tools before concluding that data is unavailable.
 ```
