@@ -2287,7 +2287,7 @@ one clears it. Both stores live at module scope in the browser
 `LLMChat` on every conversation switch, and each keeps the current value separate from the default
 for the reason above.
 
-### The two tool surfaces, and the `tool_profile` shim
+### The two tool surfaces, and the `tool_profile` coercion
 
 The **Tools** option above is the `tool_profile` field. Behind it there are exactly **two** local
 tool surfaces, resolved by one function in
@@ -2318,7 +2318,8 @@ The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_
 
 <!-- END GENERATED: tool-surfaces-spec -->
 
-`tool_profile` is now a shim over that boolean: **`"code"` is code execution; every other value —
+`code_execution_requested(tool_profile)`, called once at the edge in `chat_api.py`, coerces the
+wire string onto that boolean: **`"code"` is code execution; every other value —
 `null`, the retired `api`/`bigquery`/`rag`, `nocode`, and anything unrecognised — resolves to the
 no-code surface.** That is the safe direction for a value read back from `chat_messages` rows
 written by older clients. The degrade is not silent to an operator: one WARNING per **distinct**
