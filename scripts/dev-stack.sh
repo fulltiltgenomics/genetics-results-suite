@@ -536,7 +536,7 @@ start_chat_api() {
         fi
         export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
         export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
-        export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-5}"
+        export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
         export EXTERNAL_MCP_SERVERS="${EXTERNAL_MCP_SERVERS:-https://mcp.platform.opentargets.org}"
         export REQUIRE_AUTH="${REQUIRE_AUTH:-false}"
         export SANDBOX_URL="$SANDBOX_URL"
