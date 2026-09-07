@@ -370,8 +370,11 @@ resolves `metadata.google.internal` by name where the sandbox has no DNS.
 `sandbox/build-checks.py` runs in the builder and asserts the **final** image's properties,
 because the final stage has no shell and nothing can be checked after it is assembled: the
 absent shell and package manager, `/etc/nsswitch.conf` ordering, the pruned SDK surface, the
-advertised uids, the absence of placeholder schema docs, `GCE_METADATA_HOST` pinned to a
-literal address, and the house plot style resolving with `text.usetex` off. That last one is the branch a distribution-name check cannot see: polars links
+advertised uids, the absence of placeholder schema docs, the house plot style resolving with
+`text.usetex` off, the polars display settings — read out of the staged Dockerfile *and*
+exercised by printing a twelve-column frame, so the check fails both if the setting is dropped
+and if polars stops honouring it — and `GCE_METADATA_HOST` pinned to a literal address. That
+last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
 One of those checks reads source rather than running it, and the reason is the same one that
@@ -397,6 +400,10 @@ The final stage's environment, all of it:
 - `GENETICS_SCHEMA_DIR=/genetics/schema`
 - `GENETICS_STUBS_DIR=/genetics/sdk`
 - `MPLBACKEND=Agg`
+- `POLARS_FMT_MAX_COLS=-1`
+- `POLARS_FMT_MAX_ROWS=50`
+- `POLARS_FMT_STR_LEN=100`
+- `POLARS_TABLE_WIDTH=-1`
 - `PYTHONFAULTHANDLER=1`
 - `PYTHONPATH=/opt/venv/lib/python3.11/site-packages`
 - `PYTHONUNBUFFERED=1`

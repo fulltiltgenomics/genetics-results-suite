@@ -107,7 +107,21 @@ COPY --chown=65532:65532 stubs/ /genetics/sdk/
 # link-local IP keeps metadata.google.internal out of the resolver, which matters because the
 # sandbox has no DNS and a name lookup there is a multi-second stall inside the wall clock. It
 # is not a confinement control: reaching the address at all is the NetworkPolicy's job.
-ENV GCE_METADATA_HOST=169.254.169.254 \
+#
+# The polars display settings are here because there is no terminal on the other end: a
+# script's stdout is a pipe the supervisor reads, so polars' console-shaped defaults are wrong
+# by construction. POLARS_FMT_MAX_COLS is the one that matters — it defaults to 8, and a frame
+# with more columns silently loses the MIDDLE ones to an ellipsis column. Sessions paid for
+# that twice: once noticing a column was missing, and once re-running the whole query to print
+# it another way, having reached for tbl_width_chars and fmt_str_lengths, neither of which
+# affects the column count. MAX_ROWS stays finite because the supervisor's stdout window is
+# 64 KiB head-and-tail; unbounded rows would trade a silent column elision for a silent byte
+# elision, which is the same bug wearing a different hat.
+ENV POLARS_FMT_MAX_COLS=-1 \
+    POLARS_FMT_MAX_ROWS=50 \
+    POLARS_FMT_STR_LEN=100 \
+    POLARS_TABLE_WIDTH=-1 \
+    GCE_METADATA_HOST=169.254.169.254 \
     PYTHONPATH=/opt/venv/lib/python3.11/site-packages \
     PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
