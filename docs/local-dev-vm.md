@@ -432,7 +432,7 @@ export ANTHROPIC_API_KEY=sk-ant-...          # REQUIRED for chat
 export PERPLEXITY_API_KEY=pplx-...           # optional, literature search
 export TAVILY_API_KEY=tvly-...               # optional, web search
 export BIGQUERY_API_URL=http://localhost:8080
-export DEFAULT_MODEL=claude-opus-5
+export DEFAULT_MODEL=claude-fable-5-1
 export EXTERNAL_MCP_SERVERS=https://mcp.platform.opentargets.org
 export REQUIRE_AUTH=false                     # no oauth2-proxy locally
 # no default: SandboxClient refuses to guess an address and raises SandboxNotConfigured
