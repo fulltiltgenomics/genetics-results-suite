@@ -420,7 +420,10 @@ LAYOUT = {
     "scripts/keycloak-bind-allowlist.sh": "bind the email allow-list authenticator and realm "
                                           "attributes",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
-    "scripts/gen-sandbox-docs.py": "generate sandbox/schema/*.md and sandbox/stubs/*.pyi",
+    "scripts/gen-sandbox-docs.py": (
+        "generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema "
+        "markdown into genetics-mcp-server's prompt copy"
+    ),
     "scripts/gen-doc-blocks.py": "generate the marked blocks in docs/*.md; `--check` is the "
                                  "build gate",
     "scripts/check-doc-drift.sh": "warn when a commit changes code the docs describe",
