@@ -217,11 +217,11 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 | `code_execution` | local tools | membership |
 |---|---|---|
 | `False` — the no-code surface | 66 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
-| `True` — the code surface | 18 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 15 data tools whose `sdk_replaceable` is false |
+| `True` — the code surface | 20 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 17 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
 
-The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
 
 <!-- END GENERATED: tool-surfaces -->
 
@@ -236,7 +236,11 @@ that shows the field is not the category: it is categorised `api` and calls myva
 
 The entity lookups are exempt from that rule and say so where they are defined: they have
 SDK routes but stay on the code surface, because resolving a symbol or a phenotype name to
-an id is what the model does *before* it writes a script.
+an id is what the model does *before* it writes a script. The catalogue pair,
+`list_datasets` and `get_resource_metadata`, is exempt for the same reason: measured
+without them, "what schizophrenia data do we have?" cost the code surface five SQL scripts
+surveying views one by one and twice the no-code surface's time, because the model did not
+reach for `genetics.datasets()`.
 `CODE_EXECUTION_TOOL_DEFINITIONS` is a list rather than a field
 value: those tools *are* code execution, so the boolean includes them directly.
 `launch_subagents` reaches **neither** surface; which one should carry it is an open
@@ -424,7 +428,7 @@ unfiltered text is 40,789 chars. Measured 2026-09-06:
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
 | `None` (default), `api`, `bigquery`, `rag`, `nocode` | 64 | 31,980 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
-| `code` | 18 | 29,537 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `list_datasets`, `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces |
+| `code` | 20 | 109,861 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (~77k chars) |
 
 Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
 tool names, those five resolve to the same 64 tools, and the five prompts are byte-identical

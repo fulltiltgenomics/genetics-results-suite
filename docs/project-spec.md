@@ -2303,7 +2303,9 @@ and the code surface drops it; a tool that calls an outside host — UniProt, Ch
 MGI, cBioPortal, the literature and web backends — is `sdk_replaceable: False` and **both** surfaces
 carry it. The entity lookups are exempt and say so where they are defined: they have SDK routes but
 stay on the code surface, because resolving a symbol or a phenotype name to an id is what the model
-does *before* it writes a script. The code-execution tools are their own list — they *are* code
+does *before* it writes a script; the catalogue pair, `list_datasets` and `get_resource_metadata`,
+is exempt for the same reason, because a model without them answers "what data is there?" by
+surveying views one script at a time. The code-execution tools are their own list — they *are* code
 execution — and `launch_subagents` reaches neither surface. Generated from those definitions by
 `scripts/gen-doc-blocks.py`:
 
@@ -2312,9 +2314,9 @@ execution — and `launch_subagents` reaches neither surface. Generated from tho
 | surface | local tools |
 |---|---|
 | no-code (`code_execution=False`) | 66 — every data tool |
-| code (`code_execution=True`) | 18 — the 3 code-execution tools, plus the 15 data tools the SDK cannot stand in for |
+| code (`code_execution=True`) | 20 — the 3 code-execution tools, plus the 17 data tools the SDK cannot stand in for |
 
-The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
 
 <!-- END GENERATED: tool-surfaces-spec -->
 
