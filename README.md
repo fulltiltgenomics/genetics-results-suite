@@ -88,6 +88,12 @@ DEPLOY_ENV=daly-staging ./scripts/build-all.sh
 DEPLOY_ENV=daly-staging ./scripts/deploy.sh
 ```
 
+Two lines of `.env.<env>` shape the chat surface a deployment's users get, and they act at
+different times: `DEFAULT_TOOL_PROFILE` is rendered into chat-backend by `deploy.sh`, while
+`SHOW_TOOLS_CONTROL=false` hides the browser's Tools row and is baked into the frontend image by
+`build.sh`/`build-all.sh` (`--build-arg SHOW_TOOLS_CONTROL`), so it needs a build, not only a
+deploy. Both are documented per deployment in `docs/environments.md`.
+
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
 tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor). The setup below describes a single deployment; see

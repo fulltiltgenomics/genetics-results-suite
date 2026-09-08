@@ -196,12 +196,19 @@ which is hardcoded in ~40 manifests.
       Use a **different `SLACK_WEBHOOK_URL`** than production, or leave it empty; otherwise
       staging's daily monitor report lands in the production alert channel.
 - [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging`.** Staging starts its chat users on
-      the `code` profile — the seven-tool code-execution surface — while production leaves the
+      the `code` profile — the code-execution surface — while production leaves the
       variable unset and starts them on **All**. It is rendered into chat-backend by
       `scripts/deploy.sh` and served to the browser as the profile of anyone who has not chosen
       one; a user's own choice still wins and persists (`docs/project-spec.md`, "Tool profiles").
       Since it is read from `.env.<name>`, a deploy run without the line silently returns staging
       to All — that is the drift to look for when staging answers with direct tools again.
+- [ ] **`SHOW_TOOLS_CONTROL=false` in `.env.daly-staging`.** Staging hides the chat options'
+      Tools row (the Code execution switch), so its users stay on the profile above with no
+      control to leave it; production leaves the variable unset and shows the row. It is a
+      build-time setting: `build.sh`/`build-all.sh` read it from `.env.<name>` and pass
+      `--build-arg SHOW_TOOLS_CONTROL` to the browser image, so it takes effect on the next
+      frontend build, not on a manifest-only deploy. A user who stored `nocode` before the row
+      was hidden keeps it; the fix is the user-settings endpoint, not the browser.
 - [ ] **Confirm there is no `terraform/terraform.tfvars`.** The daly values now live in
       `terraform/terraform.tfvars.daly`; the scripts refuse to run while both exist.
 - [ ] **`unset REGISTRY`** if your shell profile exports the production one (it currently does:

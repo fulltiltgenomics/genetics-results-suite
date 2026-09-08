@@ -154,7 +154,8 @@ TAG="$(date +%Y%m%d).$(git -C "${WORK_DIR}/${REPO}" rev-parse --short HEAD)"
 BUILD_ARGS=()
 case "${SERVICE}" in
   frontend)
-    BUILD_ARGS+=(--build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}")
+    BUILD_ARGS+=(--build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}" \
+      --build-arg SHOW_TOOLS_CONTROL="${SHOW_TOOLS_CONTROL:-true}")
     ;;
   bff)
     BUILD_ARGS+=(-f "${WORK_DIR}/${REPO}/bff/Dockerfile")

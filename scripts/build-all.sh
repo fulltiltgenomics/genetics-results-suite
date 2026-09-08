@@ -59,6 +59,10 @@ fi
 #
 APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
+# whether the browser shows the chat Tools row (the Code execution switch). Read from the
+# deployment's .env.<DEPLOY_ENV> (loaded above) so a deployment can hide it while its users
+# start on the profile DEFAULT_TOOL_PROFILE names; unset means shown.
+SHOW_TOOLS_CONTROL="${SHOW_TOOLS_CONTROL:-true}"
 
 echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
@@ -119,7 +123,8 @@ build_and_push() {
 # frontend
 TAG=$(tag_for "${WORK_DIR}/genetics-results-browser")
 build_and_push genetics-results-browser "${WORK_DIR}/genetics-results-browser" "${TAG}" \
-  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}"
+  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}" \
+  --build-arg SHOW_TOOLS_CONTROL="${SHOW_TOOLS_CONTROL}"
 
 # BFF (backend-for-frontend) — same repo as the frontend, separate Dockerfile, shares the frontend tag
 build_and_push genetics-results-browser-bff "${WORK_DIR}/genetics-results-browser" "${TAG}" \
