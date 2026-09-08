@@ -37,8 +37,8 @@ be installed into a sandbox image on its own.
 
 AN EMPTY RESULT MAY HAVE NO COLUMNS (genetics-results-suite-6uk). The functions backed by
 results-api rather than BigQuery — exome, gene_burden, hla(phenotype=...), summary_stats,
-ld, search, expression, gene_disease, lookup_phenotype_names — return a bare `[]` with no
-schema when nothing matches, so the DataFrame comes back 0x0 and `df.filter(pl.col("beta")
+ld, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
+`[]` with no schema when nothing matches, so the DataFrame comes back 0x0 and `df.filter(pl.col("beta")
 > 0)` raises ColumnNotFoundError instead of yielding an empty frame. Check `df.is_empty()`
 (or `df.height == 0`) before naming a column, rather than assuming the shape of an empty
 answer. The BigQuery-backed functions and sql() carry their columns through an empty
@@ -365,6 +365,10 @@ def lookup_phenotype_names(codes: str | list[str]) -> pl.DataFrame:
     `search(kind="phenotypes")` is the fuzzy ranked index rather than a lookup, so it
     cannot answer "what is I9_CHD". One row per code; unknown codes come back with the
     upstream's 'Unknown: <code>' placeholder.
+
+    Columns are `phenotype` (the code you passed) and `name`, in that order, so the
+    join back onto a results frame is
+    `df.join(lookup_phenotype_names(codes), left_on="trait", right_on="phenotype")`.
     """
     ...
 
@@ -411,16 +415,86 @@ def sql(query: str, *, max_rows: int = 100000) -> pl.DataFrame:
 
 def schema(table: str | None = None) -> dict[str, Any]:
     """Column-level schema of the BigQuery views. A dict, not a frame: it is nested.
+
+    The shape, so no script has to discover it::
+
+        {"tables": [{"name": "credible_sets_v",
+                     "description": str,
+                     "row_count": int,
+                     "columns": [{"name": str, "type": str, "mode": str,
+                                  "description": str,
+                                  "allowed_values": [...]}],   # only where enumerable
+                     "examples": [{"description": str, "sql": str}]}],
+         "resources": {...},
+         "warnings": [{"view": str, "error": str}]}
+
+    Columns are therefore `schema(table)["tables"][0]["columns"]`, and every table is
+    `{t["name"]: t for t in schema()["tables"]}`.
+
+    READ `examples`. Each view ships worked SQL for the questions it is usually asked -
+    the credible-set key, the partition predicate to add, the join that reaches genes -
+    and it is the same text as the schema docs in the directory named by
+    GENETICS_SCHEMA_DIR. It costs one print and saves writing a query from scratch.
+
+    `allowed_values` is present only on columns with a small enumerable set; where it
+    is, use it instead of a `SELECT DISTINCT` round trip.
     """
     ...
 
 def resources() -> dict[str, Any]:
     """Catalog of available data resources, grouped by data product.
+
+    A dict keyed by product - `credible_sets`, `colocalization`, `expression`,
+    `chromatin_peaks`, `exome_results`, `gene_based`, `gene_disease` - each holding a
+    list of per-resource entries. It answers "which products exist and who supplies
+    them", not "what is in dataset X"; that is `datasets()`.
     """
     ...
 
-def datasets(resource: str | None = None, include_stats: bool = True) -> dict[str, Any]:
+def datasets(resource: str | None = None, include_stats: bool = True) -> list[dict[str, Any]]:
     """Dataset catalog with descriptions and aggregate stats.
+
+    A LIST of dataset dicts, one per dataset - not a dict keyed by name, and not a
+    frame. Each carries::
+
+        {"dataset_id", "resource", "version", "description", "author",
+         "publication_date", "trait_type", "data_type", "products",
+         "qtl_types"?, "n_samples"?, "n_phenotypes"?, "pseudo_credible_sets"?,
+         "collection"?, "subdataset_id_field"?, "stats"?, "metadata_endpoint"?}
+
+    The trailing `?` keys are present only when the registry sets them, so read them
+    with `.get`. Filter it as a list comprehension over `data_type` or `resource`
+    rather than walking it for nested dicts.
+
+    `sql("SELECT ... FROM datasets_v")` answers the same question in SQL and joins
+    against the results views; prefer it when the answer is going into a query anyway.
+    """
+    ...
+
+def resource_metadata(resource: str) -> pl.DataFrame:
+    """Harmonized per-trait metadata for one resource — one row per trait it serves.
+
+    `resources()` names the resources and `datasets()` gives the dataset-level
+    aggregates; this is the rows behind them: the trait code, its human-readable name,
+    the sample sizes, and for a collection like `eqtl_catalogue` the sub-study each
+    trait belongs to. The columns are whatever the resource's harmonized metadata
+    carries, so they differ between resources — read them off the frame rather than
+    assuming a fixed schema.
+    """
+    ...
+
+def show(data: Any) -> None:
+    """Print every column of every row, one row per line. Nothing is elided.
+
+    polars' repr is built for a terminal — 8 columns and 10 rows by default — so a
+    printed frame silently drops columns, and widening the repr only moves the cut to
+    the 64 KiB stdout window. This prints `column=value` pairs instead: nothing is
+    dropped, and a value is findable by the name of its column. Select or filter first
+    when the frame is large; printing everything is the point, not a size guarantee.
+
+    A dict prints one line per key, and a list prints one line per element (a list of
+    row dicts prints as rows), so a `schema()`/`resources()`/`datasets()` payload can
+    be shown without building a frame first. Anything else prints as itself.
     """
     ...
 

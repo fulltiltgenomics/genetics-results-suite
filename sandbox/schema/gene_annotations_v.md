@@ -55,6 +55,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against gene_annotations_v as written. Copy the shape rather than inventing
+one — each shows the filters this view expects.
+
 ### Coordinates for a set of genes, to drive window queries against the result views. A symbol can have several rows, so aggregate to one interval per gene; chr is INT64 here and in the result views, so joins need no casting.
 
 ```sql

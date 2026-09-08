@@ -29,12 +29,14 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 # — warn before the fallback to FinnGenie happens silently
 "${SCRIPT_DIR}/check-worktree-paths.sh" --check || true
 
-# The generated tables in docs/code-execution-security.md are derived from supervisor.py, the
-# sandbox manifest and the network policies. FATAL rather than warn-only, and here rather than
-# in the sandbox branch below: it is offline, it costs milliseconds, and a security document
-# whose limits table no longer matches the code is the failure the generator exists to prevent.
-echo "--- Checking the generated tables in docs/code-execution-security.md"
-python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check
+# The generated tables that are derived from this repo alone — supervisor.py, the sandbox
+# manifest, the network policies, the layout. FATAL rather than warn-only, and here rather
+# than in the sandbox branch below: they are offline, they cost milliseconds, and a security
+# document whose limits table no longer matches the code is the failure the generator exists
+# to prevent. The tool-surface blocks need genetics-mcp-server, so they are checked after the
+# clone below, against the branch this build ships.
+echo "--- Checking the generated tables that need no sibling checkout"
+python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check --skip-tool-blocks
 
 # The N-copy count against docs/duplication-baseline.json. Warn-only, unlike the block check
 # above: the count is taken over the SIBLING checkouts, whose state this build does not
@@ -57,6 +59,10 @@ fi
 #
 APP_NAME="${APP_NAME:-$(tfvar app_name)}"
 APP_NAME="${APP_NAME:-FinnGenie}"
+# whether the browser shows the chat Tools row (the Code execution switch). Read from the
+# deployment's .env.<DEPLOY_ENV> (loaded above) so a deployment can hide it while its users
+# start on the profile DEFAULT_TOOL_PROFILE names; unset means shown.
+SHOW_TOOLS_CONTROL="${SHOW_TOOLS_CONTROL:-true}"
 
 echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
@@ -80,6 +86,22 @@ clone_repo genetics-results-db "${DB_API_BRANCH}"
 echo "--- Cloning genetics-rag-service (branch: ${RAG_SERVICE_BRANCH})"
 git clone --depth 1 --branch "${RAG_SERVICE_BRANCH}" "${RAG_SERVICE_ORG}/genetics-rag-service.git" "${WORK_DIR}/genetics-rag-service"
 
+MCP_DIR="${WORK_DIR}/genetics-mcp-server"
+
+# the rest of the generated blocks: the tool surfaces, read out of the mcp-server branch being
+# built rather than whatever checkout happens to sit next to this repo. Fatal when they are
+# stale, like the check above; a branch with no tools/definitions.py is still buildable, so
+# that degrades in the same shape as the sandbox skips below.
+if [ -f "${MCP_DIR}/src/genetics_mcp_server/tools/definitions.py" ]; then
+  echo "--- Checking the generated tool-surface tables against ${MCP_SERVER_BRANCH}"
+  python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check --mcp-src "${MCP_DIR}"
+else
+  echo ""
+  echo "!!! SKIPPING the generated tool-surface tables: ${MCP_SERVER_BRANCH} of"
+  echo "!!! genetics-mcp-server has no src/genetics_mcp_server/tools/definitions.py to"
+  echo "!!! derive them from. Every other generated block was checked above."
+fi
+
 # tag includes date + short SHA from each repo's HEAD
 tag_for() {
   local dir=$1
@@ -101,7 +123,8 @@ build_and_push() {
 # frontend
 TAG=$(tag_for "${WORK_DIR}/genetics-results-browser")
 build_and_push genetics-results-browser "${WORK_DIR}/genetics-results-browser" "${TAG}" \
-  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}"
+  --build-arg DEPLOY_ENV=prod --build-arg DATA_SOURCE=finngen --build-arg APP_NAME="${APP_NAME}" \
+  --build-arg SHOW_TOOLS_CONTROL="${SHOW_TOOLS_CONTROL}"
 
 # BFF (backend-for-frontend) — same repo as the frontend, separate Dockerfile, shares the frontend tag
 build_and_push genetics-results-browser-bff "${WORK_DIR}/genetics-results-browser" "${TAG}" \
@@ -138,7 +161,6 @@ build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
 # The genetics SDK is not vendored here — it is staged out of the genetics-mcp-server
 # clone above and pip-installed at build time, so the sandbox and mcp-server can never
 # drift apart. See docs/code-execution-security.md, "Where the image lives".
-MCP_DIR="${WORK_DIR}/genetics-mcp-server"
 # The schema docs and SDK stubs are generated below rather
 # than taken from the working tree, and they gate the image the same way the SDK does:
 # build-checks.py refuses to build while a placeholder is staged, because a sandbox whose

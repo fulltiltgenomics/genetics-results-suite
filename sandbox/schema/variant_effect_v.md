@@ -50,6 +50,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against variant_effect_v as written. Copy the shape rather than inventing
+one — each shows the filters this view expects.
+
 ### Predicted accessibility effect of a variant per cell type
 
 ```sql

@@ -237,7 +237,7 @@ scripts/                             build, deploy and verification scripts
   deploy.sh                          full deploy: terraform apply, then every manifest
   dev-stack.sh                       start/stop the local dev servers from one tree (docs/local-dev-vm.md)
   gen-doc-blocks.py                  generate the marked blocks in docs/*.md; `--check` is the build gate
-  gen-sandbox-docs.py                generate sandbox/schema/*.md and sandbox/stubs/*.pyi
+  gen-sandbox-docs.py                generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema markdown into genetics-mcp-server's prompt copy
   install-git-hooks.sh               wire core.hooksPath; run once per clone
   keycloak-bind-allowlist.sh         bind the email allow-list authenticator and realm attributes
   keycloak-get-token.sh              browser auth-code+PKCE flow; prints an access token
@@ -277,7 +277,7 @@ terraform/                           infrastructure
 
 `configs/datasets.yaml` is the single source of truth for dataset and resource definitions consumed by both results-api and db-api. At deploy time, `deploy.sh` creates a Kubernetes ConfigMap (`datasets-config`) from this file and volume-mounts it into both service pods at `/app/configs/datasets.yaml`. Each service reads the path from the `DATASETS_CONFIG_PATH` environment variable.
 
-For local development, `scripts/sync-datasets.sh` copies the canonical file to sibling service repos so they can run standalone. Each service's YAML loader defaults to `./configs/datasets.yaml` when `DATASETS_CONFIG_PATH` is not set. The sibling copies are **generated and untracked** — `configs/datasets.yaml` is gitignored in both `genetics-results-api` and `genetics-results-db`, and committed only here. Two consequences: a fresh sibling clone has no `configs/datasets.yaml` at all and the service aborts at startup until `sync-datasets.sh` (or an explicit `DATASETS_CONFIG_PATH`) provides one; and because the copies are untracked there is nothing to diff, so no check detects a stale sibling copy — divergence shows up only as a service reading yesterday's config. `deploy.sh` also runs `sync-datasets.sh` (best-effort) before building the ConfigMap. The script resolves the siblings from the **git common dir** (`git rev-parse --git-common-dir`, absolutised, twice up), which is the main checkout's `.git` even from a worktree — so a run from `<repo>/.claude/worktrees/<name>` syncs the same `~/suite/genetics-results-{db,api}` a main-checkout run would, and a same-named directory sitting next to the worktree is reported as ignored rather than written to (it previously derived `SUITE_DIR` as the parent of `scripts/`, warned, and **exited 0 having copied nothing**). Failure modes are split deliberately: a sibling that is simply not checked out prints `SKIP:` and exits 0, while an unresolvable sibling root, or a resolved directory whose `pyproject.toml` does not name that repo, prints `ERROR:` and exits 1. Nonzero is loud without breaking a deploy — `deploy.sh` calls it `|| echo WARN ... (continuing)`. `SUITE_SIBLING_ROOT` overrides the resolution for layouts the `.git`-next-to-the-root assumption does not fit. Only the ConfigMap built from the canonical file governs what the deployed pods read; the sibling copies matter for local runs only. Note that this only keeps `datasets.yaml` in sync — the results-api product configs (`app/config/profiles/*/credible_sets.py`, `summary_stats.py`, `common.py`, etc., which hold the actual GCS file paths and the `dataset_to_resource` map) live only in genetics-results-api and are baked into its image at build time, so changes there require rebuilding and rolling out the results-api image.
+For local development, `scripts/sync-datasets.sh` copies the canonical file to sibling service repos so they can run standalone. Each service's YAML loader defaults to `./configs/datasets.yaml` when `DATASETS_CONFIG_PATH` is not set. The sibling copies are **generated and untracked** — `configs/datasets.yaml` is gitignored in both `genetics-results-api` and `genetics-results-db`, and committed only here. Two consequences: a fresh sibling clone has no `configs/datasets.yaml` at all and the service aborts at startup until `sync-datasets.sh` (or an explicit `DATASETS_CONFIG_PATH`) provides one; and because the copies are untracked there is nothing to diff, so a stale copy is invisible to git — a tree keeps whatever the last sync left it while its code moves on, and the divergence surfaces only when a service reads it (db-api aborts on a config too old to carry `exposed:` flags; a milder drift just serves stale dataset metadata). `dev-stack.sh up` closes that for the trees it starts by running the sync itself, from the suite tree matching its own `--tree`, before its preflight reads the file; nothing keeps a tree fresh that `dev-stack.sh` is not starting. By default `sync-datasets.sh` writes into the sibling **main checkouts**; `--tree worktree` (with `--worktree <name>`, else `$DEV_WORKTREE`, else the invoking checkout's directory name) writes into `<sibling>/.claude/worktrees/<name>`, and skips with `SKIP:` when the sibling has no such worktree. The source is always the invoking script's own tree, because this repo's `datasets.yaml` differs substantially between branches and a config synced from the wrong branch is the failure the flag exists to prevent. `deploy.sh` also runs `sync-datasets.sh` (best-effort) before building the ConfigMap. The script resolves the siblings from the **git common dir** (`git rev-parse --git-common-dir`, absolutised, twice up), which is the main checkout's `.git` even from a worktree — so a run from `<repo>/.claude/worktrees/<name>` syncs the same `~/suite/genetics-results-{db,api}` a main-checkout run would, and a same-named directory sitting next to the worktree is reported as ignored rather than written to (it previously derived `SUITE_DIR` as the parent of `scripts/`, warned, and **exited 0 having copied nothing**). Failure modes are split deliberately: a sibling that is simply not checked out prints `SKIP:` and exits 0, while an unresolvable sibling root, or a resolved directory whose `pyproject.toml` does not name that repo, prints `ERROR:` and exits 1. Nonzero is loud without breaking a deploy — `deploy.sh` calls it `|| echo WARN ... (continuing)`. `SUITE_SIBLING_ROOT` overrides the resolution for layouts the `.git`-next-to-the-root assumption does not fit. Only the ConfigMap built from the canonical file governs what the deployed pods read; the sibling copies matter for local runs only. Note that this only keeps `datasets.yaml` in sync — the results-api product configs (`app/config/profiles/*/credible_sets.py`, `summary_stats.py`, `common.py`, etc., which hold the actual GCS file paths and the `dataset_to_resource` map) live only in genetics-results-api and are baked into its image at build time, so changes there require rebuilding and rolling out the results-api image.
 
 Both services load all dataset/resource metadata exclusively from the YAML -- there are no hardcoded fallback dicts. In genetics-results-api, the profile `datasets.py` files are empty placeholders (datasets come from YAML via `app.config.yaml_loader`). The `dataset_to_resource` mapping in `profiles/*/common.py` is still hardcoded as the YAML schema does not yet support exact BQ dataset name to (resource, version) tuples.
 
@@ -1189,6 +1189,7 @@ Guardrail 1 lives inside `load_deploy_env`, which `rollout.sh` never calls — v
 If you only run `deploy.sh` without building, the rollout restart will re-pull whatever `:latest` currently points to in the registry (i.e. the last build), so no code changes from upstream service repos will be picked up.
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from the terraform `registry` output (overridable via `REGISTRY` env var, which must agree with `DEPLOY_ENV` unless `REGISTRY_FORCE=1`) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
+- **The chat Tools control**: whether the chat options show the Tools row (the Code execution switch) is a per-deployment build-time setting, `SHOW_TOOLS_CONTROL` in the deployment's `.env.<name>`; `build.sh`/`build-all.sh` read it (unset means shown) and pass `--build-arg SHOW_TOOLS_CONTROL` → the browser's Dockerfile writes `VITE_SHOW_TOOLS_CONTROL` into `.env` → `src/config/showToolsControl.ts`, where only the literal `false` hides the row. A deployment that hides it decides its users' surface through `DEFAULT_TOOL_PROFILE` on chat-backend; a user's earlier stored choice still applies, there is just no control left to change it with. Staging hides it (`docs/environments.md`).
 - **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (via `tfvar app_name` from `scripts/lib/env.sh`, reading the tfvars `DEPLOY_ENV` selected) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
 ### Manifest-render preflight (`scripts/test-manifest-render.py`)
 
@@ -1507,9 +1508,16 @@ clustering itself should be asserted from
 
 ### Running the local dev stack (`scripts/dev-stack.sh`)
 
-Five servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
-chat-backend `:4000`, BFF `:5000`, db-api `:8080` — and each lives in a different repo.
-`scripts/dev-stack.sh` starts, stops and switches all five as one unit; the full
+The servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
+chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the standalone mcp-server `:8082` —
+out of four repos, chat-backend and mcp-server being two entrypoints of `genetics-mcp-server`
+with different tool surfaces. mcp-server takes 8082 because the cluster's 8080 is db-api's
+here; it is launched the way `k8s/deployments/mcp-server.yaml` launches it, with the values that
+manifest sets mirrored as overridable defaults; for the tool-surface flags (the `ENABLE_*`
+flags and `SANDBOX_ENABLED`), one the manifest leaves unset is left unset here too, so the
+code default governs cluster and local alike; these flags compute `settings.disabled_tools`
+and select which tool list `/mcp` serves for a given run.
+`scripts/dev-stack.sh` starts, stops and switches them as one unit; the full
 from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
 
 ```
@@ -1521,7 +1529,7 @@ from-scratch setup is [docs/local-dev-vm.md](local-dev-vm.md).
 
 What is load-bearing about it:
 
-- **One tree at a time, by construction.** Both trees want the same five ports (the
+- **One tree at a time, by construction.** Both trees want the same ports (the
   frontend's `VITE_*` URLs, vite's `/api` proxy and the sandbox container's
   `host.docker.internal` targets all name them), so `up` frees each port before starting on
   it. Going back to `master` is `down` then `up --tree main`.
@@ -1539,6 +1547,14 @@ What is load-bearing about it:
   cannot leave two services on the new tree, one killed and two still serving the old one.
   `up` returns non-zero if any service fails preflight, has its port refused, or never
   answers its health endpoint.
+- **`configs/datasets.yaml` is synced into the tree being started**, before the preflight
+  reads it and before any port is freed, by invoking the `sync-datasets.sh` of the suite tree
+  matching `--tree` (with `--tree worktree` when applicable). Nothing else maintains that
+  file: it is gitignored in every tree of both siblings, so `git pull` leaves it alone and no
+  diff reports it stale, and a tree quietly keeps the last sync's copy while its code moves
+  on — db-api aborts with `no exposed views in datasets.yaml` on one too old to carry the
+  `exposed:` flags. The step runs only when db-api or results-api is selected, and its
+  failure joins the preflight gate rather than half-starting the stack.
 - **The gitignored config is referenced, never copied.** `genetics-mcp-server/.env` exists
   only in the main checkout; the script sources it by path (`MCP_ENV_FILE`) into the
   chat-backend subshell, so no secret reaches a worktree, a command line or a log. The
@@ -2182,7 +2198,7 @@ complete".
     - **The threat model is ACCIDENT, not ATTACK, and it is now stated in the code.** `.env.<env>` holds the operator's own API keys and is written by the same person who runs these scripts; it is gitignored because it is *secret*, not because it is *hostile*. `create-secrets.sh` sources it with `set -a; . file; set +a`, and sourcing arbitrary shell in your own process ends the argument — anything in that file can redefine any command, rewrite `PATH`, or replace the script's own functions, so a check written inside a script is worth nothing against it, exactly as with `BASH_ENV`. Every "refuses", "cannot" and "closed" above therefore means *bounds a mistake an operator can realistically make*. The mistakes are ranked, and the ranking is the point: a stray `PATH=` line in a deployment `.env` is genuinely plausible, a `KUBECONFIG=` line is possible, and a `kubectl()` shell function is not something anyone writes by accident. The statement lives at `require_kube_context` in `lib/env.sh`, because the code around it implied a stronger model than it can deliver.
 - **Build all images**: `./scripts/build-all.sh` — clones the service repos and builds/pushes all Docker images to Artifact Registry, including the local `monitor`, `keycloak` and `sandbox` build contexts (those build from this repo's working tree and so have no branch). Per-service branches come from `FRONTEND_BRANCH`, `RESULTS_API_BRANCH`, `MCP_SERVER_BRANCH`, `DB_API_BRANCH`, `RAG_SERVICE_BRANCH` — all default `master` except rag-service (`deploy_jk`), and they are set per deployment in `.env.<DEPLOY_ENV>` (daly-staging sets them all to `staging`). `REGISTRY` defaults to the selected environment's repo
 - **Build single image**: `./scripts/build.sh <service>` — clones, builds, and pushes one service's image (same `DEPLOY_ENV`, `REGISTRY` and branch env vars as build-all.sh). `sandbox` is also accepted: it builds the local `sandbox/` context rather than a clone, but still clones genetics-mcp-server for the SDK.
-- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today — check the branch this deployment's `.env.<DEPLOY_ENV>` names before assuming otherwise). That skip keeps a suite build green **only where the sandbox is not being deployed**: `build-all.sh` restates the skip as its last line instead of printing "All images built and pushed.", and **exits 1 when this deployment's tfvars sets `sandbox_pool_enabled = true`** (the same derivation `deploy.sh` uses for `ENABLE_SANDBOX`, `ENABLE_SANDBOX` in the environment still winning) — so on exactly the staging bring-up that turns the sandbox on, an unshippable sandbox fails the build rather than being carried past it. See "How the sandbox is turned on" above. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py` **with an explicit `--sdk-src` pointing at the copy just staged**, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index) and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`: `genetics.pyi`, `client.pyi`, `errors.pyi` from `_FUNCTIONS`, plus `plots.pyi` from `sdk/plots.py`'s `__all__` — a second surface because the standard figures are not client wrappers and have no `GeneticsClient` counterpart to be checked against) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell, that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds) and that `plots.pyi` covers **exactly** `sdk/plots.py`'s `__all__`, and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source could be found — it never skips silently. Neither script defaults to `sandbox/.sdk-src` any more: that copy exists only after an *interrupted* build, so the old default was reachable only when stale and would silently regenerate the shipped stubs from an old SDK. Run by hand with no `--sdk-src`, both resolve `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the live sibling genetics-mcp-server checkout (worktree-matching one first, each gated on `src/genetics_mcp_server/sdk`, the same resolution `run-sandbox-local.sh` uses), print the source they chose, and report a leftover staged copy rather than reading it. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` names views **bare** (`FROM credible_sets_v`), with no project or dataset prefix and no backticks. db-api no longer rewrites the SQL to achieve that: `_qualify_tables` was deleted and `default_dataset` set on both the dry-run and execution job configs instead, so **BigQuery** resolves a bare name against db-api's own dataset. Qualifying is the failure mode rather than the fix — db-api owns the dataset identity, so the same emitted SQL serves dev and production — while backticks are now merely a style deviation rather than the correctness hazard the rewrite made them (BigQuery resolves a backtick-quoted bare name like any other identifier). See `docs/datasets-yaml-schema.md`, "Field details for `tables.<table>.examples`". The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files. See `docs/code-execution-security.md`, "Where the image lives".
+- **Build sandbox image**: included in `./scripts/build-all.sh`; builds `sandbox/` as the `sandbox` image. It stages genetics-mcp-server's `src/` and `pyproject.toml` into `sandbox/.sdk-src/` (gitignored, removed on exit) and pip-installs the SDK `--no-deps` — the SDK is never vendored into this repo. The installed package is then pruned to the SDK's import closure (`sandbox/prune_venv.py`), and pip/setuptools are removed from the venv, before the final stage copies it. **The sandbox is skipped, loudly, when the genetics-mcp-server branch has no `src/genetics_mcp_server/sdk/`** (`master` does not today — check the branch this deployment's `.env.<DEPLOY_ENV>` names before assuming otherwise). That skip keeps a suite build green **only where the sandbox is not being deployed**: `build-all.sh` restates the skip as its last line instead of printing "All images built and pushed.", and **exits 1 when this deployment's tfvars sets `sandbox_pool_enabled = true`** (the same derivation `deploy.sh` uses for `ENABLE_SANDBOX`, `ENABLE_SANDBOX` in the environment still winning) — so on exactly the staging bring-up that turns the sandbox on, an unshippable sandbox fails the build rather than being carried past it. See "How the sandbox is turned on" above. `./scripts/build.sh sandbox` fails hard in the same situation instead of skipping. Both scripts first run `./scripts/gen-sandbox-docs.py` **with an explicit `--sdk-src` pointing at the copy just staged**, which regenerates `sandbox/schema/*.md` (one file per view in `configs/datasets.yaml`, plus an index), the byte-identical copy of those same files under the resolved genetics-mcp-server checkout's `src/genetics_mcp_server/schema_docs/` (chat-backend inlines them into the `code` system prompt as one `# BigQuery view reference` section — see `docs/code-execution-security.md`, "Where the image lives"; both consumers must read the same bytes, so one generator writes both and `--check` covers both), and `sandbox/stubs/*.pyi` (signature stubs read out of the staged SDK source with `ast`: `genetics.pyi`, `client.pyi`, `errors.pyi` from `_FUNCTIONS`, plus `plots.pyi` from `sdk/plots.py`'s `__all__` — a second surface because the standard figures are not client wrappers and have no `GeneticsClient` counterpart to be checked against) — the Dockerfile copies them verbatim to `/genetics/schema` and `/genetics/sdk`. Those files are **committed and regenerated**: committed so the directories are never empty and a `datasets.yaml` change shows up in review, regenerated so the image cannot document a schema older than the canonical file. `./scripts/test-sandbox-docs.py` runs next in both scripts and gates the image: it asserts the committed copies match a fresh generation, that every view, column, enumerable column and worked example reaches a file, that the index lists every view (matched on its table row — the index carries no links, because the same bytes are a system prompt where a link invites a fetch of something already inlined), that every documented column carries a well-formed BigQuery type from `tables.<view>.column_types` and that a column missing one is **refused** rather than rendered with a blank type cell, that the stubs cover **exactly** the SDK's exported surface (plus the four lifecycle helpers the generator adds) and that `plots.pyi` covers **exactly** `sdk/plots.py`'s `__all__`, and that the correctness rules live in `datasets.yaml` rather than in the generator. Exit 1 = a property broke, 2 = the harness could not run because no SDK source could be found — it never skips silently. Neither script defaults to `sandbox/.sdk-src` any more: that copy exists only after an *interrupted* build, so the old default was reachable only when stale and would silently regenerate the shipped stubs from an old SDK. Run by hand with no `--sdk-src`, both resolve `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the live sibling genetics-mcp-server checkout (worktree-matching one first, each gated on `src/genetics_mcp_server/sdk`, the same resolution `run-sandbox-local.sh` uses), print the source they chose, and report a leftover staged copy rather than reading it. `build.sh sandbox` fails hard on either; `build-all.sh` folds both into the existing skip branch. Worked example SQL in `datasets.yaml` names views **bare** (`FROM credible_sets_v`), with no project or dataset prefix and no backticks. db-api no longer rewrites the SQL to achieve that: `_qualify_tables` was deleted and `default_dataset` set on both the dry-run and execution job configs instead, so **BigQuery** resolves a bare name against db-api's own dataset. Qualifying is the failure mode rather than the fix — db-api owns the dataset identity, so the same emitted SQL serves dev and production — while backticks are now merely a style deviation rather than the correctness hazard the rewrite made them (BigQuery resolves a backtick-quoted bare name like any other identifier). See `docs/datasets-yaml-schema.md`, "Field details for `tables.<table>.examples`". The build **also** fails while `sandbox/schema/` or `sandbox/stubs/` still hold `PLACEHOLDER*` files. See `docs/code-execution-security.md`, "Where the image lives".
 - **Create secrets**: `./scripts/create-secrets.sh [--context <ctx>]` — creates k8s secrets from environment variables (includes `SLACK_WEBHOOK_URL` for the monitor). **It gets the same cluster context guard `rollout.sh` has**, from the same `lib/env.sh` implementation: immediately after `resolve_deploy_env`, **before `load_deploy_env`**, and ahead of *every* cluster-contacting call — including the `kubectl get secret` reads in `secret_key()`, which run long before the first write — it refuses unless `kubectl config current-context` is the exact string the resolved tfvars' mandatory `kube_context` key names, and all **seven** kubectl invocations below then run pinned with `--context "${ACTING_CONTEXT}"` — the guard's `readonly` freeze of its verdict, not the plain `CURRENT_CONTEXT` it also leaves behind, so that the `.env` sourced immediately afterwards cannot rewrite the target the pins carry — the four that actually reach a cluster (`secret_key()`'s `get secret`, plus the three `apply -f -` halves of the create/apply pipelines) and, uniformly, the three `create secret ... --dry-run=client` halves that do not, so that a later edit dropping a `--dry-run` cannot silently unpin the call it turns into a write. **The `load_deploy_env` ordering is part of the guard, not housekeeping**: `load_deploy_env` sources `.env.<env>` with `set -a`, i.e. arbitrary shell from a file the script does not control, and `TFVARS` is exported by then — so while it ran first, a `TFVARS=` line in that file re-pointed the guard at another deployment's tfvars (green success line, then reads and writes on production) and an `OVERRIDE_CONTEXT=` line set the very variable the `--context` **flag** exists to keep per-invocation, converting a hard refusal into the off-target-and-proceed path. Deciding before the file is read closes both; the guard needs nothing from `.env`. **Ordering alone is not enough**, and the comment here once reasoned only about the guard's inputs and about when its output is first *read*: a `CURRENT_CONTEXT=` line in `.env` *wrote* that output, and drove all three Secret writes onto production behind a truthful green staging line. The freeze (`readonly ACTING_CONTEXT`, above) is the other half — and **not the last half**: ordering protects the guard's inputs and the freeze protects its output, but neither touches `.env` changing what the frozen verdict *means*. A `kubectl() { ... }` function, a `PATH=` line or a `KUBECONFIG=` line in that file each lets the pin expand faithfully and then be **reinterpreted** — all three driven, all three silent, all three leaving the green staging line above truthful while every write goes to production. So immediately after `load_deploy_env` returns and before the first cluster contact, the script **re-asks `kubectl config current-context` and refuses unless it still equals `ACTING_CONTEXT`**, naming `.env.<env>` as the only thing that ran in between. That is an **accident detector, not a security boundary**, and the code says so: it catches the `PATH=` and `KUBECONFIG=` lines, because both change what the second question *resolves to* while the frozen answer stays put; it does **not** catch a `kubectl()` shell function, which answers the re-check too and lies consistently (verified). It lives in `create-secrets.sh` and not in `require_kube_context` because `rollout.sh` never calls `load_deploy_env`, so it has no window to re-check and must not gain a second `kubectl config current-context` call for one. Cost on the normal path: exactly one extra `kubectl config current-context`. It was the last unguarded cluster mutator *of the five `DEPLOY_ENV`-resolving entry points* (the three `keycloak-*.sh` scripts remain unguarded, above), and its blast radius is the worst of them: it used to print `kubectl config current-context` one line above writing `genetics-secrets`, and rotating `internal-api-secret` against the wrong cluster breaks every running pod there, while the daly production context differs from staging's by a trailing `-staging` alone. The override is a per-invocation `--context` **flag**, never an environment variable, for the reason measured in `rollout.sh`: an `export` outlives the run it was typed for and re-authorises every later one from the same shell. `create-secrets.sh` takes **no positional arguments** — every other input is an environment variable — so anything else on the command line is rejected rather than ignored. It also needs the **config profile** to know whether to write `keycloak-secrets` (daly only), and reads it with `tfvar config_profile` out of the tfvars `scripts/lib/env.sh` resolved. That file is gitignored and exists only in the main checkout; `resolve_deploy_env` **refuses with exit 1** when it is missing, rather than letting a guessed profile write the wrong per-profile secrets. `CONFIG_PROFILE=daly|finngen` overrides the value read from the file, and that `daly|finngen` is **enforced**, not advertised: any other value (a typo, a case slip like `Daly`, or a tfvars with no `config_profile` line, which parses to empty) also exits 1, because an unrecognised profile would otherwise fall through to `ENABLE_KEYCLOAK=false` and skip `keycloak-secrets` silently. Before that guard existed it died with exit 2 and no output at all, because the `grep` on the missing file tripped `pipefail`.
 - **Build monitor image**: included in `./scripts/build-all.sh`; builds `scripts/monitor/` as the `monitor` image
 - **Deploy monitor**: included in `./scripts/deploy.sh`; applies `k8s/deployments/monitor-cronjob.yaml` with `REGISTRY` envsubst
@@ -2272,35 +2288,54 @@ one clears it. Both stores live at module scope in the browser
 `LLMChat` on every conversation switch, and each keeps the current value separate from the default
 for the reason above.
 
-### Tool profiles, and the `code` profile
+### The two tool surfaces, and the `tool_profile` coercion
 
-The **Tools** option above is the `tool_profile` field, and it is resolved by **two** mechanisms in
-`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`. `TOOL_PROFILES` maps a profile
-to whole tool **categories** (`api`, `bigquery`, `rag`, `nocode`); `TOOL_PROFILE_TOOLS` maps a
-profile to an explicit set of tool **names** and takes precedence over it. `null` — the default — is *no
-filtering at all*, not a union of the profiles, and an unrecognised string degrades to
-general-only rather than raising, because the value is read back from `chat_messages` rows written
-by older clients. The degrade is unchanged but no longer silent to an operator: the `None`
-branch logs one WARNING per **distinct** unknown value (bounded at 64, because a stored
-profile is re-sent on every turn), and
+The **Tools** option above is the `tool_profile` field. Behind it there are exactly **two** local
+tool surfaces, resolved by one function in
+`genetics-mcp-server/src/genetics_mcp_server/tools/definitions.py`:
+`resolve_tools(code_execution, disabled)`.
+
+Membership is one field on each tool definition, `sdk_replaceable`. The line it draws is
+**internal genetics data against outside resources**, not "everything minus `run_analysis`": a
+script inside the sandbox reaches internal data through the `genetics` SDK and reaches nothing
+else, because the sandbox egress allow-list names db-api and results-api only
+(`docs/code-execution-security.md`). A tool that fetches internal data is `sdk_replaceable: True`
+and the code surface drops it; a tool that calls an outside host — UniProt, ChEMBL, myvariant.info,
+MGI, cBioPortal, the literature and web backends — is `sdk_replaceable: False` and **both** surfaces
+carry it. The entity lookups are exempt and say so where they are defined: they have SDK routes but
+stay on the code surface, because resolving a symbol or a phenotype name to an id is what the model
+does *before* it writes a script; the catalogue pair, `list_datasets` and `get_resource_metadata`,
+is exempt for the same reason, because a model without them answers "what data is there?" by
+surveying views one script at a time. The code-execution tools are their own list — they *are* code
+execution — and `launch_subagents` reaches neither surface. Generated from those definitions by
+`scripts/gen-doc-blocks.py`:
+
+<!-- BEGIN GENERATED: tool-surfaces-spec -->
+
+| surface | local tools |
+|---|---|
+| no-code (`code_execution=False`) | 66 — every data tool |
+| code (`code_execution=True`) | 20 — the 3 code-execution tools, plus the 17 data tools the SDK cannot stand in for |
+
+The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+
+<!-- END GENERATED: tool-surfaces-spec -->
+
+`code_execution_requested(tool_profile)`, called once at the edge in `chat_api.py`, coerces the
+wire string onto that boolean: **`"code"` is code execution; every other value —
+`null`, the retired `api`/`bigquery`/`rag`, `nocode`, and anything unrecognised — resolves to the
+no-code surface.** That is the safe direction for a value read back from `chat_messages` rows
+written by older clients. The degrade is not silent to an operator: one WARNING per **distinct**
+unknown value (bounded at 64, because a stored profile is re-sent on every turn), and
 `GET /chat/v1/tools/resolved?tool_profile=<v>` answers `known_profile: false` for the same input.
+The proxied surfaces (gnomAD / Open Targets, and RAG) are still keyed on the profile name rather
+than on the boolean.
 
-The second mechanism exists for `code`, the minimal code-execution surface: `run_analysis`,
-`list_capabilities`, `read_artifact`, `search_genes`, `search_phenotypes`,
-`search_scientific_literature`, `lookup_variants_by_rsid` — **seven tools against the default 68**,
-and no external (gnomAD / Open Targets) or RAG tools either. That set is not expressible as
-categories: its three orchestration tools share a category with `launch_subagents`, which must stay
-out, and its four search tools share `general` with 14 others. Recategorising tools to make it fit
-was **ruled out** — a tool's `category` also decides what the `api` chat profile advertises and what
-subagent skills declaring `tool_categories={"general","api"}` may call — so the profile layer grew
-the ability to name tools instead. No existing profile's resolved set changed.
-
-It **ships dark**: no server-side default moved, so `profile=null` still yields the full surface;
-selection is per request for local A/B work, and rollback is deleting one dict entry. The planned
-`search_entities` / `search_literature` names do not exist anywhere in the codebase — the
-consolidation that would create them is deferred, and revisiting it is what would change this
-profile's membership. Per-profile resolved counts, including under the deployed feature flags, are
-in `docs/chat-tool-reference.md` § 3.
+The code surface **ships dark**: no server-side default moved, so a null `tool_profile` yields the
+no-code surface. The counts above are the definitions' own; what a deployment's feature flags then
+subtract is in `docs/chat-tool-reference.md` § 3, and the resolved sets under the deployed flags
+are frozen in `genetics-mcp-server/tests/golden/tool_surface.json` — read them there rather than
+from a count written by hand.
 
 **Shipping dark is the settled position, not a holding pattern.** It was to be revisited by the
 paired A/B, which was **descoped on 2026-08-30** by user
@@ -2313,93 +2348,65 @@ code arm was never run against the baseline, so nothing here records it losing; 
 simply not taken on numbers, and the documented default therefore stands. No A/B result exists
 to look up, and none is coming from this epic.
 
-That default is the *request's*: a null `tool_profile` still resolves to the full surface, and
+That default is the *request's*: a null `tool_profile` resolves to the no-code surface, and
 nothing here changes it. What a deployment can move is what its users **start on**.
 `DEFAULT_TOOL_PROFILE` on chat-backend names a profile that the user-settings endpoint serves as
 `chat_tool_profile` to any user who has not stored one, and the browser adopts it exactly as it
 adopts a stored choice: the **Tools** control shows it, an explicit choice overrides it and
 persists, and a request that omits the field is unchanged. It rides the settings endpoint rather
-than the request because the browser sends null for an explicit **All**, which a request-side
-default could not tell from an omitted field. A value that names no profile is logged once and not
-served, since the browser would flag it and the chat would degrade to general-only. The variable
+than the request because an explicit choice is indistinguishable on the wire from a request-side
+default could not tell from a client that omitted the field. A value that names no profile is
+logged once and not served; the chat would resolve it to the no-code surface anyway. The variable
 is rendered into `k8s/deployments/chat-backend.yaml` from the deployment's `.env.<name>`, empty
 when unset; which deployments set it is in `docs/environments.md`.
 
-`nocode` is the fourth category-union profile, added for the code-versus-tools A/B and,
-like `rag`, **server-side only and deliberately never user-facing** — the browser's control does not
-offer it, and its own list does not even contain the name. That is not an oversight to be corrected:
-it is the comparator arm, and a user must not be able to pick it. A value already sitting in
-`user_settings` (written by a benchmark harness or by hand) is no longer discarded, though — the
-browser probes the server for it and keeps it if the server confirms it, which is what makes a
-stored `nocode` behave as stored without ever being advertised (see below).
-It resolves to `{general, api, bigquery}`: `null` minus exactly `run_analysis`,
-`list_capabilities` and `read_artifact` under the deployed flags (65 → 62, measured 2026-08-19).
-It exists because `null` **is not** a pre-code-execution baseline — `null` contains `run_analysis`,
-so an arm meant to represent the old surface could reach for the mechanism under test. Note the
-equivalence rides on a runtime flag, not on the category: excluding `orchestration` also excludes
-`launch_subagents`, which only stays out because `enable_subagents` defaults to false. Turn it on
-and `nocode` is no longer "the old surface".
+`nocode` was added for the code-versus-tools A/B as a baseline `null` could not then be, because
+`null` contained `run_analysis` — an arm meant to represent the old surface could reach for the
+mechanism under test. After the collapse the two resolve identically, so the name survives only as
+a stored value — and `nocode` is what the browser now sends with its **Code execution** switch
+off. `api`, `bigquery` and `rag` are the names no UI can produce any more; they survive only
+because stored rows still carry them, and every one of them resolves to the same no-code surface.
 
 #### Selecting a profile from the browser
 
-The **Tools** control offers **All** (`null`), **API**, **Database** (`bigquery`) and **Code
-execution** (`code`). The server knows **five** profiles and the browser's own list names **four**:
-`rag` is in the browser's list but carries a `null` label, so it is resolvable and never rendered;
-`nocode` is not in the browser's list at all. Both omissions are deliberate — do not read the two
-lists as copies of each other. The control had been commented out of `LLMChat.tsx` entirely, so the stored profile
-rode along with every request while nothing could change it — which is why the row above described
-a **Tools** option no one could see. It is back, with `code` added, so the small surface can be
-A/B'd against the full one. The default is unchanged: **All** — and, since that A/B was descoped
-without running (see "It **ships dark**" above), that default is settled rather than provisional.
-A deployment that sets `DEFAULT_TOOL_PROFILE` starts its users elsewhere without moving that
-default (see above); staging does.
+The **Tools** control is one **Code execution** switch (`LLMChat.tsx` in
+genetics-results-browser): on sends `code`, off sends `nocode`, and either persists to
+`chat_tool_profile` like any other chat option. Those are the only two values a user can produce,
+and the only two the server resolves differently.
 
-The browser's own hazard is the mirror image of the server's, and is worth stating because it reads
-backwards. Every narrower — `coerceToolProfile`, the store's `resolveCurrent`, the control — maps
-an **unrecognised** profile to `null`, and `null` is the **largest** surface, not the smallest. So a
-list left behind by a new server-side profile does not fail, it runs the maximal arm — a benchmark
-driven through the browser would be invalid with no visible symptom — unless the adoption path
-below rescues the value first, which it can only do when the server answers. The server makes the opposite
-call for the same input (unknown → general-only). Both are deliberate — the value comes back from
-`user_settings` and from `chat_messages` rows written by older clients, so neither side may raise.
+Everything the browser reads back is narrowed by `coerceToolProfile`
+(`src/features/chat/chatOptionsApi.ts`) on both paths — the user-settings row and a reopened
+conversation's stored `tool_profile` — under the same rule the server applies at the edge: `code`
+is code execution, and `api`, `bigquery`, `rag`, the legacy `all` sentinel, `null`, a missing key
+and an unknown name all resolve to the no-code surface. Both ends deciding identically is what
+lets the browser decide locally: the switch shows what the message would actually run with, no
+stored row is rewritten, and neither side raises on a name it does not know — the value comes back
+from `user_settings` and from `chat_messages` rows written by older clients. `TOOL_PROFILE_ALL`
+survives read-only, to recognise those legacy `all` rows.
 
-The two lists are pinned together rather than leaving the drift merely
-recorded. Three mechanisms, and it is worth knowing which one catches which direction:
+Two smaller pieces survive:
 
-- **A profile the server added that this browser build predates** is caught at runtime, on the
-  browser side. `getStoredChatOptions` keeps the raw value as `unknownToolProfile` when
-  `coerceToolProfile` rejects it, and `adoptServerKnownProfile` (`useChatOptions.ts`) asks
-  `GET /chat/v1/tools/resolved?tool_profile=<v>`. Only `known_profile: true` changes anything: the
-  value is kept, labelled from the raw key by `toolProfileLabel` (`LLMChat.tsx`), offered as an
-  extra radio and sent on the next message. Nothing is persisted — the settings row already holds
-  it. The stored setting is not the only place such a name arrives from: `tool_profile` is
-  persisted **per message**, so reopening a conversation that ran under a server-only profile
-  narrowed it the same way, and that is the likelier path — `applyFromConversation` probes it too.
-  The answer stays in the layer it came from: a conversation's name is adopted into the control
-  only while that conversation is the one on screen, and never becomes the user's default for new
-  chats. One probe per name per page either way — a settled answer is re-applied from the store's
-  cache, so reopening the same conversation does not re-ask. The value must first pass `isPlausibleToolProfile` (non-empty, ≤ 32 chars,
-  `^[a-z][a-z0-9_-]*$`, not the `all` sentinel) or it is never asked about and never rendered;
-  corruption in a settings row is not drift.
-- **A profile this browser offers that the server no longer knows** is caught at runtime too, by
-  the same endpoint, called whenever a profile is selected and whenever one is restored at load.
-  An explicit `known_profile: false` puts an amber "not recognised by the server" beside the
-  **Tools** control; `true` shows the resolved local-tool count. **A failed or unanswerable probe
-  shows nothing at all** — offline, a 5xx, or a backend predating the endpoint is not evidence of
-  drift, so the check is fire-and-forget, never gates sending, and is left out of the store rather
-  than recorded as "unknown".
-- **A profile added or renamed on the server** is caught at build time, on the server side, by
-  `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`,
-  which asserts `TOOL_PROFILES | TOOL_PROFILE_TOOLS == {api, bigquery, rag, nocode, code}` against a
-  literal and names the browser file to update. The two repos cannot import each other, so a literal
-  on each side is the only thing that can pin them.
+- **The `known_profile` probe, for the caption only.**
+  `GET /chat/v1/tools/resolved?tool_profile=<v>` is asked what the current setting resolves to,
+  and the "{count} tools" caption beside the switch is shown only for an answer whose boolean
+  `known_profile` is true. That field is read as the shape check that a real answer came back, not
+  as a version tell: the endpoint post-dates `nocode`, so a backend able to answer it knows both
+  values. Anything else means no caption — offline, a 5xx, a backend predating the endpoint (which
+  404s), or a 200 that merely parses (`fetchResolvedToolProfile`, `useChatOptions.ts`). It is fire-and-forget and never gates
+  sending. `isPlausibleToolProfile` bounds what may enter the probe URL (non-empty, ≤ 32 chars,
+  `^[a-z][a-z0-9_-]*$`, not the `all` sentinel).
+- **One cross-repo pin, on the server side.** genetics-mcp-server's
+  `tests/test_unknown_profile_warning.py::test_the_profile_key_set_is_pinned_against_the_browsers_copy`
+  asserts `KNOWN_TOOL_PROFILES == {api, bigquery, rag, nocode, code}` against a literal. That set
+  now validates the admin-configured `DEFAULT_TOOL_PROFILE` rather than mirroring a browser list;
+  the browser can only emit `code` or `nocode`, both of which are in it, so there are no longer
+  two lists to keep in step. The two repos cannot import each other, which is why a literal is
+  the only thing that can pin anything here at all.
 
-What keeps the browser side safe underneath all of that is unchanged: `TOOL_PROFILES`
-in `src/features/chat/chat.types.ts` is the single list every narrower reads, `TOOL_PROFILE_LABELS`
-in `LLMChat.tsx` is a `Record<ToolProfile, …>` so a new profile is a **type error** until the UI has
-decided about it (`null` there means "deliberately not offered", which is `rag`), and
-`useChatOptions.test.ts` / `LLMChat.options.test.tsx` / `useChatOptions.profileCheck.test.ts` drive
-their cases off that list and pin the unknown-value and probe behaviour explicitly.
+`DEFAULT_TOOL_PROFILE` decides which position a new chat's switch starts in (see above); staging
+sets it. Deploying the browser ahead of the chat backend has no transient: the resolved-tools
+endpoint post-dates `nocode`, so any backend that can answer the probe already knows the value the
+switch sends, and the `nocode` surface before the collapse is the same set as the one after it.
 
 **Hazard, unresolved**: `run_analysis` is the primary tool of the
 `code` profile and has no feature flag, so on any cluster **without a deployed sandbox** a user can

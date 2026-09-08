@@ -49,6 +49,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against gene_burden_results_v as written. Copy the shape rather than
+inventing one — each shows the filters this view expects.
+
 ### All burden tests for a gene across every exome study and phenotype — the usual starting point for 'is this gene implicated anywhere'
 
 ```sql

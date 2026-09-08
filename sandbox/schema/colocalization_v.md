@@ -72,6 +72,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against colocalization_v as written. Copy the shape rather than inventing
+one — each shows the filters this view expects.
+
 ### What molecular QTLs colocalize with a GWAS phenotype — the usual 'what is the likely mechanism' query
 
 ```sql

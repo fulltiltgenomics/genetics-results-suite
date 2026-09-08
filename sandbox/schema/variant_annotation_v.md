@@ -46,6 +46,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against variant_annotation_v as written. Copy the shape rather than
+inventing one — each shows the filters this view expects.
+
 ### Translate an rsID to the chr:pos:ref:alt identifier the association views use. rsid is neither partitioned nor clustered, so this scans the whole table — add a chr filter whenever the chromosome is already known.
 
 ```sql

@@ -5,15 +5,25 @@
 > question this set existed to answer is **settled by the bead's own kill criterion** — *"if
 > the code arm does not beat the baseline on cost AND does not regress quality, keep it behind
 > the profile rather than defaulting it on"* — whose conservative branch is the status quo:
-> **code execution stays opt-in, and `null` remains the default tool profile.** The arms were
+> **code execution stays opt-in — it is not turned on for everyone by default.** Which
+> profile a deployment starts its users on is its own setting, `DEFAULT_TOOL_PROFILE`
+> (`scripts/deploy.sh`, `k8s/deployments/chat-backend.yaml`), and staging runs it on `code`
+> (`docs/environments.md`); `null` is a wire value that coerces to the no-code surface, not
+> a suite-wide default. The arms were
 > never compared, so read no result into that; the decision was not taken on numbers. There is
 > no 4h6.23 report and **no paired A/B result exists — no figure below is one.** Individual
 > figures below *were* measured, some of them at real cost; read each for what it says it is.
 >
 > Everything below stands as the design and pre-registration for whoever does the manual
-> benchmarking, which is why it is kept rather than deleted. Note that
-> `genetics-results-suite-b3w` is **deferred** (iced): `replay_benchmark.py` accepts a code arm
-> whose profile resolved without `run_analysis`, so unpark it before reaching for the harness.
+> benchmarking, which is why it is kept rather than deleted.
+>
+> **The code arm is not the surface any figure here was measured against.** The two-profile
+> collapse re-pointed it: it is now the sandbox's own tools plus everything the in-sandbox
+> SDK cannot stand in for, and the proxied external and RAG servers reach it as well. The
+> `nocode` baseline is unchanged in kind — it is still every data tool and none of the
+> sandbox's — so the design below survives, but **no number on this page describes today's
+> code arm**. `genetics-results-suite-cgr9.6` is the re-measure. The harness no longer
+> accepts a code arm that resolved without `run_analysis`; see the preflight below.
 
 `eval_dataset_local.json` is the question set for the paired A/B replay benchmark. It is
 **hand-authored**, not exported from production, and that difference is the most important
@@ -42,14 +52,18 @@ into any report produced from it:
 
 ## Deliberate exclusions
 
-Both are required by 4h6.23: the code-execution arm cannot win them, for reasons that are
-design choices rather than defects, and letting them depress its score silently is the
-measurement artefact 4h6.25 was filed to prevent.
+One of the two has lost its premise (see below); the other still stands. Both were
+pre-registered because the code-execution arm cannot win them for reasons that are design
+choices rather than defects, and letting them depress its score silently is the measurement
+artefact 4h6.25 was filed to prevent.
 
 - **Clinical variant annotation** (ClinVar / CADD / dbNSFP / pathogenicity, i.e. anything
   behind `get_myvariant_annotations`). The sandbox NetworkPolicy is deny-by-default and
-  permits only db-api and results-api, so third-party egress is blocked by construction.
-  This is a genuine *unavailability*.
+  permits only db-api and results-api, so third-party egress is blocked by construction —
+  but **the premise of this exclusion is gone**: the code surface now keeps every tool the
+  SDK cannot stand in for, `get_myvariant_annotations` among them, precisely because no
+  script can reach that data. The tool is on both arms. Whether to reinstate these questions
+  is a decision for whoever runs the benchmark, not a fact about availability any more.
 - **Phenotype reports and gene-prioritisation scores** (the `Score` column, TIER1/TIER2/
   TIER3/CASCADE flags). results-api *is* on the sandbox egress allow-list and does serve
   the document, so the data is reachable — but neither the SDK nor the shipped stubs name
@@ -80,33 +94,49 @@ excluded from both sides of the rate (4h6.71).
 > **Above 10%** — do not default it on whatever the cost line says. The fix is better stubs
 > and error messages, not a rollout (carried over from genetics-results-suite-4h6.22).
 
-**Boundary rule, also pre-registered.** This set yields roughly 50–80 script attempts, so a
-rate near 10% carries a few points of sampling noise. Judge on the point estimate, but if the
-95% interval straddles 10%, the result is **inconclusive** — say so and widen the sample.
-Do not round toward whichever answer the cost line makes convenient. That temptation is the
-entire reason this number is written down before the run rather than after it.
+**Boundary rule, also pre-registered.** The script-attempt count this set yields is a
+property of the code arm and **awaits re-measurement** — the earlier "roughly 50–80" was read
+off a run against the old code surface. Take it from the run's own
+`executed_ok + executed_failed + model_rejected`. At any plausible size a rate near 10%
+carries a few points of sampling noise: judge on the point estimate, but if the 95% interval
+straddles 10%, the result is **inconclusive** — say so and widen the sample. Do not round
+toward whichever answer the cost line makes convenient. That temptation is the entire reason
+this number is written down before the run rather than after it.
 
 An arm that never calls `run_analysis` reports `None` (not measured), not `0` — so a zero in
 the report is a real zero.
 
-## The arms: `nocode` vs `code`, NOT `all` vs `code`
+## The arms: `nocode` vs `code`
 
-**Arm A is `nocode`, not the harness's default `all`.** `--arm-a all` sends
-`tool_profile: null`, and that profile **contains `run_analysis`** — measured 2026-08-19,
-`all` = 65 local tools under the deployed flags, `run_analysis` among them, and `api` and
-`bigquery` carry it too. Only `rag` (18 tools) excludes it, and rag is far too narrow to
-stand for the old surface.
+**They are the harness's defaults now** — `--arm-a nocode --arm-b code`. The surface is one
+boolean: `code` selects code execution and *every* other value, `null` included, selects the
+no-code surface, so `--arm-a all` (which sends `tool_profile: null`) is a second spelling of
+arm A rather than a broader arm, and the preflight refuses the pair.
 
-Left at `all`, the A/B compares *"65 tools including code execution"* against *"7 tools,
-code only"* — both arms able to run scripts. That is not old vs new, and it fails in a
-direction that is easy to miss: arm A picks up the same context-growth saving the code arm
-exists to test whenever the model reaches for `run_analysis`, so the measured gap
-**understates** the code arm while the baseline stops being the pre-epic system at all.
+That closes the trap this section was written about. Before the collapse, `null`, `api` and
+`bigquery` all carried `run_analysis`, so leaving arm A at `all` compared two arms that could
+both run scripts: arm A picked up the same context-growth saving the code arm exists to test,
+which **understates** the code arm while the baseline stops being the pre-epic system at all.
 
-`nocode` (`{general, api, bigquery}`, 62 tools deployed) is `all` minus exactly
-`{run_analysis, list_capabilities, read_artifact}`. Since genetics-results-suite-4h6.69 the
-system prompt is assembled from the tool list in force, so this arm also loses every mention
-of `run_analysis` from its prompt automatically — verified, the word does not appear.
+Measured 2026-09-06 by resolving both surfaces under the deployed chat-backend flags
+(`SANDBOX_ENABLED=true`, `ENABLE_SUBAGENTS=false`, everything else at its `settings.py`
+default, which disables `get_credible_sets_stats`, `get_phenotype_report` and
+`launch_subagents`):
+
+| arm | local tools | what it is |
+|---|---|---|
+| `nocode` (= `null`, `api`, `bigquery`, `rag`, anything unrecognised) | 64 | every data tool, none of the sandbox's |
+| `code` | 18 | 3 code-execution tools + the 15 the in-sandbox SDK cannot stand in for |
+
+`code` is no longer a subset of `nocode`: 15 of its 18 are also on `nocode` (the externals
+the sandbox egress allow-list puts out of a script's reach, plus the entity lookups a model
+uses *before* it writes a script), and the 3 it adds are `run_analysis`, `list_capabilities`
+and `read_artifact`. Both arms also get the **same** proxied external and RAG tools, which no
+longer depend on the profile.
+
+Since genetics-results-suite-4h6.69 the system prompt is assembled from the tool list in
+force, so the `nocode` arm loses every mention of `run_analysis` from its prompt
+automatically.
 
 ### Knowing for sure what each arm was given
 
@@ -117,31 +147,35 @@ what it reports is what the model was handed:
 ```bash
 curl -s 'http://localhost:4000/chat/v1/tools/resolved?tool_profile=nocode' | jq '.count, .known_profile'
 curl -s 'http://localhost:4000/chat/v1/tools/resolved?tool_profile=code'   | jq '.count, .known_profile'
-curl -s 'http://localhost:4000/chat/v1/tools/resolved'                     | jq '.count'  # the `all` arm
+curl -s 'http://localhost:4000/chat/v1/tools/resolved'                     | jq '.count'  # tool_profile: null
 ```
 
-Measured 2026-08-19 against the local stack: `all` 65, `nocode` 62, `code` 7, `bigquery` 23,
-and `all` minus `nocode` is exactly `{run_analysis, list_capabilities, read_artifact}`.
+A running server is the only thing that can answer this, because the flag subtraction happens
+in its process: the table above is what the code resolves to under the deployed flags, and a
+stack started with different ones resolves to something else.
 
 **Do not use `/chat/v1/tools` for this** — it returns `TOOL_DEFINITIONS` raw, with no profile
 filter, no feature flags, and neither the BigQuery nor the subagent list. It cannot answer
 what an arm ran with.
 
-**A typo in `--arm-a` is silent and costly**, which is why the harness now refuses it.
-`get_anthropic_tools` resolves an unrecognised profile to `{"general"}` — 18 tools — and
-nothing raises, deliberately, because the value comes back from rows written by older
-clients. So `--arm-a nocod` would have produced a crippled baseline that runs fine and
-reports plausible numbers. The harness resolves both arms against the server before spending
-anything and **aborts with exit 2 if either is unknown**, on the `--dry-run` path too:
+**Three ways an arm can be wrong, all of them silent, all now refused** before anything is
+spent — on the `--dry-run` path too, with exit 2:
 
-```
-ERROR: http://localhost:4000 does not recognise these arm profiles: nocod. An
-unrecognised profile silently degrades to general-only (18 tools), so this run
-would have measured a surface you did not intend.
-```
-
-The same check catches the other version of this: a profile added on disk but not loaded by
-a **running** server, which is one forgotten restart away locally.
+1. **A typo.** An unrecognised profile resolves to the no-code surface and nothing raises,
+   deliberately, because the value comes back from rows written by older clients — so
+   `--arm-b cod` would have measured a second baseline and reported plausible numbers
+   against it. The server flags it as `known_profile: false` and the harness stops.
+2. **An arm that is not the surface it names.** The name being recognised says nothing about
+   what came back: `SANDBOX_ENABLED=false` subtracts `run_analysis` *after* the surface
+   resolves, so the `code` arm arrives without the one tool it exists to exercise. Measured
+   2026-08-27, exactly that run completed, was judged, and had the code arm declared the
+   winner on a case where it had burned an iteration force-calling a tool it had not been
+   given. The harness now requires `run_analysis` on the `code` arm and its absence on any
+   other — which also catches a server that predates the collapse, where the baseline still
+   carried it.
+3. **Two arms that are one surface.** With every name except `code` resolving alike, a pair
+   like `all`/`nocode` compares a surface against itself and reports a difference of zero
+   that reads as a real result. Equal resolved name sets are fatal.
 
 The resolved counts and names are recorded in the report under `config.arm_tools`, so a
 saved run proves what each arm was given rather than leaving it to be re-derived from a tree
@@ -177,12 +211,10 @@ the limit first.
 
 ## Running it
 
-The stack must be up first, and both arms must see `SANDBOX_ENABLED=true` with the sandbox
-actually reachable. A baseline arm replayed against an unreachable sandbox is being steered
-toward a path that fails at the transport, which depresses arm A and inflates arm B's win.
-That hazard is much smaller with `nocode` than it was with `all` — an arm with no
-`run_analysis` in its tool list has no code path to be steered toward — but arm B still needs
-the sandbox up.
+The stack must be up first, and `SANDBOX_ENABLED=true` with the sandbox actually reachable.
+The baseline arm cannot be steered toward a failing code path — it has no `run_analysis` to
+reach for — but arm B needs the sandbox up, and if the flag is off the harness refuses the
+run rather than measuring a `code` arm the flag has quietly stripped the tool from.
 
 ```bash
 # 1. bring everything up (chat-api :4000, results-api :2000, db-api :8080)
@@ -194,9 +226,10 @@ curl -s localhost:8081/health          # must be {"status": "ok", ...}
 scripts/test-e2e-local.py
 
 # 3. resolve the plan without issuing a single request
-cd ~/suite/genetics-mcp-server/.claude/worktrees/db-only-architecture
+#    paths are the two repo roots; any checkout of the branch under test works
+cd <genetics-mcp-server checkout>
 .venv/bin/python -m genetics_mcp_server.scripts.replay_benchmark \
-  --dataset ~/suite/genetics-results-suite/.claude/worktrees/db-only-architecture/benchmarks/eval_dataset_local.json \
+  --dataset <genetics-results-suite checkout>/benchmarks/eval_dataset_local.json \
   --base-url http://localhost:4000 \
   --arm-a nocode --arm-b code \
   --model claude-opus-5 --provider anthropic \
@@ -337,6 +370,12 @@ is not the same as zero, and cost is half the decision.
 
 ## Cost
 
-Production averaged $2.01/turn. This set is 20 cases × 2–3 turns ≈ 54 turns, run on **both**
-arms ≈ 108 turns. Budget accordingly, and use `--limit` first. `--judge` prices itself before
+Production averaged $2.01/turn. This set is 23 cases × 2–3 turns = 56 turns, run on **both**
+arms = 112 turns. Budget accordingly, and use `--limit` first. `--judge` prices itself before
 the first call.
+
+Every case carries a `class` — `retrieval`, `analysis`, `plot`, `catalogue` or `external` —
+naming what the case tests, so a result can be read per class rather than as one total: the
+routing rule a merged surface would need *is* the split between the classes where a chain of
+tool calls wins and the ones where a script does. The harness keeps the field and reads
+nothing from it; the per-class split is done on the report.

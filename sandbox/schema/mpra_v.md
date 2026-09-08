@@ -52,6 +52,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against mpra_v as written. Copy the shape rather than inventing one — each
+shows the filters this view expects.
+
 ### MPRA calls for a variant across all cell lines (and the meta summary)
 
 ```sql

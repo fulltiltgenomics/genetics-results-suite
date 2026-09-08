@@ -60,6 +60,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against phenotypes_v as written. Copy the shape rather than inventing one —
+each shows the filters this view expects.
+
 ### Name the traits behind credible sets at a locus, in one query
 
 ```sql
