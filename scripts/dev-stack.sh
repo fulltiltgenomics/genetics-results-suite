@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring the five local dev servers up from ONE tree — the main checkouts or the
+# Bring the local dev servers up from ONE tree — the main checkouts or the
 # matching git worktrees — and point db-api at one dataset.
 #
 # Usage:
@@ -7,10 +7,17 @@
 #   scripts/dev-stack.sh up --tree main        main checkouts + genetics_results (production)
 #   scripts/dev-stack.sh up --dataset genetics_results
 #   scripts/dev-stack.sh up db-api chat-api    only those services
+#   ENABLE_PHENOTYPE_REPORT=true scripts/dev-stack.sh up mcp-server
+#                                              ... serving a different /mcp tool surface
 #   scripts/dev-stack.sh down [svc...]         stop this suite's servers on those ports
 #   scripts/dev-stack.sh down --force          ... even if the port holder is NOT this suite's
 #   scripts/dev-stack.sh status                what is listening, from which tree, on which dataset
 #   scripts/dev-stack.sh logs chat-api         tail -f a service log
+#
+# `up` first syncs the canonical configs/datasets.yaml into the tree it is about to run,
+# by invoking that tree's own scripts/sync-datasets.sh (see there for why the source tree
+# has to match). The sibling copies are gitignored in every tree, so nothing else — not
+# `git pull`, not a diff — would ever notice one going stale.
 #
 # A port is only freed when its holder belongs to this suite — its working directory is
 # inside the service's repo (either tree) or its command line names that repo. Anything
@@ -52,6 +59,21 @@
 #                        as a transient SandboxUnavailable.
 #                        Start one with scripts/run-sandbox-local.sh and set
 #                        SANDBOX_ENABLED=true yourself to exercise the sandboxed path.
+#   MCP_API_KEY          bearer token the standalone mcp-server accepts. It REFUSES TO
+#                        START on a remote transport without one, so this script generates
+#                        one into DEV_STACK_RUN_DIR the way it generates the sandbox
+#                        secrets; that file is what a curl to /mcp must present.
+#   ENABLE_PHENOTYPE_REPORT, ENABLE_CREDIBLE_SETS_STATS, ENABLE_LITERATURE_SEARCH,
+#   ENABLE_SUBAGENTS, SANDBOX_ENABLED
+#                        what the /mcp tool surface is made of. There is no single mode
+#                        variable today: mcp-server registers every tool it has except a
+#                        hardcoded exclusion list and settings.disabled_tools, which these
+#                        flags compute. A flag k8s/deployments/mcp-server.yaml sets is
+#                        mirrored as ${VAR:-<that manifest value>}; a flag the manifest
+#                        leaves unset is left unset here too, so the settings.py default
+#                        governs cluster and local alike instead of a copy of it drifting
+#                        here. Either way, one variable on the command line changes the
+#                        served tool list for that run only.
 #   SANDBOX_URL          code-execution sandbox (default: http://127.0.0.1:8081, what
 #                        scripts/run-sandbox-local.sh publishes). The client itself has NO
 #                        default and raises SandboxNotConfigured when this is unset, so this
@@ -73,13 +95,17 @@ RUN_DIR="${DEV_STACK_RUN_DIR:-$HOME/.cache/genetics-dev-stack}"
 # the frontend's VITE_* URLs, the vite /api proxy, and the sandbox container's
 # host.docker.internal targets all name them, so a second copy on other ports needs all of
 # those changed too (docs/local-dev-vm.md).
-ALL_SERVICES=(db-api results-api chat-api bff frontend)
+# mcp-server is the exception to "ports the rest of the setup already names": k8s gives it
+# 8080, which db-api holds here, so locally it gets 8082 (8081 is the sandbox) and nothing
+# else refers to it.
+ALL_SERVICES=(db-api results-api chat-api mcp-server bff frontend)
 
 svc_port() {
     case "$1" in
         db-api) echo 8080 ;;
         results-api) echo 2000 ;;
         chat-api) echo 4000 ;;
+        mcp-server) echo 8082 ;;
         bff) echo 5000 ;;
         frontend) echo 3000 ;;
     esac
@@ -89,7 +115,7 @@ svc_repo() {
     case "$1" in
         db-api) echo genetics-results-db ;;
         results-api) echo genetics-results-api ;;
-        chat-api) echo genetics-mcp-server ;;
+        chat-api | mcp-server) echo genetics-mcp-server ;;
         bff | frontend) echo genetics-results-browser ;;
     esac
 }
@@ -97,7 +123,7 @@ svc_repo() {
 svc_health() {
     case "$1" in
         db-api) echo /health ;;
-        results-api | chat-api | bff) echo /healthz ;;
+        results-api | chat-api | mcp-server | bff) echo /healthz ;;
         frontend) echo / ;;
     esac
 }
@@ -217,7 +243,11 @@ if [ "$COMMAND" = up ]; then
     SANDBOX_TOKEN_SIGNING_KEY="${SANDBOX_TOKEN_SIGNING_KEY:-$(dev_secret sandbox-token-signing-key)}"
     INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-$(dev_secret internal-api-secret)}"
     SANDBOX_ENABLED="${SANDBOX_ENABLED:-false}"
-    export SANDBOX_TOKEN_SIGNING_KEY INTERNAL_API_SECRET SANDBOX_ENABLED
+    # mcp_server.py exits 1 on a remote transport with no MCP_API_KEY, so without this the
+    # service would never listen at all. Generated like the two above: stable across
+    # restarts, outside every repo, and readable by whoever has to call /mcp.
+    MCP_API_KEY="${MCP_API_KEY:-$(dev_secret mcp-api-key)}"
+    export SANDBOX_TOKEN_SIGNING_KEY INTERNAL_API_SECRET SANDBOX_ENABLED MCP_API_KEY
     # this script starts no sandbox supervisor, so a true SANDBOX_ENABLED (from the
     # developer's own environment or MCP_ENV_FILE) is a claim this stack cannot back —
     # check it once, non-blocking, rather than let a phantom sandbox surface later as a
@@ -270,7 +300,10 @@ esac
 # will NOT do is kill a port holder that is not this suite's: the socket says only that
 # something answers on :3000, and on a dev box that is as likely to be someone else's vite.
 # --------------------------------------------------------------------------------------
-port_pids() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -un; }
+# `|| true` because a free port is a normal answer, not a failure: grep exits 1 on no match,
+# pipefail propagates it, and under `set -e` an unguarded `pid="$(port_pids ...)"` would abort
+# the script at the first service that is not running.
+port_pids() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -un || true; }
 
 port_free() { [ -z "$(port_pids "$1")" ]; }
 
@@ -297,6 +330,7 @@ proc_is_ours() {
     argv="$(proc_argv "$pid")"
     case "$argv" in *"$repo"*) return 0 ;; esac
     case "$svc:$argv" in chat-api:*genetics_mcp_server.chat_api*) return 0 ;; esac
+    case "$svc:$argv" in mcp-server:*genetics_mcp_server.mcp_server*) return 0 ;; esac
     return 1
 }
 
@@ -403,6 +437,27 @@ check_node_modules() {
     [ -d "$1/node_modules" ] || { echo "ERROR: no node_modules in $1 — run 'npm install' there first" >&2; return 1; }
 }
 
+# db-api and results-api read configs/datasets.yaml from the tree they run in, and that copy
+# is gitignored in both siblings and in every tree of them — so `git pull` never updates it and
+# nothing diffs it. A tree therefore keeps whatever the last sync left, indefinitely, while its
+# code moves on: db-api aborts at startup on a config too old to carry `exposed:` flags, and a
+# subtler drift just serves yesterday's dataset metadata. Sync before the preflight reads it,
+# from the SUITE tree matching --tree, so the config a service gets is the one its own branch
+# ships. Failure joins the preflight's gate: nothing is started or stopped.
+sync_datasets_yaml() {
+    case " ${SERVICES[*]} " in *" db-api "* | *" results-api "*) ;; *) return 0 ;; esac
+    local suite; suite="$(repo_dir genetics-results-suite)"
+    local sync="$suite/scripts/sync-datasets.sh"
+    [ -x "$sync" ] || { echo "ERROR: no sync-datasets.sh in the $TREE suite tree ($sync)" >&2; return 1; }
+    # --tree is passed only for a worktree run: the main-checkout default needs no flag, so a
+    # main tree whose script predates these options still works rather than exiting 2
+    if [ "$TREE" = worktree ]; then
+        "$sync" --tree worktree --worktree "$WORKTREE_NAME" | sed 's/^/  /'
+    else
+        "$sync" | sed 's/^/  /'
+    fi
+}
+
 # Checked for EVERY selected service before the first port is freed. Discovering a missing
 # .venv while starting service four means the first three have already taken their ports
 # from the running stack and the last two are still serving the old tree — half on each,
@@ -411,12 +466,14 @@ preflight_svc() {
     local svc="$1" dir; dir="$(repo_dir "$(svc_repo "$svc")")"
     check_dir "$dir" "$svc" || return 1
     case "$svc" in
-        db-api | results-api | chat-api) check_venv "$dir" || return 1 ;;
+        db-api | results-api | chat-api | mcp-server) check_venv "$dir" || return 1 ;;
         bff | frontend) check_node_modules "$dir" || return 1 ;;
     esac
     case "$svc" in
         db-api | results-api)
-            [ -f "$dir/configs/datasets.yaml" ] || echo "  WARN: $dir/configs/datasets.yaml missing — run scripts/sync-datasets.sh" >&2 ;;
+            # sync_datasets_yaml has already run, so a file still missing here means it
+            # SKIPped this tree — the message above says which, and why
+            [ -f "$dir/configs/datasets.yaml" ] || echo "  WARN: $dir/configs/datasets.yaml missing — the sync above did not reach this tree; db-api and results-api abort at startup without it" >&2 ;;
         chat-api)
             if [ -f "$MCP_ENV_FILE" ]; then
                 # sourced AFTER SANDBOX_TOKEN_SIGNING_KEY/INTERNAL_API_SECRET are already
@@ -479,12 +536,55 @@ start_chat_api() {
         fi
         export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
         export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
-        export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-opus-5}"
+        export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
         export EXTERNAL_MCP_SERVERS="${EXTERNAL_MCP_SERVERS:-https://mcp.platform.opentargets.org}"
         export REQUIRE_AUTH="${REQUIRE_AUTH:-false}"
         export SANDBOX_URL="$SANDBOX_URL"
         exec setsid .venv/bin/python -m genetics_mcp_server.chat_api --port 4000
     ) >"$RUN_DIR/chat-api.log" 2>&1 &
+    LAST_CHILD=$!
+}
+
+# The standalone MCP server, launched the way k8s/deployments/mcp-server.yaml launches it.
+# A SEPARATE surface from chat-api's, out of the same repo: chat-api serves the browser's
+# /chat, this serves /mcp to MCP clients, and the two resolve their tool lists through
+# different code paths. MCP_ENV_FILE is deliberately NOT sourced here — it holds
+# chat-backend's model and provider configuration, and sourcing it would let the chat side
+# move a surface that is supposed to be selected per run by the flags below.
+start_mcp_server() {
+    local dir; dir="$(repo_dir genetics-mcp-server)"
+    (
+        cd "$dir"
+        export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
+        export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
+        export CHAT_BACKEND_URL="${CHAT_BACKEND_URL:-http://localhost:4000/chat}"
+        export EXTERNAL_MCP_SERVERS="${EXTERNAL_MCP_SERVERS:-}"
+        # no TLS and no proxy in front of it here, as in the cluster where the gateway
+        # terminates both; without this FastMCP's DNS-rebinding guard refuses the call
+        export MCP_DISABLE_TRANSPORT_SECURITY="${MCP_DISABLE_TRANSPORT_SECURITY:-true}"
+        export ENABLE_ADMIN_PAGE="${ENABLE_ADMIN_PAGE:-true}"
+        export ENABLE_SUBAGENTS="${ENABLE_SUBAGENTS:-false}"
+        export SUBAGENT_MODEL="${SUBAGENT_MODEL:-}"
+        export SUBAGENT_TIMEOUT="${SUBAGENT_TIMEOUT:-120}"
+        export SUBAGENT_ALLOWED_PATHS="${SUBAGENT_ALLOWED_PATHS:-}"
+        export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+        # the rest of the manifest's environment: the genetics-secrets keys and the
+        # bearer-auth-allowed configMap, none of which the local stack can supply. Empty is
+        # the inert setting for all of them — no admin user, oauth_enabled false because it
+        # needs both issuer and resource url, and no bearer allow-list — so a local run
+        # authenticates on MCP_API_KEY alone unless the caller supplies one of these.
+        export ADMIN_USERS="${ADMIN_USERS:-}"
+        export OAUTH_ISSUER="${OAUTH_ISSUER:-}"
+        export OAUTH_RESOURCE_URL="${OAUTH_RESOURCE_URL:-}"
+        export ALLOWED_EMAILS="${ALLOWED_EMAILS:-}"
+        export ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-}"
+        export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-}"
+        # 127.0.0.1, not the manifest's 0.0.0.0: in the cluster only the gateway can reach
+        # the pod, on a dev VM 0.0.0.0 would publish an API-key-authenticated surface to
+        # whatever else can route to the box
+        exec setsid .venv/bin/python -m genetics_mcp_server.mcp_server \
+            --transport streamable-http --port 8082 --host 127.0.0.1
+    ) >"$RUN_DIR/mcp-server.log" 2>&1 &
     LAST_CHILD=$!
 }
 
@@ -535,6 +635,7 @@ cmd_up() {
     echo
 
     local svc port failed=0
+    sync_datasets_yaml || failed=1
     for svc in "${ALL_SERVICES[@]}"; do
         case " ${SERVICES[*]} " in *" $svc "*) ;; *) continue ;; esac
         preflight_svc "$svc" || failed=1
@@ -555,6 +656,7 @@ cmd_up() {
             db-api) start_db_api ;;
             results-api) start_results_api ;;
             chat-api) start_chat_api ;;
+            mcp-server) start_mcp_server ;;
             bff) start_bff ;;
             frontend) start_frontend ;;
         esac

@@ -16,11 +16,16 @@ which runs the real gateway image locally.
 | 4000 | chat-backend | `genetics-mcp-server` | browser (`VITE_CHAT_URL`) |
 | 5000 | BFF | `genetics-results-browser` (`bff/`) | browser (`VITE_API_URL`) |
 | 8080 | db-api (optional, BigQuery proxy) | `genetics-results-db` | chat-backend only |
+| 8082 | mcp-server (standalone `/mcp`) | `genetics-mcp-server` | MCP clients, with a bearer key |
 
 Data flow: browser → vite `:3000` → BFF `:5000` → results-api `:2000`; the chat views bypass
 the BFF and call `:4000` directly. db-api is only used server-side, so it needs no tunnel.
+mcp-server is off that path entirely: it is the same repo as chat-backend but a different
+entrypoint and a different tool surface, serving MCP clients rather than the browser. In the
+cluster it listens on 8080; locally that is db-api's, so it gets **8082** (8081 is the
+sandbox).
 
-## Already set up? `scripts/dev-stack.sh` drives all five
+## Already set up? `scripts/dev-stack.sh` drives the whole stack
 
 Steps 1-6 are the from-scratch build-out. On a machine where the repos, venvs and
 `node_modules` already exist, one script starts, stops and switches the whole stack
@@ -30,12 +35,13 @@ Steps 1-6 are the from-scratch build-out. On a machine where the repos, venvs an
 ./scripts/dev-stack.sh up                 # the worktree trees, db-api on genetics_dev
 ./scripts/dev-stack.sh up --tree main     # the main checkouts, db-api on genetics_results
 ./scripts/dev-stack.sh status             # port, health code, and WHICH TREE each pid runs from
-./scripts/dev-stack.sh down               # stop all five
+./scripts/dev-stack.sh down               # stop everything it started
 ./scripts/dev-stack.sh logs chat-api      # tail -f
+ENABLE_PHENOTYPE_REPORT=true ./scripts/dev-stack.sh up mcp-server   # a different /mcp surface
 ```
 
 Switching back to the main checkouts on `master` is `down` then `up --tree main`, and
-nothing else. The two trees are mutually exclusive by construction: both use the same five
+nothing else. The two trees are mutually exclusive by construction: both use the same
 ports, so `up` frees each port before it starts anything on it.
 
 What the script is doing on your behalf, and why each piece matters:
@@ -45,6 +51,15 @@ What the script is doing on your behalf, and why each piece matters:
   `--tree worktree` means `~/suite/<repo>/.claude/worktrees/<name>` for all four repos at
   once. The worktree name defaults to this checkout's own directory name (`DEV_WORKTREE`
   overrides; `SUITE_SIBLING_ROOT` overrides the root).
+- **It syncs `configs/datasets.yaml` into the tree it is about to run**, by invoking that
+  tree's own `sync-datasets.sh` (`--tree worktree` when applicable), before the preflight
+  reads the file and before any port is freed. This is the one piece of the local setup that
+  nothing else maintains: the sibling copies are gitignored in *every* tree, so `git pull`
+  never updates one and no diff detects one going stale. A tree keeps whatever the last sync
+  left while its code moves on — db-api aborts outright on a copy too old to carry `exposed:`
+  flags, and a milder drift just serves stale dataset metadata. It runs only when db-api or
+  results-api is among the selected services, and a failure joins the preflight gate, so
+  nothing is started or stopped.
 - **It stops whatever holds the port *if the holder is this suite's*, not what it started.**
   Resolution is from the listening socket (`ss`) to the process group, so it takes over
   servers started by hand in the tmux windows of step 6 — which is what the takeover
@@ -60,8 +75,8 @@ What the script is doing on your behalf, and why each piece matters:
 - **It validates every selected tree before it frees the first port.** A missing `.venv` or
   `node_modules` discovered while starting service four would leave the first three on the
   new tree, one killed, and the last two still serving the old one — half on each, silently.
-  All five directory, venv and `node_modules` checks run first; a failure starts and stops
-  nothing.
+  Every selected tree's directory, venv and `node_modules` check runs first; a failure
+  starts and stops nothing.
 - **`up` exits non-zero if any service failed** to answer its health endpoint or had its
   port refused, so a script can tell a good stack from a broken one.
 - **The gitignored config stays in the main checkout.** `genetics-mcp-server/.env` (the
@@ -148,6 +163,52 @@ It starts services in dependency order and waits for each health endpoint. resul
 a 10-minute budget because it verifies every configured tabix file against GCS before it
 serves (~90 s warm, longer cold); everything else answers in seconds.
 
+### mcp-server, and choosing which tool surface it serves
+
+`mcp-server` runs the command `k8s/deployments/mcp-server.yaml` runs — `python -m
+genetics_mcp_server.mcp_server --transport streamable-http` — with the values that manifest
+sets mirrored as `${VAR:-<manifest value>}`; for the tool-surface flags (the `ENABLE_*` flags
+and `SANDBOX_ENABLED`), one the manifest leaves unset is left unset here too, so the code
+default governs cluster and local alike rather than a copy of it drifting in this script. Either way any of it can be overridden for one run, as in the
+`ENABLE_PHENOTYPE_REPORT=true ./scripts/dev-stack.sh up mcp-server` above.
+Two deliberate differences from the manifest: the port is 8082, and the host is
+`127.0.0.1` rather than `0.0.0.0`, because in the cluster only the gateway can route to the
+pod while on a dev VM `0.0.0.0` would publish the surface to anything that can reach the box.
+`MCP_ENV_FILE` is **not** sourced for it — that file configures chat-backend, and the two
+entrypoints are supposed to be independently configured.
+
+`MCP_API_KEY` is generated into `DEV_STACK_RUN_DIR` alongside the sandbox secrets, because
+`mcp_server.py` exits 1 on a remote transport without one; every call except `/healthz` must
+present it.
+
+**There is no single mode variable.** `/mcp` registers every tool the repo defines except a
+hardcoded exclusion list in `mcp_server.py` (the externals, plus `run_analysis` and
+`read_artifact` as the layer-1 control of `docs/code-execution-security.md` §5) and
+`settings.disabled_tools`, which is computed from `ENABLE_PHENOTYPE_REPORT`,
+`ENABLE_CREDIBLE_SETS_STATS`, `ENABLE_LITERATURE_SEARCH`, `ENABLE_SUBAGENTS` and
+`SANDBOX_ENABLED`. Those flags are therefore what selects the surface per run; of them, only
+the first two reach a tool that is not already excluded on this transport.
+
+Reading the list needs the MCP `initialize` handshake first — a bare `tools/list` is refused
+— and the response is an SSE frame, not JSON:
+
+```bash
+KEY=$(cat ~/.cache/genetics-dev-stack/mcp-api-key)
+H=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
+   -H 'Accept: application/json, text/event-stream')
+curl -sS "${H[@]}" -X POST 127.0.0.1:8082/mcp \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' >/dev/null
+curl -sS "${H[@]}" -X POST 127.0.0.1:8082/mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | sed -n 's/^data: //p' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]["tools"]))'
+```
+
+The server is `stateless_http=True`, so the `initialize` reply carries no session id to
+thread through and the `notifications/initialized` post is optional.
+
+Unlike the other services it does **not** reload on source changes — `uvicorn.run` is called
+without `reload`, matching the deployed pod — so a code change needs
+`./scripts/dev-stack.sh up mcp-server` again.
+
 ### The dev dataset
 
 `--tree worktree` defaults db-api to `DATASET_ID=genetics_dev` — `phewas-development.genetics_dev`,
@@ -215,9 +276,9 @@ exactly these ports. If you are bringing up a second copy (from a worktree, a br
 checkout), pick a disjoint port for every service and set `GENETICS_API_URL`, `BFF_PORT`,
 `BIGQUERY_API_URL`, `CORS_ORIGINS` and `.env.local` to match — the numbers above are the
 defaults, not a requirement. One verification run used 12000/12001, 15000-15003, 18000/18001 and
-18080; any free block works. Afterwards, confirm the original five ports are still listening
-(`ss -ltnp | grep -E ':(2000|3000|4000|5000|8080)'`) so you know you did not disturb the copy
-someone else is using.
+18080; any free block works. Afterwards, confirm the original ports are still listening
+(`ss -ltnp | grep -E ':(2000|3000|4000|5000|8080|8082)'`) so you know you did not disturb the
+copy someone else is using.
 
 ## 1. Create the VM
 
@@ -311,6 +372,20 @@ when the script is invoked from `<repo>/.claude/worktrees/<name>` — so it work
 worktree and from a normal clone, and it prints the resolved root as its first line. A sibling
 that is not cloned here prints `SKIP:` and the run still exits 0; only an unresolvable sibling
 root, or a directory whose `pyproject.toml` does not name that repo, is an `ERROR:` and exit 1.
+
+By default it writes into the sibling **main checkouts**. `--tree worktree` writes into
+`<sibling>/.claude/worktrees/<name>` instead, taking the name from `--worktree`, else
+`$DEV_WORKTREE`, else the invoking checkout's own directory name:
+
+```bash
+~/suite/genetics-results-suite/.claude/worktrees/my-branch/scripts/sync-datasets.sh --tree worktree
+```
+
+The source is always the invoking script's **own** tree, so run the sync from the tree whose
+services will read it — this repo's `datasets.yaml` differs substantially between branches, and
+a config from the wrong branch is exactly what the flag exists to prevent. `dev-stack.sh up`
+does this for you (below), so the manual form is only needed for a tree you are not starting.
+
 If your layout does not put the siblings next to the main checkout, point it at them:
 
 ```bash
@@ -357,7 +432,7 @@ export ANTHROPIC_API_KEY=sk-ant-...          # REQUIRED for chat
 export PERPLEXITY_API_KEY=pplx-...           # optional, literature search
 export TAVILY_API_KEY=tvly-...               # optional, web search
 export BIGQUERY_API_URL=http://localhost:8080
-export DEFAULT_MODEL=claude-opus-5
+export DEFAULT_MODEL=claude-fable-5-1
 export EXTERNAL_MCP_SERVERS=https://mcp.platform.opentargets.org
 export REQUIRE_AUTH=false                     # no oauth2-proxy locally
 # no default: SandboxClient refuses to guess an address and raises SandboxNotConfigured
@@ -515,7 +590,9 @@ Two things look testable here and are not. Do not record either as verified from
 | Symptom | Cause |
 |---|---|
 | results-api or db-api aborts complaining about `configs/datasets.yaml` | the file is gitignored in both service repos — sync or copy it (step 3) |
+| db-api exits with `no exposed views in datasets.yaml` | that tree's copy predates the `exposed:` flags. The copy is gitignored, so `git pull` never updates it and nothing diffs it — re-sync the tree (step 3), or just use `dev-stack.sh up`, which syncs before it starts anything |
 | `sync-datasets.sh` prints `SKIP: <repo> is not checked out on this machine` | that sibling really is not cloned here; clone it or ignore the line (it exits 0) |
+| `sync-datasets.sh --tree worktree` prints `SKIP: <repo> has no '<name>' worktree` | the sibling is cloned but has no worktree of that name; create it, or pass the right `--worktree`. `dev-stack.sh up` then fails its own `tree not found` preflight on the same directory |
 | `sync-datasets.sh` exits 1 with `ERROR: cannot resolve where the sibling repos live` | it was run from a directory that is not a git checkout; set `SUITE_SIBLING_ROOT` to the directory holding the sibling repos |
 | `sync-datasets.sh` exits 1 with `ERROR: <path> exists but is not the <repo> repo` | a directory of the right name sits where the sibling should be but its `pyproject.toml` does not name that repo — usually a stale or partial clone, or `SUITE_SIBLING_ROOT` pointing one level off. The script refuses to copy into it; point it at the real checkout |
 | `sync-datasets.sh` exits 1 with `ERROR: SUITE_SIBLING_ROOT is set to '<path>', which is not a directory` | the override is a typo, a file, or a path that does not exist; unset it to fall back to the git-common-dir resolution |

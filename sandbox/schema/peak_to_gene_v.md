@@ -59,6 +59,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against peak_to_gene_v as written. Copy the shape rather than inventing one
+— each shows the filters this view expects.
+
 ### caQTL signals for a gene, per cell type (variant -> peak -> gene)
 
 ```sql

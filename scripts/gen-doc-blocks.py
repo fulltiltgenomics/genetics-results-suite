@@ -3,7 +3,8 @@
 
 Everything this script owns is a list or a number the code already computes: the sandbox's
 per-execution bounds and pod spec, the egress and ingress allow-lists, the image environment,
-the reserved `error.type` names, the workload table and the repository layout. Those are the
+the reserved `error.type` names, the workload table, the repository layout, and the two
+tool surfaces read out of genetics-mcp-server's tool definitions. Those are the
 parts of a document that rot silently — the prose around them stays plausible while the table
 stops matching the thing it describes — so they are derived rather than transcribed.
 
@@ -18,6 +19,9 @@ Exit 0 = up to date (or written), 1 = stale under --check, 2 = a source could no
 """
 
 import argparse
+import ast
+import difflib
+import json
 import os
 import re
 import subprocess
@@ -416,7 +420,10 @@ LAYOUT = {
     "scripts/keycloak-bind-allowlist.sh": "bind the email allow-list authenticator and realm "
                                           "attributes",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
-    "scripts/gen-sandbox-docs.py": "generate sandbox/schema/*.md and sandbox/stubs/*.pyi",
+    "scripts/gen-sandbox-docs.py": (
+        "generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema "
+        "markdown into genetics-mcp-server's prompt copy"
+    ),
     "scripts/gen-doc-blocks.py": "generate the marked blocks in docs/*.md; `--check` is the "
                                  "build gate",
     "scripts/check-doc-drift.sh": "warn when a commit changes code the docs describe",
@@ -509,8 +516,321 @@ def block_suite_repos():
     return "\n".join(f"- `{r}`" for r in siblings.SUITE_REPOS)
 
 
+
+# ---------------------------------------------------------------------------------------
+# the two tool surfaces, read out of genetics-mcp-server by AST
+# ---------------------------------------------------------------------------------------
+#
+# THE RULES MIRRORED HERE, and what would make each false — `resolve_tools` in that repo's
+# tools/definitions.py is the original, and this is a second implementation of it:
+#   1. the data tools are TOOL_DEFINITIONS + BIGQUERY_TOOL_DEFINITIONS. False if a fifth
+#      list appears, or if either stops feeding `resolve_tools`.
+#   2. code_execution=False is every data tool. False if the no-code branch grows a filter.
+#   3. code_execution=True is CODE_EXECUTION_TOOL_DEFINITIONS plus each data tool whose
+#      `sdk_replaceable` is false. False if membership moves off that field.
+#   4. SUBAGENT_TOOL_DEFINITIONS reaches neither surface. False the moment it is named in
+#      `resolve_tools`.
+#   5. `disabled` is applied afterwards and is a deployment's choice, not a property of the
+#      definitions — so it is deliberately NOT reflected in these counts.
+# Three checks stand behind those rules, because a shape check alone did not: a no-code
+# branch that grows a filter, an inverted `sdk_replaceable` polarity and a module-level
+# `TOOL_DEFINITIONS.extend(...)` all satisfy one and emit a wrong table.
+#   - _read_definitions asserts the SHAPE the rules read: the four list names bound to
+#     literal lists, a dict per entry, `name`/`category` strings and a bool
+#     `sdk_replaceable`; and that nothing at module level mutates the four lists after
+#     their literal, which is the one way a literal read can be complete and still wrong.
+#   - _assert_resolver_shape pins the normalised source of `resolve_tools`' body against
+#     _RESOLVE_TOOLS_BODY below, so ANY edit there stops this generator rather than only
+#     the edits someone thought to test for.
+#   - _check_against_golden compares the code surface derived here against the server's own
+#     tests/golden/tool_surface.json, in the same checkout the definitions came from. It is
+#     the only check that compares an ANSWER rather than a shape; it is skipped, loudly, on
+#     a branch that has no golden file.
+# The file is read from disk rather than imported: importing it would need that repo's venv,
+# and a doc gate that only runs where the server's dependencies are installed is not a gate.
+
+MCP_SRC = None  # set from --mcp-src; otherwise resolved like gen-sandbox-docs.py's SDK source
+_DEF_LISTS = ("TOOL_DEFINITIONS", "CODE_EXECUTION_TOOL_DEFINITIONS",
+              "BIGQUERY_TOOL_DEFINITIONS", "SUBAGENT_TOOL_DEFINITIONS")
+_defs_cache = {}
+
+# `resolve_tools`' body, normalised through ast.unparse with the docstring dropped. A diff
+# here means the server's resolution changed: re-read THE RULES MIRRORED ABOVE against the
+# new source, fix them where they no longer hold, and only then update this pin — replacing
+# it to make the check pass is how the mirror silently stops being one.
+_RESOLVE_TOOLS_BODY = """\
+data_tools = list(TOOL_DEFINITIONS) + list(BIGQUERY_TOOL_DEFINITIONS)
+if code_execution:
+    tools = list(CODE_EXECUTION_TOOL_DEFINITIONS) + [t for t in data_tools if not t['sdk_replaceable']]
+else:
+    tools = data_tools
+if disabled:
+    tools = [t for t in tools if t['name'] not in disabled]
+return tools"""
+
+
+
+def _load_gen_sandbox_docs():
+    """gen-sandbox-docs.py's SDK-source resolution, reused rather than copied.
+
+    Same checkout, same worktree-first order, same GENETICS_SDK_SRC / MCP_SERVER_DIR
+    overrides: a build that regenerates the stubs from one mcp-server tree must not
+    describe the tool surface of another.
+    """
+    import importlib.util
+
+    path = os.path.join(ROOT, "scripts", "gen-sandbox-docs.py")
+    # without this the traceback exits 1, which this file's convention reads as "stale"
+    if not os.path.isfile(path):
+        print(f"HARNESS: {path} is missing — the tool blocks resolve their source through "
+              f"it", file=sys.stderr)
+        raise SystemExit(2)
+    spec = importlib.util.spec_from_file_location("gen_sandbox_docs", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _definitions_path():
+    gsd = _load_gen_sandbox_docs()
+    src = gsd.resolve_sdk_src(MCP_SRC)
+    if src is None:
+        # gen-sandbox-docs.py's own message names --sdk-src, which this tool does not have
+        print("HARNESS: no genetics-mcp-server checkout was found next to this repo.\n"
+              "Pass --mcp-src DIR, or set GENETICS_SDK_SRC or MCP_SERVER_DIR. The tool "
+              "surfaces cannot be invented from this repo.", file=sys.stderr)
+        raise SystemExit(2)
+    _defs_cache["src"] = src
+    path = os.path.join(src, "src", "genetics_mcp_server", "tools", "definitions.py")
+    if not os.path.isfile(path):
+        print(f"HARNESS: no tool definitions at {path}", file=sys.stderr)
+        raise SystemExit(2)
+    return path
+
+
+def _const(node):
+    return node.value if isinstance(node, ast.Constant) else None
+
+
+def _assert_resolver_shape(tree, path):
+    """`resolve_tools` still resolves by the rules this file mirrors, or nothing is emitted."""
+    fn = next((n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == "resolve_tools"), None)
+    if fn is None:
+        print(f"HARNESS: {path} defines no resolve_tools", file=sys.stderr)
+        raise SystemExit(2)
+    args = [a.arg for a in fn.args.args]
+    body = "\n".join(
+        ast.unparse(stmt) for stmt in fn.body
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+    )
+    problems = []
+    if args[:2] != ["code_execution", "disabled"]:
+        problems.append(f"expects (code_execution, disabled), found {args}")
+    if body != _RESOLVE_TOOLS_BODY:
+        problems.append("its body no longer matches _RESOLVE_TOOLS_BODY:\n"
+                        + "\n".join(difflib.unified_diff(
+                            _RESOLVE_TOOLS_BODY.splitlines(), body.splitlines(),
+                            "pinned", "found", lineterm="")))
+    if problems:
+        print(f"HARNESS: {path}: resolve_tools has changed shape — " + "; ".join(problems)
+              + ".\nThe rules mirrored in gen-doc-blocks.py no longer describe it; fix them "
+                "there before regenerating.", file=sys.stderr)
+        raise SystemExit(2)
+    # ast.unparse writes an annotated default as `x: T=v`; the doc shows the source form
+    sig = ast.unparse(fn).splitlines()[0].rstrip(":")
+    return re.sub(r"(:[^,]*?)=", r"\1 = ", sig)
+
+
+def _assert_no_mutation(tree, path):
+    """Nothing at module level adds to the four lists after their literal.
+
+    Reading the literal is only the whole list while the literal IS the list: an
+    `extend`/`append`/`+=` further down leaves this generator emitting a table that is
+    correct about nothing but the first half of a surface.
+    """
+    hits = []
+    for node in tree.body:
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id in _DEF_LISTS:
+            hits.append(f"{node.target.id} += ... (line {node.lineno})")
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Attribute) \
+                and node.value.func.attr in ("extend", "append", "insert") \
+                and isinstance(node.value.func.value, ast.Name) \
+                and node.value.func.value.id in _DEF_LISTS:
+            hits.append(f"{node.value.func.value.id}.{node.value.func.attr}(...) "
+                        f"(line {node.lineno})")
+    if hits:
+        print(f"HARNESS: {path}: the definition lists are mutated after their literal — "
+              + "; ".join(hits) + ".\nThe literal read in gen-doc-blocks.py is no longer "
+              "the whole list; fix the rules mirrored there before regenerating.",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _read_definitions():
+    if "lists" in _defs_cache:
+        return _defs_cache
+    path = _definitions_path()
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    _assert_no_mutation(tree, path)
+    lists = {}
+    for node in tree.body:
+        name = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        if name not in _DEF_LISTS or not isinstance(node.value, ast.List):
+            continue
+        tools = []
+        for entry in node.value.elts:
+            if not isinstance(entry, ast.Dict):
+                print(f"HARNESS: {path}: {name} holds a non-literal entry", file=sys.stderr)
+                raise SystemExit(2)
+            fields = {_const(k): v for k, v in zip(entry.keys, entry.values)}
+            tool = {k: _const(fields.get(k)) for k in ("name", "category", "sdk_replaceable")}
+            if not isinstance(tool["name"], str) or not isinstance(tool["category"], str) \
+                    or not isinstance(tool["sdk_replaceable"], bool):
+                print(f"HARNESS: {path}: an entry in {name} ({tool['name']!r}) is missing "
+                      f"name, category or a boolean sdk_replaceable", file=sys.stderr)
+                raise SystemExit(2)
+            tools.append(tool)
+        if not tools:
+            print(f"HARNESS: {path}: {name} is empty", file=sys.stderr)
+            raise SystemExit(2)
+        lists[name] = tools
+    missing = [n for n in _DEF_LISTS if n not in lists]
+    if missing:
+        print(f"HARNESS: {path}: no literal list assignment for {missing}", file=sys.stderr)
+        raise SystemExit(2)
+    _defs_cache.update(lists=lists, signature=_assert_resolver_shape(tree, path))
+    return _defs_cache
+
+
+def _check_against_golden(code):
+    """The code surface derived here against the server's own golden file.
+
+    Same checkout the definitions came from, so the two cannot describe different trees.
+    A branch without the golden file is still buildable, so this says so and returns.
+    """
+    path = os.path.join(_defs_cache["src"], "tests", "golden", "tool_surface.json")
+    if not os.path.isfile(path):
+        print(f"note: no {path} — the tool surfaces are emitted from the mirrored rules "
+              f"alone, uncross-checked", file=sys.stderr)
+        return
+    with open(path) as fh:
+        golden = json.load(fh)
+    try:
+        expected = golden["chat_backend"]["profiles"]["code"]["local"]["tools"]
+    except (KeyError, TypeError):
+        print(f"HARNESS: {path} has no chat_backend.profiles.code.local.tools",
+              file=sys.stderr)
+        raise SystemExit(2)
+    got = [t["name"] for t in code]
+    if sorted(got) != sorted(expected):
+        missing = sorted(set(expected) - set(got))
+        extra = sorted(set(got) - set(expected))
+        print(f"HARNESS: the code surface derived here does not match {path}: "
+              f"missing {missing}, unexpected {extra}.\nOne of the two is wrong — the rules "
+              f"mirrored in gen-doc-blocks.py, or the golden file's own expectation.",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _surfaces():
+    """(the no-code surface, the code surface), by the rules above."""
+    if "surfaces" in _defs_cache:
+        return _defs_cache["surfaces"]
+    lists = _read_definitions()["lists"]
+    data = lists["TOOL_DEFINITIONS"] + lists["BIGQUERY_TOOL_DEFINITIONS"]
+    code = lists["CODE_EXECUTION_TOOL_DEFINITIONS"] + [
+        t for t in data if not t["sdk_replaceable"]
+    ]
+    _check_against_golden(code)
+    _defs_cache["surfaces"] = (data, code)
+    return data, code
+
+
+def _names(tools):
+    return ", ".join(f"`{t['name']}`" for t in tools)
+
+
+def _by_category(tools):
+    counts = {}
+    for t in tools:
+        counts[t["category"]] = counts.get(t["category"], 0) + 1
+    return ", ".join(f"`{c}` {n}" for c, n in sorted(counts.items()))
+
+
+def block_tool_lists():
+    lists = _read_definitions()["lists"]
+    rows = ["| symbol | tools | contents |", "|---|---|---|"]
+    for name in _DEF_LISTS:
+        tools = lists[name]
+        # keyed on the list rather than on its length: a sixth code-execution tool would
+        # otherwise cross a length threshold and be labelled "the data tools"
+        contents = "the data tools" if name == "TOOL_DEFINITIONS" else _names(tools)
+        rows.append(f"| `{name}` | {len(tools)} | {contents} — {_by_category(tools)} |")
+    every = [t for name in _DEF_LISTS for t in lists[name]]
+    rows += ["", f"**{len(every)} tool definitions in total** across the four lists: "
+                 f"{_by_category(every)}."]
+    return "\n".join(rows)
+
+
+def block_tool_surfaces_spec():
+    """The same two surfaces, for a spec that points at the reference doc for the rest.
+
+    Deliberately not the same rendering: an identical table in both docs is one table
+    someone edits in the wrong place.
+    """
+    lists = _read_definitions()["lists"]
+    execs = lists["CODE_EXECUTION_TOOL_DEFINITIONS"]
+    data, code = _surfaces()
+    kept = code[len(execs):]
+    return "\n".join([
+        "| surface | local tools |",
+        "|---|---|",
+        f"| no-code (`code_execution=False`) | {len(data)} — every data tool |",
+        f"| code (`code_execution=True`) | {len(code)} — the {len(execs)} code-execution "
+        f"tools, plus the {len(kept)} data tools the SDK cannot stand in for |",
+        "",
+        f"The code surface: {_names(execs)}, {_names(kept)}.",
+    ])
+
+
+def block_tool_surfaces():
+    lists = _read_definitions()["lists"]
+    execs = lists["CODE_EXECUTION_TOOL_DEFINITIONS"]
+    data, code = _surfaces()
+    kept = code[len(execs):]
+    return "\n".join([
+        "```python",
+        _read_definitions()["signature"],
+        "```",
+        "",
+        "| `code_execution` | local tools | membership |",
+        "|---|---|---|",
+        f"| `False` — the no-code surface | {len(data)} | every data tool: "
+        "`TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |",
+        f"| `True` — the code surface | {len(code)} | `CODE_EXECUTION_TOOL_DEFINITIONS` "
+        f"({len(execs)}) + the {len(kept)} data tools whose `sdk_replaceable` is false |",
+        "",
+        f"`SUBAGENT_TOOL_DEFINITIONS` ({_names(lists['SUBAGENT_TOOL_DEFINITIONS'])}) reaches "
+        "neither surface. `disabled` subtracts from either one afterwards and is a "
+        "deployment's choice rather than a property of the definitions, so it is not in "
+        "these counts.",
+        "",
+        f"The code surface, in definition order: {_names(execs)}, then the data tools the "
+        f"SDK cannot stand in for — {_names(kept)}.",
+    ])
+
 SECURITY = "docs/code-execution-security.md"
 SPEC = "docs/project-spec.md"
+TOOLS = "docs/chat-tool-reference.md"
 
 BLOCKS = {
     "limits": (SECURITY, block_limits),
@@ -521,7 +841,14 @@ BLOCKS = {
     "services": (SPEC, block_services),
     "structure": (SPEC, block_structure),
     "suite-repos": (SPEC, block_suite_repos),
+    "tool-lists": (TOOLS, block_tool_lists),
+    "tool-surfaces": (TOOLS, block_tool_surfaces),
+    "tool-surfaces-spec": (SPEC, block_tool_surfaces_spec),
 }
+
+# the blocks that need a genetics-mcp-server checkout; --skip-tool-blocks leaves them as they
+# stand, so a build can gate everything else before it has cloned that repo
+TOOL_BLOCKS = {"tool-lists", "tool-surfaces", "tool-surfaces-spec"}
 
 MARKER = re.compile(
     r"(<!-- BEGIN GENERATED: (?P<name>[a-z-]+) -->\n)(?P<body>.*?)(<!-- END GENERATED: (?P=name) -->)",
@@ -529,7 +856,7 @@ MARKER = re.compile(
 )
 
 
-def render(doc, text):
+def render(doc, text, skip=frozenset()):
     seen = set()
 
     def repl(m):
@@ -537,6 +864,8 @@ def render(doc, text):
         seen.add(name)
         if name not in BLOCKS or BLOCKS[name][0] != doc:
             raise SystemExit(f"{doc}: unknown generated block {name!r}")
+        if name in skip:
+            return m.group(0)
         return m.group(1) + "\n" + BLOCKS[name][1]().rstrip() + "\n\n" + m.group(4)
 
     out = MARKER.sub(repl, text)
@@ -550,15 +879,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if any generated block is stale; write nothing")
+    ap.add_argument("--mcp-src", default=None,
+                    help="a genetics-mcp-server checkout to read tools/definitions.py "
+                         "from; resolved as scripts/gen-sandbox-docs.py --sdk-src is")
+    ap.add_argument("--skip-tool-blocks", action="store_true",
+                    help="leave the blocks that need a genetics-mcp-server checkout "
+                         "untouched, and neither read nor check them")
     args = ap.parse_args()
+
+    global MCP_SRC
+    MCP_SRC = args.mcp_src
+    skip = TOOL_BLOCKS if args.skip_tool_blocks else frozenset()
 
     stale = []
     for doc in sorted({d for d, _ in BLOCKS.values()}):
         path = os.path.join(ROOT, doc)
         with open(path) as fh:
             current = fh.read()
-        fresh = render(doc, current)
-        n = sum(1 for d, _ in BLOCKS.values() if d == doc)
+        fresh = render(doc, current, skip)
+        n = sum(1 for name, (d, _) in BLOCKS.items() if d == doc and name not in skip)
         if current == fresh:
             print(f"{doc}: {n} generated block(s) up to date")
             continue

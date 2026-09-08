@@ -388,9 +388,15 @@ def main(argv=None):
 
     @check("the index lists every view")
     def _index():
+        """Matched on the table cell, not on a `(<view>.md)` link.
+
+        The index carries no links any more: the same bytes are chat-backend's system
+        prompt, where the per-view docs are inlined right below and a link is an
+        invitation to fetch something the model already has. So the row is what has to
+        be there — the backticked name in the first column."""
         index = schema_files["README.md"]
         for name in tables:
-            assert f"({name}.md)" in index, f"{name} absent from README.md"
+            assert f"| `{name}` |" in index, f"{name} absent from README.md"
 
     @check("the correctness rules are present in configs/datasets.yaml")
     def _rules_in_yaml():

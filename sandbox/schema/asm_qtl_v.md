@@ -57,6 +57,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against asm_qtl_v as written. Copy the shape rather than inventing one —
+each shows the filters this view expects.
+
 ### ASM-QTL associations for variants near a gene
 
 ```sql

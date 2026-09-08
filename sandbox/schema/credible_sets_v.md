@@ -58,6 +58,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against credible_sets_v as written. Copy the shape rather than inventing
+one — each shows the filters this view expects.
+
 ### Everything a variant is fine-mapped for, across all resources and data types. Always add the chr filter next to variant — the table is partitioned by chr and without it the same query scans ~20x more data and can hit the bytes-billed limit.
 
 ```sql

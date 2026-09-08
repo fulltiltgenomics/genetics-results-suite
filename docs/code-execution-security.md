@@ -46,9 +46,10 @@ read. It is **not** an access control and must not be cited as one.
 
 ## 1. Why in-process execution is unacceptable
 
-The mechanism exists in the codebase and is permanently switched off
-(`ENABLE_SCRIPT_EXECUTION=false` in both chat-backend and mcp-server). The reasons are the
-requirements list for everything below.
+chat-backend once carried a second execution path: a subagent tool that ran `python3`,
+`Rscript` or `bash` as a subprocess of the chat-backend process. It has been deleted — there is
+no in-process interpreter and no flag that restores one. What follows is why it could not be
+made safe, and it is the requirements list for everything below.
 
 **chat-backend runs as root** with the `chat-data` PVC mounted at `/data`. That PVC holds
 `chat_history.db` (every conversation in the deployment, all users) and `llm_config.db`
@@ -56,20 +57,21 @@ requirements list for everything below.
 every other user's conversations and can *write* prompt text that will later be prepended to
 somebody else's chat — a persistence primitive, not just a read.
 
-**The environment allow-list is scar tissue.** `sandbox_tools.py`'s `_ALLOWED_ENV_KEYS`
-carries its own history: it was a deny-list that missed `INTERNAL_API_SECRET` along with the
-internal service URLs. So an earlier version of exactly this feature leaked the suite's
-internal service credential into model-authored scripts. The allow-list is the correct fix for
-the leak, but it is applied inside the same process, uid, network namespace and mounted PVC as
-the credential it is hiding — the script can read `/proc/self/environ` of any sibling, or open
-`/data/chat_history.db` directly, and neither control applies. `execute_script` additionally
-allows `bash`, and enforces nothing beyond a 30-second `asyncio.wait_for`.
+**A process-local control cannot bound a process-local script.** That path scrubbed the child's
+environment against an allow-list, which was itself the fix for a deny-list that had missed
+`INTERNAL_API_SECRET` and the internal service URLs. The allow-list was the correct fix for the
+leak and still no boundary: it applied inside the same process, uid, network namespace and
+mounted PVC as the credential it was hiding, so a script could read `/proc/self/environ` of any
+sibling or open `/data/chat_history.db` directly and meet neither control. The interpreter list
+included `bash`, and nothing else was enforced beyond a 30-second timeout.
 
-**Decision.** In-process execution stays disabled and is not a rollout toggle for this
-feature. Code execution moves to a separate pod, in a separate node pool, with a separate
-identity, reached over HTTP from chat-backend only. `sandbox_tools.py`'s `_validate_path`
-logic is reused by `read_artifact` — but inside the sandbox pod, against a
-`/scratch/<id>/artifacts` allow-list, never against chat-backend's `SUBAGENT_ALLOWED_PATHS`.
+**Decision.** In-process execution is not a rollout toggle for this feature; it is deleted, so
+there is no switch to flip and no path for a future default to turn back on. Code execution
+lives in a separate pod, in a separate node pool, with a separate identity, reached over HTTP
+from chat-backend only. What survives in `sandbox_tools.py` is file *reading* for subagents,
+and its `_validate_path` logic is reused by `read_artifact` — but inside the sandbox pod,
+against a `/scratch/<id>/artifacts` allow-list, never against chat-backend's
+`SUBAGENT_ALLOWED_PATHS`.
 
 ---
 
@@ -357,8 +359,7 @@ forked promptly after the 503.
 
 Built from `sandbox/`, multi-stage: a venv assembled in a slim builder, pruned, byte-compiled
 and copied into `gcr.io/distroless/python3-debian12:nonroot`. No shell, no package manager, no
-`curl` — `execute_script`'s `bash` interpreter is absent from the filesystem rather than
-un-allow-listed. The builder must track the base image's CPython **minor** version, because the
+`curl` — `bash` is absent from the filesystem rather than un-allow-listed. The builder must track the base image's CPython **minor** version, because the
 final stage runs the distroless interpreter against the venv's site-packages.
 
 The genetics SDK is not vendored: it is pip-installed `--no-deps` from a staged
@@ -370,8 +371,11 @@ resolves `metadata.google.internal` by name where the sandbox has no DNS.
 `sandbox/build-checks.py` runs in the builder and asserts the **final** image's properties,
 because the final stage has no shell and nothing can be checked after it is assembled: the
 absent shell and package manager, `/etc/nsswitch.conf` ordering, the pruned SDK surface, the
-advertised uids, the absence of placeholder schema docs, `GCE_METADATA_HOST` pinned to a
-literal address, and the house plot style resolving with `text.usetex` off. That last one is the branch a distribution-name check cannot see: polars links
+advertised uids, the absence of placeholder schema docs, the house plot style resolving with
+`text.usetex` off, the polars display settings — read out of the staged Dockerfile *and*
+exercised by printing a twelve-column frame, so the check fails both if the setting is dropped
+and if polars stops honouring it — and `GCE_METADATA_HOST` pinned to a literal address. That
+last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
 One of those checks reads source rather than running it, and the reason is the same one that
@@ -397,6 +401,10 @@ The final stage's environment, all of it:
 - `GENETICS_SCHEMA_DIR=/genetics/schema`
 - `GENETICS_STUBS_DIR=/genetics/sdk`
 - `MPLBACKEND=Agg`
+- `POLARS_FMT_MAX_COLS=-1`
+- `POLARS_FMT_MAX_ROWS=50`
+- `POLARS_FMT_STR_LEN=100`
+- `POLARS_TABLE_WIDTH=-1`
 - `PYTHONFAULTHANDLER=1`
 - `PYTHONPATH=/opt/venv/lib/python3.11/site-packages`
 - `PYTHONUNBUFFERED=1`
@@ -431,6 +439,28 @@ for the reason this document's own tables are: a transcribed schema inside a con
 something nothing would ever notice going stale. Shipping the placeholders degrades silently —
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
+
+**The schema is no longer on-demand at all — it is in the system prompt.** On-demand went
+through two states and neither worked. First the directories were named nowhere a model could
+read them, so every column name was fetched over the network from a container that already held
+the answer. Then the prompt named `$GENETICS_SCHEMA_DIR` and the one-file-per-view layout, and
+the model did exactly as told: measured over benchmark run a08b371d, **32 of 138 `run_analysis`
+scripts did nothing but `print(open(...))` a schema file**, 18 of 20 cases opened with one, and
+together they were 658s of 4272s of model time. The round trip had changed source, not size.
+
+So `gen-sandbox-docs.py` now writes the same rendered markdown to a **third** destination —
+`genetics-mcp-server/src/genetics_mcp_server/schema_docs/`, resolved through the same
+`--sdk-src` search that finds the SDK for the stubs — and chat-backend inlines all of it as one
+`# BigQuery view reference` section, gated to exactly the surface that had been paying: one with
+`run_analysis` and no `query_database`. `--check` covers that copy like the other two, so the
+prompt cannot describe a column the image does not have. **This is a disclosure decision as much
+as a cost one**: every view's columns, enumerable values and worked examples are now in the
+context of every request on that surface, where before a script had to ask for a view by name.
+The set disclosed is the same set — the image shipped all 16 files either way, readable by any
+script — so nothing is reachable now that was not reachable before; what changed is that it
+arrives unasked. The files stay in the image, because a script may still open one and the
+`PLACEHOLDER` gate still guards both staged trees. The stubs are still reached through
+`list_capabilities` rather than by path.
 
 ### The LD proxy: one third-party call the sandbox can cause
 
@@ -878,12 +908,14 @@ independently required: the design assumes any one can be defeated by a future r
 config change or a mistake, and requires that the other two still hold.
 
 **Layer 1 — registration.** `run_analysis` and `read_artifact` are in mcp-server's *hardcoded*
-disabled set, not the env-driven half. `run_analysis` additionally has no `@mcp.tool()` block
-at all, which matters because a disabled set can only subtract. A tool is registered on `/mcp`
-from the moment its definition exists unless it is excluded, so each exclusion landed in the
-same change that defined the tool. `list_capabilities` is deliberately *not* excluded: an
-exclusion set padded with names that are not security controls stops reading as a security
-control.
+disabled set, not the env-driven half. `run_analysis` additionally has no `@_tool()` handler
+at all, which matters because a disabled set can only subtract. Every handler in
+`register_mcp_tools` registers through one gate, `_gate(mcp, disabled_tools, code_execution)`,
+so "a disabled set can only subtract" is now a property of that gate rather than of scattered
+per-site guards. A tool is registered on `/mcp` from the moment its definition exists unless
+it is excluded, so each exclusion landed in the same change that defined the tool.
+`list_capabilities` is deliberately *not* excluded: an exclusion set padded with names that
+are not security controls stops reading as a security control.
 
 **Layer 2 — NetworkPolicy.** The sandbox's ingress rule admits chat-backend only; mcp-server is
 denied at the network layer. Read it as a **hop-level** control, not a capability-level one: the
@@ -1071,7 +1103,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
-| `scripts/gen-doc-blocks.py --check` | the generated tables in this document still match the code | nothing |
+| `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md` and `docs/chat-tool-reference.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 

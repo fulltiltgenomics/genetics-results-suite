@@ -50,6 +50,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against exome_variant_results_v as written. Copy the shape rather than
+inventing one — each shows the filters this view expects.
+
 ### Predicted loss-of-function variant associations in a gene. annotation values differ per resource: genebass uses pLoF/missense/LC, ibd_exome_2026 uses VEP terms such as frameshift_variant.
 
 ```sql

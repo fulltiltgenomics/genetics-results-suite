@@ -69,6 +69,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against hla_associations_v as written. Copy the shape rather than inventing
+one — each shows the filters this view expects.
+
 ### The HLA profile of one phenotype, strongest allele first
 
 ```sql

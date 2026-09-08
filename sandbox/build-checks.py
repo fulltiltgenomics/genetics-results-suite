@@ -287,6 +287,55 @@ def _imports():
         assert r.returncode == 0, f"import {m} failed: {r.stderr.strip().splitlines()[-1:]}"
 
 
+@check("a wide frame prints every column under the image's polars settings")
+def _polars_display():
+    """polars renders for a console it cannot see: stdout here is the supervisor's pipe, and
+    the default POLARS_FMT_MAX_COLS=8 drops the MIDDLE columns of a wider frame into an
+    ellipsis column. The failure is silent in the only way that matters — the value is in the
+    frame, absent from the print — and the knobs a script reaches for first
+    (tbl_width_chars, fmt_str_lengths) do not govern column count, so a script that notices
+    pays for a second full run to see what it already fetched.
+
+    Asserted against the FINAL stage's ENV (which is why the Dockerfile is staged) and then
+    exercised, because a variable that is set but misspelled is worth nothing: POLARS_TABLE_WIDTH
+    is the width knob, and POLARS_FMT_TABLE_WIDTH_CHARS — the name that matches the Python
+    setter — is silently ignored."""
+    lines = open(DOCKERFILE).read().splitlines()
+    last_from = max(i for i, l in enumerate(lines) if l.startswith("FROM "))
+    final = "\n".join(lines[last_from:])
+    settings = {}
+    for var in ("POLARS_FMT_MAX_COLS", "POLARS_FMT_MAX_ROWS", "POLARS_FMT_STR_LEN",
+                "POLARS_TABLE_WIDTH"):
+        m = re.search(rf"^\s*(ENV\s+)?{var}=(\S+)", final, re.M)
+        assert m, f"the final stage does not set {var}"
+        settings[var] = m.group(2).strip('"').strip("'").rstrip("\\")
+    assert settings["POLARS_FMT_MAX_COLS"] == "-1", (
+        f"POLARS_FMT_MAX_COLS={settings['POLARS_FMT_MAX_COLS']!r}; anything but -1 elides "
+        "the middle columns of a wide frame"
+    )
+    rows = int(settings["POLARS_FMT_MAX_ROWS"])
+    assert 0 < rows <= 200, (
+        f"POLARS_FMT_MAX_ROWS={rows}; unbounded or very large trades the column elision this "
+        "check exists for against the supervisor's 64 KiB stdout window"
+    )
+    probe = (
+        "import polars as pl;"
+        "df = pl.DataFrame({f'c{i}': ['x'] for i in range(12)});"
+        "out = str(df);"
+        "assert all(f'c{i}' in out for i in range(12)), out;"
+        "assert '\u2026' not in out, out;"
+        "print('ok')"
+    )
+    r = subprocess.run(
+        PY + ["-c", probe], capture_output=True, text=True,
+        env=dict(PY_ENV, **settings),
+    )
+    assert r.returncode == 0, (
+        "a 12-column frame did not print in full under the image's polars settings: "
+        f"{r.stderr.strip().splitlines()[-1:] or r.stdout.strip()}"
+    )
+
+
 @check("`import genetics` resolves to the SDK itself, not a copy of it")
 def _sdk_alias():
     """Every doc a script's author can read names the package `genetics`; only the import path
