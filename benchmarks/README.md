@@ -370,6 +370,12 @@ is not the same as zero, and cost is half the decision.
 
 ## Cost
 
-Production averaged $2.01/turn. This set is 20 cases × 2–3 turns ≈ 54 turns, run on **both**
-arms ≈ 108 turns. Budget accordingly, and use `--limit` first. `--judge` prices itself before
+Production averaged $2.01/turn. This set is 23 cases × 2–3 turns = 56 turns, run on **both**
+arms = 112 turns. Budget accordingly, and use `--limit` first. `--judge` prices itself before
 the first call.
+
+Every case carries a `class` — `retrieval`, `analysis`, `plot`, `catalogue` or `external` —
+naming what the case tests, so a result can be read per class rather than as one total: the
+routing rule a merged surface would need *is* the split between the classes where a chain of
+tool calls wins and the ones where a script does. The harness keeps the field and reads
+nothing from it; the per-class split is done on the report.
