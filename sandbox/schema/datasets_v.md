@@ -54,6 +54,9 @@ A parent means the values are scoped by that column, so enumerate the pair.
 
 ## Worked examples
 
+Queries that run against datasets_v as written. Copy the shape rather than inventing one —
+each shows the filters this view expects.
+
 ### Flag pseudo credible sets in the same result set, not after the fact
 
 ```sql

@@ -440,14 +440,27 @@ something nothing would ever notice going stale. Shipping the placeholders degra
 `run_analysis` works, the pod is healthy, and the model reads a file that says it is not the
 real documentation — so the build refuses while one is staged.
 
-**On-demand only works if the model knows they are there, and for a long time it did not.** The
-directories were named nowhere a model could read them — not in a tool description, not in the
-system prompt — so every column name was fetched over the network from a container that already
-held the answer. genetics-mcp-server's system prompt now names `$GENETICS_SCHEMA_DIR` and the
-one-file-per-view layout in the block that reaches a surface with `run_analysis` and no
-`query_database`, so what the image discloses to the model is no longer bounded by what the
-model guessed was in it. The stubs are still reached through `list_capabilities` rather than
-by path.
+**The schema is no longer on-demand at all — it is in the system prompt.** On-demand went
+through two states and neither worked. First the directories were named nowhere a model could
+read them, so every column name was fetched over the network from a container that already held
+the answer. Then the prompt named `$GENETICS_SCHEMA_DIR` and the one-file-per-view layout, and
+the model did exactly as told: measured over benchmark run a08b371d, **32 of 138 `run_analysis`
+scripts did nothing but `print(open(...))` a schema file**, 18 of 20 cases opened with one, and
+together they were 658s of 4272s of model time. The round trip had changed source, not size.
+
+So `gen-sandbox-docs.py` now writes the same rendered markdown to a **third** destination —
+`genetics-mcp-server/src/genetics_mcp_server/schema_docs/`, resolved through the same
+`--sdk-src` search that finds the SDK for the stubs — and chat-backend inlines all of it as one
+`# BigQuery view reference` section, gated to exactly the surface that had been paying: one with
+`run_analysis` and no `query_database`. `--check` covers that copy like the other two, so the
+prompt cannot describe a column the image does not have. **This is a disclosure decision as much
+as a cost one**: every view's columns, enumerable values and worked examples are now in the
+context of every request on that surface, where before a script had to ask for a view by name.
+The set disclosed is the same set — the image shipped all 16 files either way, readable by any
+script — so nothing is reachable now that was not reachable before; what changed is that it
+arrives unasked. The files stay in the image, because a script may still open one and the
+`PLACEHOLDER` gate still guards both staged trees. The stubs are still reached through
+`list_capabilities` rather than by path.
 
 ### The LD proxy: one third-party call the sandbox can cause
 
