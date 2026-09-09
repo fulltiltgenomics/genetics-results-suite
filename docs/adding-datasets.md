@@ -147,6 +147,10 @@ the API-side resource grouping.
   BigQuery view (`mpra_v`, variant-indexed, LONG one row per variant × cell line), `data_type:
   mpra` and `trait_type: null`. As above, this repo only owns the `datasets.yaml` entries and
   `dataset_to_resource_rules`.
+- **Rare-CNV dosage sensitivity** (`rcnv`, Collins et al. 2022) is the other shape: a
+  BigQuery-only product with **no** results-api vertical and therefore no product config
+  entry at all. This repo owns the `datasets.yaml` resource, dataset and `tables` blocks;
+  the view is built in genetics-results-db and reached only through `query_bigquery`.
 
 ### The shared-combined-file + per-row resource filter (important for credible sets)
 

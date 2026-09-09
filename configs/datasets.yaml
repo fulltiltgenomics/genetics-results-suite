@@ -191,6 +191,16 @@ resources:
       in-silico variant_effect predictions and from endogenous eQTL/caQTL.
     aliases: ["MPRA", "Siraj", "reporter assay"]
 
+  rcnv:
+    label: "rCNV2 dosage sensitivity"
+    description: >-
+      Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+      185:3041-3055, doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). Genome-wide pHaplo /
+      pTriplo probabilities of haploinsufficiency and triplosensitivity, learned from
+      rare CNVs in 950,278 individuals across 54 HPO phenotypes.
+    aliases: ["rCNV2", "Collins 2022", "pHaplo", "pTriplo", "dosage sensitivity",
+              "haploinsufficiency", "triplosensitivity"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -1387,6 +1397,109 @@ tables:
       resource: null
       locus_type: null
       strand: null
+
+  dosage_sensitivity_v:
+    exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source published score set: the view appends the constant 'rcnv' AS
+        resource, and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        published dosage-sensitivity scores, has no `dataset` column
+    description: >-
+      Rare-CNV dosage sensitivity scores from Collins et al. 2022, "A cross-disorder
+      dosage sensitivity map of the human genome" (Cell 185:3041-3055,
+      doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). One row per autosomal protein-coding
+      gene: pHaplo is the probability the gene is haploinsufficient (one functional copy
+      is not enough), pTriplo the probability it is triplosensitive (a third copy is
+      harmful), both learned from rare CNVs in 950,278 individuals across 54 HPO phenotypes.
+      This is the suite's only gene-level DOSAGE evidence — the other gene-level views
+      carry annotation (gene_annotations_v) or burden (gene_burden_results_v) evidence —
+      so it is what answers "is this gene dosage sensitive?" without leaving the platform.
+
+      JOIN KEY: `ensembl_gene_id` is the key and is unique. `symbol` is the CURRENT
+      Gencode symbol and is NOT unique — Gencode gives a few names to two genes each — so
+      a join on symbol can duplicate a row. Join on ensembl_gene_id wherever the other
+      side carries it (gene_annotations_v does; this matches roughly 95% of the 18,641
+      genes here, so a missing annotation row for the rest is expected rather than a
+      sign of a bad key). The result views that carry only a gene symbol
+      (gene_burden_results_v.gene, credible_sets_v.gene_most_severe) have to join
+      on symbol.
+
+      NO COORDINATES: the published file is gene-keyed, so this view has no chr / start /
+      end and cannot answer a region question on its own — join gene_annotations_v for
+      GRCh38 coordinates. The scores were built on GENCODE v19 (GRCh37); only the gene
+      identifiers cross over, never a position.
+
+      THRESHOLDS: `haploinsufficient` is pHaplo >= 0.86 and `triplosensitive` is
+      pTriplo >= 0.94, the paper's own cutoffs. They are stored as columns so a query
+      need not restate them, but the probabilities are the better thing to rank on when
+      the question is "which of these genes is most dosage sensitive".
+
+    columns:
+      symbol: "Current GENCODE gene symbol. NOT unique — a few names are shared by two genes — so join on ensembl_gene_id when the other side has it"
+      symbol_gencode_v19: "The symbol as published by Collins et al. (GENCODE v19 spelling). Differs from `symbol` where the gene has since been renamed"
+      ensembl_gene_id: "Ensembl gene ID (e.g. ENSG00000165671). THE KEY — unique, one row per gene"
+      phaplo: "Probability that the gene is haploinsufficient (0-1)"
+      ptriplo: "Probability that the gene is triplosensitive (0-1)"
+      haploinsufficient: "pHaplo >= 0.86, the paper's haploinsufficiency threshold"
+      triplosensitive: "pTriplo >= 0.94, the paper's triplosensitivity threshold"
+      resource: "Data source identifier, constant 'rcnv'"
+
+    column_types:
+      symbol: STRING
+      symbol_gencode_v19: STRING
+      ensembl_gene_id: STRING
+      phaplo: FLOAT64
+      ptriplo: FLOAT64
+      haploinsufficient: BOOL
+      triplosensitive: BOOL
+      resource: STRING
+
+    examples:
+      - description: "Dosage sensitivity of one gene"
+        sql: >-
+          SELECT symbol, ensembl_gene_id, phaplo, ptriplo,
+                 haploinsufficient, triplosensitive
+          FROM dosage_sensitivity_v
+          WHERE symbol = 'SHANK3'
+
+      - description: "Haploinsufficient genes overlapping a genomic window. This view has no coordinates, so the GRCh38 interval comes from gene_annotations_v."
+        sql: |-
+          SELECT d.symbol, d.ensembl_gene_id, a.gene_start, a.gene_end, d.phaplo, d.ptriplo
+          FROM dosage_sensitivity_v d
+          JOIN gene_annotations_v a USING (ensembl_gene_id)
+          WHERE a.chr = 17 AND a.locus_type = 'gene with protein product'
+            AND d.haploinsufficient
+            AND a.gene_start <= 9000000 AND a.gene_end >= 7000000
+          ORDER BY a.gene_start
+
+      - description: "Rank a phenotype's gene-burden hits by triplosensitivity — which of the exome-burden genes for schizophrenia are also dosage sensitive to a duplication"
+        sql: >-
+          SELECT b.gene, b.mlog10p_burden, b.beta, d.phaplo, d.ptriplo, d.triplosensitive
+          FROM gene_burden_results_v b
+          JOIN dosage_sensitivity_v d ON d.symbol = b.gene
+          WHERE b.dataset = 'SCHEMA2' AND b.annotation = 'PTV' AND b.mlog10p_burden > 3
+          ORDER BY d.ptriplo DESC
+          LIMIT 20
+
+      - description: "Fine-mapped signals falling in haploinsufficient genes for one phenotype. credible_sets_v's gene column is `gene_most_severe` (the gene of the variant's most severe consequence), and it is a symbol, so the join is on symbol."
+        sql: >-
+          SELECT c.trait, c.gene_most_severe, c.variant, c.pip, c.mlog10p,
+                 d.phaplo, d.ptriplo
+          FROM credible_sets_v c
+          JOIN dosage_sensitivity_v d ON d.symbol = c.gene_most_severe
+          WHERE c.trait_original = 'K11_COELIAC' AND c.pip > 0.1
+            AND d.haploinsufficient
+          ORDER BY c.pip DESC
+          LIMIT 20
+
+    categorical_columns:
+      resource: null
+      haploinsufficient: null
+      triplosensitive: null
 
   variant_annotation_v:
     exposed: true
@@ -2761,6 +2874,27 @@ profiles:
         metadata_file: null
         metadata_harmonizer: null
 
+      # --- rare CNV dosage sensitivity ---
+      collins_rcnv_2022:
+        resource: rcnv
+        version: "v0.2"
+        description: >-
+          Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+          185:3041-3055, doi 10.1016/j.cell.2022.06.036; Zenodo record 6347673 v0.2,
+          CC-BY 4.0). pHaplo and pTriplo — the probabilities that losing one copy or
+          gaining a third copy of a gene is deleterious — for every autosomal
+          protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
+          54 HPO phenotypes. Gene-keyed and coordinate-free: the scores were built on
+          GENCODE v19 (GRCh37), so only the gene identifiers carry over to the suite's
+          GRCh38 views.
+        author: "Collins et al. (Talkowski lab)"
+        publication_date: "2022-08-04"
+        data_type: rcnv
+        trait_type: binary
+        n_phenotypes: 54
+        metadata_file: null
+        metadata_harmonizer: null
+
       # --- external summary statistics ---
       pgc_scz:
         resource: pgc
@@ -3741,6 +3875,27 @@ profiles:
         publication_date: "2025-12-07"
         data_type: gene_disease
         trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- rare CNV dosage sensitivity ---
+      collins_rcnv_2022:
+        resource: rcnv
+        version: "v0.2"
+        description: >-
+          Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+          185:3041-3055, doi 10.1016/j.cell.2022.06.036; Zenodo record 6347673 v0.2,
+          CC-BY 4.0). pHaplo and pTriplo — the probabilities that losing one copy or
+          gaining a third copy of a gene is deleterious — for every autosomal
+          protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
+          54 HPO phenotypes. Gene-keyed and coordinate-free: the scores were built on
+          GENCODE v19 (GRCh37), so only the gene identifiers carry over to the suite's
+          GRCh38 views.
+        author: "Collins et al. (Talkowski lab)"
+        publication_date: "2022-08-04"
+        data_type: rcnv
+        trait_type: binary
+        n_phenotypes: 54
         metadata_file: null
         metadata_harmonizer: null
 
