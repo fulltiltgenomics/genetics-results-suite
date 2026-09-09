@@ -392,6 +392,30 @@ Build and push images:
 ./scripts/build-all.sh
 ```
 
+#### Layer cache
+
+Both build scripts pass `--cache-from ${REGISTRY}/<image>:latest` and
+`--build-arg BUILDKIT_INLINE_CACHE=1` (`set_build_cache_args` in `scripts/lib/env.sh`), so a
+build reuses layers from the last pushed image instead of rebuilding them, and each push
+carries the cache metadata the next build imports. A `:latest` that does not exist yet, or a
+registry the host cannot reach, is not an error — BuildKit reports the failed import as a build
+step and builds anyway. Two limits:
+
+- **Inline cache records the final stage only.** The docker driver exports no other cache type,
+  so the *builder* stages of the multi-stage images — the browser, its bff, the sandbox — still
+  rebuild on a host with a cold local cache. This stops being true only if the builds move to a
+  `docker-container` buildx driver, which can export `type=registry`.
+- **Local cache retention is per-host daemon state that no clone carries.** BuildKit's default
+  GC reserves a fraction of the filesystem and prunes down to it whenever free disk is under its
+  minimum, so on a full build host the reserved floor can be smaller than one `build-all` run's
+  cache and every build starts cold. Set it in `/etc/docker/daemon.json` under
+  `builder.gc.policy`, restart docker **with no build in flight**, and read the policy actually
+  in force from `docker buildx inspect default` — the daemon silently ignores a `builder.gc`
+  shape it does not accept, and `dockerd --validate` passes on some it then refuses to start
+  with. Size the reserved space above one full build's cache (`docker buildx du`) and the
+  minimum free space above what a build needs on that disk (`df -h /`); re-check both if cache
+  misses come back.
+
 ### 5. Wire up git hooks (once per clone)
 
 ```bash
