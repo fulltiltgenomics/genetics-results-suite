@@ -112,7 +112,11 @@ build_and_push() {
   local name=$1 dir=$2 tag=$3
   shift 3
   echo "=== Building ${name} (tag: ${tag}) ==="
-  docker build "$@" \
+  # registry layer cache: reuse what the last push left, and export inline cache into this
+  # push so the next run has a source. See set_build_cache_args in lib/env.sh for what it
+  # cannot cover (builder stages of the multi-stage images).
+  set_build_cache_args "${name}"
+  docker build "${BUILD_CACHE_ARGS[@]}" "$@" \
     -t "${REGISTRY}/${name}:${tag}" \
     -t "${REGISTRY}/${name}:latest" \
     "${dir}"
