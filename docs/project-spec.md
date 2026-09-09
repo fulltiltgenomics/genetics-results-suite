@@ -229,6 +229,7 @@ scripts/                             build, deploy and verification scripts
   bq-dev-dataset.sh                  stand up, verify or tear down the BigQuery rehearsal dataset (docs/bigquery-dev-dataset.md)
   build-all.sh                       build and push every image
   build.sh                           build and push one service's image
+  chat-memory-proving-ground.py      staging recipe and PASS/FAIL checks for the per-project chat memory feature
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
   check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
@@ -2412,15 +2413,42 @@ opt-in setting, so the dialog can preview what turning memory on would remember;
 caller does not own — the same non-owner-invisible pattern the rest of the router uses — and
 404ing by construction for a secret chat's id, which never had a row to pin.
 
-**Proving-ground checks** (re-run after any staging rollout of this feature): the session-start
-`memory digest: user=<hash> sessions=N chars=M` log line; the streamed `usage` event's
-`cache_read` on a session's second turn is at least as large as the first turn's
-`cache_create`, confirming the block actually cached; the `digest` field of `GET
-/chat/v1/memory`, fetched before starting the user's next session, equals byte for byte the
-text that session's first turn pins — that session's log line reports `chars=M` where `M ==
-len(digest)` (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
-whole response, is the comparable quantity); and, for a user with the setting off, system block
-1 is byte-identical to a build with no memory code at all and no log line is emitted.
+**Proving ground.** The environment is the staging cluster only, because staging is where the
+*deployed build* can be observed: the pod's `.status.startTime` says which image is answering,
+`kubectl logs` carries the memory-digest log line, and the real auth-gateway asserts the
+identity the gate keys on. The path is reproducible locally — `auth_required` resolves the
+internal-secret marker plus an allow-listed identity header to that email, and the only local
+blocker is `gateway_asserted`, which needs `GATEWAY_IDENTITY_SECRET` exported before chat-api
+starts (it defaults to empty and `dev-stack.sh` never sets it) and both headers sent — but a
+local run proves the code, not the build. The kubectl context used for every check must be the
+context `kubectl` is already on and must end in `-staging` (the suite's is named
+`gke_daly-finngenie_us-central1-a_finngenie-staging`); a name is not an endpoint, so the script
+prints the kubeconfig it resolved. Getting a build there: `scripts/build-all.sh` clones the
+pushed GitHub staging branches of the sibling repos and builds and pushes their images;
+`scripts/rollout.sh --context <ctx> <service> <TAG>` then updates one deployment to an explicit
+`YYYYMMDD.sha` tag — a bare `:latest` is a silent no-op on this cluster. Verify a rollout
+actually landed by the pod's `.status.startTime`, never by `rollout.sh`'s own success message.
+
+Re-run after any staging rollout of this feature, as synthetic users, with
+`scripts/chat-memory-proving-ground.py --context <ctx> --user <synthetic email>`: (1) the
+session-start memory-digest log line fires only for a session inside a project, never for an
+unfiled session or a user without the `chat_memory` setting; (2) a project's rendered memory
+endpoint returns a digest that byte-equals the digest the next new session in that project is
+pinned with (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
+whole response, is the comparable quantity); (3) the streamed `usage` event's `cache_read` on a
+session's second turn is at least as large as the first turn's `cache_create`, on the default
+model with tools on, confirming the block actually cached; (4) moving a session into a different
+project produces exactly one `cache_create` spike on its next turn — the digest re-renders
+because block 1 changed — and stays cached after that; (5) the SSE memory event, which already
+ships, carries the project's name, exactly once per session; (6) a non-owner reading a shared
+session link never sees a `project_id`; (7) forking a session lands the fork with no project.
+All seven exit SKIP until the project endpoints land — a SKIP is not a PASS. Every check leaves
+synthetic state behind by design and records the ids it created in a state file; the script's
+own `cleanup` subcommand deletes exactly those ids and nothing else, refuses any `--user`
+outside the synthetic `memory-check*@broadinstitute.org` family, and needs `--yes` before it
+deletes anything — `--yes` and `--state` are parent-parser options, so they precede the
+subcommand (`--yes cleanup`, not `cleanup --yes`). Project cleanup lands with the project
+endpoints themselves (idt3.4).
 
 ## Chat option persistence
 
