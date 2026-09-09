@@ -197,6 +197,7 @@ configs/                             canonical dataset and resource definitions 
   datasets.yaml                      the single source of truth for datasets, resources and views
   ibd_gwas_pheno.json                per-phenotype metadata for external GWAS
   rag/                               RAG experiment configs (not k8s manifests)
+  rcnv_pheno.json                    per-phenotype metadata for the rare-CNV association study
   twins.yaml                         the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
 docs/                                everything below, and nothing else
   adding-datasets.md                 how to add a dataset across the repos and profiles

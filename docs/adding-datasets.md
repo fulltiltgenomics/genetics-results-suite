@@ -248,13 +248,19 @@ These counts rot easily, so re-derive them rather than trusting this paragraph �
 that `phewas-development` is **not reachable from the admin instance** (no kubeconfig
 context; `gcloud container clusters list --project phewas-development` returns 403), so
 the numbers below cannot be re-derived from this checkout at all. As of 2026-08-13,
-`bq ls phewas-development:genetics_results` holds **18 base tables and 15 views**.
-The 11 views with a generated `resource` plus the two metadata views is 13 — `gene_annotations_v` and
-`variant_annotation_v` are the other two live views and are in neither list. Both do
-carry a `resource` column — `'hgnc' AS resource` and `'finngen' AS resource` — but their base
-tables hold no dataset discriminator to generate it *from*, so there is nothing for a `CASE`
-to switch on (the single-source-constant case above). `configs/datasets.yaml`'s `tables:` section
-has an entry for all 15.
+`bq ls phewas-development:genetics_results` held **18 base tables and 15 views** — a
+measurement of a system this checkout cannot reach, so it is not re-derivable here and has
+not tracked the views added since. What *is* derivable is the registry: `tables:` in
+`configs/datasets.yaml` has an entry per documented view, and the subset whose `resource`
+is computed by a `CASE` in the *view SQL itself* is exactly `resource_derivation.mode ==
+'view_case'` (the first command above prints the mode of every view; `credible_sets_v` is
+`load_time` — its `CASE` runs once in the loader and is stored on the base table, not in
+the view — so `mode != none` overcounts this subset by one). The views outside the
+`view_case` subset that still carry a `resource` column as a hardcoded single-source
+constant — `gene_annotations_v`, `dosage_sensitivity_v`, `variant_annotation_v`,
+`phenotypes_v`, `datasets_v` — are exactly `resource_derivation.mode == 'none'` with
+`resource` in `columns:`; re-derive the list from the yaml rather than trusting a
+hand-written one, since it has already gone stale once.
 
 ### Column types (`tables.<view>.column_types`)
 
@@ -347,9 +353,12 @@ The `phenotypes` join key is **`trait_original`, never `trait`**: in every resul
 (`HEIGHT_IRN` vs `Height,_inverse-rank_normalized`). Joining on `trait` returns zero rows
 silently.
 
-`hla_associations_v` is the **third** spelling: it has neither `trait` nor `trait_original`
-and calls its phenotype code `phenotype`. Its join is
-`phenotypes_v p ON p.dataset = 'finngen_hla' AND p.trait_original = h.phenotype`. A view whose
+`hla_associations_v` and `rcnv_gene_associations_v` use a third spelling: neither has
+`trait` or `trait_original`, and both call the phenotype code `phenotype`. The joins are
+`phenotypes_v p ON p.dataset = 'finngen_hla' AND p.trait_original = h.phenotype` and
+`phenotypes_v p ON p.dataset = r.dataset AND p.trait_original = r.phenotype` — note the
+second matches `dataset` between the two views (`Collins_rCNV_2022`), which is the BigQuery
+`dataset` value, not the registry key `collins_rcnv_2022`. A view whose
 trait column is named anything other than `trait_original` must say so in its `tables:` block
 in `configs/datasets.yaml`, since the silent zero-row join is otherwise indistinguishable from
 "no results".

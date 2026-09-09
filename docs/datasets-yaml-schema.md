@@ -306,7 +306,7 @@ profiles:
 | `variant_effect` | In-silico predicted variant effect on chromatin (e.g. ChromBPNet, FLARE) |
 | `mpra` | Measured cis-regulatory allelic activity from a massively parallel reporter assay (MPRA) |
 | `hla` | Classical HLA allele associations (association unit is an imputed HLA allele, not a variant) |
-| `rcnv` | Rare-CNV dosage sensitivity (gene-level pHaplo/pTriplo scores) |
+| `rcnv` | Rare-CNV dosage sensitivity: gene-level pHaplo/pTriplo scores, and the per-phenotype DEL/DUP gene association statistics they were derived from |
 | `gene_disease` | Gene-disease associations |
 
 Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the others — `chromatin_peaks`, `open_chromatin`, `variant_effect`, `mpra` — carry `trait_type: null`):

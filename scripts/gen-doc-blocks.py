@@ -365,6 +365,7 @@ LAYOUT = {
                           "check-duplication.py's counts",
     "configs/rag": "RAG experiment configs (not k8s manifests)",
     "configs/*_pheno.json": "per-phenotype metadata for external GWAS",
+    "configs/rcnv_pheno.json": "per-phenotype metadata for the rare-CNV association study",
     "docs": "everything below, and nothing else",
     "docs/project-spec.md": "this file",
     "docs/adding-datasets.md": "how to add a dataset across the repos and profiles",
