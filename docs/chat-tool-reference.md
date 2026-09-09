@@ -156,8 +156,10 @@ are therefore unreachable over `/mcp` by construction:
 
 **This surface's bounds are not the `parameters` bounds.** FastMCP derives each MCP schema
 from the handler's Python signature, so `Annotated[..., Field(ge=…, le=…)]` here makes
-pydantic **reject** an out-of-range value before the executor runs. Only the six parameters
-the executor already rejects carry one — the four `window` arguments on
+pydantic **reject** an out-of-range value before the executor runs. Only the parameters
+the executor already rejects carry one (hand-kept, unlike the generated blocks above —
+`grep -n 'Annotated\[.*Field(ge=' src/genetics_mcp_server/tools/definitions.py` is the live list): the
+four `window` arguments on
 `get_asm_qtl_by_gene` / `get_open_chromatin_by_gene` / `get_variant_effect_by_gene` /
 `get_mpra_by_gene`, plus `get_mpra_pip_concordance_by_gene`'s `window` and `min_pip` and
 `get_hla_by_allele.max_rows` — where the declaration only moves an identical `SqlValueError`

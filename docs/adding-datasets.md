@@ -156,7 +156,12 @@ the API-side resource grouping.
 - **Rare-CNV dosage sensitivity** (`rcnv`, Collins et al. 2022) is the other shape: a
   BigQuery-only product with **no** results-api vertical and therefore no product config
   entry at all. This repo owns the `datasets.yaml` resource, dataset and `tables` blocks;
-  the view is built in genetics-results-db and reached only through `query_bigquery`.
+  the views are built in genetics-results-db and reached through BigQuery only — the
+  `get_dosage_sensitivity` / `get_rcnv_associations` MCP tools, `query_database` and the
+  sandbox. **A registry entry with no product config is still an entry**: results-api's
+  `/api/v1/datasets` catalogue iterates the registry rather than the product configs, so the
+  dataset is listed there with no products against it. That is the intended shape, not an
+  oversight — it is how an agent that only reads the catalogue still learns the data exists.
   Its `metadata_file` payload, `configs/rcnv_pheno.json`, is **derived, not hand-typed**:
   the paper's meta-analysis drops any cohort contributing fewer than 300 cases to a
   phenotype, so Table S2's `Total` counts cases from cohorts the phenotype never used and
@@ -353,9 +358,19 @@ The `phenotypes` join key is **`trait_original`, never `trait`**: in every resul
 (`HEIGHT_IRN` vs `Height,_inverse-rank_normalized`). Joining on `trait` returns zero rows
 silently.
 
-`hla_associations_v` and both rCNV association views (`rcnv_gene_associations_v`,
-`rcnv_window_associations_v`) use a third spelling: none has `trait` or `trait_original`,
-and all call the phenotype code `phenotype`. The joins are
+The views listed below use a third spelling: none has `trait` or `trait_original`, and all
+call the phenotype code `phenotype`. The list is derived from `configs/datasets.yaml` — a
+`tables.<view>` block with a `phenotype` column type and no `trait_original` one:
+
+<!-- BEGIN GENERATED: phenotype-join-views -->
+
+- `hla_associations_v`
+- `rcnv_gene_associations_v`
+- `rcnv_window_associations_v`
+
+<!-- END GENERATED: phenotype-join-views -->
+
+The joins are
 `phenotypes_v p ON p.dataset = 'finngen_hla' AND p.trait_original = h.phenotype` and
 `phenotypes_v p ON p.dataset = r.dataset AND p.trait_original = r.phenotype` — note the
 second matches `dataset` between the two views (`Collins_rCNV_2022`), which is the BigQuery
@@ -500,6 +515,79 @@ and the router are new. Second, the two artifacts are not redundant — a per-ph
 answers "all alleles for this trait" and cannot answer "all traits for this allele", which is
 the question that makes MHC pleiotropy visible, so BigQuery is load-bearing rather than a
 convenience mirror.
+
+## 12. Worked example: rCNV2 dosage sensitivity, associations, segments and windows
+
+Context: a **BigQuery-only** product. Collins et al. 2022 published a cross-disorder rare-CNV
+map — per-gene dosage-sensitivity scores, per-phenotype gene and sliding-window association
+statistics, and 163 disease-associated segments — over **54 HPO phenotype groups** rather than
+the suite's own trait codes, in **GRCh37**. Nothing about it is variant-keyed or position-
+queryable per phenotype, so there is no results-api vertical: the whole product is reached
+through BigQuery. It is the shape the checklist's "new view" branch exists for, and the first
+one where the phenotype axis and the genome build both differ from the rest of the suite.
+
+Changes made (new resource `rcnv`, one dataset `collins_rcnv_2022`, four tables and four views,
+no results-api product config):
+
+1. `genetics-results-munge`: `scripts/munge_rcnv.{py,sh}` with a `--product`
+   (`scores` | `genes` | `segments` | `windows`), `scripts/rcnv_liftover_windows.py`, and
+   `docs/rcnv-dosage-sensitivity.md` + `docs/rcnv-sliding-windows.md`. Each product is one
+   bgzipped TSV with **no tabix index** — nothing here is read by position at request time —
+   which is why the script writes its own bgzip pipe instead of using the shared writers.
+2. `datasets.yaml`: the `rcnv` resource, the `collins_rcnv_2022` dataset in both profiles
+   (`data_type: rcnv`, `trait_type: binary`), a `Collins_rCNV%` rule mapping to `rcnv` scoped to
+   the three association views (the lowercase fallback would give `collins_rcnv_2022`), and a
+   `tables.<view>` block per view with `exposed: true`, column descriptions and worked SQL.
+   `dosage_sensitivity_v` is the exception on `resource_derivation`: it is a single published
+   score set with no `dataset` column, so the view appends a constant `'rcnv' AS resource` and
+   its block carries `mode: none` with the reason.
+3. **The phenotype metadata is derived, not hand-typed**, and it is staged per profile.
+   `configs/rcnv_pheno.json` carries the 54 HPO groups with the meta-analysed sample sizes,
+   summed from the supplement's Table S2 over only the cohorts that contributed >=300 cases —
+   the paper's own inclusion rule. Taking the published `Total` instead overstates controls by
+   up to 7x. The command that regenerates it is in section 5 above. Only the daly profile
+   points `metadata_file` at the staged copy; the finngen entry is `metadata_file: null`
+   because the file was never staged into `finngen-commons`, so the 54 HPO codes resolve to
+   names in `phenotypes_v` on one profile and not the other. That asymmetry is a bucket-access
+   fact recorded at the entry, not a schema difference.
+4. `genetics-results-db`: `schemas/{dosage_sensitivity,rcnv_gene_associations,rcnv_segments,
+   rcnv_window_associations}{,_v}.sql` and a loader per table. **Load order matters**:
+   `build_phenotypes.BQ_DATASETS_BY_DATASET_ID['collins_rcnv_2022']` names `Collins_rCNV_2022`,
+   so `scripts/load_phenotypes.sh` fails the whole profile's registry cross-check until at
+   least one results table carrying that `dataset` value is loaded.
+5. `genetics-results-suite`: the three association views added to the monitor's `VIEWS` and `_CONFIG_VIEWS`
+   (`scripts/monitor/bq_summary.py`); the sandbox schema docs and SDK stubs regenerate from
+   `datasets.yaml` (`scripts/gen-sandbox-docs.py`).
+6. `genetics-mcp-server`: `get_dosage_sensitivity` and `get_rcnv_associations`, plus the SDK's
+   `genetics.dosage_sensitivity()` / `genetics.rcnv()` on the code surface.
+7. `genetics-results-api`: **nothing**. The registry entry alone makes the dataset appear in
+   `/api/v1/datasets` with no products against it, which is the intended result.
+
+Three points of interest, and they are the reusable ones.
+
+**The phenotype axis is HPO, so the join key is spelled differently.** These views have no
+`trait` and no `trait_original`; the phenotype code is `phenotype`, an HPO id with the colon
+removed (`HP0012759`), joined to `phenotypes_v` on `dataset = 'Collins_rCNV_2022'` — the
+BigQuery value, not the registry key `collins_rcnv_2022`. `rcnv_segments_v` has no phenotype
+column at all: a segment is associated with several groups, held as an `ARRAY<STRING>` that has
+to be `UNNEST`ed, which multiplies the row count. See the phenotype-join section above.
+
+**A lifted interval table stores both builds, and says which one is the identity.** The suite is
+GRCh38; the source is GRCh37. `rcnv_segments` and `rcnv_window_associations` therefore carry
+`*_grch37` provenance columns alongside the lifted GRCh38 pair — the GRCh37 values are the
+published identity, the GRCh38 ones are what to query with. Two consequences that a consumer
+cannot recover from the data: **the lift is lossy** (ten of the 163 segments have NULL GRCh38
+coordinates, so a coordinate-window query silently misses them unless it falls back to the
+GRCh37 pair, and 4,880 of 267,237 windows are absent entirely), and **the lift is not
+structure-preserving** (the published windows are a regular 200 kb / 10 kb-step grid in GRCh37;
+the lifted ones are not, so distinct windows are counted on the GRCh37 triple). Both facts are
+written into the `tables:` blocks rather than left for a reader to infer, because neither is
+visible in a `SELECT *`.
+
+**A BigQuery-only product is a complete product.** It needs no results-api entry, but it does
+need every other list a view lives on: `exposed: true`, `resource_derivation`, the monitor's
+view list, the phenotype registry mapping, and an MCP tool if an agent is meant to reach it
+without writing SQL.
 
 ## Checklist
 

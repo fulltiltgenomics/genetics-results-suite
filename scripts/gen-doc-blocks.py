@@ -517,6 +517,65 @@ def block_suite_repos():
     return "\n".join(f"- `{r}`" for r in siblings.SUITE_REPOS)
 
 
+def _monitor_views():
+    """`VIEWS` / `_CONFIG_VIEWS` / `_API_VIEWS` out of scripts/monitor/bq_summary.py, by AST.
+
+    Read rather than imported: the module pulls in google.cloud.bigquery, which the build
+    gate has no reason to install.
+    """
+    path = os.path.join(ROOT, "scripts", "monitor", "bq_summary.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), path)
+    wanted = {"VIEWS", "_CONFIG_VIEWS", "_API_VIEWS"}
+    found = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in wanted):
+            try:
+                found[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                pass
+    missing = wanted - set(found)
+    if missing:
+        print(f"HARNESS: {path} no longer assigns {sorted(missing)} at module level",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return found
+
+
+def block_monitored_views():
+    v = _monitor_views()
+    rows = ["| view | expected resources come from |", "|---|---|"]
+    for name in v["VIEWS"]:
+        if name in v["_CONFIG_VIEWS"]:
+            source = "`dataset_to_resource_rules` in `configs/datasets.yaml`"
+        elif name in v["_API_VIEWS"]:
+            source = "the results-api's coloc pairs"
+        else:
+            source = "nothing — row counts and distinct resources only"
+        rows.append(f"| `{name}` | {source} |")
+    return "\n".join(rows)
+
+
+def block_phenotype_join_views():
+    """The views whose phenotype code is called `phenotype`, not `trait_original`.
+
+    Derived from the shape that makes the join different rather than from a list: a
+    `tables.<view>` block with a `phenotype` column type and no `trait_original` one.
+    """
+    tables = load_yaml("configs/datasets.yaml")[0]["tables"]
+    odd = [name for name, t in sorted(tables.items())
+           if "phenotype" in (t.get("column_types") or {})
+           and "trait_original" not in (t.get("column_types") or {})]
+    if not odd:
+        print("HARNESS: no view in configs/datasets.yaml has a phenotype column without "
+              "trait_original — the paragraph this block sits in has no subject",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return "\n".join(f"- `{name}`" for name in odd)
+
+
 
 # ---------------------------------------------------------------------------------------
 # the two tool surfaces, read out of genetics-mcp-server by AST
@@ -832,6 +891,7 @@ def block_tool_surfaces():
 SECURITY = "docs/code-execution-security.md"
 SPEC = "docs/project-spec.md"
 TOOLS = "docs/chat-tool-reference.md"
+DATASETS = "docs/adding-datasets.md"
 
 BLOCKS = {
     "limits": (SECURITY, block_limits),
@@ -842,6 +902,8 @@ BLOCKS = {
     "services": (SPEC, block_services),
     "structure": (SPEC, block_structure),
     "suite-repos": (SPEC, block_suite_repos),
+    "monitored-views": (SPEC, block_monitored_views),
+    "phenotype-join-views": (DATASETS, block_phenotype_join_views),
     "tool-lists": (TOOLS, block_tool_lists),
     "tool-surfaces": (TOOLS, block_tool_surfaces),
     "tool-surfaces-spec": (SPEC, block_tool_surfaces_spec),
