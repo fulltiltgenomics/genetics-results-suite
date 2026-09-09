@@ -145,7 +145,7 @@ stack:
 
 | request | before `dev-stack.sh` provisioned the secret | now |
 |---|---|---|
-| `curl -X POST 127.0.0.1:8080/query -d '{"query":"SELECT 1"}'` | served | **401** |
+| `curl -X POST 127.0.0.1:8080/query -d '{"sql":"SELECT 1"}'` | served | **401** |
 | `curl 127.0.0.1:8080/openapi.json` | served | **401** |
 | `curl 127.0.0.1:8080/health` | 200 | 200 (unauthenticated by design) |
 
