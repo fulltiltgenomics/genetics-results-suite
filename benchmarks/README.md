@@ -184,8 +184,9 @@ still valid, it just cannot carry the proof.
 
 ## Raise the chat service's rate limit BEFORE a full run
 
-`chat_api` rate-limits per user: **`RATE_LIMIT_PER_HOUR` defaults to 20 and
-`RATE_LIMIT_PER_DAY` to 100**. This set is 106 model turns, so a full run exceeds both.
+`chat_api` rate-limits per user: **`RATE_LIMIT_PER_HOUR` defaults to 20,
+`RATE_LIMIT_PER_DAY` to 40 and `RATE_LIMIT_PER_WEEK` to 100**. This set is 106 model turns,
+so a full run exceeds all three.
 
 This does not fail cleanly, which is why it needs saying. Measured 2026-08-19: a full run
 against the defaults produced **8 ok / 16 error / 29 not_attempted per arm** — the turns
@@ -194,7 +195,7 @@ still looked complete (20 cases, both arms, correct `arm_tools`) while carrying 
 matched pairs. It reads as a finished benchmark of a handful of questions.
 
 ```bash
-RATE_LIMIT_PER_HOUR=2000 RATE_LIMIT_PER_DAY=10000 scripts/dev-stack.sh up chat-api
+RATE_LIMIT_PER_HOUR=2000 RATE_LIMIT_PER_DAY=10000 RATE_LIMIT_PER_WEEK=10000 scripts/dev-stack.sh up chat-api
 ```
 
 `dev-stack.sh` does not set these, so they must be exported into the environment it starts
