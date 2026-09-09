@@ -353,8 +353,9 @@ The `phenotypes` join key is **`trait_original`, never `trait`**: in every resul
 (`HEIGHT_IRN` vs `Height,_inverse-rank_normalized`). Joining on `trait` returns zero rows
 silently.
 
-`hla_associations_v` and `rcnv_gene_associations_v` use a third spelling: neither has
-`trait` or `trait_original`, and both call the phenotype code `phenotype`. The joins are
+`hla_associations_v` and both rCNV association views (`rcnv_gene_associations_v`,
+`rcnv_window_associations_v`) use a third spelling: none has `trait` or `trait_original`,
+and all call the phenotype code `phenotype`. The joins are
 `phenotypes_v p ON p.dataset = 'finngen_hla' AND p.trait_original = h.phenotype` and
 `phenotypes_v p ON p.dataset = r.dataset AND p.trait_original = r.phenotype` — note the
 second matches `dataset` between the two views (`Collins_rCNV_2022`), which is the BigQuery
