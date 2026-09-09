@@ -576,9 +576,9 @@ to be `UNNEST`ed, which multiplies the row count. See the phenotype-join section
 GRCh38; the source is GRCh37. `rcnv_segments` and `rcnv_window_associations` therefore carry
 `*_grch37` provenance columns alongside the lifted GRCh38 pair — the GRCh37 values are the
 published identity, the GRCh38 ones are what to query with. Two consequences that a consumer
-cannot recover from the data: **the lift is lossy** (ten of the 163 segments have NULL GRCh38
-coordinates, so a coordinate-window query silently misses them unless it falls back to the
-GRCh37 pair, and 4,880 of 267,237 windows are absent entirely), and **the lift is not
+cannot recover from the data: **the lift is lossy** (a few of the 163 segments have NULL GRCh38
+coordinates — six in the current load — so a coordinate-window query silently misses them
+unless it falls back to the GRCh37 pair, and 4,880 of 267,237 windows are absent entirely), and **the lift is not
 structure-preserving** (the published windows are a regular 200 kb / 10 kb-step grid in GRCh37;
 the lifted ones are not, so distinct windows are counted on the GRCh37 triple). Both facts are
 written into the `tables:` blocks rather than left for a reader to infer, because neither is
