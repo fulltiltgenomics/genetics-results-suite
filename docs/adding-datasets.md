@@ -138,7 +138,10 @@ the API-side resource grouping.
   `/gene_based/{gene}` across all traits) plus a `"prefix"` + `"suffix"` for the
   unfiltered per-trait files that `/gene_based_results_by_phenotype/{resource}/{trait}`
   streams. The per-trait files are also what BigQuery's `gene_burden_results` is loaded
-  from. For genebass the combined file holds the mlog10p_burden > 4 hits only.
+  from. For genebass the combined file holds the mlog10p_burden > 4 hits only. The files
+  have no `resource` column; `/gene_based/{gene}` appends one from the data file's
+  `"resource"`, so a new entry's `"resource"` is what the SDK's `gene_burden(gene=...)`
+  frame shows.
 - **Expression / coloc / chromatin / gene-disease** → the correspondingly named module.
 - **Open chromatin / variant effect** — unlike a plain new dataset (which only needs a
   `datasets.yaml` entry plus an existing product config), these are two **new products**.

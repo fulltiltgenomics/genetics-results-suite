@@ -2025,7 +2025,11 @@ hand-maintained list per router is exactly the thing that rots, no declaration i
   against the dict literals in its own module source.
 - `gene_burden(gene=...)` needed no declaration at all: it serves TSV, whose header line
   `tabix -h` prints even for a locus with no hits, and the SDK was simply dropping it —
-  `ToolExecutor` now takes those names from the reader it already built.
+  `ToolExecutor` now takes those names from the reader it already built. The burden files
+  carry no `resource` column, so results-api's `/gene_based/{gene}` appends one from each
+  data file's config; its values are results-api's resource ids, not the strings
+  `gene_burden_results_v.resource` holds (`schema` vs `schema2`), so a script must not join
+  the two on it.
   `gene_burden(phenotype=...)` reads a file, so it advertises that file's real header via
   `json_phenotype_with_header`.
 - `gene_disease` expresses "no associations" as a **404** that the SDK reads as an empty
