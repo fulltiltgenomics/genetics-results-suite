@@ -606,7 +606,13 @@ The analyzer is staleness-based: it only (re)analyzes sessions that are missing,
 messages (continued conversations, `updated_at > analyzed_at`), or were analyzed by an older
 `ANALYZER_VERSION` — unchanged conversations are skipped, so the nightly run only spends LLM
 budget on what actually changed. Results are written into the `conversation_analysis`/
-`conversation_issue` tables in `chat_history.db`.
+`conversation_issue` tables in `chat_history.db`. The issue-text → category sidecar at
+`/data/analysis_output/.cache/issue_categories.json` carries a fingerprint of the taxonomy
+it was built with and is discarded on mismatch, so a taxonomy change in the image
+re-categorizes every issue on the next run by itself. A failed categorization batch is
+not cached (it would never be retried) and exits the run non-zero so the `OnFailure`
+restart below redoes it; the failure shows up as a failed Job and as an ERROR line in
+the monitor's log scan.
 
 - **Storage / RWO co-scheduling**: the job mounts the same `chat-data` PVC at `/data` as
   chat-backend so it reads/writes the same `chat_history.db`. Because that PVC is `ReadWriteOnce`,
