@@ -229,6 +229,7 @@ scripts/                             build, deploy and verification scripts
   bq-dev-dataset.sh                  stand up, verify or tear down the BigQuery rehearsal dataset (docs/bigquery-dev-dataset.md)
   build-all.sh                       build and push every image
   build.sh                           build and push one service's image
+  chat-memory-proving-ground.py      staging recipe and check runner for the per-project chat memory feature; `check all` or one numbered check, each PASS/FAIL with its numbers; cleanup reports DONE or FAILED
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
   check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
@@ -1213,6 +1214,19 @@ Guardrail 1 lives inside `load_deploy_env`, which `rollout.sh` never calls — v
 2. `./scripts/deploy.sh` (or `./scripts/rollout.sh <service>` for one service) — applies manifests and force-restarts pods so they pull the freshly-built `:latest` images
 
 If you only run `deploy.sh` without building, the rollout restart will re-pull whatever `:latest` currently points to in the registry (i.e. the last build), so no code changes from upstream service repos will be picked up.
+
+**Layer cache.** Every `docker build` in `build.sh` and `build-all.sh` carries the flags
+`set_build_cache_args` (`scripts/lib/env.sh`) sets: `--cache-from` the image's own previously
+pushed `:latest`, and `--build-arg BUILDKIT_INLINE_CACHE=1` to export that cache into the image
+being pushed. The two are one mechanism — without the build-arg, `--cache-from` points at an
+image carrying no cache manifest. A missing `:latest` or an unreachable registry degrades to a
+reported-but-non-fatal import failure, so the first build of a new image needs no guard. What it
+does **not** cover: inline cache is the final stage only (the docker driver exports nothing
+else), so the builder stages of the browser, bff and sandbox images rebuild whenever the local
+cache is cold; and the local cache's retention is per-host `/etc/docker/daemon.json`
+(`builder.gc.policy`) that no clone carries — BuildKit's default reserved space can be below one
+full `build-all` run's cache, which makes every build cold on a host whose disk sits near its
+GC minimum-free threshold. README's "Layer cache" has the host-side procedure.
 
 - **Full deploy**: `./scripts/deploy.sh` — runs terraform apply, configures kubectl, deploys all k8s manifests; derives the container registry from the terraform `registry` output (overridable via `REGISTRY` env var, which must agree with `DEPLOY_ENV` unless `REGISTRY_FORCE=1`) and substitutes it in k8s manifests at deploy time; `CONFIG_PROFILE` (terraform variable, default `daly`) selects the data profile for results-api (`daly` or `finngen`); creates a `datasets-config` ConfigMap from `configs/datasets.yaml` and mounts it into results-api and db-api pods at `/app/configs/datasets.yaml` (env var `DATASETS_CONFIG_PATH`); rag-service is skipped by default (set `ENABLE_RAG=true` to include it); after applying manifests, force-restarts all app deployments so pods pick up `:latest` images and ConfigMap changes (subPath mounts don't propagate; oauth2-proxy doesn't hot-reload). Does **not** build images — run `build-all.sh` or `build.sh` first if you need new code.
 - **The chat Tools control**: whether the chat options show the Tools row (the Code execution switch) is a per-deployment build-time setting, `SHOW_TOOLS_CONTROL` in the deployment's `.env.<name>`; `build.sh`/`build-all.sh` read it (unset means shown) and pass `--build-arg SHOW_TOOLS_CONTROL` → the browser's Dockerfile writes `VITE_SHOW_TOOLS_CONTROL` into `.env` → `src/config/showToolsControl.ts`, where only the literal `false` hides the row. A deployment that hides it decides its users' surface through `DEFAULT_TOOL_PROFILE` on chat-backend; a user's earlier stored choice still applies, there is just no control left to change it with. Staging hides it (`docs/environments.md`).
@@ -2293,24 +2307,54 @@ rather than a row removal, precisely so a restored `chat_messages` row keeps res
 `--llm-config-db` as `llm_config.db` beside `--db`, so its report names sets without any manifest
 change.
 
-## Chat memory (recent-work digest)
+## Chat memory (per-project digest)
 
 A user can opt in to having the chat model remember the *shape* of their own earlier
-conversations — what they were about, not what was found. On a session's first turn, a
-derived index of the user's other recent sessions is rendered once and joined into system
-block 1 beside the instruction envelope, so it costs the same one cache write per session
-that the instructions already pay and no new cache breakpoint (`docs/chat-tool-reference.md`
-§4). Like instructions, the feature spans two service repos and needed no manifest or
-infrastructure change here.
+conversations **in the same project** — what they were about, not what was found.
+Conversations are grouped into projects, and a conversation that is not filed into one gets no
+memory at all: the digest describes a line of work, and an unfiled chat names none. On the first
+turn a filed session takes, a derived index of that project's other sessions is rendered once and
+joined into system block 1 beside the instruction envelope, so it costs the same one cache write
+per session that the instructions already pay and no new cache breakpoint
+(`docs/chat-tool-reference.md` §4). Like instructions, the feature spans two service repos and
+needed no manifest or infrastructure change here.
 
 | Piece | Repo | Where |
 |-------|------|-------|
-| Entity extraction, digest rendering, caps | `../genetics-mcp-server` | `memory_digest.py` |
-| Opt-in setting, the four-condition gate, the log-line pseudonym | `../genetics-mcp-server` | `memory_gate.py` |
+| Entity extraction, session clustering, digest rendering, caps | `../genetics-mcp-server` | `memory_digest.py` |
+| Opt-in setting, the four-condition gate, the in-project session cap, the log-line pseudonyms | `../genetics-mcp-server` | `memory_gate.py` |
 | Envelope wrapping, per-turn resolution, block-1 assembly | `../genetics-mcp-server` | `config/defaults.py` (`memory_envelope`), `chat_api.py` (`_resolve_user_memory`, `_load_user_memory`), `llm_service.py` (`_stream_anthropic`) |
-| Storage columns, first-writer-wins write, pin | `../genetics-mcp-server` | `db/chat_history_db.py` |
-| `GET /chat/v1/memory`, `PUT /chat/v1/chat/sessions/{id}/pin` | `../genetics-mcp-server` | `routers/chat_history.py` |
-| Memory dialog, pin star on a session | `../genetics-results-browser` | `src/features/chat/MemoryDialog.tsx`, `memoryApi.ts` |
+| Project rows, session membership, first-writer-wins digest write, pin | `../genetics-mcp-server` | `db/chat_history_db.py` (`chat_projects`, `chat_sessions.project_id` / `.context_digest`) |
+| Project, filing, memory and pin endpoints | `../genetics-mcp-server` | `routers/chat_history.py` |
+| Sidebar project sections and filing, memory dialog, pin star, memory chip | `../genetics-results-browser` | `src/features/chat/` — `ChatHistorySidebar.tsx`, `useProjects.ts`, `projectsApi.ts`, `MemoryDialog.tsx`, `memoryApi.ts`, `LLMChat.tsx` |
+
+**Projects.** A project is a row in `chat_projects` (per user, a name, a creation and an update
+time) and membership is one nullable column, `chat_sessions.project_id` — on the session rather
+than on its messages, because `fork_session` copies message-level fields and grouping must not
+travel with a fork. `chat_history_db.PROJECTS_MAX_PER_USER` bounds how many a user can hold. The
+sidebar orders projects by last activity, which `list_projects` derives as the newest `updated_at`
+among a project's sessions (falling back to the project row's own, which only a rename touches):
+deriving it on read leaves the chat write path untouched, at the cost of one LEFT JOIN over a list
+the cap keeps short.
+
+**The read path** (`chat_api._load_user_memory`, one `to_thread` hop because every step is a
+database call). After the gate, the session row decides: **no project, no memory** — and the
+digest window is not even opened, because called without a project it spans every session the
+user owns. `chat_sessions.context_digest` is then read as a **tri-state**: NULL means nothing has
+been rendered for this session yet; a stored string is handed back verbatim; and a stored **empty
+string is a hit, not a miss** — it records that the project held nothing else to index, and
+reading it as absent would re-render on every turn until the project gained a second conversation,
+i.e. memory appearing mid-session. Otherwise the digest is rendered over the project's window
+(`get_recent_sessions_for_digest` with the project id: `memory_gate.MEMORY_PROJECT_SESSION_CAP`
+most recent sessions plus that project's pinned ones, the current session excluded) and stored —
+an empty render included.
+
+**Moving a conversation costs one uncached turn, deliberately.** `set_session_project` nulls
+`context_digest` whenever the project actually changes, so the next turn renders the new project's
+index; filing, moving and unfiling therefore each move block 1 once and lose the cached prefix for
+that one turn. The alternative — keeping a digest that describes a grouping the conversation is no
+longer in — is worse than a single cache miss. Re-filing a session where it already sits (including
+unfiled → unfiled) is a no-op that keeps the digest.
 
 **What is remembered.** `memory_digest.extract_entities` walks a session's assistant
 `tool_use` **inputs** only — never a tool's result — over the closed kind set in
@@ -2325,57 +2369,66 @@ first-message head, and, for a pinned session, its excerpted question and answer
 prompt describing it as still there. `phenotype_code` is collapsed and length-capped like the title but not scrubbed, because the artifact pattern cannot match a phenotype code. An extracted entity value
 that matches the same pattern is dropped outright rather than replaced
 (`memory_digest._entities_str`), because an entity line names each value once. **Never remembered:** tool results, plots,
-downloads, and secret chats — a secret conversation writes no `chat_sessions` row at all, so
-there is nothing for the digest to read. A session you only *read* as another user's shared
-link never enters your digest (`get_session_for_access` clears `context_digest` for a
-non-owner reader — that keeps a shared reader from seeing the *owner's* digest, a different
-property from what follows). A session you *fork* is not excluded: `fork_session` makes the
-fork your own session (title `"Fork of: ..."`, `content_json` copied), and
-`get_recent_sessions_for_digest` selects by `user_id`, so the fork's title and the entities
-mined from its copied messages do enter your digest. That is exactly why `memory_envelope`
-wraps the digest in the same guardrail treatment as an instruction body — its docstring
-notes the digest "can include content forked from another user's shared session," which is
-why the model is told to read the block as content, never as instruction.
+downloads, unfiled conversations, conversations in another of the user's projects, and secret
+chats — a secret conversation writes no `chat_sessions` row at all, so there is nothing for the
+digest to read. A session you only *read* as another user's shared link never enters your digest,
+and `get_session_for_access` clears both `context_digest` and `project_id` for a non-owner reader:
+both describe how the owner organizes their own conversations. A session you *fork* lands
+**unfiled** (`fork_session` copies neither field), so it enters no digest until you file it
+yourself; once you do, its copied messages are mined like any other session of yours. That is
+exactly why `memory_envelope` wraps the digest in the same guardrail treatment as an instruction
+body — its docstring notes the digest "can include content forked from another user's shared
+session," which is why the model is told to read the block as content, never as instruction.
 
-**Opt-in.** Off by default. `memory_gate.MEMORY_SETTING_KEY` (`chat_memory`) is a
-`user_settings` row read the same generic way the other chat options are (see below); until a
-user sets it to `"on"`, nothing is rendered into a prompt and nothing is stored, and no
-memory log line is emitted on a chat turn. `GET /chat/v1/memory` is the exception: it renders
-the digest fresh on request regardless of the setting, so the dialog can preview what memory
-would remember — that render is never stored.
+**Opt-in.** Off by default, and global rather than per project. `memory_gate.MEMORY_SETTING_KEY`
+(`chat_memory`) is a `user_settings` row read the same generic way the other chat options are (see
+below); until a user sets it to `"on"`, nothing is rendered into a prompt and nothing is stored,
+and no memory log line is emitted on a chat turn. The per-project preview endpoint is the
+exception: it renders fresh on request regardless of the setting, so the dialog can show what
+turning memory on would remember — that render is never stored.
 
 **Where it lives.** The rendered text sits in `chat_sessions.context_digest`, in
 `chat_history.db` on the same `chat-data` PVC and the same daily GCE disk snapshot as every
 other conversation row ("Chat instructions" above documents the same backup path for
-`llm_config.db`). Deleting a session deletes its row outright, so every digest rendered
-*after* the deletion — `GET /chat/v1/memory`, and any session started from then on — omits
-it. But every *other* session of that user that already carries a non-NULL `context_digest`
-keeps its frozen copy verbatim for the rest of that session's life, by design: the block is
-byte-stable, rendered once on a session's first turn, never rewritten afterward. Those stored
-copies are a second store that deletion does not purge today — this is the epic's decision D3
-territory: purging them would mean re-rendering `context_digest` on the user's other sessions
-at delete time, at the cost of one cache miss each.
+`llm_config.db`). Deleting a conversation deletes its row outright, so every digest rendered
+*after* the deletion omits it — but every *other* session in that project that already carries a
+non-NULL `context_digest` keeps its frozen copy verbatim for the rest of that session's life, by
+design: the block is byte-stable for a session's whole length or it invalidates the cached prefix
+on every follow-up turn. Those frozen copies are a second store that deletion does not purge, now
+bounded to the one project the deleted conversation was filed in. Deleting a **project** offers
+the two paths the sidebar makes the user choose between: `delete_project` unfiles its
+conversations and keeps them (they lose memory on their next turn), `delete_project_with_sessions`
+deletes them, each through `delete_session` so the message cascade and the foreign-key-less
+`chat_turn_metrics` rows go with them.
+
+**Digests stored before projects existed** stay in the column untouched and unread: their sessions
+are unfiled, and the read path answers "no project, no memory" before it ever looks at the column.
 
 **Why it is pinned per session.** `set_context_digest` writes only when the session's
 `context_digest` is still NULL (first writer wins) and every later turn of that session reads
-the stored bytes back verbatim rather than re-rendering — the block must be byte-stable for
-the life of a session or it invalidates the cached prefix on every follow-up turn. That
-matters because block 1 is genuinely cold at the start of most sessions: measured 2026-09-09
-against production `chat_history.db` (`scripts/memory_premise_stats.py`, excluding
-`anonymous`/`mcp-tool`). All-time, inter-session gaps run past the ~5-minute ephemeral cache
-TTL for about 93% of returns (median gap 47.9h; only 6.7% of consecutive sessions from the
-same user start within 5 minutes of each other); the last-90-day window lands in the same
-place (median gap 61.5h; 6.9% under 5 minutes) — a cache design bought once per session, not
-once per turn, is what fits that distribution either way. The premise itself cleared its kill
-criteria by a wide margin on the same last-90-day measurement: 78.7% of sessions came from a
-returning user, and 22.9% of those re-mentioned a prior-session gene/phenotype/variant in
-their first message (re-run with the shared extractor; the kill thresholds were 20% and 15%).
-The digest's own steady-state cost — one rendering per session, cached for every turn after
-it — came out to roughly $0.005/turn, well under the 10%-of-median-turn-cost bar the epic set
-for reverting the feature on cost alone; that cost baseline came from the BigQuery log sink
-(`genetics_chat_logs.stdout`, `cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`)
-rather than from `memory_premise_stats.py` itself, because production's `chat_history.db`
-carries no `chat_turn_metrics` table to read a per-turn cost from.
+the stored bytes back verbatim rather than re-rendering. That matters because block 1 is genuinely
+cold at the start of most sessions: measured 2026-09-09 against production `chat_history.db`
+(`scripts/memory_premise_stats.py` in `../genetics-mcp-server`, excluding `anonymous`/`mcp-tool`),
+inter-session gaps run past the ~5-minute ephemeral cache TTL for about 93% of returns (median gap
+47.9h all-time, 61.5h over the last 90 days) — a cache design bought once per session, not once
+per turn, is what fits that distribution. The digest's own steady-state cost came out to roughly
+$0.005/turn, well under the 10%-of-median-turn-cost bar set for reverting the feature on cost
+alone; that baseline came from the BigQuery log sink (`genetics_chat_logs.stdout`,
+`cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`) rather than from
+`memory_premise_stats.py` itself, because production's `chat_history.db` carries no
+`chat_turn_metrics` table to read a per-turn cost from.
+
+**Why per project rather than per recent conversations.** The same premise script answers it:
+`memory_digest.cluster_sessions` groups a user's sessions by shared strict entities
+(gene/phenotype/variant) as a proxy for a line of work, and `analyse_clusters` reports **M1** (are
+users multi-threaded at all), **M2** (how often the session a recency digest would lead with
+belongs to a different line of work than the one being referred back to) and **M3** (how often the
+session actually meant has fallen out of the recency window while sitting in the same cluster).
+The measured values and the ruling they produced — proceed, and keep the digest recency-shaped
+*inside* the project rather than spanning the whole of it — are recorded with the feature's epic
+in the issue tracker, not here, because they are a dated measurement rather than a property of the
+code. `memory_gate.MEMORY_PROJECT_SESSION_CAP` carries the consequence, with a comment saying what
+would justify raising it.
 
 **Gates.** `memory_gate.memory_gate_open` — point at the code rather than this doc for the
 exact conditions; opt-in, `gateway_asserted` (the digest is private content keyed to an
@@ -2385,29 +2438,81 @@ service identity or the shared `anonymous` of an auth-less deployment are all in
 required.
 
 **Cap.** `memory_digest.MAX_DIGEST_CHARS`, with `MAX_PINNED_SESSIONS` bounding how many pinned
-sessions are ever considered (both in `memory_digest.py`); the recency window on which sessions
-are candidates at all, `MEMORY_DIGEST_SESSION_LIMIT`, lives in `memory_gate.py` instead. Over
-the char cap, oldest unpinned entries drop first, then oldest pinned entries drop down to the
+sessions are ever considered (both in `memory_digest.py`); how far back inside one project a
+session is a candidate at all, `MEMORY_PROJECT_SESSION_CAP`, lives in `memory_gate.py` instead.
+Over the char cap, oldest unpinned entries drop first, then oldest pinned entries drop down to the
 newest one, which is truncated rather than dropped if it alone still overflows
 (`memory_digest._assemble`).
 
-**Endpoints**, both in `routers/chat_history.py`, and both 404ing for a caller that is not an
-identifiable person (a service identity, or the shared `anonymous` of an auth-less
-deployment): `GET /chat/v1/memory` renders the digest fresh for the caller regardless of the
-opt-in setting, so the dialog can preview what turning memory on would remember; `PUT
-/chat/v1/chat/sessions/{id}/pin` toggles a session's pin, 404ing (not 403ing) for a session the
-caller does not own — the same non-owner-invisible pattern the rest of the router uses — and
-404ing by construction for a secret chat's id, which never had a row to pin.
+**Endpoints.** All in `routers/chat_history.py`, all `Depends(auth_required)`, all scoped to the
+authenticated caller, and all 404ing rather than 403ing for something that is not the caller's —
+the same non-owner-invisible pattern the rest of that router uses — and for a caller that is not an
+identifiable person (a service identity, or the shared `anonymous` of an auth-less deployment).
+Read the decorators there for paths and status codes: `list_projects`, `create_project`,
+`update_project` (rename), `delete_project` (with or without its conversations),
+`list_project_sessions`, `set_session_project` (file, move, unfile), `get_project_memory` (the
+project's digest rendered fresh, regardless of the opt-in, so the dialog can preview it) and
+`pin_session` (a pin keeps a conversation in its own project's digest after it falls out of the
+in-project window; 404 by construction for a secret chat, which never had a row to pin).
 
-**Proving-ground checks** (re-run after any staging rollout of this feature): the session-start
-`memory digest: user=<hash> sessions=N chars=M` log line; the streamed `usage` event's
-`cache_read` on a session's second turn is at least as large as the first turn's
-`cache_create`, confirming the block actually cached; the `digest` field of `GET
-/chat/v1/memory`, fetched before starting the user's next session, equals byte for byte the
-text that session's first turn pins — that session's log line reports `chars=M` where `M ==
-len(digest)` (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
-whole response, is the comparable quantity); and, for a user with the setting off, system block
-1 is byte-identical to a build with no memory code at all and no log line is emitted.
+**Dialog and chip.** `MemoryDialog` is mounted twice in the browser. From the account menu it
+takes no project and is the global opt-in switch plus a pointer to projects. From a project's
+sidebar menu, or from the "Used *&lt;name&gt;* memory" chip under a turn (the label falls back to
+"project" when the project has no name), it takes the project id and
+shows that project's freshly rendered digest, the character counter against the cap, and the
+project's sessions with their pin stars, alongside what removes a line from it: unfile or delete
+the conversation, unpin it, or turn memory off. The chip is driven by the SSE `memory` event,
+which carries the project name and the session and character counts once per session — read back
+from what the turn actually rendered, so the event and the `memory digest:` log line cannot
+disagree.
+
+**Proving ground.** The environment is the staging cluster only, because staging is where the
+*deployed build* can be observed: the pod's `.status.startTime` says which image is answering,
+`kubectl logs` carries the memory-digest log line, and the real auth-gateway asserts the
+identity the gate keys on. The path is reproducible locally — `auth_required` resolves the
+internal-secret marker plus an allow-listed identity header to that email, and the only local
+blocker is `gateway_asserted`, which needs `GATEWAY_IDENTITY_SECRET` exported before chat-api
+starts (it defaults to empty and `dev-stack.sh` never sets it) and both headers sent — but a
+local run proves the code, not the build. The kubectl context used for every check must be the
+context `kubectl` is already on and must end in `-staging` (the suite's is named
+`gke_daly-finngenie_us-central1-a_finngenie-staging`); a name is not an endpoint, so the script
+prints the kubeconfig it resolved. Getting a build there: `scripts/build-all.sh` clones the
+pushed GitHub staging branches of the sibling repos and builds and pushes their images;
+`scripts/rollout.sh --context <ctx> <service> <TAG>` then updates one deployment to an explicit
+`YYYYMMDD.sha` tag — a bare `:latest` is a silent no-op on this cluster. Verify a rollout
+actually landed by the pod's `.status.startTime`, never by `rollout.sh`'s own success message.
+
+Re-run after any staging rollout of this feature, as synthetic users, with
+`scripts/chat-memory-proving-ground.py --context <ctx> --user <synthetic email>`: (1) the
+session-start memory-digest log line fires only for a session inside a project, never for an
+unfiled session or a user without the `chat_memory` setting; (2) a project's rendered memory
+endpoint returns a digest that byte-equals the digest the next new session in that project is
+pinned with (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
+whole response, is the comparable quantity); (3) a session's second turn reads back at
+least as many cached tokens as the first turn created (`chat_turn_metrics.cache_read_tokens`
+against `cache_create_tokens`, matched on the turn's `message_id`), on the default model with
+tools on, confirming the block actually cached; (4) moving a session into a different
+project produces exactly one `cache_create` spike on its next turn — the digest re-renders
+because block 1 changed — and stays cached after that, measured against a control turn run
+immediately before the move so the spike cannot be the prompt cache expiring on its own; (5) the SSE memory event, which already
+ships, carries the project's name, exactly once per session; (6) a non-owner reading a shared
+session link never sees a `project_id`; (7) forking a session lands the fork with no project.
+All seven checks are implemented and each prints PASS or FAIL with its numbers; nothing
+reports SKIP, and a check that cannot be evaluated (an empty digest to compare, a second user who
+already carries the setting) fails rather than passing quietly. `check all` runs 1-7 in order and
+lets the later checks reuse the project and seeded sessions the earlier ones created, while each
+numbered check also runs alone and creates whatever it is missing. Reuse is scoped to a single
+run: the warm session checks 3 and 4 share is rebuilt whenever it was not driven by that run or
+no longer sits in the project asked for, because check 4 moves it out and leaves it there. **No run has happened yet**:
+the checks drive real chat turns against the deployed build, so they need the rollout above
+first. Checks 1, 6 and 7 need a second synthetic user (`--user-2`) — check 1's no-setting arm drives a turn as that user. Every check leaves synthetic
+state behind by design and records the ids it created — sessions, projects and the `chat_memory`
+setting, each against the user that created it — in a state file; the script's own `cleanup`
+subcommand deletes exactly those ids and nothing else (projects with
+`?with_sessions=true`), refuses any `--user`/`--user-2` outside the synthetic
+`memory-check*@broadinstitute.org` family, and needs `--yes` before it deletes anything — `--yes`
+and `--state` are parent-parser options, so they precede the subcommand (`--yes cleanup`, not
+`cleanup --yes`).
 
 ## Chat option persistence
 
@@ -2426,7 +2531,7 @@ the next new chat. Starting a new chat (including secret chat) returns the contr
 A conversation that predates a column reads NULL there and falls through to the user's default
 rather than to the built-in one.
 
-**Chat memory's opt-in** (`chat_memory`, see "Chat memory (recent-work digest)" above) rides the
+**Chat memory's opt-in** (`chat_memory`, see "Chat memory (per-project digest)" above) rides the
 same `user_settings` mechanism as the row above, read and written through the same generic
 endpoints — but it is not one of the four chat options: it has no `chat_messages` column and no
 per-conversation value, because it describes the user's account, not a single conversation.

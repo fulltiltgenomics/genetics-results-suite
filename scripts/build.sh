@@ -83,7 +83,9 @@ if [ "${SERVICE}" = "sandbox" ]; then
 
   TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
   echo "=== Building sandbox (tag: ${TAG}) ==="
-  docker build --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)" \
+  set_build_cache_args sandbox
+  docker build "${BUILD_CACHE_ARGS[@]}" \
+    --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)" \
     -t "${REGISTRY}/sandbox:${TAG}" \
     -t "${REGISTRY}/sandbox:latest" \
     "${SANDBOX_DIR}"
@@ -167,7 +169,9 @@ esac
 
 # build and push
 echo "=== Building ${IMAGE} (tag: ${TAG}) ==="
-docker build "${BUILD_ARGS[@]}" \
+# registry layer cache, same flags build-all.sh uses — see set_build_cache_args in lib/env.sh
+set_build_cache_args "${IMAGE}"
+docker build "${BUILD_CACHE_ARGS[@]}" "${BUILD_ARGS[@]}" \
   -t "${REGISTRY}/${IMAGE}:${TAG}" \
   -t "${REGISTRY}/${IMAGE}:latest" \
   "${WORK_DIR}/${REPO}"
