@@ -60,12 +60,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 64 | the data tools — `api` 44, `general` 20 |
+| `TOOL_DEFINITIONS` | 66 | the data tools — `api` 46, `general` 20 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**70 tool definitions in total** across the four lists: `api` 44, `bigquery` 2, `general` 20, `orchestration` 4.
+**72 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 20, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -216,7 +216,7 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 66 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `False` — the no-code surface | 68 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
 | `True` — the code surface | 20 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 17 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
