@@ -309,7 +309,7 @@ export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
 export ALPHAGENOME_API_KEY="..."         # optional; with no key chat-backend does not
-                                         # advertise the AlphaGenome tool at all
+                                         # advertise either AlphaGenome tool at all
 export COHERE_API_KEY="..."              # optional, for rag-service embeddings (required when ENABLE_RAG=true)
 export ADMIN_USERS="a@example.com,b@example.com"  # optional, emails allowed on the chat admin page
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."  # optional, for the monitor CronJob

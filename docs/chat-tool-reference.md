@@ -60,12 +60,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 67 | the data tools — `api` 46, `general` 21 |
+| `TOOL_DEFINITIONS` | 68 | the data tools — `api` 46, `general` 22 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**73 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 21, `orchestration` 4.
+**74 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 22, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -218,12 +218,12 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 69 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
-| `True` — the code surface | 21 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 18 data tools whose `sdk_replaceable` is false |
+| `False` — the no-code surface | 70 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `True` — the code surface | 22 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 19 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
 
-The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `get_myvariant_annotations`.
+The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured`, `get_myvariant_annotations`.
 
 <!-- END GENERATED: tool-surfaces -->
 
@@ -869,7 +869,7 @@ means approved somewhere in the world, NOT 'FDA-approved'"*.
 
 **Negative constraints on interpretation**
 
-- `get_alphagenome_variant_predictions`: *"CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT"* … *"'What does this variant do?', 'tell me about rs...', 'is this variant causal?', 'why is this locus associated?' are NOT requests for AlphaGenome"* … *"This suite having nothing to say about a variant is NOT a reason to call it."* The opt-in has no enforcement behind it — no per-user setting, no per-conversation column, no UI toggle — so this description and the `### AlphaGenome variant predictions (opt-in)` prompt block are the whole of it. It also carries the reading rules the result's own `validation` block cannot state: *"`quantity: \"magnitude\"` — the direction is NOT reported and you must not state or infer one"*, and that the population rho *"is NOT a confidence for the variant in hand and must never be quoted as one"*.
+- `get_alphagenome_variant_predictions` and `compare_alphagenome_with_measured` (the opt-in paragraph is ONE literal, `_ALPHAGENOME_OPT_IN`, spliced into both descriptions, so the two cannot drift): *"CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT"* … *"'What does this variant do?', 'tell me about rs...', 'is this variant causal?', 'why is this locus associated?' are NOT requests for AlphaGenome"* … *"This suite having nothing to say about a variant is NOT a reason to call it."* The opt-in has no enforcement behind it — no per-user setting, no per-conversation column, no UI toggle — so this description and the `### AlphaGenome variant predictions (opt-in)` prompt block are the whole of it. It also carries the reading rules the result's own `validation` block cannot state: *"`quantity: \"magnitude\"` — the direction is NOT reported and you must not state or infer one"*, and that the population rho *"is NOT a confidence for the variant in hand and must never be quoted as one"*. The comparison tool adds the rule its own response shape enforces: a magnitude-only modality's concordance carries *"NO `direction` key at all"*, and a modality with no measured substrate answers *"nothing measured to compare against"* rather than pairing something.
 - `search_cbioportal`: *"This is somatic tumour data. It says nothing about germline association — do not read a high mutation frequency here as evidence for a GWAS or disease-association claim"* and the GRCh37/GRCh38 build warning (*"Never compare a coordinate from this tool against a GRCh38 position."*).
 - `search_scientific_literature`: *"You do NOT choose the backend and there is no parameter for it"* … *"Do NOT invent hybrid labels like 'PubMed/Europe PMC' or 'Perplexity/PubMed'"*.
 - `get_summary_stats`: *"Do NOT use this as a discovery tool — use credible set tools or PheWAS for that."*
@@ -1449,6 +1449,52 @@ SIDE BY SIDE WITH MEASURED DATA the labelling matters MORE, not less: label ever
 | `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call, and one call per variant is the expensive mistake here. A variant the model cannot score comes back as its own failed row, leaving the rest of the batch intact. |
 | `cell_type` | `string` | no | — | — | Cell type or tissue to score in, matched against AlphaGenome's own biosample names (e.g. 'liver', 'K562'). Omit to take the strongest effect across all tracks. A request that matches nothing falls back to all tracks and says so in `cell_type_match`. |
 | `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to score. Omit for the default set, which is exactly the modalities calibrated against this suite's own measurements. Any modality NOT in that default is uncalibrated and has to be asked for by name; its result says so in `validation`. |
+
+`required`: ['variants']
+
+#### `compare_alphagenome_with_measured`
+`TOOL_DEFINITIONS` — category `general`
+
+Description as sent to the model:
+
+```text
+MEASURED RESULTS FROM THIS SUITE PLACED BESIDE ALPHAGENOME'S PREDICTION for the same variant, per modality, with their concordance. The measured side is this suite's own data — caQTL, eQTL and sQTL effect sizes from `credible_sets_v`, MPRA allelic skew from `mpra_v` — and the predicted side is the same model output `get_alphagenome_variant_predictions` returns. Use this when someone wants to know how a prediction stands up against what was actually measured.
+
+This is NOT for variants the suite is silent about: a comparison needs both halves, and it is worth most exactly where the measured data already exists.
+
+CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT. Exactly three things count as asking:
+1. the user names AlphaGenome;
+2. the user asks for a model prediction of a variant's regulatory effect;
+3. the user asks how a measured value in this suite compares with what a model predicts for the same variant — that comparison is a first-class use of this tool, not a workaround.
+
+Nothing else is. In particular:
+- Do NOT call it as background enrichment, and do not add a prediction to an answer nobody asked one for.
+- "What does this variant do?", "tell me about rs...", "is this variant causal?", "why is this locus associated?" are NOT requests for AlphaGenome. Answer them from this suite's own measured and fine-mapped data.
+- This suite having nothing to say about a variant is NOT a reason to call it. Say the data is silent; you may OFFER a prediction in one line and then wait to be asked.
+- It is an ADDITIONAL source of evidence, not a fallback for gaps — and having it available is not a reason to use it. It is a rate-limited external model under a non-commercial licence.
+
+HOW TO READ THE RESULT. It carries BOTH kinds of number, so the envelope has no single `measured` flag — every value inside carries its own:
+- A `measured: true` value names its `source`: the view, the column, the assay, the resource, and the gene or accessibility peak that was measured. A `measured: false` value names AlphaGenome. Never merge, average or reconcile the two into one number, and never report a predicted value as a result from this suite.
+- `concordance.direction` is `"agrees"` or `"disagrees"` — the two signs match, or they do not. That is the whole claim. Do NOT compute a correlation, an error or an agreement score: with one variant there is nothing to correlate, and any such number would be fiction.
+- A modality whose `quantity` is `"magnitude"` has NO `direction` key at all, and both sides are reported unsigned. The absence IS the statement: a measured sQTL beta orients to a leafcutter intron cluster and the predicted splice delta has no corresponding orientation, so no direction agreement exists to report. Do not infer one, and do not describe such a pair as consistent or inconsistent in direction.
+- `measured_substrates[].population_rho`, with `rho_scope: "population"`, is how well that MODALITY tracked that substrate across a cohort of variants. It is a property of the pairing and NEVER this variant's confidence.
+- `context_match: "cross_tissue"` means the measurement is in a different cell type or tissue than the prediction was asked for. Say so — cell-type-matched comparisons are the stronger evidence.
+- The prediction's `cell_type_match` carries two independent flags: `matched` says whether the requested cell type resolved to tracks, and `resolution_failed` says the lookup itself failed. A failed lookup is "could not be checked", not "no match" — report them differently.
+- Empty `measurements` means one of two different things and the `note` says which: this suite has measured nothing for this variant, or the modality has no measured substrate here at all (the unvalidated tier-4 modalities). Never invent a comparison for the second — "nothing measured to compare against" is the answer.
+
+READ THE `validation` BLOCK BEFORE QUOTING A NUMBER. Every modality in the result carries its own — `tier`, `status`, `quantity`, `calibrated_against`, `population_rho`, `rho_scope`:
+- `tier` is how deeply the MODALITY was calibrated here — 1-3 against this suite's own measurements, 4 against nothing. It is a property of the modality and says nothing about how good this variant's prediction is; it is not a score, a rank or a confidence.
+- `quantity: "signed"` — the sign is meaningful (negative is a predicted decrease). `quantity: "magnitude"` — the direction is NOT reported and you must not state or infer one.
+- `population_rho` with `rho_scope: "population"` is a cohort-level Spearman correlation between this MODALITY and `calibrated_against`, across many variants. It is a property of the modality. It is NOT a confidence for the variant in hand and must never be quoted as one.
+- `status: "unvalidated"` (no `population_rho`) means the modality was never checked against anything measured in this suite. Say so whenever you report one.
+- `quantile` ranks the score against a genome-wide background and usually says more than the raw value.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call. |
+| `cell_type` | `string` | no | — | — | Cell type or tissue to compare in. It matches BOTH sides — AlphaGenome's biosample names and the measured assay's cell type or MPRA cell line (K562, HEPG2, SKNSH, HCT116, A549) — so passing it is what makes a matched comparison possible. Omit and every measurement comes back as `context_match: "not_requested"`. |
+| `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to compare. Omit for the default set, which is exactly the modalities that HAVE a measured substrate here. A modality outside it has nothing to compare against and comes back saying so. |
 
 `required`: ['variants']
 
