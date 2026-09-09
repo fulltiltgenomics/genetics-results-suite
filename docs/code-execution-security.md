@@ -765,6 +765,14 @@ The receiving end has to admit it too — a sandbox egress allow is necessary an
 
 <!-- END GENERATED: network -->
 
+**AlphaGenome changed nothing above, deliberately — the absence is the claim.** Its two tools
+sit on `ServerToolExecutor` in `tools/orchestration.py`, which `sandbox/prune_venv.py`'s
+`SDK_ALLOWLIST` does not ship, and the image installs the SDK `--no-deps` against
+`sandbox/requirements.txt` (`sandbox/Dockerfile`), so the `alphagenome` package is never in
+the sandbox venv — the sibling's `tests/test_alphagenome.py` AST-walks every allow-listed
+module to hold that; the allow-list above is untouched, and no rule was added to let a script
+reach the Atlas API.
+
 **Label contract.** A `podSelector` that matches no pod is not an error — it is silent
 no-coverage, and since this is the only egress policy in the namespace a label mismatch yields
 a sandbox with *unrestricted* egress and no signal anywhere. `scripts/test-network-policies.py`
