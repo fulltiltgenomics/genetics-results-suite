@@ -363,6 +363,13 @@ trait column is named anything other than `trait_original` must say so in its `t
 in `configs/datasets.yaml`, since the silent zero-row join is otherwise indistinguishable from
 "no results".
 
+`rcnv_segments_v` has no phenotype column at all: a segment is associated with several HPO
+groups, and they are an `ARRAY<STRING>` (`associated_hpos`). The join is
+`CROSS JOIN UNNEST(s.associated_hpos) AS hpo JOIN phenotypes_v p ON p.dataset = s.dataset AND
+p.trait_original = hpo` — one output row per (segment, phenotype). Equating the array column
+itself to `trait_original` is a type error rather than a zero-row join, so this shape fails
+loudly; what does not is forgetting that the row count multiplies.
+
 ## 7. Deploy
 
 1. **datasets.yaml-only changes** (metadata, pseudo flag, a new mapping rule): run
