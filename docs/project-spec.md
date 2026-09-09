@@ -197,6 +197,7 @@ configs/                             canonical dataset and resource definitions 
   datasets.yaml                      the single source of truth for datasets, resources and views
   ibd_gwas_pheno.json                per-phenotype metadata for external GWAS
   rag/                               RAG experiment configs (not k8s manifests)
+  rcnv_pheno.json                    per-phenotype metadata for the rare-CNV association study
   twins.yaml                         the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
 docs/                                everything below, and nothing else
   adding-datasets.md                 how to add a dataset across the repos and profiles
@@ -285,13 +286,15 @@ The YAML defines two exome dataset resources with different filtering levels: `g
 
 Summary statistics are served by results-api from per-phenotype tabix files two ways: `/api/v1/summary_stats/{resource}/{data_type}` (GET/POST) for named variants, and `/api/v1/summary_stats_by_region/{resource}/{data_type}/{region}` for every record in a `chr:start-end` region. Both require `phenotypes=<comma-separated>` — there is no combined file spanning a region across traits, unlike `credible_sets_by_region`. The genetics-mcp-server exposes both as `get_summary_stats` and `get_summary_stats_by_region`.
 
-Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.)
+Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.) The **rCNV2 product has no results-api endpoint at all**, by the same design: `get_dosage_sensitivity` and `get_rcnv_associations` are BigQuery-only, and results-api's part in it is that the `/api/v1/datasets` catalogue iterates the dataset registry rather than the product configs, so `collins_rcnv_2022` is listed there with no products against it.
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
 
 caQTL results are keyed by **peak**, not gene: `finngen_caqtl` rows in `credible_sets_v` carry a peak id (e.g. `chr5-35482826-35484273`) in the `trait` column, so a gene-based caQTL question is only answerable by joining through the Open4Gene peak-to-gene link table (`peak_to_gene_v`, the BQ face of the `finngen_chromatin_peaks` dataset) on `peak_id = trait` and `cell_type = cell_type`. The `tables.peak_to_gene_v` block in `datasets.yaml` carries the column descriptions, worked join examples, and an explicit warning against approximating the link by coordinates (linked peaks sit up to ~1 Mb away and most nearby peaks are not linked) — without it agents fell back to hand-written coordinate-window SQL that silently answered a different question. The `FinnGen%` resource rule is scoped to include `peak_to_gene_v` since the table is FinnGen ATAC-seq only.
 
 MPRA (Siraj et al. 2026) is a new functional-annotation product — measured intrinsic cis-regulatory allelic activity from a massively parallel reporter assay (221K fine-mapped + 86K control variants tested in 5 cell lines: K562, HepG2, SK-N-SH, HCT116, A549), served for both profiles. Like open_chromatin/variant_effect it is a new vertical rather than a plain dataset: one dataset `siraj_mpra` under resource `siraj_mpra` (`dataset_to_resource_rules` map `siraj_mpra%` -> `siraj_mpra`), `data_type: mpra`, `trait_type: null`. The source WIDE per-variant TSV is munged to LONG (one row per variant × `cell_line`, where `cell_line` ∈ {`meta`, K562, HEPG2, SKNSH, HCT116, A549}) carrying the emVar/active/log2Skew/log2FC calls, bgzip+tabix-indexed on GCS. Served two ways: results-api tabix range endpoints (`/api/v1/mpra` by-variant / by-region / by-gene, its own tabix vertical) and BigQuery (`mpra` base table / `mpra_v` view, which adds `resource`). The genetics-mcp-server exposes `get_mpra_by_variant`, `get_mpra_by_region`, and `get_mpra_by_gene`. Scientifically it is the functional-validation layer for the regulatory-buffering story (Kanai et al.): emVar rates and allelic-effect concordance scale with FinnGen fine-mapping PIP, and MPRA measures intrinsic reporter activity distinct from endogenous eQTL/caQTL and from in-silico variant_effect predictions.
+
+rCNV2 (Collins et al. 2022) is the suite's first **BigQuery-only** product: a cross-disorder rare-CNV dosage-sensitivity map over 54 HPO phenotype groups, served for both profiles as one dataset `collins_rcnv_2022` under a new resource `rcnv` (`dataset_to_resource_rules` map `Collins_rCNV%` -> `rcnv`), `data_type: rcnv`, `trait_type: binary`. There is **no results-api vertical and no product config entry** — nothing here is read by position per phenotype at request time — so all four faces are BigQuery views: `dosage_sensitivity_v` (per-gene pHaplo/pTriplo, a single published score set, so its `resource` is a constant rather than a derived `CASE`), `rcnv_gene_associations_v` (54 phenotypes x DEL/DUP x 17,263 genes), `rcnv_segments_v` (the 163 disease-associated segments, with their HPO groups, credible intervals and gene lists as arrays) and `rcnv_window_associations_v` (the genome-wide sliding-window meta-analysis, the largest table of the product). The phenotype axis is HPO rather than a suite trait code: the column is `phenotype` (an HPO id with the colon removed) and joins `phenotypes_v` on `dataset = 'Collins_rCNV_2022'`. Data is produced by `genetics-results-munge`'s `scripts/munge_rcnv.{py,sh}` (`--product scores|genes|segments|windows`) and loaded by `genetics-results-db`; the agent reaches it through `get_dosage_sensitivity` and `get_rcnv_associations`, through the sandbox SDK's `genetics.dosage_sensitivity()` / `genetics.rcnv()`, and through raw `query_database`.
 
 ### Classical HLA allele associations
 
@@ -491,6 +494,7 @@ The suite is **GRCh38** throughout, but the third-party resources are not unifor
 | myvariant.info | GRCh38 | assembly pinned to `hg38` on every request |
 | UniProt / EBI genomic-HGVS lookups | GRCh38 | pinned per-chromosome RefSeq accessions |
 | cBioPortal | **mostly GRCh37** (467 of 539 studies hg19) | never lifted over; matched on gene symbol and protein change only |
+| rCNV2 (Collins et al. 2022) | **GRCh37 source** | mixed by product: the gene-level tables are keyed on ENSG and the current symbol and carry **no coordinates at all**, so they are build-independent and join through `gene_annotations_v`; the segment and sliding-window tables are lifted to GRCh38 with UCSC liftOver and keep the published `*_grch37` pair beside the lift as the row's identity. The lift is lossy and is documented as such: ten of the 163 segments have NULL GRCh38 coordinates, and the lifted windows are no longer the regular grid the published ones are |
 | ChEMBL | none — the resource carries no coordinates | build-independent by construction: a gene resolves through UniProt to an accession, and drugs, targets and activities are keyed on that accession and on ChEMBL ids |
 
 cBioPortal is the one resource whose coordinates must not be compared with the
@@ -999,8 +1003,30 @@ A Python-based monitoring CronJob (`scripts/monitor/`) runs once a day (schedule
 **What it checks:**
 
 - **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset is present in the results-api `/api/v1/datasets` response.
-- **BigQuery data coverage** (`bq_summary.py`): Queries BQ views (`credible_sets_v`, `colocalization_v`, `coloc_credsets_v`, `exome_variant_results_v`, `gene_burden_results_v`, `asm_qtl_v`, `mpra_v`) for row counts and distinct resources. For credible_sets/exome/gene_based/asm_qtl/mpra views, compares actual resources against expected from `dataset_to_resource_rules`. For colocalization views, derives expected resources from the results-api's dataset products (coloc pairs). Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
+- **BigQuery data coverage** (`bq_summary.py`): queries each view in the table below for row counts and distinct resources, and compares the resources it finds against the expected set for that view. Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns.
 - **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace **of its own cluster** over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts. The cluster clause matters because Cloud Logging is project-wide and two deployments in one project (daly + daly-staging) both use the `genetics` namespace — without `K8S_CLUSTER` each would alert on the other's errors.
+
+The views it queries, and where each one's expected resources come from — a view is added to
+the check by adding it to `VIEWS` and to whichever of `_CONFIG_VIEWS` / `_API_VIEWS` it belongs
+in (`scripts/monitor/bq_summary.py`):
+
+<!-- BEGIN GENERATED: monitored-views -->
+
+| view | expected resources come from |
+|---|---|
+| `credible_sets_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `colocalization_v` | the results-api's coloc pairs |
+| `coloc_credsets_v` | the results-api's coloc pairs |
+| `exome_variant_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `gene_burden_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `asm_qtl_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `mpra_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `hla_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `rcnv_gene_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `rcnv_segments_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `rcnv_window_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+
+<!-- END GENERATED: monitored-views -->
 
 **Severity reclassification:** GKE's logging agent tags *everything a container writes to stderr* as `severity=ERROR` regardless of content, so the Cloud Logging severity is meaningless for the many services that log normally to stderr (uvicorn, postgres, batch scripts). The alerter therefore recovers the level the application itself reported by matching the message text against `_LEVEL_PATTERNS` (python/uvicorn `INFO:`, nginx `[error]`, postgres `[27] LOG:`), ranks it via `_LEVEL_RANK`, and drops anything below WARNING. Messages carrying no recognizable level fall back to the Cloud Logging severity (fail open, so unknown formats still alert). The count of dropped entries is logged to the CronJob's stdout so the suppression is never silent. Services that log progress to stderr must prefix it with a level (see `analyze_conversations.py`) or it will be reported as an error. Third-party tools whose output cannot be prefixed must be silenced at the source instead of added to the ignore list, so that their *real* errors still alert: `keycloak-postgres-backup` sets `DEBIAN_FRONTEND=noninteractive` (else debconf warns about the missing TTY on every run), buffers apt output to a temp file and replays it to stderr only when the install fails, and passes `gsutil -q` to drop the upload progress meter. Before that, one nightly backup in two surfaced ~10 phantom `[ERROR]` lines in Slack — intermittently, because the 02:00 UTC job is only inside the lookback window of the 08:00 monitor run and the 24h dedup TTL expires at almost exactly the backup's own 24h cadence.
 
@@ -1999,7 +2025,11 @@ hand-maintained list per router is exactly the thing that rots, no declaration i
   against the dict literals in its own module source.
 - `gene_burden(gene=...)` needed no declaration at all: it serves TSV, whose header line
   `tabix -h` prints even for a locus with no hits, and the SDK was simply dropping it —
-  `ToolExecutor` now takes those names from the reader it already built.
+  `ToolExecutor` now takes those names from the reader it already built. The burden files
+  carry no `resource` column, so results-api's `/gene_based/{gene}` appends one from each
+  data file's config; its values are results-api's resource ids, not the strings
+  `gene_burden_results_v.resource` holds (`schema` vs `schema2`), so a script must not join
+  the two on it.
   `gene_burden(phenotype=...)` reads a file, so it advertises that file's real header via
   `json_phenotype_with_header`.
 - `gene_disease` expresses "no associations" as a **404** that the SDK reads as an empty
@@ -2263,6 +2293,122 @@ rather than a row removal, precisely so a restored `chat_messages` row keeps res
 `--llm-config-db` as `llm_config.db` beside `--db`, so its report names sets without any manifest
 change.
 
+## Chat memory (recent-work digest)
+
+A user can opt in to having the chat model remember the *shape* of their own earlier
+conversations — what they were about, not what was found. On a session's first turn, a
+derived index of the user's other recent sessions is rendered once and joined into system
+block 1 beside the instruction envelope, so it costs the same one cache write per session
+that the instructions already pay and no new cache breakpoint (`docs/chat-tool-reference.md`
+§4). Like instructions, the feature spans two service repos and needed no manifest or
+infrastructure change here.
+
+| Piece | Repo | Where |
+|-------|------|-------|
+| Entity extraction, digest rendering, caps | `../genetics-mcp-server` | `memory_digest.py` |
+| Opt-in setting, the four-condition gate, the log-line pseudonym | `../genetics-mcp-server` | `memory_gate.py` |
+| Envelope wrapping, per-turn resolution, block-1 assembly | `../genetics-mcp-server` | `config/defaults.py` (`memory_envelope`), `chat_api.py` (`_resolve_user_memory`, `_load_user_memory`), `llm_service.py` (`_stream_anthropic`) |
+| Storage columns, first-writer-wins write, pin | `../genetics-mcp-server` | `db/chat_history_db.py` |
+| `GET /chat/v1/memory`, `PUT /chat/v1/chat/sessions/{id}/pin` | `../genetics-mcp-server` | `routers/chat_history.py` |
+| Memory dialog, pin star on a session | `../genetics-results-browser` | `src/features/chat/MemoryDialog.tsx`, `memoryApi.ts` |
+
+**What is remembered.** `memory_digest.extract_entities` walks a session's assistant
+`tool_use` **inputs** only — never a tool's result — over the closed kind set in
+`memory_digest.KINDS` (gene, phenotype, variant, dataset, view). The renderer
+(`_render_unpinned`/`_render_pinned`) adds the session's title, `phenotype_code`,
+updated-at date, and a capped head of its first user message alongside those entities. A
+pinned session additionally carries a capped excerpt of that first question and of its last
+assistant turn's text. Anything that reads like a download link or artifact filename is
+scrubbed to a placeholder wherever free text enters the digest — the title, the
+first-message head, and, for a pinned session, its excerpted question and answer
+(`memory_digest._head`) — so a storage path that later expires never sits in a cached
+prompt describing it as still there. `phenotype_code` is collapsed and length-capped like the title but not scrubbed, because the artifact pattern cannot match a phenotype code. An extracted entity value
+that matches the same pattern is dropped outright rather than replaced
+(`memory_digest._entities_str`), because an entity line names each value once. **Never remembered:** tool results, plots,
+downloads, and secret chats — a secret conversation writes no `chat_sessions` row at all, so
+there is nothing for the digest to read. A session you only *read* as another user's shared
+link never enters your digest (`get_session_for_access` clears `context_digest` for a
+non-owner reader — that keeps a shared reader from seeing the *owner's* digest, a different
+property from what follows). A session you *fork* is not excluded: `fork_session` makes the
+fork your own session (title `"Fork of: ..."`, `content_json` copied), and
+`get_recent_sessions_for_digest` selects by `user_id`, so the fork's title and the entities
+mined from its copied messages do enter your digest. That is exactly why `memory_envelope`
+wraps the digest in the same guardrail treatment as an instruction body — its docstring
+notes the digest "can include content forked from another user's shared session," which is
+why the model is told to read the block as content, never as instruction.
+
+**Opt-in.** Off by default. `memory_gate.MEMORY_SETTING_KEY` (`chat_memory`) is a
+`user_settings` row read the same generic way the other chat options are (see below); until a
+user sets it to `"on"`, nothing is rendered into a prompt and nothing is stored, and no
+memory log line is emitted on a chat turn. `GET /chat/v1/memory` is the exception: it renders
+the digest fresh on request regardless of the setting, so the dialog can preview what memory
+would remember — that render is never stored.
+
+**Where it lives.** The rendered text sits in `chat_sessions.context_digest`, in
+`chat_history.db` on the same `chat-data` PVC and the same daily GCE disk snapshot as every
+other conversation row ("Chat instructions" above documents the same backup path for
+`llm_config.db`). Deleting a session deletes its row outright, so every digest rendered
+*after* the deletion — `GET /chat/v1/memory`, and any session started from then on — omits
+it. But every *other* session of that user that already carries a non-NULL `context_digest`
+keeps its frozen copy verbatim for the rest of that session's life, by design: the block is
+byte-stable, rendered once on a session's first turn, never rewritten afterward. Those stored
+copies are a second store that deletion does not purge today — this is the epic's decision D3
+territory: purging them would mean re-rendering `context_digest` on the user's other sessions
+at delete time, at the cost of one cache miss each.
+
+**Why it is pinned per session.** `set_context_digest` writes only when the session's
+`context_digest` is still NULL (first writer wins) and every later turn of that session reads
+the stored bytes back verbatim rather than re-rendering — the block must be byte-stable for
+the life of a session or it invalidates the cached prefix on every follow-up turn. That
+matters because block 1 is genuinely cold at the start of most sessions: measured 2026-09-09
+against production `chat_history.db` (`scripts/memory_premise_stats.py`, excluding
+`anonymous`/`mcp-tool`). All-time, inter-session gaps run past the ~5-minute ephemeral cache
+TTL for about 93% of returns (median gap 47.9h; only 6.7% of consecutive sessions from the
+same user start within 5 minutes of each other); the last-90-day window lands in the same
+place (median gap 61.5h; 6.9% under 5 minutes) — a cache design bought once per session, not
+once per turn, is what fits that distribution either way. The premise itself cleared its kill
+criteria by a wide margin on the same last-90-day measurement: 78.7% of sessions came from a
+returning user, and 22.9% of those re-mentioned a prior-session gene/phenotype/variant in
+their first message (re-run with the shared extractor; the kill thresholds were 20% and 15%).
+The digest's own steady-state cost — one rendering per session, cached for every turn after
+it — came out to roughly $0.005/turn, well under the 10%-of-median-turn-cost bar the epic set
+for reverting the feature on cost alone; that cost baseline came from the BigQuery log sink
+(`genetics_chat_logs.stdout`, `cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`)
+rather than from `memory_premise_stats.py` itself, because production's `chat_history.db`
+carries no `chat_turn_metrics` table to read a per-turn cost from.
+
+**Gates.** `memory_gate.memory_gate_open` — point at the code rather than this doc for the
+exact conditions; opt-in, `gateway_asserted` (the digest is private content keyed to an
+identity the auth gateway itself authenticated, the same rule `read_artifact` uses, stricter
+than instruction sets), non-secret, and a caller that names a real person rather than a
+service identity or the shared `anonymous` of an auth-less deployment are all independently
+required.
+
+**Cap.** `memory_digest.MAX_DIGEST_CHARS`, with `MAX_PINNED_SESSIONS` bounding how many pinned
+sessions are ever considered (both in `memory_digest.py`); the recency window on which sessions
+are candidates at all, `MEMORY_DIGEST_SESSION_LIMIT`, lives in `memory_gate.py` instead. Over
+the char cap, oldest unpinned entries drop first, then oldest pinned entries drop down to the
+newest one, which is truncated rather than dropped if it alone still overflows
+(`memory_digest._assemble`).
+
+**Endpoints**, both in `routers/chat_history.py`, and both 404ing for a caller that is not an
+identifiable person (a service identity, or the shared `anonymous` of an auth-less
+deployment): `GET /chat/v1/memory` renders the digest fresh for the caller regardless of the
+opt-in setting, so the dialog can preview what turning memory on would remember; `PUT
+/chat/v1/chat/sessions/{id}/pin` toggles a session's pin, 404ing (not 403ing) for a session the
+caller does not own — the same non-owner-invisible pattern the rest of the router uses — and
+404ing by construction for a secret chat's id, which never had a row to pin.
+
+**Proving-ground checks** (re-run after any staging rollout of this feature): the session-start
+`memory digest: user=<hash> sessions=N chars=M` log line; the streamed `usage` event's
+`cache_read` on a session's second turn is at least as large as the first turn's
+`cache_create`, confirming the block actually cached; the `digest` field of `GET
+/chat/v1/memory`, fetched before starting the user's next session, equals byte for byte the
+text that session's first turn pins — that session's log line reports `chars=M` where `M ==
+len(digest)` (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
+whole response, is the comparable quantity); and, for a user with the setting off, system block
+1 is byte-identical to a build with no memory code at all and no log line is emitted.
+
 ## Chat option persistence
 
 The four chat options (**Answer** detail, **Instructions**, **Literature search**, **Tools**) are
@@ -2279,6 +2425,11 @@ Opening a conversation applies **its last message's** options to the controls an
 the next new chat. Starting a new chat (including secret chat) returns the controls to the default.
 A conversation that predates a column reads NULL there and falls through to the user's default
 rather than to the built-in one.
+
+**Chat memory's opt-in** (`chat_memory`, see "Chat memory (recent-work digest)" above) rides the
+same `user_settings` mechanism as the row above, read and written through the same generic
+endpoints — but it is not one of the four chat options: it has no `chat_messages` column and no
+per-conversation value, because it describes the user's account, not a single conversation.
 
 No new endpoints — the defaults ride on the generic `GET/PUT /chat/v1/llm-config/user/settings*`,
 and the per-message values on the existing message save. Because that save is an
@@ -2314,7 +2465,7 @@ execution — and `launch_subagents` reaches neither surface. Generated from tho
 
 | surface | local tools |
 |---|---|
-| no-code (`code_execution=False`) | 66 — every data tool |
+| no-code (`code_execution=False`) | 68 — every data tool |
 | code (`code_execution=True`) | 20 — the 3 code-execution tools, plus the 17 data tools the SDK cannot stand in for |
 
 The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.

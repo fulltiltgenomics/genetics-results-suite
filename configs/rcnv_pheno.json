@@ -1,0 +1,326 @@
+[
+    {
+        "phenocode": "HP0000118",
+        "phenostring": "Phenotypic abnormality",
+        "num_cases": 458326,
+        "num_controls": 491952
+    },
+    {
+        "phenocode": "HP0000707",
+        "phenostring": "Abnormality of the nervous system",
+        "num_cases": 260804,
+        "num_controls": 491952
+    },
+    {
+        "phenocode": "HP0000708",
+        "phenostring": "Behavioral abnormality",
+        "num_cases": 135483,
+        "num_controls": 491952
+    },
+    {
+        "phenocode": "UNKNOWN",
+        "phenostring": "Other / not otherwise specified",
+        "num_cases": 92201,
+        "num_controls": 432685
+    },
+    {
+        "phenocode": "HP0012639",
+        "phenostring": "Abnormal nervous system morphology",
+        "num_cases": 68594,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0031466",
+        "phenostring": "Impairment in personality functioning",
+        "num_cases": 58323,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0012759",
+        "phenostring": "Neurodevelopmental abnormality",
+        "num_cases": 55628,
+        "num_controls": 129291
+    },
+    {
+        "phenocode": "HP0002715",
+        "phenostring": "Abnormality of the immune system",
+        "num_cases": 54004,
+        "num_controls": 443420
+    },
+    {
+        "phenocode": "HP0001939",
+        "phenostring": "Abnormality of metabolism/homeostasis",
+        "num_cases": 47035,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0002960",
+        "phenostring": "Autoimmunity",
+        "num_cases": 42014,
+        "num_controls": 417142
+    },
+    {
+        "phenocode": "HP0033127",
+        "phenostring": "Abnormality of the musculoskeletal system",
+        "num_cases": 41280,
+        "num_controls": 438844
+    },
+    {
+        "phenocode": "HP0001626",
+        "phenostring": "Abnormality of the cardiovascular system",
+        "num_cases": 40892,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0002011",
+        "phenostring": "Morphological central nervous system abnormality",
+        "num_cases": 37800,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0007302",
+        "phenostring": "Bipolar affective disorder",
+        "num_cases": 34824,
+        "num_controls": 412566
+    },
+    {
+        "phenocode": "HP0000759",
+        "phenostring": "Abnormal peripheral nervous system morphology",
+        "num_cases": 32617,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0002597",
+        "phenostring": "Abnormality of the vasculature",
+        "num_cases": 30182,
+        "num_controls": 443420
+    },
+    {
+        "phenocode": "HP0001367",
+        "phenostring": "Abnormal joint morphology",
+        "num_cases": 26084,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0000729",
+        "phenostring": "Autistic behavior",
+        "num_cases": 26092,
+        "num_controls": 98971
+    },
+    {
+        "phenocode": "HP0007367",
+        "phenostring": "Atrophy/Degeneration affecting the central nervous system",
+        "num_cases": 25891,
+        "num_controls": 54481
+    },
+    {
+        "phenocode": "HP0100852",
+        "phenostring": "Abnormal fear/anxiety-related behavior",
+        "num_cases": 25743,
+        "num_controls": 443420
+    },
+    {
+        "phenocode": "HP0003107",
+        "phenostring": "Abnormal circulating cholesterol concentration",
+        "num_cases": 25452,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0100753",
+        "phenostring": "Schizophrenia",
+        "num_cases": 25080,
+        "num_controls": 446089
+    },
+    {
+        "phenocode": "HP0001197",
+        "phenostring": "Abnormality of prenatal development or birth",
+        "num_cases": 24283,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0009830",
+        "phenostring": "Peripheral neuropathy",
+        "num_cases": 22515,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0001250",
+        "phenostring": "Seizure",
+        "num_cases": 21289,
+        "num_controls": 477291
+    },
+    {
+        "phenocode": "HP0002621",
+        "phenostring": "Atherosclerosis",
+        "num_cases": 19640,
+        "num_controls": 417142
+    },
+    {
+        "phenocode": "HP0000152",
+        "phenostring": "Abnormality of head or neck",
+        "num_cases": 15419,
+        "num_controls": 438844
+    },
+    {
+        "phenocode": "HP0011446",
+        "phenostring": "Abnormality of higher mental function",
+        "num_cases": 15240,
+        "num_controls": 129291
+    },
+    {
+        "phenocode": "HP0000752",
+        "phenostring": "Hyperactivity",
+        "num_cases": 14955,
+        "num_controls": 98971
+    },
+    {
+        "phenocode": "HP0003077",
+        "phenostring": "Hyperlipidemia",
+        "num_cases": 14734,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0100022",
+        "phenostring": "Abnormality of movement",
+        "num_cases": 12448,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0000271",
+        "phenostring": "Abnormality of the face",
+        "num_cases": 11681,
+        "num_controls": 438844
+    },
+    {
+        "phenocode": "HP0001627",
+        "phenostring": "Abnormal heart morphology",
+        "num_cases": 11388,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0012647",
+        "phenostring": "Abnormal inflammatory response",
+        "num_cases": 10659,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0003011",
+        "phenostring": "Abnormality of the musculature",
+        "num_cases": 10629,
+        "num_controls": 438844
+    },
+    {
+        "phenocode": "HP0001574",
+        "phenostring": "Abnormality of the integument",
+        "num_cases": 10492,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0001249",
+        "phenostring": "Intellectual disability",
+        "num_cases": 10356,
+        "num_controls": 129291
+    },
+    {
+        "phenocode": "HP0025031",
+        "phenostring": "Abnormality of the digestive system",
+        "num_cases": 10011,
+        "num_controls": 443420
+    },
+    {
+        "phenocode": "HP0001370",
+        "phenostring": "Rheumatoid arthritis",
+        "num_cases": 8470,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0002086",
+        "phenostring": "Abnormality of the respiratory system",
+        "num_cases": 8368,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0012443",
+        "phenostring": "Abnormality of brain morphology",
+        "num_cases": 7688,
+        "num_controls": 463005
+    },
+    {
+        "phenocode": "HP0001507",
+        "phenostring": "Growth abnormality",
+        "num_cases": 6849,
+        "num_controls": 70024
+    },
+    {
+        "phenocode": "HP0000119",
+        "phenostring": "Abnormality of the genitourinary system",
+        "num_cases": 6509,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0001997",
+        "phenostring": "Gout",
+        "num_cases": 6154,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0025033",
+        "phenostring": "Abnormality of digestive system morphology",
+        "num_cases": 6105,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0009121",
+        "phenostring": "Abnormal axial skeleton morphology",
+        "num_cases": 5917,
+        "num_controls": 76183
+    },
+    {
+        "phenocode": "HP0002360",
+        "phenostring": "Sleep disturbance",
+        "num_cases": 6071,
+        "num_controls": 404598
+    },
+    {
+        "phenocode": "HP0410008",
+        "phenostring": "Abnormality of the peripheral nervous system",
+        "num_cases": 5937,
+        "num_controls": 392981
+    },
+    {
+        "phenocode": "HP0011804",
+        "phenostring": "Abnormal muscle physiology",
+        "num_cases": 5796,
+        "num_controls": 424183
+    },
+    {
+        "phenocode": "HP0011442",
+        "phenostring": "Abnormal central motor function",
+        "num_cases": 5192,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0004305",
+        "phenostring": "Involuntary movements",
+        "num_cases": 4747,
+        "num_controls": 56598
+    },
+    {
+        "phenocode": "HP0004323",
+        "phenostring": "Abnormality of body weight",
+        "num_cases": 3853,
+        "num_controls": 70024
+    },
+    {
+        "phenocode": "HP0011121",
+        "phenostring": "Abnormality of skin morphology",
+        "num_cases": 3476,
+        "num_controls": 419259
+    },
+    {
+        "phenocode": "HP0012447",
+        "phenostring": "Abnormal myelination",
+        "num_cases": 3156,
+        "num_controls": 392981
+    }
+]
