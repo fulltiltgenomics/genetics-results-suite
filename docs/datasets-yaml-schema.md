@@ -347,12 +347,21 @@ they join to the rest of the schema on gene identifiers only.
 ### Profile differences
 
 The finngen and daly profiles share identical dataset definitions and descriptions.
-They differ only in `metadata_file` GCS paths, which point to different buckets:
+They differ in `metadata_file` GCS paths, which point to different buckets:
 
 - **finngen**: `gs://finngen-commons/results_api_data/...`
 - **daly**: `gs://daly-genetics-results/...`
 
-When `metadata_file` is `null`, the entry is identical across profiles.
+An entry may also carry a `metadata_file` in one profile and `null` in the other, when the
+metadata has only been staged into one bucket. `metadata_file` and
+`metadata_harmonizer` are set and cleared together, but the two halves fail differently, so
+the rule is one-directional. A non-null `metadata_file` with a null `metadata_harmonizer`
+is the loud half: `genetics-results-db`'s `build_phenotypes.py` reads every non-null
+`metadata_file` before it checks the harmonizer, so a path that is not readable fails the
+phenotype load for the entire profile. A null `metadata_file` with a non-null
+`metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and the
+dataset's trait codes simply stay unresolved in `phenotypes_v` -- a silent no-op that looks
+configured.
 
 **Consumer**: results-api (`datasets` registry, dataset-to-resource mapping)
 

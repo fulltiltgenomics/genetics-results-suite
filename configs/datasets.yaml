@@ -2892,6 +2892,10 @@ profiles:
         data_type: rcnv
         trait_type: binary
         n_phenotypes: 54
+        # rcnv_pheno.json was not staged into finngen-commons -- the account that staged
+        # it had no access to that bucket at the time -- so the phenotype names/counts live
+        # only in the daly bucket for now; a null metadata_file leaves the 54 HPO codes
+        # unresolved in phenotypes_v here.
         metadata_file: null
         metadata_harmonizer: null
 
@@ -3896,8 +3900,17 @@ profiles:
         data_type: rcnv
         trait_type: binary
         n_phenotypes: 54
-        metadata_file: null
-        metadata_harmonizer: null
+        # rcnv_pheno.json is derived from the paper's Table S2, not hand-typed. The
+        # meta-analysis drops any cohort contributing fewer than 300 cases to a phenotype,
+        # so S2's Total column counts cases from cohorts the phenotype never used and the
+        # pooled control sample (491,952) overstates controls by up to 7x -- HP:0004323
+        # keeps 3 of 7 cohorts and 70,024 controls. num_cases sums the S2 cohort columns
+        # with >=300 cases; num_controls sums the S2 control row ('-') over those same
+        # cohorts. Re-run over table_S2.tsv (HPO, Description, Total, Cohort 1..7):
+        # awk -F'\t' 'NR==1{next} $1=="-"{for(i=4;i<=10;i++)k[i]=$i+0;next} {c=0;t=0;for(i=4;i<=10;i++)if($i+0>=300){c+=$i;t+=k[i]} gsub(/:/,"",$1); print $1"\t"$2"\t"c"\t"t}' table_S2.tsv \
+        #   | python3 -c 'import csv,json,sys; json.dump([{"phenocode":r[0],"phenostring":r[1],"num_cases":int(r[2]),"num_controls":int(r[3])} for r in csv.reader(sys.stdin,delimiter="\t")], open("configs/rcnv_pheno.json","w"), indent=4)'
+        metadata_file: "gs://daly-genetics-results/rcnv/collins_rcnv_2022/rcnv_pheno.json"
+        metadata_harmonizer: finngen_r13
 
       # --- external summary statistics ---
       pgc_scz:
