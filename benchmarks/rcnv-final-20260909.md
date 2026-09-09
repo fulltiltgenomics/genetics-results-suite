@@ -165,9 +165,12 @@ things the gate said only the new tables could supply are exactly what the answe
   segmental-duplication regions. Both arms reported the loaded counts and both stated the
   unlifted fraction unprompted. The rule is over the *set*, so this is invisible to the score —
   it would not be if a question ever asked for a window count.
-- **`merged_DEL_segment_22q11.21` has no GRCh38 lift at all** (`segment_start`/`segment_end`
-  null); both arms noticed and said so. A GRCh38 coordinate query for that segment returns
-  nothing, which is the safe failure, not a silent wrong one.
+- **`merged_DEL_segment_22q11.21` had no GRCh38 lift in the load these runs queried**
+  (`segment_start`/`segment_end` null); both arms noticed and said so. A GRCh38 coordinate
+  query for that segment returned nothing, which is the safe failure, not a silent wrong one.
+  The segments munge now composes that boundary from the sliding windows sitting on it, so
+  the segment carries a GRCh38 pair; the hazard remains for the segments that still do not
+  lift.
 
 ## Fabricated values
 
