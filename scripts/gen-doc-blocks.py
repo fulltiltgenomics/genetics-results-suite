@@ -416,9 +416,9 @@ LAYOUT = {
                                  "(docs/bigquery-dev-dataset.md)",
     "scripts/chat_usage_stats.sh": "chat usage counts from the BigQuery chat-log sink",
     "scripts/chat-memory-proving-ground.py": "staging recipe and check runner for the "
-                                             "per-project chat memory feature; each check "
-                                             "exits SKIP until implemented; cleanup reports "
-                                             "DONE or FAILED",
+                                             "per-project chat memory feature; `check all` "
+                                             "or one numbered check, each PASS/FAIL with its "
+                                             "numbers; cleanup reports DONE or FAILED",
     "scripts/keycloak-register-client.sh": "register or update an MCP OAuth client in the live "
                                            "realm",
     "scripts/keycloak-register-brainzzz.sh": "the brainzzz client specifically",

@@ -229,7 +229,7 @@ scripts/                             build, deploy and verification scripts
   bq-dev-dataset.sh                  stand up, verify or tear down the BigQuery rehearsal dataset (docs/bigquery-dev-dataset.md)
   build-all.sh                       build and push every image
   build.sh                           build and push one service's image
-  chat-memory-proving-ground.py      staging recipe and check runner for the per-project chat memory feature; each check exits SKIP until implemented; cleanup reports DONE or FAILED
+  chat-memory-proving-ground.py      staging recipe and check runner for the per-project chat memory feature; `check all` or one numbered check, each PASS/FAIL with its numbers; cleanup reports DONE or FAILED
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
   check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
@@ -2488,20 +2488,31 @@ session-start memory-digest log line fires only for a session inside a project, 
 unfiled session or a user without the `chat_memory` setting; (2) a project's rendered memory
 endpoint returns a digest that byte-equals the digest the next new session in that project is
 pinned with (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
-whole response, is the comparable quantity); (3) the streamed `usage` event's `cache_read` on a
-session's second turn is at least as large as the first turn's `cache_create`, on the default
-model with tools on, confirming the block actually cached; (4) moving a session into a different
+whole response, is the comparable quantity); (3) a session's second turn reads back at
+least as many cached tokens as the first turn created (`chat_turn_metrics.cache_read_tokens`
+against `cache_create_tokens`, matched on the turn's `message_id`), on the default model with
+tools on, confirming the block actually cached; (4) moving a session into a different
 project produces exactly one `cache_create` spike on its next turn — the digest re-renders
-because block 1 changed — and stays cached after that; (5) the SSE memory event, which already
+because block 1 changed — and stays cached after that, measured against a control turn run
+immediately before the move so the spike cannot be the prompt cache expiring on its own; (5) the SSE memory event, which already
 ships, carries the project's name, exactly once per session; (6) a non-owner reading a shared
 session link never sees a `project_id`; (7) forking a session lands the fork with no project.
-**All seven check bodies are still stubs**: each exits SKIP, and a SKIP is not a PASS — only
-`cleanup` and the context and exec plumbing are exercised today. Every check leaves synthetic
-state behind by design and records the ids it created in a state file; the script's own `cleanup`
-subcommand deletes exactly those ids and nothing else, refuses any `--user` outside the synthetic
+All seven checks are implemented and each prints PASS or FAIL with its numbers; nothing
+reports SKIP, and a check that cannot be evaluated (an empty digest to compare, a second user who
+already carries the setting) fails rather than passing quietly. `check all` runs 1-7 in order and
+lets the later checks reuse the project and seeded sessions the earlier ones created, while each
+numbered check also runs alone and creates whatever it is missing. Reuse is scoped to a single
+run: the warm session checks 3 and 4 share is rebuilt whenever it was not driven by that run or
+no longer sits in the project asked for, because check 4 moves it out and leaves it there. **No run has happened yet**:
+the checks drive real chat turns against the deployed build, so they need the rollout above
+first. Checks 1, 6 and 7 need a second synthetic user (`--user-2`) — check 1's no-setting arm drives a turn as that user. Every check leaves synthetic
+state behind by design and records the ids it created — sessions, projects and the `chat_memory`
+setting, each against the user that created it — in a state file; the script's own `cleanup`
+subcommand deletes exactly those ids and nothing else (projects with
+`?with_sessions=true`), refuses any `--user`/`--user-2` outside the synthetic
 `memory-check*@broadinstitute.org` family, and needs `--yes` before it deletes anything — `--yes`
 and `--state` are parent-parser options, so they precede the subcommand (`--yes cleanup`, not
-`cleanup --yes`). Deleting the projects a run created belongs with the checks that create them.
+`cleanup --yes`).
 
 ## Chat option persistence
 
