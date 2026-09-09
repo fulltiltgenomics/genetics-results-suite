@@ -180,7 +180,7 @@ check '^scripts/gen-doc-blocks\.py$' \
     '^docs/project-spec\.md$' \
     'scripts/gen-doc-blocks.py -> docs/project-spec.md (which blocks are generated, what each derives from, and the build gate that runs it)'
 
-# The third doc it owns, and the one whose SOURCE this repo cannot see: the tool-surface
+# The one doc it owns whose SOURCE this repo cannot see: the tool-surface
 # blocks are derived from genetics-mcp-server's tools/definitions.py, which no diff staged
 # here can contain. This rule therefore catches only a change to the generator; a tool added
 # or an sdk_replaceable flipped in the sibling repo is caught by `--check` at build time and
@@ -188,6 +188,10 @@ check '^scripts/gen-doc-blocks\.py$' \
 check '^scripts/gen-doc-blocks\.py$' \
     '^docs/chat-tool-reference\.md$' \
     'scripts/gen-doc-blocks.py -> docs/chat-tool-reference.md (the generated tool-list and tool-surface blocks: the rules mirrored from resolve_tools, and the cross-repo limit of this warning)'
+
+check '^scripts/gen-doc-blocks\.py$' \
+    '^docs/adding-datasets\.md$' \
+    'scripts/gen-doc-blocks.py -> docs/adding-datasets.md (the generated phenotype-join view list and the derivation it names)'
 
 # Only the *static branding assets* under keycloak/themes/ are exempt, and NOT because they are
 # cosmetic — theme.properties records that css/genetics.css hides the username/password form, so a

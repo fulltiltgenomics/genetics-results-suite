@@ -191,6 +191,16 @@ resources:
       in-silico variant_effect predictions and from endogenous eQTL/caQTL.
     aliases: ["MPRA", "Siraj", "reporter assay"]
 
+  rcnv:
+    label: "rCNV2 dosage sensitivity"
+    description: >-
+      Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+      185:3041-3055, doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). Genome-wide pHaplo /
+      pTriplo probabilities of haploinsufficiency and triplosensitivity, learned from
+      rare CNVs in 950,278 individuals across 54 HPO phenotypes.
+    aliases: ["rCNV2", "Collins 2022", "pHaplo", "pTriplo", "dosage sensitivity",
+              "haploinsufficiency", "triplosensitivity"]
+
 # ---------------------------------------------------------------------------
 # Tables: profile-independent BigQuery view metadata
 # Used by db-api for _TABLE_DESCRIPTIONS, _COLUMN_DESCRIPTIONS,
@@ -1388,6 +1398,665 @@ tables:
       locus_type: null
       strand: null
 
+  dosage_sensitivity_v:
+    exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source published score set: the view appends the constant 'rcnv' AS
+        resource, and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        published dosage-sensitivity scores, has no `dataset` column
+    description: >-
+      Rare-CNV dosage sensitivity scores from Collins et al. 2022, "A cross-disorder
+      dosage sensitivity map of the human genome" (Cell 185:3041-3055,
+      doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). One row per autosomal protein-coding
+      gene: pHaplo is the probability the gene is haploinsufficient (one functional copy
+      is not enough), pTriplo the probability it is triplosensitive (a third copy is
+      harmful), both learned from rare CNVs in 950,278 individuals across 54 HPO phenotypes.
+      This is the suite's only gene-level DOSAGE evidence — the other gene-level views
+      carry annotation (gene_annotations_v) or burden (gene_burden_results_v) evidence —
+      so it is what answers "is this gene dosage sensitive?" without leaving the platform.
+
+      JOIN KEY: `ensembl_gene_id` is the key and is unique. `symbol` is the CURRENT
+      Gencode symbol and is NOT unique — Gencode gives a few names to two genes each — so
+      a join on symbol can duplicate a row. Join on ensembl_gene_id wherever the other
+      side carries it (gene_annotations_v does; this matches roughly 95% of the 18,641
+      genes here, so a missing annotation row for the rest is expected rather than a
+      sign of a bad key). The result views that carry only a gene symbol
+      (gene_burden_results_v.gene, credible_sets_v.gene_most_severe) have to join
+      on symbol.
+
+      NO COORDINATES: the published file is gene-keyed, so this view has no chr / start /
+      end and cannot answer a region question on its own — join gene_annotations_v for
+      GRCh38 coordinates. The scores were built on GENCODE v19 (GRCh37); only the gene
+      identifiers cross over, never a position.
+
+      THRESHOLDS: `haploinsufficient` is pHaplo >= 0.86 and `triplosensitive` is
+      pTriplo >= 0.94, the paper's own cutoffs. They are stored as columns so a query
+      need not restate them, but the probabilities are the better thing to rank on when
+      the question is "which of these genes is most dosage sensitive".
+
+    columns:
+      symbol: "Current GENCODE gene symbol. NOT unique — a few names are shared by two genes — so join on ensembl_gene_id when the other side has it"
+      symbol_gencode_v19: "The symbol as published by Collins et al. (GENCODE v19 spelling). Differs from `symbol` where the gene has since been renamed"
+      ensembl_gene_id: "Ensembl gene ID (e.g. ENSG00000165671). THE KEY — unique, one row per gene"
+      phaplo: "Probability that the gene is haploinsufficient (0-1)"
+      ptriplo: "Probability that the gene is triplosensitive (0-1)"
+      haploinsufficient: "pHaplo >= 0.86, the paper's haploinsufficiency threshold"
+      triplosensitive: "pTriplo >= 0.94, the paper's triplosensitivity threshold"
+      resource: "Data source identifier, constant 'rcnv'"
+
+    column_types:
+      symbol: STRING
+      symbol_gencode_v19: STRING
+      ensembl_gene_id: STRING
+      phaplo: FLOAT64
+      ptriplo: FLOAT64
+      haploinsufficient: BOOL
+      triplosensitive: BOOL
+      resource: STRING
+
+    examples:
+      - description: "Dosage sensitivity of one gene"
+        sql: >-
+          SELECT symbol, ensembl_gene_id, phaplo, ptriplo,
+                 haploinsufficient, triplosensitive
+          FROM dosage_sensitivity_v
+          WHERE symbol = 'SHANK3'
+
+      - description: "Haploinsufficient genes overlapping a genomic window. This view has no coordinates, so the GRCh38 interval comes from gene_annotations_v."
+        sql: |-
+          SELECT d.symbol, d.ensembl_gene_id, a.gene_start, a.gene_end, d.phaplo, d.ptriplo
+          FROM dosage_sensitivity_v d
+          JOIN gene_annotations_v a USING (ensembl_gene_id)
+          WHERE a.chr = 17 AND a.locus_type = 'gene with protein product'
+            AND d.haploinsufficient
+            AND a.gene_start <= 9000000 AND a.gene_end >= 7000000
+          ORDER BY a.gene_start
+
+      - description: "Rank a phenotype's gene-burden hits by triplosensitivity — which of the exome-burden genes for schizophrenia are also dosage sensitive to a duplication"
+        sql: >-
+          SELECT b.gene, b.mlog10p_burden, b.beta, d.phaplo, d.ptriplo, d.triplosensitive
+          FROM gene_burden_results_v b
+          JOIN dosage_sensitivity_v d ON d.symbol = b.gene
+          WHERE b.dataset = 'SCHEMA2' AND b.annotation = 'PTV' AND b.mlog10p_burden > 3
+          ORDER BY d.ptriplo DESC
+          LIMIT 20
+
+      - description: "Fine-mapped signals falling in haploinsufficient genes for one phenotype. credible_sets_v's gene column is `gene_most_severe` (the gene of the variant's most severe consequence), and it is a symbol, so the join is on symbol."
+        sql: >-
+          SELECT c.trait, c.gene_most_severe, c.variant, c.pip, c.mlog10p,
+                 d.phaplo, d.ptriplo
+          FROM credible_sets_v c
+          JOIN dosage_sensitivity_v d ON d.symbol = c.gene_most_severe
+          WHERE c.trait_original = 'K11_COELIAC' AND c.pip > 0.1
+            AND d.haploinsufficient
+          ORDER BY c.pip DESC
+          LIMIT 20
+
+    categorical_columns:
+      resource: null
+      haploinsufficient: null
+      triplosensitive: null
+
+  rcnv_gene_associations_v:
+    exposed: true
+    resource_derivation:
+      mode: view_case
+    description: >-
+      Gene-level rare-CNV association statistics from Collins et al. 2022, "A cross-disorder
+      dosage sensitivity map of the human genome" (Cell 185:3041-3055,
+      doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). One row per (phenotype, cnv_type, gene):
+      54 HPO phenotype groups x {DEL, DUP} x 17,263 autosomal protein-coding genes, from a
+      meta-analysis of rare CNVs in 950,278 individuals. This is the per-phenotype
+      counterpart to dosage_sensitivity_v: that view says whether a gene is dosage
+      sensitive in general, this one says which phenotype a deletion or duplication of it
+      is associated with. The gene's pHaplo/pTriplo scores are joined onto every row here,
+      so both questions are answerable without a second query.
+
+      SIGNIFICANCE HAS TWO TIERS, EACH GATED BY SECONDARY EVIDENCE. A gene is exome-wide
+      significant if `mlog10p > -LOG10(2.90e-6)` (P <= 2.90e-6), or FDR significant if
+      `mlog10_fdr_q > -LOG10(0.01)` (FDR < 1%); either tier additionally requires at least
+      one of `n_nominal_cohorts >= 2` (nominal evidence in >= 2 independent cohorts) or
+      `mlog10p_secondary > -LOG10(0.05)` (the leave-top-cohort-out re-analysis is still
+      nominally significant). Thresholding on `mlog10p` or `mlog10_fdr_q` alone, without
+      the secondary-evidence requirement, is not what the paper reports and will not
+      reproduce its gene lists. Checked against dev: the full rule —
+      `(mlog10_fdr_q > -LOG10(0.01) OR mlog10p > -LOG10(2.90e-6)) AND (n_nominal_cohorts >= 2
+      OR mlog10p_secondary > -LOG10(0.05))` — returns 5,680 rows over 739 distinct genes,
+      matching the paper's published totals.
+
+      65% OF ROWS ARE "TESTED, NO ESTIMATE". Every gene appears for every phenotype and
+      CNV type, including those where the meta-analysis produced no estimate because no
+      qualifying CNV was observed; those rows carry NULL from `beta` onward. Filter
+      `beta IS NOT NULL` to get the estimated associations. Do NOT filter on
+      `n_nominal_cohorts` for this — the NULL rows are not the rows with
+      n_nominal_cohorts = 0, and using it as a proxy silently drops real estimates.
+
+      PHENOTYPES ARE HPO GROUPS, WITH TWO SPECIAL CODES. `phenotype` is an HPO term id
+      with the colon removed (HP0012759 = HP:0012759). HP0000118 ("Phenotypic
+      abnormality") is not a peer of the other 53 codes — it is every case pooled
+      (458,326 cases + 491,952 controls, the full 950,278-individual cohort), so it
+      overlaps all the others and must not be summed with them. UNKNOWN is the group of
+      cases whose indication matched none of the listed HPO terms. For the human-readable
+      name, join phenotypes_v on `p.dataset = r.dataset AND p.trait_original = r.phenotype`
+      — this view calls its phenotype code `phenotype`, not `trait_original`.
+
+      EFFECT SIZES ARE ON THE LOG SCALE. `beta` is ln(odds ratio), so OR = EXP(beta), and
+      `beta_lower`/`beta_upper` are the 95% CI on the same scale. The `*_secondary` columns
+      are a leave-top-cohort-out sensitivity re-analysis (the meta re-run without
+      `top_cohort`), NULL for 86% of rows; use them to check that a signal is not carried by
+      a single cohort, never as the primary result.
+
+      NO COORDINATES: the published data is GRCh37 and gene-keyed, so nothing positional is
+      stored here. Join gene_annotations_v on ensembl_gene_id for GRCh38 coordinates.
+
+    columns:
+      dataset: "Source dataset, constant 'Collins_rCNV_2022'"
+      phenotype: "HPO phenotype group code without the colon (e.g. HP0012759). HP0000118 is all cases pooled; UNKNOWN is cases matching none of the listed terms. Join phenotypes_v.trait_original for the name"
+      cnv_type: "CNV class tested: DEL (deletion) or DUP (duplication)"
+      symbol: "Current HGNC gene symbol. NOT unique — join on ensembl_gene_id where the other side has it"
+      symbol_gencode_v19: "The symbol as published by Collins et al. (GENCODE v19 spelling)"
+      ensembl_gene_id: "Ensembl gene ID (e.g. ENSG00000251322). Part of the key (phenotype, cnv_type, ensembl_gene_id) and the join key to dosage_sensitivity_v and gene_annotations_v"
+      n_nominal_cohorts: "Number of contributing cohorts with nominal (P<0.05) evidence. One of the two ways to satisfy the paper's secondary-evidence requirement (n_nominal_cohorts >= 2, OR mlog10p_secondary > -LOG10(0.05)) alongside the primary FDR or exome-wide threshold. NOT a proxy for whether an estimate exists — use beta IS NOT NULL for that"
+      top_cohort: "Cohort contributing the strongest single-cohort signal; the one dropped in the *_secondary re-analysis"
+      cohorts_excluded: "Semicolon-separated cohorts excluded from this meta-analysis (too few cases for this phenotype, or no CNV data). NULL where none were excluded"
+      case_freq: "Frequency of carriers of a qualifying CNV overlapping the gene among cases"
+      control_freq: "Frequency of carriers of a qualifying CNV overlapping the gene among controls"
+      beta: "Effect size as ln(odds ratio) — OR = EXP(beta). NULL where the gene was tested but no estimate was produced (65% of rows)"
+      beta_lower: "Lower bound of the 95% CI on beta, ln scale"
+      beta_upper: "Upper bound of the 95% CI on beta, ln scale"
+      z: "Meta-analysis Z score"
+      mlog10p: "-log10 of the meta-analysis p-value. Exome-wide significance in the paper is P <= 2.90e-6, i.e. mlog10p > -LOG10(2.90e-6), plus the secondary-evidence requirement on n_nominal_cohorts or mlog10p_secondary — see the view description"
+      mlog10_fdr_q: "-log10 of the FDR q-value. The paper's FDR-significance threshold is FDR < 1%, i.e. mlog10_fdr_q > -LOG10(0.01), plus the same secondary-evidence requirement — see the view description"
+      beta_secondary: "beta from the leave-top-cohort-out re-analysis. NULL for 86% of rows"
+      beta_lower_secondary: "Lower 95% CI bound of beta_secondary, ln scale"
+      beta_upper_secondary: "Upper 95% CI bound of beta_secondary, ln scale"
+      z_secondary: "Z score from the leave-top-cohort-out re-analysis"
+      mlog10p_secondary: "-log10 p-value from the leave-top-cohort-out re-analysis"
+      mlog10_fdr_q_secondary: "-log10 FDR q-value from the leave-top-cohort-out re-analysis"
+      phaplo: "pHaplo for this gene, joined from dosage_sensitivity on ensembl_gene_id. Constant across the gene's rows"
+      ptriplo: "pTriplo for this gene, joined from dosage_sensitivity on ensembl_gene_id. Constant across the gene's rows"
+      haploinsufficient: "phaplo >= 0.86, the paper's haploinsufficiency cutoff"
+      triplosensitive: "ptriplo >= 0.94, the paper's triplosensitivity cutoff"
+      resource: "Data source identifier, constant 'rcnv' — the same resource dosage_sensitivity_v carries"
+
+    column_types:
+      dataset: STRING
+      phenotype: STRING
+      cnv_type: STRING
+      symbol: STRING
+      symbol_gencode_v19: STRING
+      ensembl_gene_id: STRING
+      n_nominal_cohorts: INT64
+      top_cohort: STRING
+      cohorts_excluded: STRING
+      case_freq: FLOAT64
+      control_freq: FLOAT64
+      beta: FLOAT64
+      beta_lower: FLOAT64
+      beta_upper: FLOAT64
+      z: FLOAT64
+      mlog10p: FLOAT64
+      mlog10_fdr_q: FLOAT64
+      beta_secondary: FLOAT64
+      beta_lower_secondary: FLOAT64
+      beta_upper_secondary: FLOAT64
+      z_secondary: FLOAT64
+      mlog10p_secondary: FLOAT64
+      mlog10_fdr_q_secondary: FLOAT64
+      phaplo: FLOAT64
+      ptriplo: FLOAT64
+      haploinsufficient: BOOL
+      triplosensitive: BOOL
+      resource: STRING
+
+    examples:
+      - description: "PheWAS for one gene across the 54 HPO groups: which phenotypes a deletion or duplication of it is associated with, strongest FDR first. The phenotype name comes from phenotypes_v, joined on trait_original = phenotype."
+        sql: |-
+          SELECT r.phenotype, p.trait_name, r.cnv_type, r.n_nominal_cohorts,
+                 ROUND(EXP(r.beta), 2) AS odds_ratio,
+                 ROUND(r.mlog10p, 2) AS mlog10p,
+                 ROUND(r.mlog10_fdr_q, 2) AS mlog10_fdr_q,
+                 r.phaplo, r.ptriplo
+          FROM rcnv_gene_associations_v r
+          JOIN phenotypes_v p ON p.dataset = r.dataset AND p.trait_original = r.phenotype
+          WHERE r.symbol = 'SHANK3' AND r.beta IS NOT NULL
+          ORDER BY r.mlog10_fdr_q DESC
+          LIMIT 20
+
+      - description: "Deletion versus duplication of one gene, side by side per phenotype. A gene can be dosage sensitive in one direction only, and the two rows per phenotype are the way to see it."
+        sql: |-
+          SELECT phenotype,
+                 ROUND(MAX(IF(cnv_type = 'DEL', EXP(beta), NULL)), 2) AS del_or,
+                 ROUND(MAX(IF(cnv_type = 'DEL', mlog10_fdr_q, NULL)), 2) AS del_mlog10_fdr_q,
+                 ROUND(MAX(IF(cnv_type = 'DUP', EXP(beta), NULL)), 2) AS dup_or,
+                 ROUND(MAX(IF(cnv_type = 'DUP', mlog10_fdr_q, NULL)), 2) AS dup_mlog10_fdr_q
+          FROM rcnv_gene_associations_v
+          WHERE symbol = 'NRXN1' AND beta IS NOT NULL
+          GROUP BY phenotype
+          ORDER BY GREATEST(IFNULL(del_mlog10_fdr_q, 0), IFNULL(dup_mlog10_fdr_q, 0)) DESC
+          LIMIT 20
+
+      - description: "Genes significantly associated with intellectual disability (HP:0001249) at the paper's own FDR-tier threshold: FDR < 1% (mlog10_fdr_q > -LOG10(0.01)) AND (nominal evidence in at least two cohorts OR the leave-top-cohort-out secondary p-value still nominally significant). The exome-wide tier (mlog10p > -LOG10(2.90e-6)) with the same secondary-evidence requirement is the other way a gene qualifies. Thresholding on mlog10_fdr_q or mlog10p alone would not reproduce the published list."
+        sql: |-
+          SELECT symbol, ensembl_gene_id, cnv_type, n_nominal_cohorts,
+                 ROUND(EXP(beta), 2) AS odds_ratio,
+                 ROUND(mlog10p, 2) AS mlog10p,
+                 ROUND(mlog10_fdr_q, 2) AS mlog10_fdr_q,
+                 phaplo, ptriplo
+          FROM rcnv_gene_associations_v
+          WHERE phenotype = 'HP0001249'
+            AND mlog10_fdr_q > -LOG10(0.01)
+            AND (n_nominal_cohorts >= 2 OR mlog10p_secondary > -LOG10(0.05))
+          ORDER BY mlog10_fdr_q DESC
+          LIMIT 50
+
+      - description: "Haploinsufficient genes that both carry a DEL association and sit in a fine-mapped region for a FinnGen trait. This view has no coordinates, so the GRCh38 interval comes from gene_annotations_v; the CTE's chr BETWEEN 1 AND 22 is what prunes credible_sets_v's chr partitions — rcnv_gene_associations_v only covers autosomal genes, so any chrX/Y credible set could never join anyway."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, pos, trait_original, variant, pip
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS'
+              AND trait_original = 'K11_IBD_STRICT' AND pip > 0.1
+              AND chr BETWEEN 1 AND 22
+          )
+          SELECT r.symbol, g.chr, g.gene_start, g.gene_end, cs.variant, cs.pip,
+                 r.phenotype, ROUND(EXP(r.beta), 2) AS del_odds_ratio,
+                 ROUND(r.mlog10_fdr_q, 2) AS mlog10_fdr_q, r.phaplo
+          FROM cs
+          JOIN gene_annotations_v g
+            ON g.chr = cs.chr AND cs.pos BETWEEN g.gene_start AND g.gene_end
+          JOIN rcnv_gene_associations_v r USING (ensembl_gene_id)
+          WHERE r.cnv_type = 'DEL' AND r.haploinsufficient AND r.beta IS NOT NULL
+          ORDER BY r.mlog10_fdr_q DESC
+          LIMIT 20
+
+    categorical_columns:
+      resource: null
+      dataset: null
+      cnv_type: null
+      phenotype: null
+
+  rcnv_segments_v:
+    exposed: true
+    resource_derivation:
+      mode: view_case
+    description: >-
+      The 163 disease-associated rare-CNV segments of Collins et al. 2022, "A cross-disorder
+      dosage sensitivity map of the human genome" (Cell 185:3041-3055,
+      doi 10.1016/j.cell.2022.06.036, CC-BY 4.0), Table S3. One row per segment — 69 DEL and
+      94 DUP, 88 genome-wide significant and 75 FDR significant — each an interval whose
+      deletion or duplication is associated with one or more of the study's phenotype
+      groups. This is the region-level view of the same study whose gene-level statistics
+      are in rcnv_gene_associations_v and whose per-gene scores are in dosage_sensitivity_v.
+
+      SIX SEGMENTS HAVE NO GRCh38 COORDINATES. `segment_start`/`segment_end` are the GRCh38
+      lift of the published GRCh37 interval: the whole interval where that lifts, otherwise
+      composed from the two published 200 kb sliding windows that begin and end on the
+      segment's boundaries. They are NULL where neither works — currently 1p11.2-p12,
+      8q24.3, 10q26.3, 13q34, 17p13.3 DEL and the 22q11.21 duplication, recurrent genomic
+      disorders whose flanking segmental duplications are exactly the sequence GRCh37 and
+      GRCh38 rearranged. Which segments those are follows the liftOver chain the load was
+      built from, so the list moves when the source is re-munged. Any query with a
+      `segment_start`/`segment_end` predicate silently misses them: add
+      `AND segment_start IS NOT NULL` to make the exclusion explicit, and use
+      `segment_start_grch37`/`segment_end_grch37` — always present — when the region matters
+      more than the build.
+
+      THE LIST COLUMNS ARE ARRAYS. `associated_hpos`, `credints`, `credints_grch37`,
+      `genes`, `genes_gencode_v19` and `gene_ensembl_ids` are ARRAY<STRING>; use
+      `CROSS JOIN UNNEST(<col>)` to get a row each, or `<value> IN UNNEST(<col>)` to match
+      one. Each has a scalar length column next to it (`n_hpos`, `n_credints`, `n_genes`),
+      so a count needs no UNNEST. `credints` and `credints_grch37` are positionally aligned:
+      position i is the same credible interval in both builds, and `credints[i]` is the
+      literal string 'NA' where that one interval did not lift.
+
+      `associated_hpos` HOLDS THE STUDY'S PHENOTYPE CODES, INCLUDING THE LITERAL 'UNKNOWN'.
+      Each entry is an HP0000118-style code without the colon, the same codes
+      rcnv_gene_associations_v.phenotype uses — 45 real HPO codes plus the literal 'UNKNOWN',
+      which 33 segments carry. Join `phenotypes_v` on `dataset` and `trait_original` to get
+      the phenotype name for a code.
+
+      JOIN GENES ON `gene_ensembl_ids`, NOT `genes`. `genes` holds current HGNC symbols
+      mapped from the source GENCODE v19 spellings (`genes_gencode_v19` keeps the published
+      ones, aligned position for position), and symbols are neither stable nor unique.
+      Twelve gene-poor segments carry empty gene arrays, not NULL.
+
+      SIGNIFICANCE AND EFFECT SIZE ARE POOLED OVER THE SEGMENT'S PHENOTYPES.
+      `best_significance` is the strongest tier the segment reached across its associated
+      phenotypes — 'Genome-wide' (the paper's primary threshold) or 'FDR' (the secondary
+      FDR < 1% tier) — not a per-phenotype value. `beta` is likewise the pooled ln(odds
+      ratio), so OR = EXP(beta), with `beta_lower`/`beta_upper` its 95% CI and
+      `beta_min`/`beta_max` the range of the per-phenotype estimates.
+
+    columns:
+      dataset: "Source dataset, constant 'Collins_rCNV_2022'. Matches phenotypes_v.dataset for the HPO group names"
+      segment_id: "Segment identifier as published, e.g. merged_DEL_segment_22q11.21. Unique within the view"
+      cnv_type: "CNV class: DEL (deletion) or DUP (duplication). A locus can appear as both, as a separate segment each"
+      chr: "Chromosome number, 1-22. The published segments are autosomal only"
+      segment_start: "Segment start, GRCh38 — the whole-interval lift, or the start of the 200 kb sliding window that begins on it. NULL for the six segments where neither lifts (1p11.2-p12, 8q24.3, 10q26.3, 13q34, 17p13.3 DEL, 22q11.21 DUP) — a coordinate-window query misses those, so use segment_start_grch37/segment_end_grch37 as the fallback"
+      segment_end: "Segment end, GRCh38. NULL for the same six segments as segment_start"
+      segment_start_grch37: "Segment start as published (GRCh37). Always present, including for the segments with no GRCh38 lift"
+      segment_end_grch37: "Segment end as published (GRCh37). Always present"
+      cytoband: "Cytogenetic band range the segment spans, e.g. 22q11.21. The way these loci are named clinically"
+      best_significance: "Strongest significance tier the segment reached across its associated phenotypes: 'Genome-wide' (the paper's primary threshold, 88 segments) or 'FDR' (the FDR < 1% secondary tier, 75 segments)"
+      control_freq: "Pooled carrier frequency of the segment in controls"
+      case_freq: "Pooled carrier frequency of the segment in cases"
+      beta: "Pooled effect size across the segment's phenotypes as ln(odds ratio) — OR = EXP(beta)"
+      beta_lower: "Lower bound of the 95% CI on the pooled beta, ln scale"
+      beta_upper: "Upper bound of the 95% CI on the pooled beta, ln scale"
+      beta_min: "Smallest per-phenotype ln(OR) among the segment's associated phenotypes"
+      beta_max: "Largest per-phenotype ln(OR) among the segment's associated phenotypes"
+      n_hpos: "Number of associated HPO phenotype groups; ARRAY_LENGTH(associated_hpos)"
+      n_credints: "Number of 95% credible intervals fine-mapped within the segment; ARRAY_LENGTH of both credint arrays"
+      credint_size: "Total span in base pairs covered by the segment's credible intervals (GRCh37)"
+      n_genes: "Number of protein-coding genes in the segment; ARRAY_LENGTH(genes). 0 for 12 gene-poor segments"
+      associated_hpos: "ARRAY of the study's phenotype codes: HPO phenotype group codes without the colon (e.g. HP0012759) plus the literal 'UNKNOWN' (33 segments carry it), the same codes rcnv_gene_associations_v.phenotype uses. Match with 'HP0012759' IN UNNEST(associated_hpos); join phenotypes_v on dataset and trait_original for the name"
+      credints: "ARRAY of 95% credible intervals as chr:start-end (GRCh38), positionally aligned with credints_grch37. The literal 'NA' marks an interval that did not lift"
+      credints_grch37: "ARRAY of 95% credible intervals as chr:start-end (GRCh37), as published. Always complete — the fallback wherever credints has an 'NA'"
+      genes: "ARRAY of current HGNC gene symbols in the segment, aligned with gene_ensembl_ids. Empty (not NULL) for the 12 segments with no genes. Display these; join on gene_ensembl_ids"
+      genes_gencode_v19: "ARRAY of the gene symbols as published by Collins et al. (GENCODE v19 spelling), aligned position for position with genes. Use when reconciling against the paper's tables"
+      gene_ensembl_ids: "ARRAY of Ensembl gene IDs (unversioned), aligned with genes. The join key to gene_annotations_v and dosage_sensitivity_v"
+      resource: "Data source identifier, constant 'rcnv' — the same resource dosage_sensitivity_v and rcnv_gene_associations_v carry"
+
+    column_types:
+      dataset: STRING
+      segment_id: STRING
+      cnv_type: STRING
+      chr: INT64
+      segment_start: INT64
+      segment_end: INT64
+      segment_start_grch37: INT64
+      segment_end_grch37: INT64
+      cytoband: STRING
+      best_significance: STRING
+      control_freq: FLOAT64
+      case_freq: FLOAT64
+      beta: FLOAT64
+      beta_lower: FLOAT64
+      beta_upper: FLOAT64
+      beta_min: FLOAT64
+      beta_max: FLOAT64
+      n_hpos: INT64
+      n_credints: INT64
+      credint_size: INT64
+      n_genes: INT64
+      associated_hpos: ARRAY<STRING>
+      credints: ARRAY<STRING>
+      credints_grch37: ARRAY<STRING>
+      genes: ARRAY<STRING>
+      genes_gencode_v19: ARRAY<STRING>
+      gene_ensembl_ids: ARRAY<STRING>
+      resource: STRING
+
+    examples:
+      - description: "Fine-mapped GWAS variants that fall inside a disease-associated CNV segment: is the common-variant signal in the same interval as the rare-CNV one? The BETWEEN is on the GRCh38 pair, which is why `AND s.segment_start IS NOT NULL` is spelled out — the handful of segments with no GRCh38 lift, the 22q11.21 duplication among them, cannot match and would otherwise disappear without a trace."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, pos, variant, trait_original, pip
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS'
+              AND pip > 0.5 AND chr BETWEEN 1 AND 22
+          )
+          SELECT s.segment_id, s.cnv_type, s.cytoband, s.chr, s.segment_start, s.segment_end, s.n_genes,
+                 cs.trait_original, cs.variant, ROUND(cs.pip, 3) AS pip
+          FROM rcnv_segments_v s
+          JOIN cs ON cs.chr = s.chr AND cs.pos BETWEEN s.segment_start AND s.segment_end
+          WHERE s.segment_start IS NOT NULL
+          ORDER BY cs.pip DESC
+          LIMIT 20
+
+      - description: "Every segment associated with one HPO phenotype group, strongest pooled effect first. UNNEST turns the associated_hpos array into a row per phenotype, and phenotypes_v gives the code its name — joined on dataset (the BigQuery value Collins_rCNV_2022) and trait_original, since this view has no trait column. Reported in GRCh37, which every segment has."
+        sql: |-
+          SELECT s.segment_id, s.cnv_type, s.cytoband, s.chr,
+                 s.segment_start_grch37, s.segment_end_grch37, s.best_significance,
+                 ROUND(EXP(s.beta), 2) AS pooled_odds_ratio, s.n_genes, p.trait_name
+          FROM rcnv_segments_v s
+          CROSS JOIN UNNEST(s.associated_hpos) AS hpo
+          JOIN phenotypes_v p ON p.dataset = s.dataset AND p.trait_original = hpo
+          WHERE hpo = 'HP0012759'
+          ORDER BY s.beta DESC
+          LIMIT 20
+
+      - description: "Which genes in the 22q11.21 deletion are the dosage-sensitive ones. The gene_ensembl_ids array is the join key — not `genes`, whose symbols are neither unique nor stable — and the join to dosage_sensitivity_v is what ranks the segment's contents by pHaplo; it carries `symbol` itself, so no second join to gene_annotations_v is needed. All 48 listed genes have a dosage score, so all 48 come back."
+        sql: |-
+          SELECT d.symbol, d.ensembl_gene_id, d.phaplo, d.ptriplo,
+                 d.haploinsufficient, d.triplosensitive
+          FROM rcnv_segments_v s
+          CROSS JOIN UNNEST(s.gene_ensembl_ids) AS ensembl_gene_id
+          JOIN dosage_sensitivity_v d USING (ensembl_gene_id)
+          WHERE s.segment_id = 'merged_DEL_segment_22q11.21'
+          ORDER BY d.phaplo DESC
+          LIMIT 20
+
+      - description: "Why the gene list and a coordinate window disagree, on the segment where it matters most. The window here is reconstructed from the segment's own genes' GRCh38 coordinates rather than taken from segment_start/segment_end, so the comparison also works on the segments whose interval has no lift; counting everything gene_annotations_v holds inside that window returns 93 against the paper's 48. The published list is protein-coding genes from GENCODE v19, gene_annotations_v is the whole current gene universe — so use gene_ensembl_ids for what the paper tested, and a window only for what is there now."
+        sql: |-
+          WITH seg AS (
+            SELECT chr, gene_ensembl_ids, ARRAY_LENGTH(gene_ensembl_ids) AS genes_listed
+            FROM rcnv_segments_v
+            WHERE segment_id = 'merged_DEL_segment_22q11.21'
+          ),
+          span AS (
+            SELECT s.chr, MIN(g.gene_start) AS win_start, MAX(g.gene_end) AS win_end
+            FROM seg s
+            CROSS JOIN UNNEST(s.gene_ensembl_ids) AS ensembl_gene_id
+            JOIN gene_annotations_v g USING (ensembl_gene_id)
+            GROUP BY s.chr
+          )
+          SELECT (SELECT genes_listed FROM seg) AS genes_listed_by_the_paper,
+                 span.chr, span.win_start, span.win_end,
+                 (SELECT COUNT(*) FROM gene_annotations_v g
+                  WHERE g.chr = span.chr
+                    AND g.gene_start >= span.win_start
+                    AND g.gene_end <= span.win_end) AS genes_in_grch38_window
+          FROM span
+
+    categorical_columns:
+      resource: null
+      dataset: null
+      cnv_type: null
+      best_significance: null
+
+  rcnv_window_associations_v:
+    exposed: true
+    resource_derivation:
+      mode: view_case
+    description: >-
+      Sliding-window rare-CNV association statistics from Collins et al. 2022, "A
+      cross-disorder dosage sensitivity map of the human genome" (Cell 185:3041-3055,
+      doi 10.1016/j.cell.2022.06.036, CC-BY 4.0). One row per (phenotype, cnv_type, window)
+      over 259,795 genomic windows: 108 (phenotype, cnv_type) groups, 17,114-257,726 rows
+      each, 11,198,315 rows total, from the same meta-analysis of rare CNVs in 950,278
+      individuals as rcnv_gene_associations_v.
+      This is the position-keyed half of that pair: use it for "is there a rare-CNV
+      association anywhere in this interval", including intergenic intervals and regions
+      whose signal is not attributable to one gene.
+
+      A WINDOW ROW IS NOT A GENE ROW. The association is for the CNVs OVERLAPPING the
+      window, not for any gene inside it — a 200 kb window typically contains several genes
+      and the signal cannot be assigned to one of them. For a gene-level answer use
+      rcnv_gene_associations_v, which is keyed on ensembl_gene_id and carries the pHaplo /
+      pTriplo scores; this view carries no gene column and no dosage-sensitivity scores.
+      To go from a window to the genes in it, join gene_annotations_v on GRCh38 coordinates.
+
+      COORDINATES ARE GRCh38, WITH THE GRCh37 ORIGINALS KEPT. The published windows are a
+      regular grid in GRCh37 — 200 kb wide, 10 kb step — and window_start_grch37 /
+      window_end_grch37 are those published values, traceable to the Zenodo file: this is
+      the window's published identity. window_start / window_end are the GRCh38 result of
+      lifting them (UCSC liftOver, whole interval, same chromosome, lifted length 180-220
+      kb) and are what to query with, since every other view here is GRCh38 — but they are
+      a derived coordinate, not the window's identity. The LIFTED set is NOT a regular
+      grid. Lifted widths run 190,000-219,265, only ~90% are exactly 200 kb, and some
+      adjacent pairs come back in a different order than they went in. So do not assume a
+      200 kb width or a 10 kb step of the GRCh38 columns, and do not compute a window index
+      from them. Count distinct windows on (chr, window_start_grch37, window_end_grch37):
+      the lift is bijective here (both pairs distinct-count to the same 259,795), so this
+      is not needed to get a correct count, but it is the window's published identity and
+      the GRCh38 pair is derived from it. Rows still overlap heavily by construction: a
+      single strong locus produces ~20 consecutive windows with near-identical statistics,
+      so "how many significant windows" is not a count of independent signals.
+
+      ONLY WINDOWS THAT LIFTED ARE HERE. 4,880 of the 267,237 published windows (1.83%) do
+      not lift and are absent, and the loss is not uniform: chr9 7.7% (pericentromeric),
+      chr21 4.4%, chr22 3.6%, chr1 3.2%. A further 2,562 lifted windows have NA statistics
+      in every phenotype x CNV group and so reach no row here, leaving 259,795 distinct
+      windows. Near those regions, "no window covers this position" means the window was
+      dropped, not that the interval was tested and null.
+
+      NO "TESTED, NO ESTIMATE" ROWS — THE OPPOSITE OF THE GENE TABLE. rcnv_gene_associations_v
+      keeps the 65% of gene rows whose statistics are NULL; here those rows are dropped at
+      munge instead, because a window with no estimate is not a fact about any entity a
+      caller can ask about. Every row carries a beta, a z, an mlog10p and an mlog10_fdr_q,
+      so `beta IS NOT NULL` is unnecessary on this view (the *_secondary columns are still
+      NULL for 58% of rows). The number of windows present therefore varies by phenotype and
+      CNV class, from 17,114 to 257,726 rows per group.
+
+      SIGNIFICANCE HAS TWO TIERS, EACH GATED BY SECONDARY EVIDENCE — the same gate as
+      rcnv_gene_associations_v, but the primary threshold differs: this is the paper's
+      sliding-window rule, not its gene-based exome-wide rule. A window is FDR significant
+      if `mlog10_fdr_q > -LOG10(0.01)` (FDR < 1%), or genome-wide significant if
+      `mlog10p > -LOG10(3.74e-6)` (P <= 3.74e-6, the paper's Bonferroni threshold for the
+      ~13,340 non-overlapping 200 kb windows it estimates were effectively tested); either
+      tier additionally requires `n_nominal_cohorts >= 2` OR
+      `mlog10p_secondary > -LOG10(0.05)`. Thresholding on `mlog10p` or `mlog10_fdr_q` alone
+      is not what the paper reports.
+
+      PHENOTYPES ARE HPO GROUPS, WITH TWO SPECIAL CODES, exactly as in
+      rcnv_gene_associations_v. `phenotype` is an HPO term id with the colon removed
+      (HP0012759 = HP:0012759). HP0000118 ("Phenotypic abnormality") is every case pooled
+      (458,326 cases + 491,952 controls), so it overlaps all the others and must not be
+      summed with them; UNKNOWN is the group of cases matching none of the listed terms.
+      Join phenotypes_v on `p.dataset = w.dataset AND p.trait_original = w.phenotype` for
+      the name.
+
+      QUERY WITH A `chr` PREDICATE. The table is partitioned by chromosome and clustered by
+      (phenotype, cnv_type, window_start); it is the largest table of the rCNV product by two
+      orders of magnitude, so a positional question should name `chr` as a literal, and a
+      phenotype-wide question should name `phenotype` and `cnv_type`.
+
+      EFFECT SIZES ARE ON THE LOG SCALE: `beta` is ln(odds ratio), so OR = EXP(beta).
+
+    columns:
+      dataset: "Source dataset, constant 'Collins_rCNV_2022'"
+      phenotype: "HPO phenotype group code without the colon (e.g. HP0012759). HP0000118 is all cases pooled; UNKNOWN is cases matching none of the listed terms. Join phenotypes_v.trait_original for the name"
+      cnv_type: "CNV class tested: DEL (deletion) or DUP (duplication)"
+      chr: "Chromosome as an integer. Autosomes only (1-22) — the study tested no sex chromosome. The partitioning column: name it as a literal in any positional query"
+      window_start: "Window start in GRCh38, lifted from window_start_grch37. Query with this, not the GRCh37 pair. Lifted windows are NOT a regular grid — do not assume a 200 kb width or a 10 kb step"
+      window_end: "Window end in GRCh38, lifted from window_end_grch37"
+      window_start_grch37: "Published GRCh37 window start. With window_end_grch37 and chr this is the window's published identity, traceable to the Zenodo file — the GRCh38 pair is derived from it, not an independent identity"
+      window_end_grch37: "Published GRCh37 window end. The published grid is exactly 200 kb wide with a 10 kb step; the GRCh38 pair is neither"
+      n_nominal_cohorts: "Number of contributing cohorts with nominal (P<0.05) evidence. One of the two ways to satisfy the paper's secondary-evidence requirement (n_nominal_cohorts >= 2, OR mlog10p_secondary > -LOG10(0.05)) alongside the primary FDR or genome-wide threshold"
+      top_cohort: "Cohort contributing the strongest single-cohort signal; the one dropped in the *_secondary re-analysis"
+      cohorts_excluded: "Semicolon-separated cohorts excluded from this meta-analysis (too few cases for this phenotype, or no CNV data). NULL where none were excluded"
+      case_freq: "Frequency of carriers of a qualifying CNV overlapping the window among cases"
+      control_freq: "Frequency of carriers of a qualifying CNV overlapping the window among controls"
+      beta: "Effect size as ln(odds ratio) — OR = EXP(beta). Never NULL on this view: rows without an estimate are dropped at munge, unlike rcnv_gene_associations_v"
+      beta_lower: "Lower bound of the 95% CI on beta, ln scale"
+      beta_upper: "Upper bound of the 95% CI on beta, ln scale"
+      z: "Meta-analysis Z score"
+      mlog10p: "-log10 of the meta-analysis p-value. Genome-wide significance in the paper is P <= 3.74e-6 (the Bonferroni threshold for ~13,340 non-overlapping windows), i.e. mlog10p > -LOG10(3.74e-6), plus the secondary-evidence requirement — see the view description"
+      mlog10_fdr_q: "-log10 of the FDR q-value. The paper's FDR-significance threshold is FDR < 1%, i.e. mlog10_fdr_q > -LOG10(0.01), plus the same secondary-evidence requirement"
+      beta_secondary: "beta from the leave-top-cohort-out re-analysis. NULL for 58% of rows"
+      beta_lower_secondary: "Lower 95% CI bound of beta_secondary, ln scale"
+      beta_upper_secondary: "Upper 95% CI bound of beta_secondary, ln scale"
+      z_secondary: "Z score from the leave-top-cohort-out re-analysis"
+      mlog10p_secondary: "-log10 p-value from the leave-top-cohort-out re-analysis"
+      mlog10_fdr_q_secondary: "-log10 FDR q-value from the leave-top-cohort-out re-analysis"
+      resource: "Data source identifier, constant 'rcnv' — the same resource dosage_sensitivity_v, rcnv_gene_associations_v and rcnv_segments_v carry"
+
+    column_types:
+      dataset: STRING
+      phenotype: STRING
+      cnv_type: STRING
+      chr: INT64
+      window_start: INT64
+      window_end: INT64
+      window_start_grch37: INT64
+      window_end_grch37: INT64
+      n_nominal_cohorts: INT64
+      top_cohort: STRING
+      cohorts_excluded: STRING
+      case_freq: FLOAT64
+      control_freq: FLOAT64
+      beta: FLOAT64
+      beta_lower: FLOAT64
+      beta_upper: FLOAT64
+      z: FLOAT64
+      mlog10p: FLOAT64
+      mlog10_fdr_q: FLOAT64
+      beta_secondary: FLOAT64
+      beta_lower_secondary: FLOAT64
+      beta_upper_secondary: FLOAT64
+      z_secondary: FLOAT64
+      mlog10p_secondary: FLOAT64
+      mlog10_fdr_q_secondary: FLOAT64
+      resource: STRING
+
+    examples:
+      - description: "Is there a rare-CNV signal at a fine-mapped GWAS locus? Takes the high-PIP credible-set variants of one FinnGen quantitative trait on one chromosome and reports the deletion windows covering each lead position — chosen because its lead variant sits inside 16p11.2, a well-known recurrent-CNV region, and the join lands on genome-wide-significant deletion windows there. The literal `chr = 16` appears on BOTH sides — in the CTE it prunes credible_sets_v's partitions, on the window view it prunes this table's, and the join's `cs.chr = w.chr` alone would prune neither. Windows overlap, so one position falls in ~20 of them with near-identical statistics."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, pos, variant, pip
+            FROM credible_sets_v
+            WHERE chr = 16 AND resource = 'finngen' AND data_type = 'GWAS'
+              AND trait_original = 'median_3035941_age_adjusted_IRN' AND pip > 0.5
+          )
+          SELECT cs.variant, ROUND(cs.pip, 3) AS pip,
+                 w.window_start, w.window_end,
+                 w.window_start_grch37, w.window_end_grch37,
+                 ROUND(EXP(w.beta), 2) AS odds_ratio,
+                 ROUND(w.mlog10p, 2) AS mlog10p,
+                 ROUND(w.mlog10_fdr_q, 2) AS mlog10_fdr_q
+          FROM rcnv_window_associations_v w
+          JOIN cs ON cs.chr = w.chr AND cs.pos BETWEEN w.window_start AND w.window_end
+          WHERE w.chr = 16 AND w.cnv_type = 'DEL' AND w.phenotype = 'HP0012759'
+          ORDER BY w.mlog10p DESC
+          LIMIT 20
+
+      - description: "Which phenotypes a deletion of one region is associated with: the single strongest window per phenotype in chr16:29-31 Mb (GRCh38, the 16p11.2 recurrent-CNV region), strongest first. The overlap test is `window_start < end AND window_end > start`, not BETWEEN — a window is wanted if it intersects the region, and BETWEEN on window_start alone would miss the windows that start before it. Reducing to one row per phenotype is what makes the result readable; without it the ~200 overlapping windows per phenotype swamp it."
+        sql: |-
+          SELECT w.phenotype, p.trait_name,
+                 w.window_start, w.window_end,
+                 w.window_start_grch37, w.window_end_grch37,
+                 w.n_nominal_cohorts,
+                 ROUND(EXP(w.beta), 2) AS odds_ratio,
+                 ROUND(w.mlog10p, 2) AS mlog10p,
+                 ROUND(w.mlog10_fdr_q, 2) AS mlog10_fdr_q
+          FROM rcnv_window_associations_v w
+          LEFT JOIN phenotypes_v p
+            ON p.dataset = w.dataset AND p.trait_original = w.phenotype
+          WHERE w.chr = 16
+            AND w.window_start < 31000000 AND w.window_end > 29000000
+            AND w.cnv_type = 'DEL'
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY w.phenotype ORDER BY w.mlog10p DESC) = 1
+          ORDER BY mlog10p DESC
+          LIMIT 15
+
+      - description: "FDR-significant deletion windows genome-wide for one HPO group, at the paper's own rule: FDR < 1% AND (nominal evidence in at least two cohorts OR the leave-top-cohort-out secondary p-value still nominally significant). This is the one shape with no `chr` literal, because the question is genome-wide; the (phenotype, cnv_type) clustering prefix is what limits the scan instead. The result is windows, not loci — consecutive rows are the same signal seen through a sliding window, so collapse adjacent windows before counting regions."
+        sql: |-
+          SELECT w.phenotype, p.trait_name, w.cnv_type,
+                 w.chr, w.window_start, w.window_end,
+                 w.n_nominal_cohorts,
+                 ROUND(EXP(w.beta), 2) AS odds_ratio,
+                 ROUND(w.mlog10p, 2) AS mlog10p,
+                 ROUND(w.mlog10_fdr_q, 2) AS mlog10_fdr_q
+          FROM rcnv_window_associations_v w
+          JOIN phenotypes_v p
+            ON p.dataset = w.dataset AND p.trait_original = w.phenotype
+          WHERE w.phenotype = 'HP0012759' AND w.cnv_type = 'DEL'
+            AND w.mlog10_fdr_q > -LOG10(0.01)
+            AND (w.n_nominal_cohorts >= 2 OR w.mlog10p_secondary > -LOG10(0.05))
+          ORDER BY w.mlog10_fdr_q DESC
+          LIMIT 50
+
+    categorical_columns:
+      resource: null
+      dataset: null
+      cnv_type: null
+      phenotype: null
   variant_annotation_v:
     exposed: true
     resource_derivation:
@@ -1928,6 +2597,12 @@ dataset_to_resource_rules:
     resource: "finngen"
     applies_to: ["hla_associations_v"]
     comment: "FinnGen R14 classical HLA allele associations; the lowercase fallback would give 'finngen_hla', not the 'finngen' resource the rest of the suite uses"
+
+  # rcnv_gene_associations_v pattern
+  - pattern: "Collins_rCNV%"
+    resource: "rcnv"
+    applies_to: ["rcnv_gene_associations_v", "rcnv_segments_v", "rcnv_window_associations_v"]
+    comment: "Collins et al. 2022 rare-CNV gene associations, disease-associated segments and sliding-window associations; the lowercase fallback would give 'collins_rcnv_2022', not the 'rcnv' resource dosage_sensitivity_v's scores carry"
 
   # fallback: lowercase the dataset name
   - pattern: "*"
@@ -2758,6 +3433,32 @@ profiles:
         publication_date: "2025-12-07"
         data_type: gene_disease
         trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # --- rare CNV dosage sensitivity ---
+      collins_rcnv_2022:
+        resource: rcnv
+        version: "v0.2"
+        description: >-
+          Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+          185:3041-3055, doi 10.1016/j.cell.2022.06.036; Zenodo record 6347673 v0.2,
+          CC-BY 4.0). pHaplo and pTriplo — the probabilities that losing one copy or
+          gaining a third copy of a gene is deleterious — for every autosomal
+          protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
+          54 HPO phenotypes, together with the per-phenotype DEL/DUP gene association
+          statistics those scores were learned from (54 HPO groups x 2 CNV types x 17,263
+          genes). Gene-keyed and coordinate-free: both products were built on GENCODE v19
+          (GRCh37), so only the gene identifiers carry over to the suite's GRCh38 views.
+        author: "Collins et al. (Talkowski lab)"
+        publication_date: "2022-08-04"
+        data_type: rcnv
+        trait_type: binary
+        n_phenotypes: 54
+        # rcnv_pheno.json was not staged into finngen-commons -- the account that staged
+        # it had no access to that bucket at the time -- so the phenotype names/counts live
+        # only in the daly bucket for now; a null metadata_file leaves the 54 HPO codes
+        # unresolved in phenotypes_v here.
         metadata_file: null
         metadata_harmonizer: null
 
@@ -3743,6 +4444,37 @@ profiles:
         trait_type: null
         metadata_file: null
         metadata_harmonizer: null
+
+      # --- rare CNV dosage sensitivity ---
+      collins_rcnv_2022:
+        resource: rcnv
+        version: "v0.2"
+        description: >-
+          Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
+          185:3041-3055, doi 10.1016/j.cell.2022.06.036; Zenodo record 6347673 v0.2,
+          CC-BY 4.0). pHaplo and pTriplo — the probabilities that losing one copy or
+          gaining a third copy of a gene is deleterious — for every autosomal
+          protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
+          54 HPO phenotypes, together with the per-phenotype DEL/DUP gene association
+          statistics those scores were learned from (54 HPO groups x 2 CNV types x 17,263
+          genes). Gene-keyed and coordinate-free: both products were built on GENCODE v19
+          (GRCh37), so only the gene identifiers carry over to the suite's GRCh38 views.
+        author: "Collins et al. (Talkowski lab)"
+        publication_date: "2022-08-04"
+        data_type: rcnv
+        trait_type: binary
+        n_phenotypes: 54
+        # rcnv_pheno.json is derived from the paper's Table S2, not hand-typed. The
+        # meta-analysis drops any cohort contributing fewer than 300 cases to a phenotype,
+        # so S2's Total column counts cases from cohorts the phenotype never used and the
+        # pooled control sample (491,952) overstates controls by up to 7x -- HP:0004323
+        # keeps 3 of 7 cohorts and 70,024 controls. num_cases sums the S2 cohort columns
+        # with >=300 cases; num_controls sums the S2 control row ('-') over those same
+        # cohorts. Re-run over table_S2.tsv (HPO, Description, Total, Cohort 1..7):
+        # awk -F'\t' 'NR==1{next} $1=="-"{for(i=4;i<=10;i++)k[i]=$i+0;next} {c=0;t=0;for(i=4;i<=10;i++)if($i+0>=300){c+=$i;t+=k[i]} gsub(/:/,"",$1); print $1"\t"$2"\t"c"\t"t}' table_S2.tsv \
+        #   | python3 -c 'import csv,json,sys; json.dump([{"phenocode":r[0],"phenostring":r[1],"num_cases":int(r[2]),"num_controls":int(r[3])} for r in csv.reader(sys.stdin,delimiter="\t")], open("configs/rcnv_pheno.json","w"), indent=4)'
+        metadata_file: "gs://daly-genetics-results/rcnv/collins_rcnv_2022/rcnv_pheno.json"
+        metadata_harmonizer: finngen_r13
 
       # --- external summary statistics ---
       pgc_scz:

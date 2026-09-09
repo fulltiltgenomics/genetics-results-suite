@@ -66,6 +66,7 @@ repairs it anyway rather than trusting that.
 | `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
 | `scripts/test-network-policies.py` | `docs/project-spec.md` | the harness's own enumerated spec: the checks it runs, its discovery tells and both locks, the workload kinds it sweeps, and its three-way answer on the live-sandbox probe |
 | `scripts/gen-doc-blocks.py` | `docs/code-execution-security.md`, `docs/project-spec.md` | which blocks are generated, what each derives from, and the build gate that runs it. The blocks themselves need no row: `--check` fails the build when they are stale |
+| `scripts/gen-doc-blocks.py` | `docs/adding-datasets.md` | the phenotype-join block: the views whose phenotype code is spelled `phenotype`, derived from each `tables.<view>` block's `column_types` in `configs/datasets.yaml` |
 | `scripts/gen-doc-blocks.py` | `docs/chat-tool-reference.md` | the tool-list and tool-surface blocks: the `resolve_tools` rules mirrored in the generator, and the cross-repo limit — the source of those blocks is genetics-mcp-server's `tools/definitions.py`, which a diff staged here can never contain, so only `--check` at build time catches a tool added there |
 
 The four rows just added — `gen-sandbox-docs.py`/`test-sandbox-docs.py` and

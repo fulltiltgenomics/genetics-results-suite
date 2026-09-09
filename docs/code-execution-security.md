@@ -1103,7 +1103,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
-| `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md` and `docs/chat-tool-reference.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
+| `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 

@@ -306,6 +306,7 @@ profiles:
 | `variant_effect` | In-silico predicted variant effect on chromatin (e.g. ChromBPNet, FLARE) |
 | `mpra` | Measured cis-regulatory allelic activity from a massively parallel reporter assay (MPRA) |
 | `hla` | Classical HLA allele associations (association unit is an imputed HLA allele, not a variant) |
+| `rcnv` | Rare-CNV dosage sensitivity: gene-level pHaplo/pTriplo scores, the per-phenotype DEL/DUP gene association statistics they were derived from, the disease-associated CNV segments of the same study, and its genome-wide sliding-window associations |
 | `gene_disease` | Gene-disease associations |
 
 Disambiguating the chromatin-related data types (note `caqtl` is a measured QTL with `trait_type: quantitative`; the others — `chromatin_peaks`, `open_chromatin`, `variant_effect`, `mpra` — carry `trait_type: null`):
@@ -328,6 +329,12 @@ carry `gene`/`allele` instead of `ref`/`alt` and never join to variant-keyed dat
 chr/pos/ref/alt. Keep it separate from `gwas` for exactly that reason: a consumer that
 assumes a variant key would silently mis-handle it.
 
+`rcnv` is gene-keyed rather than variant-keyed: the association unit is a rare CNV
+overlapping a gene, and what is stored is the per-gene dosage-sensitivity probability
+(pHaplo/pTriplo) rather than a per-variant effect. It keeps a real `trait_type` because
+the underlying CNV tests are case/control, but the rows carry no coordinates at all, so
+they join to the rest of the schema on gene identifiers only.
+
 ### `trait_type` enum
 
 | Value | Description |
@@ -340,12 +347,21 @@ assumes a variant key would silently mis-handle it.
 ### Profile differences
 
 The finngen and daly profiles share identical dataset definitions and descriptions.
-They differ only in `metadata_file` GCS paths, which point to different buckets:
+They differ in `metadata_file` GCS paths, which point to different buckets:
 
 - **finngen**: `gs://finngen-commons/results_api_data/...`
 - **daly**: `gs://daly-genetics-results/...`
 
-When `metadata_file` is `null`, the entry is identical across profiles.
+An entry may also carry a `metadata_file` in one profile and `null` in the other, when the
+metadata has only been staged into one bucket. `metadata_file` and
+`metadata_harmonizer` are set and cleared together, but the two halves fail differently, so
+the rule is one-directional. A non-null `metadata_file` with a null `metadata_harmonizer`
+is the loud half: `genetics-results-db`'s `build_phenotypes.py` reads every non-null
+`metadata_file` before it checks the harmonizer, so a path that is not readable fails the
+phenotype load for the entire profile. A null `metadata_file` with a non-null
+`metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and the
+dataset's trait codes simply stay unresolved in `phenotypes_v` -- a silent no-op that looks
+configured.
 
 **Consumer**: results-api (`datasets` registry, dataset-to-resource mapping)
 

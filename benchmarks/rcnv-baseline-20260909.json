@@ -1,0 +1,2092 @@
+{
+ "bead": "genetics-results-suite-hpa1.1",
+ "run": "rCNV question set, baseline with no rCNV data loaded",
+ "date": "2026-09-09",
+ "deployment": "daly-staging (gke_daly-finngenie_us-central1-a_finngenie-staging)",
+ "dataset": "daly-finngenie:genetics_results_dev",
+ "model": "claude-fable-5-1 (chat-backend DEFAULT_MODEL; no model override sent)",
+ "questions": "benchmarks/rcnv-questions.md",
+ "arms": {
+  "nocode": {
+   "identity": "mcp-tool (internal marker only)",
+   "tool_profile": "nocode",
+   "turns": [
+    {
+     "id": "S1",
+     "question": "Is NRXN1 haploinsufficient according to the Collins 2022 rCNV dosage-sensitivity map?",
+     "elapsed_s": 75.1,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map rare copy number variation NRXN1 pHaplo haploinsufficiency score",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "Collins 2022 Cell rCNV dosage sensitivity map NRXN1 pHaplo pTriplo score"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "NRXN1 pHaplo 0.9 dosage sensitivity Collins haploinsufficient gene 2p16.3 deletion rCNV",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "NRXN1 pHaplo score haploinsufficient Collins dosage sensitivity 2p16.3 deletion neurodevelopmental",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"NRXN1\" \"pHaplo\" score",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 4,
+      "input_tokens": 61473,
+      "cache_read": 43910,
+      "cache_create": 0,
+      "output_tokens": 1417,
+      "total_input_tokens": 39995,
+      "total_output_tokens": 2139,
+      "context_window": 1000000,
+      "context_percent": 6.1,
+      "turn_elapsed_ms": 74699,
+      "model_ms": 26068,
+      "model_attempts": 1
+     },
+     "answer": "**Short answer: I can't verify NRXN1's actual pHaplo value with my tools, so I can't give you a confirmed yes/no from the Collins 2022 map itself.** Here is what I could establish and where the definitive answer lives.\n\n**What the Collins 2022 map is** (perplexity backend): [Collins et al. 2022, Cell](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) meta-analyzed rCNVs from 950,278 individuals across 54 disorders, then used an ensemble ML model to assign pHaplo (probability of haploinsufficiency) and pTriplo to 18,641 autosomal protein-coding genes (GENCODE v19), calling 2,987 genes haploinsufficient and 1,559 triplosensitive. The published cutoffs are **pHaplo \u2265 0.86** for haploinsufficient and **pTriplo \u2265 0.94** for triplosensitive (also quoted in a [GIM Open abstract](https://www.gimopen.org/article/S2949-7744(23)00533-2/pdf) applying them).\n\n**Why I can't answer definitively:** the per-gene scores sit in the supplementary TSV (`Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz`, [Zenodo 6347673](https://zenodo.org/records/6347673)), the UCSC `dosageSensitivity` track, and DECIPHER's gene browser \u2014 none of which my tools can read, and none of my web/literature hits quote the NRXN1 number directly. I won't state a value from memory.\n\n**Where to look up the exact number in seconds:**\n- DECIPHER: https://www.deciphergenomics.org/gene/NRXN1/browser (genes coloured by pHaplo)\n- UCSC hg38 \u2192 Phenotype & Disease \u2192 \"Dosage Sensitivity\" track (pHaplo / pTriplo)\n- Zenodo TSV above, grep `NRXN1`\n\n**Context that bears on the expectation:** independent of Collins 2022, heterozygous exonic NRXN1 deletions (2p16.3 deletion syndrome, OMIM #614332) are a well-established, incompletely penetrant risk factor for ASD, schizophrenia, ID and epilepsy \u2014 e.g. 0.11% of postnatal clinical cases vs 0.02% of controls, p = 6.1\u00d710\u207b\u2077 ([Dabell et al. 2013](https://pubmed.ncbi.nlm.nih.gov/23495017/)); systematic review in [Castronovo et al. 2020](https://pubmed.ncbi.nlm.nih.gov/30873608/). ClinGen also maintains a dosage-sensitivity curation for NRXN1 (https://dosage.clinicalgenome.org/clingen_gene.cgi?sym=NRXN1), which is the clinical-grade haploinsufficiency call as opposed to Collins's statistical prediction. Given that deletion-intolerance evidence, a high pHaplo would be the expected result \u2014 but that is an inference, not the score.\n\nHappy to pull FinnGen/UKBB common-variant or gnomAD constraint (pLI/LOEUF) data on NRXN1 if you want complementary evidence on deletion intolerance."
+    },
+    {
+     "id": "S2",
+     "question": "What is the pTriplo score of PTEN, and does it pass the triplosensitivity threshold?",
+     "elapsed_s": 57.3,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "PTEN pTriplo score Collins 2022 dosage sensitivity pHaplo"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map pHaplo pTriplo thresholds 0.86 0.94",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"PTEN\" \"pTriplo\" score value triplosensitive",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "PTEN gene dosage sensitivity pHaplo pTriplo DECIPHER Collins haploinsufficiency triplosensitivity score",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 4,
+      "input_tokens": 51803,
+      "cache_read": 43902,
+      "cache_create": 0,
+      "output_tokens": 848,
+      "total_input_tokens": 18762,
+      "total_output_tokens": 1687,
+      "context_window": 1000000,
+      "context_percent": 5.2,
+      "turn_elapsed_ms": 56919,
+      "model_ms": 15957,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a tool that serves pTriplo/pHaplo scores directly (they come from Collins et al. 2022, not from FinnGen/gnomAD-style views), so let me check the literature/web for the PTEN value.I can't give you PTEN's pTriplo value from my tools \u2014 pHaplo/pTriplo scores (Collins et al. 2022, *Cell*) aren't in any of the FinnGen/gnomAD/annotation views I query, and the web/literature searches I ran (backends: DuckDuckGo web search and `perplexity` literature search) returned the paper and its thresholds but not the PTEN gene-level score itself. I won't quote a number from memory.\n\n**What I can confirm from the sources retrieved:**\n\n| Item | Value | Source |\n|---|---|---|\n| Triplosensitivity threshold | **pTriplo \u2265 0.94** | [Collins et al. 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) |\n| Haploinsufficiency threshold | pHaplo \u2265 0.86 | same |\n| Genes passing TS threshold | 1,559 (648 uniquely triplosensitive) | same |\n| Genes passing HI threshold | 2,987 | same |\n\n**Where to look up PTEN's exact score:**\n- Supplementary Table S7 of the paper, or the Zenodo file `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz` ([Zenodo record 6347673](https://zenodo.org/records/6347673)) \u2014 18,641 autosomal genes with pHaplo and pTriplo.\n- The UCSC Genome Browser \"Dosage Sensitivity\" track (hg38, `pTriplo` table) shows it per gene.\n- DECIPHER gene pages also display the Collins scores alongside ClinGen dosage curation.\n\nOnce you have the number, the call is simple: PTEN passes triplosensitivity if pTriplo \u2265 0.94. Note that a high pTriplo doesn't imply a known duplication disorder \u2014 for PTEN the established Mendelian mechanism is haploinsufficiency/loss of function (PTEN hamartoma tumour syndrome); I can pull the ClinGen/GENCC gene-disease records or FinnGen GWAS/burden evidence for PTEN if useful."
+    },
+    {
+     "id": "S3",
+     "question": "Is COMT haploinsufficient in the rCNV dosage-sensitivity map?",
+     "elapsed_s": 54.3,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "COMT pHaplo pTriplo dosage sensitivity map rare CNV Collins 2022 haploinsufficient 22q11.2",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "COMT pHaplo score rCNV dosage sensitivity map Collins 2022 haploinsufficient"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"COMT\" \"pHaplo\" value dosage sensitivity Collins",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 54508,
+      "cache_read": 43899,
+      "cache_create": 0,
+      "output_tokens": 865,
+      "total_input_tokens": 19607,
+      "total_output_tokens": 1410,
+      "context_window": 1000000,
+      "context_percent": 5.5,
+      "turn_elapsed_ms": 53957,
+      "model_ms": 18202,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a tool that serves the rCNV dosage-sensitivity map (Collins et al. 2022 pHaplo/pTriplo scores) directly, so I checked the literature and web for COMT's score.I can't give you a verified yes/no: none of my tools serve the Collins et al. 2022 rCNV dosage-sensitivity scores (pHaplo/pTriplo), and a literature search (backend: `perplexity`) plus two web searches returned the paper and its data release but not COMT's gene-level score. I won't quote a pHaplo value from memory.\n\n**Where to look it up directly**\n\n- The score table: `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz` on [Zenodo (record 6347673)](https://zenodo.org/records/6347673) \u2014 pHaplo and pTriplo for 18,641 autosomal protein-coding genes (Gencode v19). Grep for `COMT`.\n- Browsable version: the UCSC \"Dosage Sensitivity\" track (hg38, `pHaplo` / `pTriplo` subtracks) at chr22:19.94\u201319.97 Mb.\n- Paper: [Collins et al. 2022, Cell](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/). Their thresholds are **pHaplo \u2265 0.86** for \"haploinsufficient\" and **pTriplo \u2265 0.94** for \"triplosensitive\" (2,987 and 1,559 genes respectively).\n\n**Context that bears on the interpretation**\n\n- COMT sits inside the recurrent 22q11.2 deletion (LCR22 A\u2013D), and the rCNV map's gene-level predictions are driven partly by segment-level associations, so genes in this interval tend to receive elevated pHaplo regardless of individual evidence \u2014 a COMT score near the threshold would not by itself establish COMT-specific haploinsufficiency.\n- The ClinGen dosage curation gives the *region* a haploinsufficiency score of 3 ([Xue et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8753460/)); COMT hemizygosity does reduce mRNA/protein/activity by ~50% ([Gothelf et al. 2014](https://pmc.ncbi.nlm.nih.gov/articles/PMC3872263/)), but whether that reduction is phenotypically consequential on its own remains debated ([Eisenberg & Berman 2014](https://pmc.ncbi.nlm.nih.gov/articles/PMC4205935/)).\n\nIf you pull the COMT row from the Zenodo table, I can put it in context against the thresholds and against what FinnGen/UKBB GWAS and exome burden data show for COMT."
+    },
+    {
+     "id": "S4",
+     "question": "Give both dosage-sensitivity scores (pHaplo and pTriplo) for CACNA1C.",
+     "elapsed_s": 43.4,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "CACNA1C pHaplo pTriplo dosage sensitivity score Collins 2022"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "CACNA1C pHaplo pTriplo dosage sensitivity haploinsufficiency triplosensitivity",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"CACNA1C\" \"pHaplo\" \"pTriplo\"",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 51623,
+      "cache_read": 43905,
+      "cache_create": 0,
+      "output_tokens": 683,
+      "total_input_tokens": 13739,
+      "total_output_tokens": 1230,
+      "context_window": 1000000,
+      "context_percent": 5.2,
+      "turn_elapsed_ms": 43023,
+      "model_ms": 14417,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a dedicated tool for the Collins et al. 2022 dosage-sensitivity scores (pHaplo/pTriplo), so let me see whether I can locate the CACNA1C values via search.**CACNA1C dosage-sensitivity scores (Collins et al. 2022 rCNV map, as displayed on [DECIPHER v11.40](https://www.deciphergenomics.org/gene/CACNA1C/overview/clinical-info)):**\n\n| Score | Value | Interpretation |\n|---|---|---|\n| pHaplo | **1.00** | Predicted haploinsufficient (\u22650.86 cutoff) |\n| pTriplo | **1.00** | Predicted triplosensitive (\u22650.94 cutoff) |\n\nSo CACNA1C is predicted to be intolerant to both copy-number loss and gain. This is consistent with the other constraint metrics on the same DECIPHER page (pLI 1.00, LOEUF 0.19, missense Z 7.28).\n\n**Caveats**\n- I don't have a direct tool for the Collins et al. scores; these values come from DECIPHER's rendering of that resource via web search (rounded to 2 decimals). The primary source is [Collins et al. 2022, Cell](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) (Table S7 / [Zenodo record 6347673](https://zenodo.org/records/6347673)) if you need the unrounded values.\n- These are ML predictions, not clinical curation. ClinGen's dosage curation for CACNA1C (last evaluated 2016) still lists haploinsufficiency as \"little evidence\" and triplosensitivity as \"no evidence\", though subsequent reports of truncating variants/deletions with neurodevelopmental phenotypes ([Rodan et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8488020/); [Mio et al. 2020](https://pubmed.ncbi.nlm.nih.gov/31953239/)) support haploinsufficiency (literature via the `perplexity` backend).\n\nHappy to pull CACNA1C's GWAS/fine-mapping or burden-test evidence if that's the next question."
+    },
+    {
+     "id": "S5",
+     "question": "Which of SHANK3, ANKRD11 and RBFOX1 are triplosensitive?",
+     "elapsed_s": 82.0,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SHANK3,ANKRD11,RBFOX1"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity triplosensitivity score SHANK3 ANKRD11 RBFOX1",
+        "include_domains": [
+         "clinicalgenome.org",
+         "search.clinicalgenome.org",
+         "dosage.clinicalgenome.org"
+        ],
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "SHANK3 ClinGen dosage sensitivity haploinsufficiency triplosensitivity score",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ANKRD11 ClinGen dosage sensitivity triplosensitivity score",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "RBFOX1 ClinGen dosage sensitivity haploinsufficiency triplosensitivity score",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "ClinGen Dosage Sensitivity Map triplosensitivity score for SHANK3, ANKRD11 and RBFOX1 (duplications; haploinsufficiency vs triplosensitivity)",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"ANKRD11\" \"Triplosensitivity\" \"No evidence available\" OR \"Sufficient evidence\" ClinGen Genome Curation Page",
+        "include_domains": [
+         "ncbi.nlm.nih.gov"
+        ],
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"RBFOX1\" \"Triplosensitivity\" ClinGen Genome Curation Page haploinsufficiency",
+        "include_domains": [
+         "ncbi.nlm.nih.gov"
+        ],
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 5,
+      "input_tokens": 57574,
+      "cache_read": 43902,
+      "cache_create": 0,
+      "output_tokens": 948,
+      "total_input_tokens": 31599,
+      "total_output_tokens": 2573,
+      "context_window": 1000000,
+      "context_percent": 5.8,
+      "turn_elapsed_ms": 81658,
+      "model_ms": 16993,
+      "model_attempts": 1
+     },
+     "answer": "I'll check the ClinGen/GENCC gene\u2013disease records and the ClinGen Dosage Sensitivity curations for these three genes.**Short answer: none of the three is established as triplosensitive.** By ClinGen Dosage Sensitivity curation, SHANK3 and ANKRD11 are haploinsufficient (score 3) with **no evidence for triplosensitivity (score 0)**; I could not retrieve RBFOX1's ClinGen dosage record with my tools, so its status is unverified here.\n\n| Gene | Haploinsufficiency (ClinGen) | Triplosensitivity (ClinGen) | Source |\n|---|---|---|---|\n| SHANK3 | 3 \u2013 sufficient evidence (Phelan-McDermid syndrome) | **0 \u2013 no evidence available** (last evaluated 2018-08-14) | ClinGen dosage summary as mirrored on [NCBI GTR](https://www.ncbi.nlm.nih.gov/gtr/genes/85358/) |\n| ANKRD11 | 3 \u2013 sufficient evidence (KBG syndrome; NCBI notes \"2 dosage sensitivity classifications\") | **0 \u2013 no evidence available** (last evaluated 2022-06-14) | [NCBI Gene](https://www.ncbi.nlm.nih.gov/gene/29123/), [ClinGen dosage page](https://search.clinicalgenome.org/kb/gene-dosage/HGNC:21316) |\n| RBFOX1 | not retrieved | **not retrieved** | \u2014 check directly at [dosage.clinicalgenome.org](https://dosage.clinicalgenome.org/) |\n\nNotes:\n- My `get_gene_disease_associations` (ClinGen/GENCC) call returned no records for any of the three genes, so the scores above come from web-indexed ClinGen summaries rather than an in-house table; the literature call that surfaced the SHANK3 record used the `perplexity` backend.\n- A TS score of 0 means \"no evidence,\" not \"evidence against\" \u2014 22q13 duplications including SHANK3 and 16q24.3 duplications including ANKRD11 are reported in the literature, but ClinGen has not judged the gene-level evidence sufficient.\n- A complementary, non-curated view is the statistical pTriplo score from [Collins et al. 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) (Cell; rare-CNV meta-analysis of ~1M individuals), which predicts triplosensitivity genome-wide. I did not pull per-gene pTriplo values; I can look those up if you want a prediction-based answer for RBFOX1 in particular."
+    },
+    {
+     "id": "S6",
+     "question": "How many genes in the rCNV dosage-sensitivity map are haploinsufficient, and how many are triplosensitive?",
+     "elapsed_s": 26.5,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "rCNV dosage sensitivity map haploinsufficient triplosensitive genes Collins 2022 Cell genome-wide",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 47578,
+      "cache_read": 43910,
+      "cache_create": 0,
+      "output_tokens": 515,
+      "total_input_tokens": 3672,
+      "total_output_tokens": 710,
+      "context_window": 1000000,
+      "context_percent": 4.8,
+      "turn_elapsed_ms": 26162,
+      "model_ms": 10982,
+      "model_attempts": 1
+     },
+     "answer": "The rCNV dosage-sensitivity map is not one of the datasets in my genetics database, so this answer comes from the literature (backend queried: `perplexity`).\n\n**Answer \u2014 from [Collins et al. 2022, *Cell*](https://pubmed.ncbi.nlm.nih.gov/35917817/):**\n\n| Category | Genes |\n|---|---|\n| Haploinsufficient (pHaplo-predicted, deletion-intolerant) | **2,987** |\n| Triplosensitive (pTriplo-predicted, duplication-intolerant) | **1,559** |\n| \u2014 of which uniquely triplosensitive (not also haploinsufficient) | 648 |\n\nContext from the abstract: these predictions come from an ensemble machine-learning model (pHaplo & pTriplo scores) applied to all autosomal genes, trained on rCNVs meta-analyzed from nearly one million individuals across 54 disorders, which also defined 163 disease-associated dosage-sensitive segments.\n\nTwo caveats worth noting:\n- The counts depend on the score thresholds the authors chose; the scores themselves are continuous, so other cutoffs give other counts.\n- The earlier 2021 medRxiv preprint reported different figures (3,006 haploinsufficient and 295 triplosensitive) \u2014 the peer-reviewed *Cell* numbers above are the final ones.\n\nI can look up the specific pHaplo/pTriplo thresholds used, or cross-reference particular genes from that map against FinnGen GWAS/burden evidence if useful."
+    },
+    {
+     "id": "S7",
+     "question": "Does the rCNV dosage-sensitivity map give a pHaplo score for MECP2?",
+     "elapsed_s": 35.1,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 rCNV dosage sensitivity map pHaplo pTriplo autosomal genes chromosome X excluded",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "rCNV2 dosage sensitivity pHaplo pTriplo scores chromosome X genes MECP2",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 48261,
+      "cache_read": 43901,
+      "cache_create": 0,
+      "output_tokens": 647,
+      "total_input_tokens": 4364,
+      "total_output_tokens": 1144,
+      "context_window": 1000000,
+      "context_percent": 4.8,
+      "turn_elapsed_ms": 34717,
+      "model_ms": 15600,
+      "model_attempts": 1
+     },
+     "answer": "I don't have the rCNV dosage-sensitivity map (Collins et al. 2022) in my genetics databases, so let me check the published source directly rather than answer from memory.**No.** The rCNV dosage-sensitivity map ([Collins et al. 2022, *Cell*](https://pubmed.ncbi.nlm.nih.gov/35917817/)) computed pHaplo and pTriplo only for **autosomal** protein-coding genes \u2014 the abstract states the ensemble model predicted dosage sensitivity \"for all autosomal genes\" (2,987 haploinsufficient at pHaplo \u2265 0.86, 1,559 triplosensitive). MECP2 is on Xq28, so it has no pHaplo/pTriplo score in that resource (the Zenodo file `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz` and the UCSC `dosageSensitivity` track are autosome-only). Sex chromosomes were excluded largely because the rCNV association and model framework assumes diploid copy number, which doesn't hold for hemizygous males.\n\nCaveat: this rests on the published description (via the `perplexity` literature backend and a web search); I don't host the rCNV dataset, so I can't inspect the score file row-by-row.\n\n**Where to get a dosage-sensitivity call for MECP2 instead:**\n- **ClinGen Dosage Sensitivity Curation** \u2014 MECP2 has a curated entry ([HGNC:6990](https://search.clinicalgenome.org/kb/gene-dosage/HGNC:6990)); ClinGen rates X-linked genes in the context of a male genome, and MECP2 is the canonical example of a gene that is both haploinsufficient (Rett syndrome) and triplosensitive (MECP2 duplication syndrome).\n- **gnomAD constraint** (pLI/LOEUF) covers chrX and is available through the gnomAD tools here if you want it.\n\nI can pull the ClinGen/GenCC gene\u2013disease records for MECP2 or its gnomAD constraint metrics if useful."
+    },
+    {
+     "id": "S8",
+     "question": "Which protein-coding genes in chr22:18,900,000-21,100,000 (GRCh38) are haploinsufficient?",
+     "elapsed_s": 190.7,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_genes_in_region",
+       "input": {
+        "chr": "22",
+        "start": 18900000,
+        "end": 21100000,
+        "gene_type": "protein_coding"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR6,PRODH,FAM246C,DGCR2,ESS2,TSSK2,GSC2,SLC25A1,CLTCL1,HIRA,C22orf39,MRPL40,UFD1,CDC45,CLDN5,SEPTIN5,GP1BB,TBX1,GNB1L,RTL10,TXNRD2,COMT,ARVCF,TANGO2,DGCR8,TRMT2A,RANBP1,ZDHHC8,CCDC188,RTN4R,DGCR6L,ZNF74,SCARF2,KLHL22,MED15,PI4KA,SERPIND1,SNAP29,CRKL,AIFM3,LZTR1,THAP7,TUBA3FP,P2RX6,SLC7A4,LRRC74B"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TBX1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR6,PRODH,DGCR2,ESS2,TSSK2,GSC2,SLC25A1,CLTCL1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "HIRA,C22orf39,MRPL40,UFD1,CDC45,CLDN5,SEPTIN5,GP1BB"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "GNB1L,RTL10,TXNRD2,COMT,ARVCF,TANGO2,DGCR8,TRMT2A"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "RANBP1,ZDHHC8,CCDC188,RTN4R,DGCR6L,ZNF74,SCARF2,KLHL22"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "MED15,PI4KA,SERPIND1,SNAP29,CRKL,AIFM3,LZTR1,THAP7"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TUBA3FP,P2RX6,SLC7A4,LRRC74B,FAM246C"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "LZTR1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "GP1BB"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "CRKL"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "HIRA"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR8"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "MED15"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "PI4KA"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SNAP29"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "UFD1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SEPTIN5"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "CDC45"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TANGO2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR6"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "PRODH"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "ESS2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TSSK2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "GSC2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SLC25A1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "CLTCL1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "C22orf39"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "MRPL40"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "CLDN5"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "GNB1L"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "RTL10"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TXNRD2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "COMT"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "ARVCF"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TRMT2A"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "RANBP1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "ZDHHC8"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "CCDC188"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "RTN4R"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "DGCR6L"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "ZNF74"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SCARF2"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "KLHL22"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SERPIND1"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "AIFM3"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "THAP7"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "P2RX6"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "SLC7A4"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "LRRC74B"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "TUBA3FP"
+       }
+      },
+      {
+       "name": "get_gene_disease_associations",
+       "input": {
+        "gene": "FAM246C"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "ClinGen dosage sensitivity haploinsufficiency score TBX1 CRKL 22q11.2 deletion region genes",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity TBX1 haploinsufficiency score",
+        "include_domains": [
+         "clinicalgenome.org",
+         "search.clinicalgenome.org",
+         "dosage.clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "LZTR1 curation results for Dosage Sensitivity haploinsufficiency score clinicalgenome",
+        "include_domains": [
+         "search.clinicalgenome.org",
+         "clinicalgenome.org"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "SERPIND1 OR CRKL OR SNAP29 curation results for Dosage Sensitivity haploinsufficiency score",
+        "include_domains": [
+         "search.clinicalgenome.org",
+         "clinicalgenome.org"
+        ]
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 10,
+      "input_tokens": 97531,
+      "cache_read": 43912,
+      "cache_create": 0,
+      "output_tokens": 2905,
+      "total_input_tokens": 317325,
+      "total_output_tokens": 8356,
+      "context_window": 1000000,
+      "context_percent": 9.8,
+      "turn_elapsed_ms": 190358,
+      "model_ms": 52773,
+      "model_attempts": 1
+     },
+     "answer": "I'll start by listing the protein-coding genes in that interval (the 22q11.2 deletion region), then check ClinGen/GenCC curations for each.Now checking ClinGen/GenCC curations for all 46 HGNC-named genes in one call.The batch returned empty, which is suspicious for TBX1/LZTR1 \u2014 let me test individually.Single-gene calls work; the long batch failed silently. I'll query in small batches.Now the remaining genes, individually.I don't have direct access to ClinGen dosage-sensitivity scores or gnomAD pLI/LOEUF through my tools, so let me check the literature for the formal haploinsufficiency curation of this region.**Short answer:** In this interval \u2014 which is the proximal 22q11.2 deletion region (LCR22A\u2013D) \u2014 **no individual gene has been shown to be haploinsufficient with ClinGen's top evidence level (HI score 3)**. The recurrent 22q11.2 deletion *region* as a whole is haploinsufficient, but the evidence for individual genes is weaker. The strongest single-gene candidates from my data are **TBX1**, **LZTR1**, and **SERPIND1** (autosomal-dominant loss-of-function mechanisms in GenCC), with CRKL, HIRA and CLDN5 as weaker candidates.\n\n**How I assessed this:** I listed the 50 protein-coding genes in the region (46 with HGNC symbols), queried GenCC/ClinGen/OMIM gene\u2013disease curations for each one individually (the batch mode of that tool silently returned nothing), and checked ClinGen dosage-sensitivity records via web search. I do **not** have a tool that returns ClinGen HI scores or gnomAD pLI/LOEUF directly, so constraint-based haploinsufficiency is not covered here.\n\n### Genes with autosomal-dominant curations (the candidates)\n\n| Gene | GenCC AD curation (top classification) | Mechanism / dosage evidence | Verdict |\n|---|---|---|---|\n| **TBX1** | DiGeorge syndrome \u2013 Definitive (G2P); conotruncal heart malformations \u2013 Definitive (Ambry); velocardiofacial \u2013 Strong | ClinGen HI score **1** (\"little evidence\", 2024): LoF point mutations in TBX1 phenocopy 22q11.2DS but few cases; Tbx1 dosage in mouse is strongly phenotype-dependent | Best single-gene candidate, but formally not established |\n| **LZTR1** | Noonan syndrome 10 \u2013 Definitive (ClinGen, G2P, Ambry); schwannomatosis \u2013 Definitive (G2P, Ambry) | Schwannomatosis follows a tumour-suppressor (germline LoF + second hit) model; dominant Noonan alleles are largely missense | Dominant LoF gene, but not classic developmental haploinsufficiency; I could not retrieve its ClinGen HI score |\n| **SERPIND1** | Heparin cofactor 2 deficiency \u2013 Definitive (ClinGen), Strong (PanelApp) | Heterozygous deficiency \u2248 half-normal HCII levels | Biochemically haploinsufficient, but clinical penetrance for thrombosis is weak |\n| CRKL | Congenital heart disease \u2013 **No Known Disease Relationship** (ClinGen) | ClinGen dosage page: mouse data suggest CRKL haploinsufficiency contributes to cardiac/genitourinary features; curated as \"little evidence\" | Hypothesis only |\n| HIRA | Neurodevelopmental disorder \u2013 Limited (G2P, AD) | \u2014 | Weak |\n| CLDN5 | Neurodevelopmental disorder \u2013 Limited (G2P, AD) | \u2014 | Weak |\n| COMT | Paroxysmal dyskinesia \u2013 Moderate (Ambry, AD) | \u2014 | Weak/unclear mechanism |\n| DGCR2, CLTCL1, TXNRD2 | Limited (AD) | \u2014 | Weak |\n\n### Genes whose disease curations are recessive only (not haploinsufficient)\nPRODH, SLC25A1, CDC45, GP1BB (Bernard-Soulier; only Orphanet lists an AD form), TANGO2, PI4KA, SCARF2, SNAP29, P2RX6.\n\n### No Mendelian curation at all\nDGCR6, ESS2, TSSK2, GSC2, C22orf39, MRPL40, UFD1, SEPTIN5, GNB1L, RTL10, ARVCF, DGCR8, TRMT2A, RANBP1, ZDHHC8, CCDC188, RTN4R, DGCR6L, ZNF74, KLHL22, MED15, AIFM3, THAP7, SLC7A4, LRRC74B, FAM246C, TUBA3FP (pseudogene), plus 4 unnamed ENSG loci.\n\n### Caveats that matter\n- The 22q11.2DS phenotype is generally considered a **contiguous-gene** effect (TBX1 for cardiac/craniofacial, CRKL modifying cardiac/renal, DGCR8/others for neuropsychiatric), so weak single-gene HI scores don't mean the deletion is benign \u2014 the recurrent region itself is ClinGen HI = 3.\n- For a constraint-based answer (pLI/LOEUF), you'd need gnomAD; for the authoritative per-gene HI/TS scores, the ClinGen dosage map ([dosage.clinicalgenome.org](https://dosage.clinicalgenome.org/)) accepts GRCh38 region queries directly. Literature search was via the `perplexity` backend; the TBX1 HI = 1 score comes from the [ClinGen TBX1 dosage page](https://search.clinicalgenome.org/kb/gene-dosage/HGNC:11592).\n\n\ud83d\udce5 Per-gene GenCC downloads: [TBX1](/chat/v1/downloads/a3772a1480584fe5a8dd53737df41d10) \u00b7 [LZTR1](/chat/v1/downloads/a2f0a101b6974b098ec7a0f5216dec97) \u00b7 [SERPIND1](/chat/v1/downloads/3e5dc21bc34d45fd9a5e76948d595013) \u00b7 [CRKL](/chat/v1/downloads/84161f78051441198d8c370ab98b723a) \u00b7 [HIRA](/chat/v1/downloads/bb677a943f9a4de29a34eea0c1a932aa) \u00b7 [CLDN5](/chat/v1/downloads/c684563fe9ed41fb996b09008f2583be) \u00b7 [COMT](/chat/v1/downloads/142e7d159ccf4b48bf0f601a17cc9980) \u00b7 [GP1BB](/chat/v1/downloads/47448c52419c473c877d646c4a344313) \u00b7 [PI4KA](/chat/v1/downloads/da8f0aa46f73442db86c89d27727084f) \u00b7 [SNAP29](/chat/v1/downloads/22811fda0a3b4e0ab23a5848d5cb8229) \u00b7 [CDC45](/chat/v1/downloads/19085f79e1b5482dabe90e07f5d9e5c5) \u00b7 [TANGO2](/chat/v1/downloads/1b98a6d75bf24e6a9cb834b15144c34a) \u00b7 [DGCR6](/chat/v1/downloads/47f2481cd9514b81befb0c24eaf262e4) \u00b7 [PRODH](/chat/v1/downloads/ffaef5e205da4435926f2037c49c2a60) \u00b7 [DGCR2](/chat/v1/downloads/dbcecf632da042208d51fd0b0d001325) \u00b7 [ESS2](/chat/v1/downloads/c963867a83ed4af79b20bdbb9ac1e3e2) \u00b7 [SLC25A1](/chat/v1/downloads/560ca2b336054394acd3e9bd85c0b90d) \u00b7 [CLTCL1](/chat/v1/downloads/98717d4abdd44334a1c2a10be66f33b8) \u00b7 [TXNRD2](/chat/v1/downloads/694a09bad4ea4cbc8520311dadfedebc) \u00b7 [SCARF2](/chat/v1/downloads/cd96f90c8b9f4ed9bc8a1bb8629dd0ed) \u00b7 [P2RX6](/chat/v1/downloads/185ecddaa7664a56bc43eb4e0189d0b7) \u00b7 [DGCR8](/chat/v1/downloads/85da57dbc0784cc79abcb93d88604ff8)\n\nHappy to follow up with rare-variant burden (genebass) or mouse KO evidence for TBX1/CRKL/LZTR1 if you want the LoF-tolerance angle."
+    },
+    {
+     "id": "S9",
+     "question": "Take the schizophrenia pLoF burden hits in SCHEMA2 with mlog10p_burden >= 6 and rank them by triplosensitivity.",
+     "elapsed_s": 56.4,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_database_schema",
+       "input": {
+        "table": "gene_burden_results_v"
+       }
+      },
+      {
+       "name": "get_database_schema",
+       "input": {
+        "table": "gene_annotations_v"
+       }
+      },
+      {
+       "name": "query_database",
+       "input": {
+        "sql": "SELECT gene, gene_id, chr, annotation, trait_original, mlog10p_burden, beta, se, total_variants, n_cases, n_controls, flags\nFROM gene_burden_results_v\nWHERE resource = 'schema2' AND annotation = 'PTV' AND mlog10p_burden >= 6\nORDER BY mlog10p_burden DESC\nLIMIT 100"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity triplosensitivity score SETD1A ZMYM2 RB1CC1 HERC1 SCAF1 XPO7 ATP9A PTK2 STAG1 JARID2",
+        "include_domains": [
+         "clinicalgenome.org",
+         "search.clinicalgenome.org",
+         "dosage.clinicalgenome.org"
+        ],
+        "max_results": 10
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 4,
+      "input_tokens": 58194,
+      "cache_read": 43923,
+      "cache_create": 0,
+      "output_tokens": 1362,
+      "total_input_tokens": 35457,
+      "total_output_tokens": 2548,
+      "context_window": 1000000,
+      "context_percent": 5.8,
+      "turn_elapsed_ms": 55976,
+      "model_ms": 21853,
+      "model_attempts": 1
+     },
+     "answer": "I'll start by checking the schema for the burden results and gene annotation views to see whether a triplosensitivity field exists.I can give you the first half of this but not the second \u2014 **triplosensitivity scores are not in any of my data sources**, so I cannot rank on them.\n\n## SCHEMA2 schizophrenia PTV burden hits (mlog10p_burden \u2265 6)\n\nSCHEMA2 labels its pLoF mask `PTV` (protein-truncating variants). All rows are from 87,959 cases / 150,587 controls, trait `schizophrenia`, ranked by burden significance:\n\n| Rank | Gene | Chr | mlog10p | p-value | beta (log OR) | SE |\n|---|---|---|---|---|---|---|\n| 1 | SETD1A | 16 | 12.98 | 1.0e-13 | 2.10 | 0.28 |\n| 2 | ZMYM2 | 13 | 10.96 | 1.1e-11 | 1.73 | 0.25 |\n| 3 | RB1CC1 | 8 | 10.77 | 1.7e-11 | 1.94 | 0.29 |\n| 4 | HERC1 | 15 | 10.40 | 4.0e-11 | 1.13 | 0.17 |\n| 5 | SCAF1 | 19 | 8.45 | 3.5e-9 | 2.14 | 0.36 |\n| 6 | XPO7 | 8 | 8.23 | 5.8e-9 | 1.89 | 0.33 |\n| 7 | ATP9A | 20 | 6.47 | 3.4e-7 | 1.21 | 0.24 |\n| 8 | PTK2 | 8 | 6.30 | 5.0e-7 | 1.76 | 0.35 |\n| 9 | STAG1 | 3 | 6.27 | 5.4e-7 | 2.45 | 0.49 |\n| 10 | JARID2 | 6 | 6.07 | 8.5e-7 | 2.33 | 0.47 |\n\n\ud83d\udce5 [Download full results as TSV](/chat/v1/downloads/5f9e340eab6245859ac6a6141b00d139)\n\nTen genes pass the threshold; the result is complete (not truncated). Note that hits 7\u201310 (p \u2248 3e-7 to 9e-7) sit below SCHEMA's exome-wide threshold (~2.2e-6 is met, but these are the weaker tier), so treat them with more caution than the top six.\n\n## Why I can't do the triplosensitivity ranking\n\nTriplosensitivity (TS) and haploinsufficiency (HI) scores come from the **ClinGen Dosage Sensitivity curation**, which is not among my tables (`gene_annotations_v` carries HGNC/GENCODE fields and gene groups only; `get_gene_disease_associations` gives ClinGen/GenCC gene\u2013disease *validity*, not dosage). A web search for these scores returned nothing usable. Rather than guess, I'd point you to:\n\n- **ClinGen Dosage Sensitivity Map**: https://search.clinicalgenome.org/kb/gene-dosage \u2014 search each of the 10 symbols; the TS score (0/1/2/3, or \"not yet evaluated\") and HI score are on each gene page.\n- Alternatively, gnomAD v4 publishes constraint-based **pTriplo / pHaplo** probabilities (Collins et al. 2022) which are a genome-wide computational proxy for dosage sensitivity, if you want a score for every gene rather than only curated ones.\n\nOne expectation to set: curated ClinGen TS scores of 3 are rare (a few dozen genes genome-wide), so it is likely most or all of these 10 come back as TS = 0 or \"not evaluated\", in which case the ranking would be largely uninformative and pTriplo would be the more useful metric.\n\nIf you paste the TS or pTriplo values, I'll merge them into the table above and re-rank. I can also pull ClinGen/GenCC gene\u2013disease validity, gnomAD constraint (pLI/LOEUF) or the SCHEMA2 `PTV_missense` mask for these genes if that helps."
+    },
+    {
+     "id": "S10",
+     "question": "How many protein-coding genes on chromosome 22 are triplosensitive?",
+     "elapsed_s": 42.1,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_database_schema",
+       "input": {
+        "table": "gene_annotations_v"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity map triplosensitivity score 3 genes chromosome 22"
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 50130,
+      "cache_read": 43895,
+      "cache_create": 0,
+      "output_tokens": 476,
+      "total_input_tokens": 11495,
+      "total_output_tokens": 881,
+      "context_window": 1000000,
+      "context_percent": 5.0,
+      "turn_elapsed_ms": 41729,
+      "model_ms": 10847,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this one from my data. Triplosensitivity is a ClinGen Dosage Sensitivity curation (score 0\u20133 per gene/region), and none of my sources carry it \u2014 I checked the gene reference table (`gene_annotations_v`: HGNC/GENCODE fields and gene groups only) and my ClinGen access covers gene\u2013disease validity, not dosage sensitivity. A web search found only the resource itself, not a per-chromosome count.\n\nWhere to get the answer directly:\n- **ClinGen Dosage Sensitivity Map** \u2014 https://dosage.clinicalgenome.org/ . Download the gene-level TSV (`ClinGen_gene_curation_list_GRCh38.tsv`, linked from the Downloads page), filter `Genomic Location` to chr22 and `Triplosensitivity Score` = 3 (\"sufficient evidence\"). Note that very few genes genome-wide have a triplosensitivity score of 3 (most curated genes are 0 or \"not yet evaluated\"), so the chr22 count is likely to be very small or zero \u2014 the well-known 22q11.2 triplosensitivity is curated as a **region**, not gene-by-gene.\n\nIf you'd like, I can instead list the protein-coding genes on chromosome 22 from `gene_annotations_v` (as a scaffold to join against the ClinGen file), or look up ClinGen gene\u2013disease validity for specific chr22 genes."
+    },
+    {
+     "id": "G1",
+     "question": "What is the odds ratio for deletions of NRXN1 in HP:0012759 (neurodevelopmental abnormality), with its confidence interval and p-value?",
+     "elapsed_s": 44.2,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_gene_based_results",
+       "input": {
+        "gene": "NRXN1"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "NRXN1 deletion odds ratio HP:0012759 neurodevelopmental abnormality rare CNV dosage sensitivity map",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 54841,
+      "cache_read": 43923,
+      "cache_create": 0,
+      "output_tokens": 1117,
+      "total_input_tokens": 10922,
+      "total_output_tokens": 1757,
+      "context_window": 1000000,
+      "context_percent": 5.5,
+      "turn_elapsed_ms": 43798,
+      "model_ms": 18255,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a CNV/deletion association dataset in my tools \u2014 my resources cover GWAS fine-mapping, QTLs, and exome rare-variant burden tests (SNVs/indels), not structural-variant case-control statistics keyed by HPO terms. Let me check what I *do* have for NRXN1 and locate the source of that specific statistic.**Short answer: I can't give you that specific number.** None of my data sources contain CNV/deletion case\u2013control association statistics indexed by HPO term. An HPO-coded deletion odds ratio for NRXN1 (HP:0012759) is the kind of statistic reported by the rare-CNV dosage-sensitivity meta-analysis of [Collins et al. 2022, *Cell*](https://doi.org/10.1016/j.cell.2022.06.036) \u2014 the browser for that study (rCNV/DSMap, https://dsmap.org or the paper's supplementary tables) is where you'd read off the gene-level deletion OR, 95% CI, and p-value for that HPO term. Please don't take a number from me here; I'd be guessing.\n\n**What I can tell you from my own data (rare SNV/indel burden, not deletions):**\n\n| Dataset | Trait | Annotation | beta (log OR) | se | p-value | n cases / controls |\n|---|---|---|---|---|---|---|\n| SCHEMA2 | schizophrenia | PTV | 0.84 | 0.29 | 4.4\u00d710\u207b\u00b3 | 87,959 / 150,587 |\n| SCHEMA2 | schizophrenia | PTV+missense | 0.59 | 0.14 | 2.3\u00d710\u207b\u2075 | 87,959 / 150,587 |\n| BipEx2 | bipolar disorder | pLoF | 0.45 | 0.51 | 0.37 | 64,435 / 168,101 |\n\n\ud83d\udce5 [Download full results as TSV](/chat/v1/downloads/9d6bea763bae4c4da1546897328941a0)\n\nThe SCHEMA2 PTV+missense burden (OR \u2248 e^0.59 \u2248 1.8, p \u2248 2\u00d710\u207b\u2075) points the same direction as the deletion literature but is far below exome-wide significance and is a different variant class.\n\n**Published deletion ORs for neurodevelopmental phenotypes** (literature search, `perplexity` backend), for context:\n- Clinical DD/ID referrals vs controls (19,263 cases / 15,264 controls): exonic NRXN1 deletions OR = 8.14 (95% CI 2.91\u201322.72) \u2014 [Lowther et al. 2017](https://pmc.ncbi.nlm.nih.gov/articles/PMC4980119/)\n- Schizophrenia, exon-disrupting deletions: OR = 8.97 (95% CI 1.8\u201351.9), p = 0.0027 \u2014 [Rujescu et al. 2009](https://pmc.ncbi.nlm.nih.gov/articles/PMC2695245/); OR = 4.78 (2.44\u20139.37), p = 1.3\u00d710\u207b\u2075 \u2014 [Kirov et al. 2009](https://pmc.ncbi.nlm.nih.gov/articles/PMC2728827/)\n- Broad developmental-disorder spectrum, p = 8.9\u00d710\u207b\u2077 vs literature controls \u2014 [Ching et al. 2010](https://pmc.ncbi.nlm.nih.gov/articles/PMC3001124/)\n\nThese are cohort-specific estimates, not the HP:0012759 meta-analysis value you asked for. If you can paste the row from the Collins et al. table, I'm happy to help interpret it alongside the burden data above."
+    },
+    {
+     "id": "G2",
+     "question": "How many genes reach FDR q <= 0.05 for duplications in HP:0001249 (intellectual disability)?",
+     "elapsed_s": 75.9,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_database_schema",
+       "input": {}
+      },
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "gene-level rare CNV duplication burden HPO terms intellectual disability HP:0001249 FDR dosage sensitivity map",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 91852,
+      "cache_read": 43908,
+      "cache_create": 0,
+      "output_tokens": 687,
+      "total_input_tokens": 88989,
+      "total_output_tokens": 1172,
+      "context_window": 1000000,
+      "context_percent": 9.2,
+      "turn_elapsed_ms": 75497,
+      "model_ms": 19970,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this from the data I have access to, so I'll say that up front rather than approximate.\n\n**What's missing:** None of the datasets available to me contain gene-level rare CNV (deletion/duplication) burden results, and none are keyed by HPO terms such as HP:0001249. I checked the full dataset inventory (`list_datasets`) and the database schema: what exists is SNV/indel-based GWAS fine-mapping (FinnGen, UKB, Open Targets, meta-analyses), molecular QTLs, exome single-variant and gene-burden tests (Genebass, SCHEMA, BipEx, IBD), colocalization, and functional/regulatory assays. There is no CNV association table, no \"duplication\" vs \"deletion\" burden product, and no FDR q-value column anywhere, so a count of genes at q \u2264 0.05 for duplications in intellectual disability cannot be derived here.\n\n**Where to look:** The framing of your question \u2014 gene-level dosage burden, HPO-coded phenotypes, FDR \u2014 matches the rare CNV (rCNV) cross-disorder dosage-sensitivity study, *A cross-disorder dosage sensitivity map of the human genome* ([Collins et al. 2022, PMC9742861](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/)), which meta-analysed rCNVs from ~1 million individuals across 54 HPO-coded disorders and tested deletions and duplications separately per gene. That paper's supplementary tables (per-HPO, per-CNV-type gene association results with FDR) are the place to get the HP:0001249 duplication count. This identification came from a `perplexity`-backend literature search; I have not read the paper's tables and cannot quote the number from it.\n\nIf you have the gene list or summary table from that source, I can take it from there \u2014 e.g., cross-referencing the duplication-significant genes against FinnGen/UKB fine-mapping, Genebass burden results, or Mendelian gene\u2013disease annotations (GenCC/Monarch) available in my tools."
+    },
+    {
+     "id": "G3",
+     "question": "What fraction of cases and of controls carry a deletion of NRXN1 in HP:0012759?",
+     "elapsed_s": 50.0,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality"
+       }
+      },
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "NRXN1 exonic deletion frequency neurodevelopmental disorder cases versus controls",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 69093,
+      "cache_read": 43902,
+      "cache_create": 0,
+      "output_tokens": 888,
+      "total_input_tokens": 44430,
+      "total_output_tokens": 1472,
+      "context_window": 1000000,
+      "context_percent": 6.9,
+      "turn_elapsed_ms": 49678,
+      "model_ms": 16101,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this from the data I have access to, for two reasons:\n\n1. **No HPO\u2011coded phenotypes.** None of the resources served here (FinnGen R14, FinnGen+UKBB/MVP meta\u2011analyses, Open Targets, genebass, SCHEMA/BipEx, IBD, PGC, etc.) index traits by HPO term. A search for `HP:0012759` / \"neurodevelopmental abnormality\" returned only unrelated fuzzy matches (e.g. O15_* obstetric endpoints, F5_DEMENTIA).\n2. **No CNV carrier data.** My tools cover SNV/indel fine\u2011mapping, QTLs, exome single\u2011variant and gene\u2011burden tests, and functional readouts \u2014 not copy\u2011number variant calls or per\u2011gene deletion carrier counts in cases vs controls. `get_exome_results_by_gene` / `get_gene_based_results` for NRXN1 would return rare coding SNV burden, not deletions, so I have not run them as a stand\u2011in.\n\nHP:0012759 case/control deletion frequencies are typically reported by CNV browsers or HPO\u2011annotated CNV cohorts (e.g. DECIPHER, ClinGen Dosage/ClinVar CNV, or a specific paper's supplementary tables such as the Danish iPSYCH/population NRXN1 study). Those would be the places to look.\n\nFor orientation only, the published literature (backend queried: `perplexity`) gives exonic NRXN1 deletion frequencies in clinically referred NDD cohorts of roughly 0.1\u20130.25 % of cases vs ~0.02 % of controls \u2014 e.g. [Ching et al. 2010](https://pmc.ncbi.nlm.nih.gov/articles/PMC3001124/) (12/3,540 referrals; P = 8.9 \u00d7 10\u207b\u2077 vs literature controls), [Curran et al. 2013](https://pmc.ncbi.nlm.nih.gov/articles/PMC4223877/) (18 exonic deletions/10,397 referrals = 0.17 %), and the EJHG series citing 10/51,939 (0.019 %) exonic NRXN1\u2011\u03b1 deletions in controls ([Nature/EJHG 2012](https://www.nature.com/articles/ejhg201295)). These are not HP:0012759\u2011specific numbers and I have not verified the control denominators against the primary papers.\n\nIf you can tell me which dataset the HP:0012759 counts should come from, I can check whether any of its outputs (e.g. gene\u2011level SNV burden in genebass or SCHEMA) are available here as a complementary line of evidence."
+    },
+    {
+     "id": "W1",
+     "question": "Which 200 kb sliding window has the strongest rare-CNV deletion association with HP:0012759, and where is it? The sliding-window summary statistics are on GRCh37.",
+     "elapsed_s": 60.1,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {}
+      },
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "rare CNV deletion 200 kb sliding window association HPO terms HP:0012759 neurodevelopmental abnormality dosage sensitivity map GRCh37 summary statistics",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 69541,
+      "cache_read": 43928,
+      "cache_create": 0,
+      "output_tokens": 939,
+      "total_input_tokens": 41925,
+      "total_output_tokens": 1480,
+      "context_window": 1000000,
+      "context_percent": 7.0,
+      "turn_elapsed_ms": 59707,
+      "model_ms": 24284,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this one from the data I have access to, so let me be clear about that up front rather than approximate.\n\n**What I checked**\n\n- `list_datasets`: none of the datasets available to me is a rare-CNV / structural-variant association resource. Everything served here is SNP/indel-based (FinnGen R14, FinnGen+UKBB/MVP meta-analyses, Open Targets, eQTL Catalogue, pQTL, exome burden, etc.) and on GRCh38. There are no CNV sliding-window summary statistics, no HPO-coded phenotypes, and no GRCh37 tracks.\n- `search_phenotypes` for `HP:0012759` / \"neurodevelopmental abnormality\": no match \u2014 only fuzzy hits on unrelated FinnGen/genebass endpoints (e.g. O15_*, TONGUEABNORMALITY, F5_DEMENTIA), none of which is an HPO term.\n\n**Where the data you're describing lives**\n\nThe design you describe \u2014 rare CNV deletion/duplication meta-analysis, 200 kb sliding windows in 10 kb steps (267,237 autosomal windows), HPO-coded phenotypes including HP:0012759, GRCh37 coordinates \u2014 matches the rare-CNV (rCNV) framework from the Talkowski lab: Collins et al. 2022, *A cross-disorder dosage sensitivity map of the human genome* (Cell), whose sliding-window summary statistics are released per HPO term and per CNV type (DEL/DUP) on GRCh37. The same window scheme is reused in the seizure-CNV paper ([Nature Communications 2023](https://www.nature.com/articles/s41467-023-39539-6)) and the COURAGE-PD CNV GWAS ([Landoulsi et al. 2026](https://pmc.ncbi.nlm.nih.gov/articles/PMC13323976/)), both surfaced by the `perplexity` literature backend. The Collins et al. per-HPO sliding-window statistics are distributed via the paper's supplementary data / associated GitHub\u2013Zenodo release, and the top DEL window for HP:0012759 would be read directly from that file (sorted by meta-analysis p-value), with coordinates in GRCh37.\n\nI have not verified the specific top window for HP:0012759 and won't guess at it \u2014 the chr16p11.2 / 22q11.2 / 15q13.3 / 1q21.1 recurrent NDD deletions are the usual suspects, but which one ranks first depends on the exact release and test statistic.\n\nIf you can point me to the file (or paste the top rows), I can help interpret the window: lift it to GRCh38, list the genes in it, and check FinnGen/UKBB SNP-based signals, gene-burden results and GenCC Mendelian annotations at that locus."
+    },
+    {
+     "id": "W2",
+     "question": "On which chromosomes does any 200 kb sliding window reach p < 1e-8 for rare-CNV deletions in HP:0012759?",
+     "elapsed_s": 31.2,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {}
+      },
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality"
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 64730,
+      "cache_read": 43916,
+      "cache_create": 0,
+      "output_tokens": 681,
+      "total_input_tokens": 37115,
+      "total_output_tokens": 954,
+      "context_window": 1000000,
+      "context_percent": 6.5,
+      "turn_elapsed_ms": 30834,
+      "model_ms": 14775,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this one from my data, and I'd rather say so than guess.\n\n**What's missing**\n\n- **No CNV association data.** I checked every dataset available to me (`list_datasets`): all GWAS resources (FinnGen R14, FinnGen+UKBB/MVP meta-analyses, Open Targets, PGC, GP2, IBD, COVID-HGI) are SNP/indel-based fine-mapping or summary statistics. The exome resources (Genebass, SCHEMA, BipEx, IBD exome) are rare SNV/indel burden tests. There is no rare-CNV deletion/duplication burden dataset, and no sliding-window (200 kb or otherwise) association product.\n- **No HPO-coded phenotypes.** `search_phenotypes` for `HP:0012759` / \"neurodevelopmental abnormality\" returns only fuzzy, unrelated matches (e.g. `O15_MATERN_CARE_FETAL_ABNORM`, `TONGUEABNORMALITY`). None of my resources index traits by HPO term.\n\n**Where to look instead**\n\nThe question reads like a query against a CNV-phenome-wide analysis keyed by HPO term \u2014 e.g. the DECIPHER/DDD CNV burden analyses, the UK Biobank CNV-PheWAS work (Auwerx et al., Hujoel et al.), or the ClinGen/dbVar dosage-sensitivity maps. Those source publications/portals carry the per-window or per-region CNV statistics you need; I can't retrieve or reproduce them.\n\n**What I can do**, if useful: for a specific chromosomal region you already have in mind (e.g. 16p11.2, 22q11.2, 1q21.1, 15q13.3), I can report what SNP-based GWAS fine-mapping, rare-variant burden (Genebass/SCHEMA/BipEx) and Mendelian gene\u2013disease (GenCC/Monarch) evidence exists for neurodevelopmental traits at those loci. Just name the regions or genes."
+    },
+    {
+     "id": "X1",
+     "question": "Which disease-associated rare-CNV segments overlap chr16:29,500,000-30,200,000 (GRCh37), and which HPO terms are they associated with?",
+     "elapsed_s": 49.4,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity 16p11.2 recurrent region proximal BP4-BP5 chr16:29.6-30.2 Mb GRCh37 deletion duplication",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "16p11.2 BP4-BP5 recurrent deletion duplication phenotypes autism intellectual disability obesity macrocephaly schizophrenia HPO",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 51649,
+      "cache_read": 43924,
+      "cache_create": 0,
+      "output_tokens": 1581,
+      "total_input_tokens": 7729,
+      "total_output_tokens": 2492,
+      "context_window": 1000000,
+      "context_percent": 5.2,
+      "turn_elapsed_ms": 49063,
+      "model_ms": 23673,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a CNV-segment resource (DECIPHER, ClinGen dosage-sensitivity regions, ClinVar CNVs, or an HPO-annotated CNV table) among my tools, so I cannot query \"which rare-CNV segments overlap this interval\" directly from data. What I can do is ground the answer in the published/curated knowledge for this interval, which is the well-known proximal 16p11.2 (BP4\u2013BP5) recurrent CNV region.**Upfront limitation:** none of my data tools carries rare-CNV segment tables (DECIPHER, ClinGen dosage regions, ClinVar CNVs) or HPO annotations, so I cannot return a database-derived list of overlapping segments. The answer below comes from curated/published sources found by web search and literature search (backend queried: `perplexity`), not from a CNV query. For the authoritative segment list with coordinates, use the ClinGen Dosage Sensitivity region search (GRCh37 mode) at https://dosage.clinicalgenome.org/ and DECIPHER, which both accept your interval directly.\n\n## What overlaps chr16:29.5\u201330.2 Mb (GRCh37)\n\nYour interval is essentially the **proximal 16p11.2 recurrent region (BP4\u2013BP5), ~600 kb, ~chr16:29.6\u201330.2 Mb GRCh37**, curated by ClinGen as [ISCA-37400 \"16p11.2 recurrent region (proximal, BP4-BP5) (includes TBX6)\"](https://dosage.clinicalgenome.org/clingen_region.cgi?id=ISCA-37400) and in ClinVar as [RCV000034307](https://www.ncbi.nlm.nih.gov/clinvar/RCV000034307.3/). Two disease-associated segments sit here:\n\n| CNV segment | Disorder | Phenotypes reported \u2192 HPO terms (my mapping) |\n|---|---|---|\n| **16p11.2 BP4\u2013BP5 deletion** (~600 kb) | Proximal 16p11.2 deletion syndrome; incidence ~1/2000 | Speech/language delay in ~70% (HP:0000750 Delayed speech and language development), IQ shifted \u22121.8 SD (HP:0001249 Intellectual disability / HP:0001263 Global developmental delay), autism in 20\u201325% (HP:0000717 Autism), motor coordination difficulties ~60% (HP:0001270 Motor delay), seizures ~24% (HP:0001250 Seizure), obesity in 75% of adults (HP:0001513 Obesity), macrocephaly (HP:0000256), congenital anomalies incl. vertebral anomalies via TBX6 (HP:0003422 Vertebral segmentation defect) \u2014 [Chung et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC10256135/), [Auwerx et al. 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11568765/) |\n| **16p11.2 BP4\u2013BP5 duplication** (reciprocal) | Proximal 16p11.2 duplication | Autism (HP:0000717), intellectual disability (HP:0001249), schizophrenia (HP:0100753), microcephaly (HP:0000252), underweight/low BMI (HP:0004325 Decreased body weight) \u2014 mirror phenotypes of the deletion; [Weiss et al. 2008](https://www.nejm.org/doi/full/10.1056/NEJMoa075974), [Qureshi et al. 2014](https://pmc.ncbi.nlm.nih.gov/articles/PMC4138332/), [Rein & Yan 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7606557/) |\n\nBoth segments are recorded as having incomplete penetrance and variable expressivity ([Oliva-Teles et al. 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7763014/)).\n\n**Caveats that matter:**\n- The HPO IDs above are my mapping of the phenotype descriptions in these papers, not curated HPO annotations pulled from a database; verify against DECIPHER/ClinGen before using them formally.\n- The distal 16p11.2 region (BP2\u2013BP3, ~chr16:28.7\u201328.95 Mb GRCh37; SH2B1) lies just outside your interval and is a distinct segment \u2014 the [Loviglio et al. 2016](https://www.nature.com/articles/mp201684) hit in the search refers to that region, not yours.\n- I did not enumerate smaller atypical/non-recurrent CNVs or single-gene deletions (e.g., isolated TBX6, KCTD13, PRRT2 events) within the interval; those would come from DECIPHER.\n\nIf useful, I can look at what my tools *can* say about this locus \u2014 GWAS/QTL credible sets, burden results, or ClinGen gene-disease validity for the ~30 genes inside the interval (e.g., TBX6, PRRT2, KCTD13, SEZ6L2, MAPK3)."
+    },
+    {
+     "id": "X2",
+     "question": "How many genes lie in the 22q11.21 rare-CNV deletion segment?",
+     "elapsed_s": 57.7,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "get_genes_in_region",
+       "input": {
+        "chr": "22",
+        "start": 18900000,
+        "end": 21500000,
+        "gene_type": "protein_coding"
+       }
+      },
+      {
+       "name": "get_genes_in_region",
+       "input": {
+        "chr": "22",
+        "start": 18900000,
+        "end": 21500000,
+        "gene_type": "all"
+       }
+      },
+      {
+       "name": "query_database",
+       "input": {
+        "sql": "SELECT gene_type, COUNT(DISTINCT gene_name) AS n FROM gene_annotations_v WHERE CAST(chr AS STRING) = '22' AND gene_start <= 21465672 AND gene_end >= 18912231 GROUP BY gene_type ORDER BY n DESC LIMIT 50"
+       }
+      },
+      {
+       "name": "get_database_schema",
+       "input": {
+        "table": "gene_annotations_v"
+       }
+      },
+      {
+       "name": "query_database",
+       "input": {
+        "sql": "SELECT locus_type, COUNT(DISTINCT symbol) AS n, STRING_AGG(DISTINCT symbol, ', ' ORDER BY symbol) AS symbols FROM gene_annotations_v WHERE chr = 22 AND gene_start <= 21465672 AND gene_end >= 18912231 GROUP BY locus_type ORDER BY n DESC LIMIT 50"
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 5,
+      "input_tokens": 97672,
+      "cache_read": 43897,
+      "cache_create": 0,
+      "output_tokens": 994,
+      "total_input_tokens": 199571,
+      "total_output_tokens": 2939,
+      "context_window": 1000000,
+      "context_percent": 9.8,
+      "turn_elapsed_ms": 57373,
+      "model_ms": 16788,
+      "model_attempts": 1
+     },
+     "answer": "**\u224848 protein-coding genes** lie in the typical ~3 Mb 22q11.21 deletion (LCR22\u2011A \u2192 LCR22\u2011D; GRCh38 chr22:18,912,231\u201321,465,672), out of **108 HGNC-annotated loci** in total.\n\nBreakdown (HGNC/GENCODE GRCh38, `gene_annotations_v`):\n\n| Locus type | n | Examples |\n|---|---|---|\n| Protein-coding | **48** | *TBX1, COMT, DGCR8, HIRA, CRKL, PRODH, SEPTIN5, GP1BB, UFD1, RANBP1, ZDHHC8, SNAP29, LZTR1, PI4KA, MED15, HIC2, TXNRD2, ARVCF, TANGO2, CLDN5, SCARF2, GNB1L \u2026* |\n| Pseudogenes | 36 | *PRODHLP, TSSK1A, POM121L4P/7P/8P, BCRP2/5/6 \u2026* |\n| lncRNA | 15 | *DGCR5, DGCR11, LINC00895/00896, TANGO2-AS1 \u2026* |\n| miRNA | 7 | *MIR185, MIR1306, MIR1286, MIR3618, MIR4761, MIR649, MIR6816* |\n| snoRNA | 1 | *SNORA77B* |\n| Unknown | 1 | *TUBA3FP* |\n\n\ud83d\udce5 [Download full results as TSV](/chat/v1/downloads/3ddbb9f1a64a42709c7d347fa01d1a92)\n\nCaveats that matter for the count:\n- The number depends on the breakpoints you use. The ~46 protein-coding genes quoted in most 22q11.2DS reviews (e.g. McDonald-McGinn et al. 2015) reflects older annotation; the 48 here includes recently named small ORFs (*CCDC188, FAM246A/C, LRRC74B*). *DGCR6* straddles the proximal LCR22\u2011A boundary and *HIC2* sits just inside LCR22\u2011D, so \u00b11\u20132 genes depending on the exact deletion in a given patient.\n- For the smaller nested deletions: the proximal 1.5 Mb A\u2013B deletion (\u224818.9\u201320.3 Mb) contains ~30 of these genes (*DGCR6* through *DGCR6L*, including *TBX1*, *COMT*, *DGCR8*); the distal B\u2013D / C\u2013D segments (\u224820.3\u201321.5 Mb) hold the remaining ~18 (*ZNF74* through *HIC2*, including *CRKL*, *LZTR1*, *SNAP29*, *PI4KA*, *MED15*).\n\nI have not listed the full per-gene coordinates here; ask if you want the gene table for a specific breakpoint interval (A\u2013B, A\u2013C, B\u2013D, etc.) or the GWAS/burden evidence for any of these genes."
+    }
+   ]
+  },
+  "code": {
+   "identity": "gateway-asserted address",
+   "tool_profile": "code",
+   "turns": [
+    {
+     "id": "S1",
+     "question": "Is NRXN1 haploinsufficient according to the Collins 2022 rCNV dosage-sensitivity map?",
+     "elapsed_s": 34.0,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map rCNV pHaplo NRXN1 haploinsufficient",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 65413,
+      "cache_read": 59315,
+      "cache_create": 0,
+      "output_tokens": 765,
+      "total_input_tokens": 6102,
+      "total_output_tokens": 1194,
+      "context_window": 1000000,
+      "context_percent": 6.5,
+      "turn_elapsed_ms": 33584,
+      "model_ms": 14256,
+      "model_attempts": 1
+     },
+     "answer": "I don't have the Collins et al. 2022 rCNV dosage-sensitivity map (pHaplo/pTriplo scores) in any of my data sources \u2014 none of the views here (credible sets, colocalization, exome/burden, functional assays) carry gene-level dosage-sensitivity scores, so I can't read NRXN1's pHaplo value directly. Let me check the literature for what that paper reports.**Short answer: I can't give you NRXN1's pHaplo score from my data.** The Collins et al. 2022 dosage-sensitivity map (pHaplo/pTriplo) is not among the datasets available to me \u2014 my views hold credible sets, colocalization, exome/burden results and functional assays, not gene-level rCNV dosage scores. To get the authoritative answer, look up NRXN1 in the paper's Table S7 / supplementary gene-score file, which is also served through gnomAD (gene page \u2192 \"Dosage sensitivity\", where the Collins pHaplo/pTriplo scores are displayed).\n\nWhat I can confirm from the literature (backend queried: `perplexity`):\n\n- [Collins et al. 2022, *Cell*](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) meta-analyzed rCNVs from ~1 million individuals across 54 disorders, defined 163 dosage-sensitive segments, and trained an ensemble model producing pHaplo and pTriplo for all autosomal genes, calling **2,987 genes haploinsufficient and 1,559 triplosensitive**.\n- The haploinsufficiency cutoff was set where the average deletion effect size matched LoF of PTV-constrained genes (average OR \u2265 2.7); the [published article](https://www.cell.com/cell/fulltext/S0092-8674(22)00788-7) notes this corresponds to **pHaplo \u2265 0.86** (and pTriplo \u2265 0.94 for triplosensitivity).\n- The Perplexity summary states that NRXN1 falls within the paper's haploinsufficient gene set. That is consistent with expectation \u2014 2p16.3/NRXN1 exon-spanning deletions are among the best-established neurodevelopmental CNV risk factors \u2014 but **the summary is an AI-generated synthesis, not a verified read of the score table**, so treat it as unconfirmed until you check the supplementary file or gnomAD.\n\nIf useful, I can instead look at what my data does hold for NRXN1 \u2014 e.g. gene burden results from SCHEMA2/BipEx2/Genebass, or fine-mapped GWAS signals in the NRXN1 region \u2014 but none of that substitutes for the Collins pHaplo value."
+    },
+    {
+     "id": "S2",
+     "question": "What is the pTriplo score of PTEN, and does it pass the triplosensitivity threshold?",
+     "elapsed_s": 71.3,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "PTEN pTriplo score Collins 2022 dosage sensitivity map pHaplo pTriplo"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map pTriplo threshold 0.94 triplosensitive genes PTEN",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"PTEN\" \"pTriplo\" score value",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "\nimport urllib.request, gzip, io, sys\nurl = \"https://zenodo.org/records/6347673/files/Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz?download=1\"\ntry:\n    data = urllib.request.urlopen(url, timeout=40).read()\n    txt = gzip.decompress(data).decode()\n    lines = txt.splitlines()\n    print(lines[0])\n    for l in lines:\n        if l.split(\"\\t\")[0] == \"PTEN\":\n            print(l)\nexcept Exception as e:\n    print(\"fetch failed:\", repr(e))\n",
+        "timeout_s": 60
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "PTEN dosage sensitivity pHaplo pTriplo Collins gnomAD \"PTEN\" triplosensitivity duplication",
+        "include_domains": [
+         "gnomad.broadinstitute.org",
+         "ucsc.edu",
+         "decipher.sanger.ac.uk",
+         "pmc.ncbi.nlm.nih.gov",
+         "biorxiv.org",
+         "medrxiv.org"
+        ],
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "PTEN DECIPHER gene overview clinical-info \"Probability of triplosensitivity\"",
+        "include_domains": [
+         "deciphergenomics.org"
+        ],
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 3,
+       "tool_use_id": "toolu_01MH86F6cpD9f7nBkmvnY9yP",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 530
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 6,
+      "input_tokens": 68826,
+      "cache_read": 59307,
+      "cache_create": 0,
+      "output_tokens": 941,
+      "total_input_tokens": 36102,
+      "total_output_tokens": 2243,
+      "context_window": 1000000,
+      "context_percent": 6.9,
+      "turn_elapsed_ms": 70929,
+      "model_ms": 16177,
+      "model_attempts": 1
+     },
+     "answer": "I don't have a tool that serves the Collins et al. dosage-sensitivity scores directly, so I'll look it up rather than quote from memory.I couldn't retrieve PTEN's pTriplo value with the tools available, so I won't quote a number \u2014 here is what I could and could not establish.\n\n**What is verified**\n\n- pTriplo comes from [Collins et al. 2022, *Cell*](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) (literature backend queried: `perplexity`). The triplosensitivity cutoff is **pTriplo \u2265 0.94** (haploinsufficiency cutoff pHaplo \u2265 0.86), which defined 1,559 triplosensitive genes; at these cutoffs the average rCNV effect size is comparable to LoF in PTV-constrained genes (OR \u2265 2.7).\n- The per-gene scores (18,641 autosomal protein-coding genes) are in the supplementary file `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz` on [Zenodo](https://zenodo.org/records/6347673), and are also displayed on the [UCSC \"Dosage Sensitivity\" track](https://genome.ucsc.edu/cgi-bin/hgTrackUi?db=hg38&g=dosageSensitivity) and on each gene's DECIPHER clinical-info page.\n\n**What I could not do**\n\n- None of my genetics databases carry pHaplo/pTriplo, and the analysis sandbox has no network access (the Zenodo download failed on DNS resolution). Web search did not surface a page quoting PTEN's specific value, so I have no source to cite for it.\n\n**Where to get the exact number in seconds**\n\n- DECIPHER: `https://www.deciphergenomics.org/gene/PTEN/overview/clinical-info` \u2014 lists \"Probability of triplosensitivity (pTriplo)\" directly.\n- UCSC Genome Browser (hg38): enable the *Dosage Sensitivity* track and navigate to PTEN (chr10:87.86\u201387.97 Mb).\n\nOnce you have the value, the interpretation is simply: \u2265 0.94 \u2192 predicted triplosensitive under the Collins et al. criterion; below it \u2192 not. Note that pTriplo is a prediction of duplication intolerance; PTEN's well-established clinical dosage phenotype (PHTS/Cowden) is a haploinsufficiency mechanism, which is a separate question from whether it also passes the triplosensitivity threshold. If you paste the value here, I can put it in context against the paper's thresholds and the gene's pHaplo."
+    },
+    {
+     "id": "S3",
+     "question": "Is COMT haploinsufficient in the rCNV dosage-sensitivity map?",
+     "elapsed_s": 43.4,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_capabilities",
+       "input": {}
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "COMT pHaplo pTriplo dosage sensitivity rCNV Collins 2022 22q11.2 haploinsufficient",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "list_capabilities",
+       "input": {
+        "module": "genetics"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "COMT pHaplo pTriplo score Collins 2022 dosage sensitivity gene table",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 74068,
+      "cache_read": 59304,
+      "cache_create": 0,
+      "output_tokens": 882,
+      "total_input_tokens": 20759,
+      "total_output_tokens": 1583,
+      "context_window": 1000000,
+      "context_percent": 7.4,
+      "turn_elapsed_ms": 43014,
+      "model_ms": 14659,
+      "model_attempts": 1
+     },
+     "answer": "I don't have the rCNV dosage-sensitivity map (Collins et al. 2022 pHaplo/pTriplo scores) as a queryable dataset, so let me check the SDK surface and the literature.**I can't answer this from my data.** The Collins et al. 2022 rCNV dosage\u2011sensitivity map (pHaplo/pTriplo) is not one of the datasets I can query \u2014 my views cover credible sets, colocalization, exome/burden, HLA, MPRA/chromatin and gene annotations, and the SDK's `gene_disease` function returns Mendelian gene\u2011disease links, not CNV dosage scores. Neither the literature search (perplexity backend) nor a web search returned the gene\u2011level COMT value, so I won't quote a number.\n\nWhere to look it up directly:\n\n- **Zenodo record 6347673** \u2014 `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz`, pHaplo/pTriplo for 18,641 autosomal protein\u2011coding genes (https://zenodo.org/records/6347673). The paper's thresholds were pHaplo \u2265 0.86 for \"haploinsufficient\" (2,987 genes) and pTriplo \u2265 0.94 for \"triplosensitive\" (1,559 genes) \u2014 [Collins et al. 2022, Cell](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/).\n- **UCSC Genome Browser** hg38 \"Dosage Sensitivity\" track (pHaplo and pTriplo subtracks), or **DECIPHER**, which integrates the same scores.\n\nTwo caveats worth carrying into the lookup: COMT sits inside the recurrent 22q11.2 deletion, so its rCNV signal is confounded by the whole segment, and the paper's segment\u2011level fine\u2011mapping \u2014 not the gene\u2011level pHaplo alone \u2014 is what nominates driver genes there. Separately, the biochemical sense of \"haploinsufficient\" (\u224850% COMT mRNA/protein/activity in 22q11.2DS carriers, per the perplexity summary) is a different claim from a pHaplo call and doesn't settle it.\n\nIf you pull the score, I can put it alongside what I do have for COMT \u2014 FinnGen credible sets, gene\u2011burden results, and eQTL/pQTL colocalizations."
+    },
+    {
+     "id": "S4",
+     "question": "Give both dosage-sensitivity scores (pHaplo and pTriplo) for CACNA1C.",
+     "elapsed_s": 57.8,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "CACNA1C pHaplo pTriplo dosage sensitivity score Collins 2022"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "CACNA1C pHaplo pTriplo dosage sensitivity haploinsufficiency triplosensitivity",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"CACNA1C\" \"pHaplo\" \"pTriplo\" score value",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "\nimport urllib.request, gzip, io\nurl = \"https://zenodo.org/records/6347673/files/Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz?download=1\"\ntry:\n    data = urllib.request.urlopen(url, timeout=40).read()\n    txt = gzip.decompress(data).decode()\n    for line in txt.splitlines():\n        if line.startswith(\"#\") or line.split(\"\\t\")[0] == \"CACNA1C\":\n            print(line)\nexcept Exception as e:\n    print(\"FETCH FAILED:\", repr(e))\n",
+        "timeout_s": 90
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 3,
+       "tool_use_id": "toolu_01N2MmoH82dtSBC6Nq37835H",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 515
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 4,
+      "input_tokens": 67859,
+      "cache_read": 59310,
+      "cache_create": 0,
+      "output_tokens": 954,
+      "total_input_tokens": 23123,
+      "total_output_tokens": 2083,
+      "context_window": 1000000,
+      "context_percent": 6.8,
+      "turn_elapsed_ms": 57447,
+      "model_ms": 16859,
+      "model_attempts": 1
+     },
+     "answer": "I don't have pHaplo/pTriplo in my genetics database (it holds credible sets, coloc, exome/burden and functional-assay views, not the Collins et al. 2022 dosage-sensitivity catalogue), so let me look them up externally.I can't give you the numbers: **pHaplo/pTriplo are not in any data source I can query**, and my sandbox has no internet access to pull the score file. Rather than quote values from memory (which I won't do), here is exactly where they live:\n\n**Where to get CACNA1C's pHaplo and pTriplo**\n- **Source publication**: [Collins et al. 2022, *Cell*, \"A cross-disorder dosage sensitivity map of the human genome\"](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) \u2014 scores for 18,641 autosomal protein-coding genes are in **Table S7**.\n- **Direct download**: Zenodo record 6347673, file `Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz` (https://zenodo.org/records/6347673) \u2014 columns: gene, pHaplo, pTriplo. Grep for `CACNA1C`.\n- **Browser view**: UCSC Genome Browser (hg38) \"Dosage Sensitivity\" track (pHaplo and pTriplo subtracks) at chr12:~2.0\u20132.8 Mb; also shown per-gene in DECIPHER gene pages.\n- **Interpretation thresholds** (from the paper): pHaplo \u2265 0.86 \u2192 predicted haploinsufficient; pTriplo \u2265 0.94 \u2192 predicted triplosensitive (the paper's stricter cut-offs; pTriplo \u2265 0.68 corresponds to OR \u2265 2).\n\n**Related context I did retrieve** (literature search, backend: perplexity)\n- ClinGen dosage curation (last evaluated 2016-03-24, via [NCBI Gene 775](https://www.ncbi.nlm.nih.gov/gene/775)): haploinsufficiency = \"little evidence\"; triplosensitivity = \"no evidence available\". Note this is a curated evidence grade, not the Collins probabilistic score, and predates the recent LoF phenotype reports.\n- Since then, truncating variants and a single-gene 12p13.33 deletion have been linked to a neurodevelopmental phenotype (expressive language delay, hypotonia, autism): [Rodan et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8488020/) (11 individuals with truncating variants) and [Mio et al. 2020](https://pubmed.ncbi.nlm.nih.gov/31953239/). Rodan et al. also note strong gnomAD LoF constraint (pLI 1.0, o/e 0.05), so a high pHaplo would be expected \u2014 but that is an inference, not the score itself.\n\nIf you paste the two numbers once you've pulled them, I can put them alongside FinnGen/UKB burden and common-variant evidence for CACNA1C."
+    },
+    {
+     "id": "S5",
+     "question": "Which of SHANK3, ANKRD11 and RBFOX1 are triplosensitive?",
+     "elapsed_s": 67.2,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity SHANK3 triplosensitivity score",
+        "include_domains": [
+         "clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity ANKRD11 triplosensitivity score",
+        "include_domains": [
+         "clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity RBFOX1 triplosensitivity haploinsufficiency score",
+        "include_domains": [
+         "clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"SHANK3\" ClinGen \"triplosensitivity\" \"no evidence\" OR \"sufficient evidence\" duplication 22q13"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"RBFOX1\" ClinGen dosage \"haploinsufficiency score\" \"triplosensitivity score\""
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "ClinGen dosage sensitivity triplosensitivity scores SHANK3 ANKRD11 RBFOX1 duplication",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ANKRD11 ankyrin repeat domain 11 NCBI gene 29123 \"Copy number response\" Triplosensitivity",
+        "include_domains": [
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "RBFOX1 RNA binding fox-1 homolog 1 NCBI gene 54715 \"Copy number response\" Triplosensitivity Haploinsufficiency",
+        "include_domains": [
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "RBFOX1 ClinGen dosage curation duplication \"no evidence\" OR \"little evidence\" 16p13.3"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "\"RBFOX1\" gene 54715 ncbi \"Triplosensitivity\""
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 5,
+      "input_tokens": 74120,
+      "cache_read": 59307,
+      "cache_create": 0,
+      "output_tokens": 1030,
+      "total_input_tokens": 41982,
+      "total_output_tokens": 2606,
+      "context_window": 1000000,
+      "context_percent": 7.4,
+      "turn_elapsed_ms": 66775,
+      "model_ms": 15269,
+      "model_attempts": 1
+     },
+     "answer": "I'll check ClinGen's dosage sensitivity curations for these three genes.The search hits confirm curation pages exist but don't show the scores. Let me pull the actual score values.SHANK3 is confirmed (TS: no evidence). Let me get ANKRD11 and RBFOX1 from their NCBI Gene pages, which mirror the ClinGen scores.**None of the three are triplosensitive** according to ClinGen's Dosage Sensitivity curation. All three carry a triplosensitivity score of 0 (\"No evidence available\") \u2014 the ClinGen scale is 0 = no evidence, 1 = little, 2 = emerging, 3 = sufficient evidence for dosage pathogenicity.\n\n| Gene | ClinGen haploinsufficiency (HI) | ClinGen triplosensitivity (TS) | Source |\n|---|---|---|---|\n| SHANK3 | 3 \u2013 Sufficient evidence (Phelan-McDermid syndrome) | **0 \u2013 No evidence available** (evaluated 2018-08-14) | [NCBI Gene 85358](https://www.ncbi.nlm.nih.gov/gene/85358), [ClinVar](https://www.ncbi.nlm.nih.gov/clinvar/variation/372707/) |\n| ANKRD11 | 3 \u2013 Sufficient evidence (KBG syndrome) | **0 \u2013 No evidence available** (evaluated 2022-06-14) | [NCBI Gene 29123](https://www.ncbi.nlm.nih.gov/gene/29123/), [ClinGen curation page](https://search.clinicalgenome.org/kb/gene-dosage/HGNC:21316) |\n| RBFOX1 | 1 \u2013 Little evidence | **0 \u2013 No evidence available** | [ClinVar VCV001807793](https://www.ncbi.nlm.nih.gov/clinvar/variation/1807793/) (ClinGen HI/TS fields shown on the record) |\n\nA few things worth noting:\n\n- **\"No evidence\" \u2260 \"proven benign.\"** ClinGen's TS score 0 means no published evidence was found that whole-gene duplication causes disease; a score of 40 (\"dosage sensitivity unlikely\") is the explicit negative call, and none of these genes carry it. For SHANK3 in particular, 22q13 duplications including SHANK3 have been reported in neurodevelopmental cohorts, but the evidence has not reached ClinGen's bar \u2014 the curation was last evaluated in 2018 so it may be worth checking the live [ClinGen dosage map](https://dosage.clinicalgenome.org/) for any update.\n- **SHANK3 and ANKRD11 are clear haploinsufficiency genes** (HI = 3); they are dosage-sensitive to loss, not gain. RBFOX1 is only weakly supported even for haploinsufficiency (HI = 1), consistent with the high frequency of RBFOX1 intragenic deletions in population controls.\n- The literature search here (backend: `perplexity`) also surfaced the Collins et al. 2022 [cross-disorder dosage sensitivity map](https://www.cell.com/cell/fulltext/S0092-8674(22)00788-7), which provides statistical pTriplo scores from rare CNV burden as an alternative to expert curation \u2014 I did not pull the per-gene pTriplo values, but can if you'd like a population-genetic rather than curation-based view."
+    },
+    {
+     "id": "S6",
+     "question": "How many genes in the rCNV dosage-sensitivity map are haploinsufficient, and how many are triplosensitive?",
+     "elapsed_s": 24.0,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map human genome rCNV haploinsufficient triplosensitive genes count",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 62940,
+      "cache_read": 59315,
+      "cache_create": 0,
+      "output_tokens": 513,
+      "total_input_tokens": 3629,
+      "total_output_tokens": 725,
+      "context_window": 1000000,
+      "context_percent": 6.3,
+      "turn_elapsed_ms": 23638,
+      "model_ms": 9898,
+      "model_attempts": 1
+     },
+     "answer": "This isn't in my genetics database (it's not a dataset I host), so the answer comes from the literature (queried via the `perplexity` backend).\n\n**Collins et al. 2022, *Cell*** \u2014 [A cross-disorder dosage sensitivity map of the human genome](https://pubmed.ncbi.nlm.nih.gov/35917817/) \u2014 reports, from the ensemble pHaplo/pTriplo model applied to all autosomal genes:\n\n| Category | Genes |\n| --- | --- |\n| Haploinsufficient (deletion-intolerant, pHaplo \u2265 cutoff) | **2,987** |\n| Triplosensitive (duplication-intolerant, pTriplo \u2265 cutoff) | **1,559** |\n| \u2014 of which uniquely triplosensitive (not also haploinsufficient) | 648 |\n\nSo 1,559 \u2212 648 = 911 genes are called both haploinsufficient and triplosensitive, giving 2,987 + 648 = 3,635 dosage-sensitive genes in total. The cutoffs were set where the average deletion/duplication effect size matched that of LoF in PTV-constrained genes (average OR \u2265 2.7).\n\nTwo caveats: (1) the earlier medRxiv preprint / ESHG abstract of the same work gave different figures (3,006 haploinsufficient and 295 triplosensitive) \u2014 the published Cell numbers above supersede those; (2) these are model-predicted probabilities, not the 163 disorder-associated segments the paper also defines, which is a separate count."
+    },
+    {
+     "id": "S7",
+     "question": "Does the rCNV dosage-sensitivity map give a pHaplo score for MECP2?",
+     "elapsed_s": 33.3,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "rCNV dosage sensitivity map Collins 2022 pHaplo pTriplo MECP2 score"
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map human genome pHaplo pTriplo MECP2",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 63779,
+      "cache_read": 59306,
+      "cache_create": 0,
+      "output_tokens": 691,
+      "total_input_tokens": 4477,
+      "total_output_tokens": 1110,
+      "context_window": 1000000,
+      "context_percent": 6.4,
+      "turn_elapsed_ms": 32915,
+      "model_ms": 15340,
+      "model_attempts": 1
+     },
+     "answer": "I don't have the rCNV dosage-sensitivity catalogue (Collins et al. 2022) loaded in any of my databases \u2014 none of the views here carry pHaplo/pTriplo scores. Let me check what's publicly reported for MECP2.**Short answer: No.** The rCNV map's pHaplo/pTriplo scores cover **autosomal genes only** \u2014 the Zenodo release (`Collins_rCNV_2022.dosage_sensitivity_scores.tsv.gz`, [record 6347673](https://zenodo.org/records/6347673)) describes \"predicted probabilities of haploinsufficiency (pHaplo) and triplosensitivity (pTriplo) for 18,641 **autosomal** protein-coding genes as defined in Gencode v19.\" MECP2 is on chrX (Xq28), so it has no pHaplo or pTriplo score in that resource. The paper itself ([Collins et al. 2022, Cell](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/); backend queried: perplexity) likewise states the ensemble model predicted scores \"for all autosomal genes.\"\n\nTwo caveats on the answer:\n\n- **This is from the public documentation, not from my databases.** None of my views (credible sets, coloc, burden, gene annotations, etc.) carry the rCNV catalogue, so I confirmed the scope from the Zenodo record and the paper rather than from a table lookup. I have not opened the TSV itself to verify MECP2's absence row-by-row.\n- **Absence of a score is not a statement about MECP2's dosage sensitivity.** MECP2 is a textbook bidirectionally dosage-sensitive gene (loss \u2192 Rett syndrome; duplication \u2192 MECP2 duplication syndrome); it is simply outside the map because rCNV association and the ML model excluded sex chromosomes.\n\nIf you need a quantitative dosage-sensitivity metric for MECP2, the alternatives are ClinGen's dosage-sensitivity curation (which does score X-linked genes; MECP2 is curated as haploinsufficiency 3 / triplosensitivity 3) or gnomAD LOEUF/pLI for loss-of-function constraint. I can pull the gnomAD constraint or the ClinGen entry if that's useful."
+    },
+    {
+     "id": "S8",
+     "question": "Which protein-coding genes in chr22:18,900,000-21,100,000 (GRCh38) are haploinsufficient?",
+     "elapsed_s": 93.8,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "import genetics\ndf = genetics.sql(\"\"\"\nSELECT symbol, name, MIN(gene_start) AS gene_start, MAX(gene_end) AS gene_end, ANY_VALUE(ensembl_gene_id) AS ensg\nFROM gene_annotations_v\nWHERE chr = 22 AND locus_type = 'gene with protein product'\n  AND gene_end >= 18900000 AND gene_start <= 21100000\nGROUP BY symbol, name\nORDER BY gene_start\n\"\"\")\nprint(len(df))\ngenetics.show(df)\n"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity haploinsufficiency score 3 genes 22q11.2 TBX1 CRKL LZTR1 HIRA SNAP29",
+        "max_results": 8
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "22q11.2 deletion region haploinsufficient genes gnomAD pLI LOEUF constraint TBX1 CRKL HIRA MED15 PI4KA",
+        "max_results": 10
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage curation TBX1 haploinsufficiency score sufficient evidence",
+        "include_domains": [
+         "search.clinicalgenome.org",
+         "clinicalgenome.org",
+         "dosage.clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ],
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity LZTR1 CRKL SNAP29 haploinsufficiency score curation",
+        "include_domains": [
+         "search.clinicalgenome.org",
+         "clinicalgenome.org",
+         "dosage.clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ],
+        "max_results": 8
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "22q11.2 recurrent copy number variation-related syndrome ClinGen curation gene haploinsufficiency score TBX1 \"3\" LZTR1 \"30\" table",
+        "include_domains": [
+         "tp.amegroups.org",
+         "pmc.ncbi.nlm.nih.gov"
+        ],
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 1,
+       "tool_use_id": "toolu_018K34gBrYTG6xjPWQYCR5oH",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 2092
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 5,
+      "input_tokens": 77951,
+      "cache_read": 59317,
+      "cache_create": 0,
+      "output_tokens": 1774,
+      "total_input_tokens": 53675,
+      "total_output_tokens": 3608,
+      "context_window": 1000000,
+      "context_percent": 7.8,
+      "turn_elapsed_ms": 93393,
+      "model_ms": 30181,
+      "model_attempts": 1
+     },
+     "answer": "I'll first enumerate the protein-coding genes in that window from `gene_annotations_v`, then check haploinsufficiency evidence (ClinGen dosage sensitivity / gnomAD constraint), which is not stored in this database.The database has 45 protein-coding genes in that window but carries no haploinsufficiency metric (no pLI/LOEUF/ClinGen dosage scores), so I'll check external curation.**Short answer:** the 45 protein-coding genes in chr22:18.9\u201321.1 Mb (the LCR22\u2011A\u2192D 22q11.2 deletion interval) are in `gene_annotations_v`, but **this database holds no haploinsufficiency metric** (no ClinGen dosage score, pLI or LOEUF), and I could not retrieve per\u2011gene ClinGen dosage curations through my search tools. So I can give you the gene list plus what the literature supports, not an authoritative per\u2011gene HI score.\n\n**The 45 protein-coding genes (GRCh38, `gene_annotations_v`, chr22, `locus_type = 'gene with protein product'`):**\nDGCR6, PRODH, FAM246C, DGCR2, ESS2, TSSK2, GSC2, SLC25A1, CLTCL1, HIRA, C22orf39, MRPL40, UFD1, CDC45, CLDN5, SEPTIN5, GP1BB, TBX1, GNB1L, RTL10, TXNRD2, COMT, ARVCF, TANGO2, DGCR8, TRMT2A, RANBP1, ZDHHC8, CCDC188, RTN4R, DGCR6L, ZNF74, SCARF2, KLHL22, MED15, PI4KA, SERPIND1, SNAP29, CRKL, AIFM3, LZTR1, THAP7, P2RX6, SLC7A4, LRRC74B.\n\n**Haploinsufficiency evidence (literature; `perplexity` backend):**\n\n| Gene | Evidence | Strength |\n|---|---|---|\n| **TBX1** | Repeatedly named as the main dosage\u2011sensitive driver of the cardiac/craniofacial/thymic phenotypes of 22q11.2DS; mouse *Tbx1* haploinsufficiency models \u2014 [McDonald\u2011McGinn et al. 2015](https://pmc.ncbi.nlm.nih.gov/articles/PMC4900471/), [Karbarz 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7563277/) | Well established |\n| **CRKL** | Dosage\u2011sensitive driver of cardiac and genitourinary defects in central (LCR22 B\u2013D / C\u2013D) deletions \u2014 [Bertini et al. 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC11764475/), [Huth et al. 2023](https://pmc.ncbi.nlm.nih.gov/articles/PMC10689790/) | Strong, mostly CNV + mouse |\n| **HIRA, MED15** | Reported as highly LoF\u2011intolerant (pLI > 0.9) in a 2022 *Mol Psychiatry* analysis summarised by the search backend (PMID 35753121) \u2014 I could not open the paper to verify the numbers | Constraint\u2011based, unverified here |\n\nImportant caveat: a ClinGen HI score of 3 exists for the **region** (A\u2013D / A\u2013B recurrent deletion \u2192 DiGeorge/VCFS), not necessarily for individual genes ([Zhang et al. 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC8753460/)). Many other genes in the interval (e.g. LZTR1, SNAP29, TANGO2, SLC25A1, TXNRD2, PRODH, SCARF2, GP1BB, CDC45, PI4KA) are known primarily for **autosomal recessive** disorders, where heterozygous loss is not itself haploinsufficient \u2014 but I have not confirmed their ClinGen classifications.\n\n**For an authoritative per\u2011gene answer** use the ClinGen Dosage Sensitivity Map (https://dosage.clinicalgenome.org/) and gnomAD constraint (pLI/LOEUF) directly. If you'd like, I can instead look at what *this* database does hold for these genes \u2014 e.g. Genebass/exome pLoF burden results in `gene_burden_results_v`, or FinnGen LoF variant frequencies in `variant_annotation_v` \u2014 as an indirect view of LoF tolerance."
+    },
+    {
+     "id": "S9",
+     "question": "Take the schizophrenia pLoF burden hits in SCHEMA2 with mlog10p_burden >= 6 and rank them by triplosensitivity.",
+     "elapsed_s": 53.9,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "import genetics\ndf = genetics.sql(\"\"\"\nSELECT resource, dataset, trait, trait_original, gene, gene_id, chr, annotation,\n       mlog10p_burden, beta, se, n_cases, n_controls, total_variants, flags\nFROM gene_burden_results_v\nWHERE LOWER(dataset) LIKE '%schema%' AND mlog10p_burden >= 6\nORDER BY mlog10p_burden DESC\n\"\"\")\ngenetics.show(df)\nprint(genetics.sql(\"SELECT DISTINCT resource, dataset, annotation FROM gene_burden_results_v WHERE LOWER(dataset) LIKE '%schema%'\"))\n"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity triplosensitivity SETD1A ZMYM2 RB1CC1 HERC1 SCAF1 XPO7 ATP9A PTK2 STAG1 JARID2",
+        "include_domains": [
+         "search.clinicalgenome.org",
+         "clinicalgenome.org",
+         "dosage.clinicalgenome.org"
+        ],
+        "max_results": 10
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 1,
+       "tool_use_id": "toolu_01KJicTpwYsCJyUs3Zf3pfzf",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 4073
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 67378,
+      "cache_read": 59328,
+      "cache_create": 0,
+      "output_tokens": 1164,
+      "total_input_tokens": 12861,
+      "total_output_tokens": 2268,
+      "context_window": 1000000,
+      "context_percent": 6.7,
+      "turn_elapsed_ms": 53592,
+      "model_ms": 19727,
+      "model_attempts": 1
+     },
+     "answer": "**I can't do the triplosensitivity ranking.** None of my data sources carries a triplosensitivity score \u2014 neither ClinGen dosage-sensitivity curations (0/1/2/3/30/40) nor the Collins et al. 2022 pTriplo/pHaplo scores \u2014 and a web search for the ClinGen dosage entries returned nothing usable. To finish the ranking, look the ten genes below up in the ClinGen Dosage Sensitivity Map (https://dosage.clinicalgenome.org/) or in Collins et al. 2022 (Cell, Supplementary Table with pTriplo per gene).\n\nHere is the first half, which I can do: SCHEMA2 schizophrenia gene-burden hits at mlog10p_burden \u2265 6 (`gene_burden_results_v`, resource `schema2`, 87,959 cases / 150,587 controls). SCHEMA2 has two annotation classes, `PTV` (protein-truncating = pLoF) and `PTV_missense`; the pLoF-only set is 10 genes:\n\n| gene | chr | mlog10p_burden (PTV) | p | beta (log-OR) | se |\n|---|---|---|---|---|---|\n| SETD1A | 16 | 12.98 | 1.0e-13 | 2.10 | 0.28 |\n| ZMYM2 | 13 | 10.96 | 1.1e-11 | 1.73 | 0.25 |\n| RB1CC1 | 8 | 10.77 | 1.7e-11 | 1.94 | 0.29 |\n| HERC1 | 15 | 10.40 | 4.0e-11 | 1.13 | 0.17 |\n| SCAF1 | 19 | 8.45 | 3.5e-9 | 2.14 | 0.36 |\n| XPO7 | 8 | 8.23 | 5.9e-9 | 1.89 | 0.33 |\n| ATP9A | 20 | 6.47 | 3.4e-7 | 1.21 | 0.24 |\n| PTK2 | 8 | 6.30 | 5.0e-7 | 1.76 | 0.35 |\n| STAG1 | 3 | 6.27 | 5.4e-7 | 2.45 | 0.49 |\n| JARID2 | 6 | 6.07 | 8.5e-7 | 2.33 | 0.47 |\n\nHeld back: eight more genes (SP4, FYN, PPP3CA, CUL1, HDAC9, SCN2A, plus SETD1A/ZMYM2/HERC1/RB1CC1/SCAF1/XPO7/JARID2 again) pass \u2265 6 only under the combined `PTV_missense` mask; say if you want them included. `total_variants` is not populated for SCHEMA2, so carrier counts per gene aren't available here.\n\nIf you can paste in the ClinGen or pTriplo scores for these ten, I'll merge and rank them."
+    },
+    {
+     "id": "S10",
+     "question": "How many protein-coding genes on chromosome 22 are triplosensitive?",
+     "elapsed_s": 27.4,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "import genetics\ndf = genetics.sql(\"\"\"\nSELECT COUNT(DISTINCT symbol) AS n_protein_coding_chr22\nFROM gene_annotations_v\nWHERE chr = 22 AND locus_type = 'gene with protein product'\n\"\"\")\ngenetics.show(df)\n"
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "ClinGen dosage sensitivity triplosensitivity score 3 genes list chromosome 22",
+        "include_domains": [
+         "clinicalgenome.org",
+         "search.clinicalgenome.org",
+         "ncbi.nlm.nih.gov"
+        ]
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 1,
+       "tool_use_id": "toolu_01F5dARzGNrvkPHf88PToPka",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 2288
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 61240,
+      "cache_read": 59300,
+      "cache_create": 0,
+      "output_tokens": 527,
+      "total_input_tokens": 1944,
+      "total_output_tokens": 1389,
+      "context_window": 1000000,
+      "context_percent": 6.1,
+      "turn_elapsed_ms": 27103,
+      "model_ms": 10727,
+      "model_attempts": 1
+     },
+     "answer": "Straight answer first: **triplosensitivity is not something my data can tell you.** It is a ClinGen Dosage Sensitivity curation (a 0\u20133 score per gene), and none of the views I have access to (gene annotations, credible sets, coloc, exome/burden, functional assays) carry ClinGen dosage scores. I can't count triplosensitive genes without inventing the annotation.\n\nWhat I can do is give you the denominator and point you to the source. Let me get the chr22 protein-coding gene count and check what ClinGen reports.**I can't give you that number** \u2014 triplosensitivity is a ClinGen Dosage Sensitivity curation, and no view in my database carries ClinGen haploinsufficiency/triplosensitivity scores. Any count I produced would be fabricated, so I'm not going to.\n\nWhat the data does support:\n\n| Quantity | Value | Source |\n|---|---|---|\n| Protein-coding genes on chr22 (denominator) | **426** distinct HGNC symbols | `gene_annotations_v`, `locus_type = 'gene with protein product'`, chr = 22 |\n\nWhere to get the answer:\n\n- **ClinGen Dosage Sensitivity Map** \u2014 https://dosage.clinicalgenome.org/ (web search hit above). Download `ClinGen_gene_curation_list_GRCh38.tsv`, filter `Triplosensitivity Score = 3` (sufficient evidence; scores 1\u20132 are limited/emerging, 30 = the gene is in a region-level curation) and chromosome 22.\n- One caveat that changes the interpretation: ClinGen's triplosensitivity-score-3 list is very short genome-wide (the evidence bar is much higher than for haploinsufficiency), so the chr22 answer is likely zero or close to it \u2014 but that's an expectation, not a verified number. Confirm from the TSV.\n\nIf you paste the ClinGen gene list (or the chr22 slice of it) back to me, I can intersect it with the 426 protein-coding genes and then layer on what I *do* have \u2014 FinnGen credible sets, coloc, burden results \u2014 for those genes."
+    },
+    {
+     "id": "G1",
+     "question": "What is the odds ratio for deletions of NRXN1 in HP:0012759 (neurodevelopmental abnormality), with its confidence interval and p-value?",
+     "elapsed_s": 74.9,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "NRXN1 deletion odds ratio HP:0012759 neurodevelopmental abnormality rare CNV association dosage sensitivity map",
+        "max_results": 10
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "Collins 2022 cross-disorder dosage sensitivity map human genome rare CNV HPO terms NRXN1 deletion odds ratio neurodevelopmental abnormality HP:0012759",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 89135,
+      "cache_read": 59328,
+      "cache_create": 0,
+      "output_tokens": 1470,
+      "total_input_tokens": 53913,
+      "total_output_tokens": 2345,
+      "context_window": 1000000,
+      "context_percent": 8.9,
+      "turn_elapsed_ms": 74563,
+      "model_ms": 26575,
+      "model_attempts": 1
+     },
+     "answer": "I'll check what's available in the data resources and the literature in parallel.**Short answer: I can't give you that exact statistic.** The specific number you're describing \u2014 an OR for NRXN1 deletions against the HPO term HP:0012759 \u2014 is the format used by the rare-CNV meta-analysis of [Collins et al. 2022, *Cell*](https://pmc.ncbi.nlm.nih.gov/articles/PMC9742861/) (~1M individuals, 54 HPO-coded disorders including \"neurodevelopmental abnormality\"). That per-gene/per-segment CNV association table is not in any of the datasets available to me, and the literature search (backend: `perplexity`) returned the paper but not the NRXN1 row itself.\n\n**What I checked**\n- All 40+ datasets in `list_datasets`: FinnGen, UKBB, Open Targets, Genebass, SCHEMA/BipEx exomes, etc. None contain rare-CNV or deletion burden results, and none use HPO terms as phenotypes. There is no NRXN1-deletion association to query here.\n- Two literature searches (backend: `perplexity`): the Collins 2022 paper was located, but the retrieved text only gives study-level content (163 dosage-sensitive segments, 54 HPO terms each with \u22653,000 samples), not the NRXN1 \u00d7 HP:0012759 OR/CI/p.\n\n**Where to get the exact figure**\n- Collins et al. 2022 supplementary tables (segment-level and gene-level rCNV association statistics per HPO term), or the analysis repository linked from the paper (talkowski-lab rCNV2 on GitHub), which hosts the full per-HPO summary statistics for deletions and duplications.\n\n**Closest published estimates for NRXN1 deletions vs a neurodevelopmental phenotype (not the HPO-coded meta-analysis)**\n\n| Study | Phenotype | Comparison | OR (95% CI) | P |\n|---|---|---|---|---|\n| [Lowther et al. 2017](https://pmc.ncbi.nlm.nih.gov/articles/PMC4980119/) | DD/ID (clinical microarray referrals) | 19,263 cases vs 15,264 controls, exonic deletions | 8.14 (2.91\u201322.72) | reported as significant; value truncated in abstract |\n| [Kirov et al. 2009](https://pmc.ncbi.nlm.nih.gov/articles/PMC2728827/) | Schizophrenia | 17/8,789 cases vs 17/42,054 controls | 4.78 (2.44\u20139.37) | 1.3\u00d710\u207b\u2075 |\n| [Rujescu et al. 2009](https://pmc.ncbi.nlm.nih.gov/articles/PMC2695245/) | Schizophrenia | exon-disrupting deletions, 2,977 cases vs 33,746 controls | 8.97 (1.8\u201351.9) | 0.0027 |\n\nCaveat that matters: these are case-control ORs from clinically ascertained cohorts and consistently show that only **exon-disrupting** deletions carry risk \u2014 intronic NRXN1 deletions do not appreciably ([Lowther 2017](https://pmc.ncbi.nlm.nih.gov/articles/PMC4980119/); population-based confirmation in [Montalbano et al. 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11655628/), where exonic deletions gave ~3\u00d7 autism and ~2\u00d7 ADHD risk). The Collins HP:0012759 estimate will be a pooled meta-analytic OR that is not directly comparable to any of these.\n\nIf you have access to the Collins supplementary tables and paste the NRXN1 row, I can help interpret it against the estimates above."
+    },
+    {
+     "id": "G2",
+     "question": "How many genes reach FDR q <= 0.05 for duplications in HP:0001249 (intellectual disability)?",
+     "elapsed_s": 37.2,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "import genetics\ndf = genetics.sql(\"\"\"\nSELECT resource, dataset, annotation, COUNT(*) n\nFROM gene_burden_results_v\nWHERE LOWER(annotation) LIKE '%dup%' OR LOWER(annotation) LIKE '%cnv%' OR LOWER(annotation) LIKE '%del%'\n   OR trait_original LIKE 'HP:%' OR LOWER(trait) LIKE '%intellectual%'\nGROUP BY 1,2,3 ORDER BY n DESC\n\"\"\")\ngenetics.show(df)\ndf2 = genetics.sql(\"\"\"\nSELECT DISTINCT resource, dataset, annotation FROM gene_burden_results_v ORDER BY 1,2,3\n\"\"\")\ngenetics.show(df2)\n"
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 2,
+       "tool_use_id": "toolu_016eXnvVhzJzs6kqiGA5zTAG",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 4815
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 75060,
+      "cache_read": 59313,
+      "cache_create": 0,
+      "output_tokens": 575,
+      "total_input_tokens": 30477,
+      "total_output_tokens": 1197,
+      "context_window": 1000000,
+      "context_percent": 7.5,
+      "turn_elapsed_ms": 36868,
+      "model_ms": 11990,
+      "model_attempts": 1
+     },
+     "answer": "I can't answer this from the data I have access to \u2014 there is no CNV (duplication/deletion) gene-level association dataset, and no HPO-coded phenotypes, in any of the resources available to me.\n\n**What I checked**\n\n- `list_datasets`: the gene-level burden resources are all exome sequence-variant studies \u2014 Genebass (UK Biobank), SCHEMA2 (schizophrenia), BipEx2 (bipolar) and the 2026 IBD exome analysis. None is a CNV study and none uses HPO terms as phenotype codes.\n- `gene_burden_results_v`: the only annotation classes present are `pLoF`, `missense`, `missense|LC`, `pLoF|missense|LC`, `synonymous`, `nonsynonymous`, `PTV`, `PTV_missense` \u2014 no duplication/deletion/CNV class. A search for traits coded `HP:%` or named \"intellectual\" returned 0 rows.\n\n**Where to look instead**\n\nA per-gene duplication FDR for HP:0001249 is the shape of result produced by CNV dosage-sensitivity analyses such as Collins et al. 2022 (*Cell*, rCNV2 \u2014 gene-level DUP/DEL association with FDR across HPO-defined phenotype groups, including intellectual disability), or DECIPHER/ClinGen dosage-sensitivity curations. The rCNV2 supplementary gene-level tables (available via the Talkowski lab GitHub/Zenodo) are the direct source for that count.\n\nIf it helps, I can run a literature search to pin down the exact publication and its reported number for HP:0001249 duplications, or check the gene list you have against GenCC/Monarch gene\u2013disease curations for intellectual disability."
+    },
+    {
+     "id": "G3",
+     "question": "What fraction of cases and of controls carry a deletion of NRXN1 in HP:0012759?",
+     "elapsed_s": 60.7,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality"
+       }
+      },
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "search_scientific_literature",
+       "input": {
+        "query": "NRXN1 exonic deletion frequency in neurodevelopmental disorder cases versus population controls",
+        "max_results": 8
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 86585,
+      "cache_read": 59307,
+      "cache_create": 0,
+      "output_tokens": 1159,
+      "total_input_tokens": 46633,
+      "total_output_tokens": 2284,
+      "context_window": 1000000,
+      "context_percent": 8.7,
+      "turn_elapsed_ms": 60299,
+      "model_ms": 20411,
+      "model_attempts": 1
+     },
+     "answer": "I'll check whether any dataset here is keyed by that HPO term and whether NRXN1 deletion (CNV) carrier data exists at all.**Short answer: this isn't answerable from the data I have.** Two independent gaps:\n\n1. **No HPO-coded phenotypes.** Nothing in the suite is keyed by HP:0012759 (Neurodevelopmental abnormality). `search_phenotypes` returned only fuzzy non-matches (obstructed labour, tongue abnormality, dementia). Phenotypes here are FinnGen endpoints, UKBB/Genebass field codes, Open Targets studies, etc.\n2. **No CNV/deletion carrier data.** `list_datasets` shows SNP/indel GWAS credible sets, exome single-variant and gene-burden tests (Genebass, SCHEMA2, BipEx2, IBD exome), QTLs, and functional atlases. None reports structural-variant carrier counts by case/control status, so a carrier fraction for an NRXN1 deletion cannot be computed from anything I can query.\n\n**Where to get it:** DECIPHER / ClinGen Dosage Sensitivity (NRXN1 is a curated haploinsufficient gene, with HPO-annotated patients), or gnomAD-SV for population deletion frequency.\n\n**Published case-vs-control estimates** (literature backend queried: `perplexity`), for exonic NRXN1 deletions \u2014 note these cohorts are clinical-referral or disorder-specific, not HP:0012759 per se:\n\n| Study | Cases | Controls |\n|---|---|---|\n| [Ching et al. 2010](https://pmc.ncbi.nlm.nih.gov/articles/PMC3001124/) | 12/3,540 clinical referrals (0.34%; 9 exonic \u03b1-deletions \u22480.25%) | 10/51,939 literature controls (0.019%) |\n| [Curran et al. 2013](https://pmc.ncbi.nlm.nih.gov/articles/PMC4223877/) | 18 exonic / 10,397 referrals (0.17%) | \u2014 |\n| [Cosemans et al. 2020](https://pubmed.ncbi.nlm.nih.gov/31932357/) (literature meta-cohort, 629 deletions) | ~1/800 (\u22480.13%) in NDD/neuropsychiatric patients | ~1/3,000 (\u22480.03%) |\n| [Fuccillo & Pak 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8491281/) (review) | ~0.18% across major NDDs | ~0.02% |\n| Danish population study 2024 ([Nature Genomic Med.](https://www.nature.com/articles/s41525-024-00450-8)) | 108 exonic carriers among cases | 27 among controls; general-population exonic prevalence 0.70/1,000 (0.07%) |\n\nSo the consistent picture is roughly **0.1\u20130.25% of neurodevelopmental cases vs ~0.02\u20130.07% of controls** (\u22485\u201310\u00d7 enrichment), with exon 6\u201324 deletions considerably more penetrant than exon 1\u20135 deletions per Cosemans et al. The Perplexity summary also cited Schaaf 2012, Dabell 2013 and Lal 2013 with similar figures, but those weren't returned as structured records so I haven't listed them.\n\nIf useful, I can pull NRXN1 rare-coding-variant burden results (Genebass, SCHEMA2, BipEx2) \u2014 a different but related question that the data here *can* answer."
+    },
+    {
+     "id": "W1",
+     "question": "Which 200 kb sliding window has the strongest rare-CNV deletion association with HP:0012759, and where is it? The sliding-window summary statistics are on GRCh37.",
+     "elapsed_s": 28.0,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "list_capabilities",
+       "input": {}
+      },
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality",
+        "limit": 20
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 3,
+      "input_tokens": 79355,
+      "cache_read": 59333,
+      "cache_create": 0,
+      "output_tokens": 722,
+      "total_input_tokens": 34704,
+      "total_output_tokens": 1135,
+      "context_window": 1000000,
+      "context_percent": 7.9,
+      "turn_elapsed_ms": 27619,
+      "model_ms": 13943,
+      "model_attempts": 1
+     },
+     "answer": "I'll start by checking whether any CNV sliding-window dataset exists in the available data.The dataset registry has no CNV or sliding-window product. Let me confirm the SDK surface and check whether HP:0012759 exists as a phenotype anywhere before concluding.I can't answer this one from the data I have access to \u2014 and I'd rather say so than guess.\n\n**What I checked**\n\n- `list_datasets` (the full registry, 50 datasets): there is **no CNV dataset** of any kind \u2014 no rare-CNV burden, no deletion/duplication calls, and no sliding-window summary statistics. Everything here is SNV/indel-based (GWAS credible sets, molecular QTLs, exome single-variant and gene-burden tests, HLA alleles, chromatin/MPRA functional layers). All of it is on **GRCh38**; nothing is served on GRCh37.\n- The SDK surface (`list_capabilities`): no CNV, sliding-window, or HPO-keyed function exists.\n- `search_phenotypes` for `HP:0012759` / \"neurodevelopmental abnormality\": no HPO-coded phenotype exists in any resource. The fuzzy hits returned (e.g. `O15_LABOUR_PELVIC_ABNORM`, `TONGUEABNORMALITY`, `F5_DEMENTIA`) are unrelated string matches, not the trait you asked about.\n\n**Where this data actually lives**\n\nThe description \u2014 rare CNV deletions, 200 kb sliding windows, HPO-coded phenotypes, GRCh37 \u2014 matches the **UK Biobank / DECIPHER-style CNV sliding-window association analyses** (e.g. the Auwerx et al. / Kutalik-group UKB CNV-GWAS releases, or the CNV burden analyses from the Kingdom et al. / Wright-group UKB studies, which use HPO terms). Those summary statistics are distributed via the authors' repositories (Zenodo / GWAS Catalog) rather than through FinnGen or the sources connected here. Once you have that file, the query itself is trivial \u2014 sort the deletion-model rows on p-value (or \u2212log10 p) and take the top window's chromosome and GRCh37 start/end \u2014 but I can't run it for you without the file.\n\nIf you can point me to the specific publication you have in mind, I'm happy to search the literature for the reported top deletion window for HP:0012759 so you at least have the published answer to compare against."
+    },
+    {
+     "id": "W2",
+     "question": "On which chromosomes does any 200 kb sliding window reach p < 1e-8 for rare-CNV deletions in HP:0012759?",
+     "elapsed_s": 48.1,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "list_datasets",
+       "input": {
+        "include_stats": false
+       }
+      },
+      {
+       "name": "list_capabilities",
+       "input": {}
+      },
+      {
+       "name": "search_phenotypes",
+       "input": {
+        "query": "HP:0012759,neurodevelopmental abnormality,copy number",
+        "limit": 20
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 4,
+      "input_tokens": 81828,
+      "cache_read": 59321,
+      "cache_create": 0,
+      "output_tokens": 612,
+      "total_input_tokens": 52589,
+      "total_output_tokens": 986,
+      "context_window": 1000000,
+      "context_percent": 8.2,
+      "turn_elapsed_ms": 47738,
+      "model_ms": 16331,
+      "model_attempts": 1
+     },
+     "answer": "I'll first check whether any CNV / sliding-window dataset exists among the available resources.I can't answer this from the data I have access to \u2014 and I want to say that clearly rather than work around it.\n\n**What's missing**\n\n- **No CNV association data.** `list_datasets` returns 49 datasets and none is a copy-number-variant (deletion/duplication) association study; every GWAS product here is SNP/indel-based (FinnGen R14, FinnGen+UKBB/MVP meta-analyses, Open Targets, PGC, GP2, IIBDGC, COVID-HGI). The SDK likewise exposes no CNV or sliding-window function (`credible_sets`, `summary_stats`, `exome`, `gene_burden`, `hla`, `mpra`, etc. only).\n- **No HPO-coded phenotypes.** Searching for `HP:0012759` / \"neurodevelopmental abnormality\" returned only fuzzy, unrelated hits (e.g. FinnGen `TONGUEABNORMALITY`, Open Targets \"Mitochondrial DNA copy number\"). No dataset here indexes traits by HPO term.\n- **No sliding-window statistics.** Even for SNP data, the available products are variant-level summary stats and credible sets, not 200 kb window-aggregated burden tests.\n\n**Where to look instead**\n\nA \"200 kb sliding window, rare CNV deletion, HPO-coded phenotype\" analysis matches the design of CNV-burden studies in clinical/DECIPHER-style or biobank CNV scans (e.g. UK Biobank CNV association studies, or Hujoel/Auwerx-type sliding-window CNV GWAS). The published supplementary tables or the authors' browser for that specific study would carry the per-window p-values by chromosome. If you tell me which paper or portal the analysis comes from, I can search the literature for it, but I cannot reproduce or query the result itself."
+    },
+    {
+     "id": "X1",
+     "question": "Which disease-associated rare-CNV segments overlap chr16:29,500,000-30,200,000 (GRCh37), and which HPO terms are they associated with?",
+     "elapsed_s": 40.8,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "web_search",
+       "input": {
+        "query": "16p11.2 recurrent deletion BP4-BP5 chr16:29.6-30.2 Mb GRCh37 ClinGen dosage sensitivity HPO phenotypes",
+        "max_results": 5
+       }
+      },
+      {
+       "name": "web_search",
+       "input": {
+        "query": "16p11.2 duplication syndrome ORPHA:370079 HPO terms microcephaly schizophrenia; 16p11.2 deletion ORPHA:261197 macrocephaly obesity autism",
+        "max_results": 5
+       }
+      }
+     ],
+     "script_results": [],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 62491,
+      "cache_read": 59329,
+      "cache_create": 0,
+      "output_tokens": 1181,
+      "total_input_tokens": 3166,
+      "total_output_tokens": 2037,
+      "context_window": 1000000,
+      "context_percent": 6.2,
+      "turn_elapsed_ms": 40318,
+      "model_ms": 20616,
+      "model_attempts": 1
+     },
+     "answer": "This one falls outside what my tools cover, so I'll be upfront: I do not have a rare-CNV / structural-variant catalogue or HPO annotation table in the genetics database (the views are SNP/indel credible sets, coloc, exome burden, functional assays and HLA \u2014 all GRCh38, no CNV segments, no HPO). I cannot return the segment list from data. Let me at least ground the well-known answer for that interval and point you to the right sources.**Short answer:** I can't produce this from my data \u2014 none of the databases I query hold rare-CNV segments or HPO annotations (my views are SNP/indel fine-mapping, coloc, exome burden, functional assays and HLA, all on GRCh38). Below is what the public curated sources say about that interval, so you know where to pull the authoritative segment list.\n\n**What overlaps chr16:29.5\u201330.2 Mb (GRCh37)**\n\nYour window is essentially the **proximal 16p11.2 recurrent region (BP4\u2013BP5)**:\n\n| Source record | GRCh37 coordinates | Dosage class | Associated disorder |\n|---|---|---|---|\n| ClinGen dosage region **ISCA-37400** ([link](https://search.clinicalgenome.org/kb/gene-dosage/region/ISCA-37400)) / ClinVar [RCV000034307](https://www.ncbi.nlm.nih.gov/clinvar/RCV000034307/) | chr16:29,649,997\u201330,199,852 (GRCh38: 29,638,676\u201330,188,531), ~550 kb | Deletion (haploinsufficiency) | Proximal 16p11.2 microdeletion syndrome (OMIM #611913, ORPHA:261197) |\n| Same region ISCA-37400 | same | Duplication (triplosensitivity) | 16p11.2 microduplication syndrome (OMIM #614671, ORPHA:370079) |\n\nThe distal BP1\u2013BP3 region (ISCA-37486, incl. *SH2B1*, ~28.7\u201328.95 Mb) lies just outside your window; larger BP1\u2013BP5 CNVs would overlap it but are curated separately ([ClinGen ISCA-37486](https://search.clinicalgenome.org/kb/gene-dosage/region/ISCA-37486)).\n\n**HPO terms (per ClinGen/Orphanet summaries in the searches above \u2014 not from my database)**\n- Deletion: global developmental delay, speech/language delay, motor coordination disorder, intellectual disability, autism spectrum disorder, seizures, macrocephaly, obesity, vertebral/scoliosis anomalies.\n- Duplication: intellectual disability, ADHD, epilepsy, schizophrenia predisposition, microcephaly, low BMI.\n\nI have not verified the exact HPO IDs attached to each record; these are the phenotype classes named in the ClinGen curation text and Orphanet descriptions.\n\n**Where to get the complete, ID-level answer**\n- **ClinGen Dosage Sensitivity Map** (dosage.clinicalgenome.org) \u2014 region-level curations with coordinates in both builds.\n- **DECIPHER** (decipher.sanger.ac.uk) \u2014 patient CNVs with HPO terms; supports a GRCh37 region query directly.\n- **ClinVar / dbVar (nstd102 = ClinGen curated CNVs)** \u2014 download with HPO/MedGen cross-references.\n- **Orphanet/HPO annotations** (hpo.jax.org, `phenotype.hpoa`) \u2014 the HPO term lists for ORPHA:261197 and ORPHA:370079.\n\nIf it's useful, I *can* tell you what's in this interval on the SNP side \u2014 e.g. FinnGen credible sets or coloc hits in GRCh38 chr16:29.64\u201330.19 Mb (*TBX6*, *KCTD13*, *MAPK3*, *SH2B1*-adjacent genes) \u2014 just ask."
+    },
+    {
+     "id": "X2",
+     "question": "How many genes lie in the 22q11.21 rare-CNV deletion segment?",
+     "elapsed_s": 48.8,
+     "error": null,
+     "tool_calls": [
+      {
+       "name": "run_analysis",
+       "input": {
+        "code": "import genetics\n# anchor genes: DGCR6/PRODH sit just distal to LCR22-A; LZTR1/HIC2 sit just proximal to LCR22-D; USP18 ~ LCR22-B, KLHL22/MED15 ~LCR22-C region\nanchors = genetics.sql(\"\"\"\nSELECT symbol, chr, MIN(gene_start) gs, MAX(gene_end) ge FROM gene_annotations_v\nWHERE symbol IN ('DGCR6','PRODH','TBX1','COMT','USP18','ZNF74','KLHL22','MED15','PI4KA','CRKL','LZTR1','HIC2','TOP3B')\nGROUP BY symbol, chr ORDER BY gs\"\"\")\ngenetics.show(anchors)\nfor label, s, e in [('A-D (~3 Mb typical deletion, chr22:18.9-21.5 Mb GRCh38)', 18900000, 21500000),\n                    ('A-B (~1.5 Mb proximal nested deletion, chr22:18.9-20.3 Mb)', 18900000, 20300000)]:\n    df = genetics.sql(f\"\"\"\n    SELECT locus_type, COUNT(DISTINCT symbol) n FROM gene_annotations_v\n    WHERE chr = 22 AND gene_start >= {s} AND gene_end <= {e}\n    GROUP BY locus_type ORDER BY n DESC\"\"\")\n    print(\"\\n==\", label); genetics.show(df)\n    tot = genetics.sql(f\"SELECT COUNT(DISTINCT symbol) n FROM gene_annotations_v WHERE chr=22 AND gene_start>={s} AND gene_end<={e}\")\n    print(\"total distinct genes:\", tot['n'][0])\npc = genetics.sql(\"\"\"SELECT symbol, gene_start FROM gene_annotations_v WHERE chr=22 AND gene_start>=18900000 AND gene_end<=21500000\nAND locus_type='gene with protein product' GROUP BY symbol, gene_start ORDER BY gene_start\"\"\")\nprint(\"\\nprotein-coding genes A-D:\", \", \".join(pc['symbol'].to_list()))"
+       }
+      }
+     ],
+     "script_results": [
+      {
+       "type": "script_result",
+       "iteration": 1,
+       "tool_use_id": "toolu_01E5hcaV53TmckAW7P3PxtQV",
+       "ran": true,
+       "ok": true,
+       "status": "ok",
+       "timed_out": false,
+       "exception": null,
+       "limit": null,
+       "duration_ms": 10715
+      }
+     ],
+     "usage": {
+      "type": "usage",
+      "iteration": 2,
+      "input_tokens": 62479,
+      "cache_read": 59302,
+      "cache_create": 0,
+      "output_tokens": 864,
+      "total_input_tokens": 3181,
+      "total_output_tokens": 2416,
+      "context_window": 1000000,
+      "context_percent": 6.2,
+      "turn_elapsed_ms": 48384,
+      "model_ms": 14776,
+      "model_attempts": 1
+     },
+     "answer": "**Answer: ~49 protein-coding genes (110 annotated genes in total) in the typical ~3 Mb LCR22\u2011A\u2192D deletion; ~30 protein-coding (54 total) in the nested 1.5 Mb A\u2192B segment.**\n\nCounted from `gene_annotations_v` (HGNC + GENCODE GRCh38), genes fully contained in the window:\n\n| Segment (GRCh38) | Protein-coding | Pseudogenes | lncRNA | miRNA | Other | Total |\n|---|---|---|---|---|---|---|\n| A\u2013D, chr22:18.9\u201321.5 Mb (DGCR6/PRODH \u2192 HIC2) | **49** | 37 | 15 | 7 | 2 | **110** |\n| A\u2013B, chr22:18.9\u201320.3 Mb (DGCR6/PRODH \u2192 just before ZNF74) | **30** | 9 | 8 | 6 | 1 | **54** |\n\nThe A\u2013D protein-coding list runs DGCR6, PRODH, DGCR2, ESS2, TSSK2, GSC2, SLC25A1, CLTCL1, HIRA, UFD1, CDC45, CLDN5, SEPTIN5, GP1BB, **TBX1**, GNB1L, TXNRD2, **COMT**, ARVCF, TANGO2, **DGCR8**, TRMT2A, RANBP1, ZDHHC8, RTN4R, DGCR6L, ZNF74, SCARF2, KLHL22, MED15, PI4KA, SERPIND1, SNAP29, **CRKL**, AIFM3, **LZTR1**, THAP7, P2RX6, SLC7A4, HIC2, plus a few small/less-characterised ORFs (full list held back; ask if you want it).\n\nCaveats that matter:\n- The segment boundaries are the LCR22 repeats, which are not gene anchors, so I used the conventional flanking genes (DGCR6/PRODH proximally, HIC2 distally, USP18-side excluded). Shifting the edges by ~100 kb changes the count by a handful of pseudogenes/lncRNAs but barely moves the protein-coding count.\n- \"Genes\" is definition-dependent: literature figures range from \"~46 protein-coding\" to \"~90 genes\" for the 3 Mb deletion depending on whether pseudogenes and ncRNAs are included; the table above shows both.\n\nHappy to pull FinnGen/UKBB credible sets or burden results for any of these genes, or count the distal B\u2013D or C\u2013D nested segments."
+    }
+   ]
+  }
+ }
+}
