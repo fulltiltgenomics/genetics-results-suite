@@ -60,12 +60,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 66 | the data tools — `api` 46, `general` 20 |
+| `TOOL_DEFINITIONS` | 67 | the data tools — `api` 46, `general` 21 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**72 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 20, `orchestration` 4.
+**73 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 21, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -218,12 +218,12 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 68 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
-| `True` — the code surface | 20 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 17 data tools whose `sdk_replaceable` is false |
+| `False` — the no-code surface | 69 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `True` — the code surface | 21 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 18 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
 
-The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `get_myvariant_annotations`.
 
 <!-- END GENERATED: tool-surfaces -->
 
@@ -427,7 +427,7 @@ path has never carried tools.
 
 Sections in the **unfiltered** text, in order: Core Principles; Analyzing data (the
 three-pass method); Tool Usage Guidelines; Mouse Model Evidence (search_mgi); Variant
-Annotation Sources; Functional / Regulatory Readouts; HLA / the MHC region; Protein
+Annotation Sources; Functional / Regulatory Readouts; AlphaGenome variant predictions (opt-in); HLA / the MHC region; Protein
 Annotation (UniProt); Drug and Target Evidence (ChEMBL); Data Sources and Resource Names; Pseudo Credible Sets; Subagent
 Orchestration; Choosing How to Get Data; Response Style; Handling Uncertainty; Out of Scope
 and Limitations; Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology;
@@ -437,17 +437,17 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
 everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
-unfiltered text is 40,789 chars. Measured 2026-09-06:
+unfiltered text is 165,110 chars. Measured 2026-09-09:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 64 | 31,980 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
-| `code` | 20 | 109,861 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (~77k chars) |
+| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 67 | 35,698 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
+| `code` | 21 | 155,013 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (~77k chars) |
 
 Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
-tool names, those five resolve to the same 64 tools, and the five prompts are byte-identical
-at 31,980 chars. Only `code` gates differently, and it is now the only value with two shapes.
-`SANDBOX_ENABLED=false` takes `run_analysis` off it, leaving 17 tools and 21,029 chars, and
+tool names, those five resolve to the same 67 tools, and the five prompts are byte-identical
+at 35,698 chars. Only `code` gates differently, and it is now the only value with two shapes.
+`SANDBOX_ENABLED=false` takes `run_analysis` off it, leaving 20 tools and 24,521 chars, and
 the loss is wider than the script guidance: HLA / the MHC region, Choosing How to Get Data
 and the database-routing blocks all go, because `genetics.sql` inside a script was this
 surface's only route to the database. What does NOT go is `get_variant_protein_effect` — it
@@ -457,7 +457,7 @@ only for a database-only shape with `get_variant_protein_effect` removed, which
 `tests/test_system_prompt.py` synthesises rather than resolving from a profile (see the
 route-completeness bullet below).
 
-`tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
+`tests/test_system_prompt.py` holds **twelve** test classes, **eight** of them parametrised
 over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
 now includes `nocode`, the arm the `code` arm is measured against; it was missing until
 `genetics-results-suite-4h6.78`/`.79`, so thirteen parametrised test functions never
@@ -869,6 +869,7 @@ means approved somewhere in the world, NOT 'FDA-approved'"*.
 
 **Negative constraints on interpretation**
 
+- `get_alphagenome_variant_predictions`: *"CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT"* … *"'What does this variant do?', 'tell me about rs...', 'is this variant causal?', 'why is this locus associated?' are NOT requests for AlphaGenome"* … *"This suite having nothing to say about a variant is NOT a reason to call it."* The opt-in has no enforcement behind it — no per-user setting, no per-conversation column, no UI toggle — so this description and the `### AlphaGenome variant predictions (opt-in)` prompt block are the whole of it. It also carries the reading rules the result's own `validation` block cannot state: *"`quantity: \"magnitude\"` — the direction is NOT reported and you must not state or infer one"*, and that the population rho *"is NOT a confidence for the variant in hand and must never be quoted as one"*.
 - `search_cbioportal`: *"This is somatic tumour data. It says nothing about germline association — do not read a high mutation frequency here as evidence for a GWAS or disease-association claim"* and the GRCh37/GRCh38 build warning (*"Never compare a coordinate from this tool against a GRCh38 position."*).
 - `search_scientific_literature`: *"You do NOT choose the backend and there is no parameter for it"* … *"Do NOT invent hybrid labels like 'PubMed/Europe PMC' or 'Perplexity/PubMed'"*.
 - `get_summary_stats`: *"Do NOT use this as a discovery tool — use credible set tools or PheWAS for that."*
@@ -1021,7 +1022,7 @@ Read a row as: `type` is the JSON-schema type; `req` yes means the name is in
 `input_schema.required`; `default` is emitted into the schema and is **advisory to the
 model**, since the handler applies its own default when the key is absent.
 
-### Category `general` — 20 tools
+### Category `general` — 21 tools
 
 #### `search_phenotypes`
 `TOOL_DEFINITIONS`, `definitions.py:16` — category `general`
@@ -1414,6 +1415,42 @@ NEVER cite a ChEMBL id, pChEMBL value or activity count from memory — they mus
 | `max_results` | `integer` | no | `25` | `minimum` 1 / `maximum` 100 | Maximum top compounds to return, best pChEMBL first (default 25, max 100). The counts and the assay-type breakdown cover every activity read, not just these. |
 
 `required`: ['query']
+
+#### `get_alphagenome_variant_predictions`
+`TOOL_DEFINITIONS`, `definitions.py:1401` — category `general`
+
+Description as sent to the model:
+
+```text
+MODEL PREDICTIONS from AlphaGenome (Google DeepMind) — what a deep-learning model predicts one variant does to regulatory activity: chromatin accessibility, histone and TF binding, transcription, splicing, optionally in a named cell type or tissue. NOTHING HERE WAS MEASURED IN ANYONE. It is not a FinnGen result and not an assay; never present a number from this tool as either.
+
+CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT. Exactly three things count as asking:
+1. the user names AlphaGenome;
+2. the user asks for a model prediction of a variant's regulatory effect;
+3. the user asks how a measured value in this suite compares with what a model predicts for the same variant — that comparison is a first-class use of this tool, not a workaround.
+
+Nothing else is. In particular:
+- Do NOT call it as background enrichment, and do not add a prediction to an answer nobody asked one for.
+- "What does this variant do?", "tell me about rs...", "is this variant causal?", "why is this locus associated?" are NOT requests for AlphaGenome. Answer them from this suite's own measured and fine-mapped data.
+- This suite having nothing to say about a variant is NOT a reason to call it. Say the data is silent; you may OFFER a prediction in one line and then wait to be asked.
+- It is an ADDITIONAL source of evidence, not a fallback for gaps — and having it available is not a reason to use it. It is a rate-limited external model under a non-commercial licence.
+
+READ THE `validation` BLOCK BEFORE QUOTING A NUMBER. Every modality in the result carries its own — `tier`, `status`, `quantity`, `calibrated_against`, `population_rho`, `rho_scope`:
+- `quantity: "signed"` — the sign is meaningful (negative is a predicted decrease). `quantity: "magnitude"` — the direction is NOT reported and you must not state or infer one.
+- `population_rho` with `rho_scope: "population"` is a cohort-level Spearman correlation between this MODALITY and `calibrated_against`, across many variants. It is a property of the modality. It is NOT a confidence for the variant in hand and must never be quoted as one.
+- `status: "unvalidated"` (no `population_rho`) means the modality was never checked against anything measured in this suite. Say so whenever you report one.
+- `quantile` ranks the score against a genome-wide background and usually says more than the raw value.
+
+SIDE BY SIDE WITH MEASURED DATA the labelling matters MORE, not less: label every number from this tool as predicted, name the source of every measured number, never merge or average the two into one figure, and where they disagree say that they disagree.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call, and one call per variant is the expensive mistake here. A variant the model cannot score comes back as its own failed row, leaving the rest of the batch intact. |
+| `cell_type` | `string` | no | — | — | Cell type or tissue to score in, matched against AlphaGenome's own biosample names (e.g. 'liver', 'K562'). Omit to take the strongest effect across all tracks. A request that matches nothing falls back to all tracks and says so in `cell_type_match`. |
+| `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to score. Omit for the default set, which is exactly the modalities calibrated against this suite's own measurements. Any modality NOT in that default is uncalibrated and has to be asked for by name; its result says so in `validation`. |
+
+`required`: ['variants']
 
 #### `get_gene_group_members`
 `TOOL_DEFINITIONS`, `definitions.py:1478` — category `general`
