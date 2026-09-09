@@ -10,8 +10,9 @@
 #                       by terraform) with the backend derived from its config_profile. Kept so
 #                       instances that manage exactly one deployment work unchanged.
 #
-# Exports: DEPLOY_ENV, TFVARS, BACKEND_FILE, ENV_FILE, TF_VAR_FILE_ARGS (array), and the
-# tfvar() helper. Callers source their own .env via load_deploy_env.
+# Exports: DEPLOY_ENV, TFVARS, BACKEND_FILE, ENV_FILE, TF_VAR_FILE_ARGS (array), the tfvar()
+# helper and set_build_cache_args (the build scripts' registry layer-cache flags, which need
+# the REGISTRY this file resolves). Callers source their own .env via load_deploy_env.
 
 _ENV_SH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${ROOT_DIR:-$(cd "${_ENV_SH_DIR}/../.." && pwd)}"
@@ -476,4 +477,30 @@ require_kube_context() {
   else
     readonly ACTING_CONTEXT="${CURRENT_CONTEXT}"
   fi
+}
+
+# Layer-cache flags for `docker build`, set into BUILD_CACHE_ARGS for the named image.
+#
+# Why this is needed at all: BuildKit's GC prunes the local cache down to its reserved space
+# whenever the host has less free disk than the policy's minimum, so on a full host the cache
+# of a whole build can be gone before the next run — measured on the build host, zero cached
+# layers two hours after a full build-all. --cache-from makes the previously pushed :latest a
+# cache source, so an evicted local cache (or a fresh host) refetches layers from the registry
+# instead of rebuilding them; BUILDKIT_INLINE_CACHE=1 is what puts that metadata into the image
+# being pushed, so there is something to fetch next time. Both halves are required — dropping
+# the build-arg leaves --cache-from pointing at an image with no cache manifest.
+#
+# Two limits, neither of which this can fix:
+#   - inline cache records the FINAL stage only. The docker driver supports no other cache
+#     exporter, so the builder stages of the multi-stage images (the browser and its bff, the
+#     sandbox) still rebuild from scratch on a host with no local cache.
+#   - the local BuildKit cache retention is per-host daemon config (/etc/docker/daemon.json,
+#     builder.gc), which no clone carries. See README's build section.
+#
+# A missing :latest — the first build of a new image, or a registry the host cannot read — needs
+# no guard: BuildKit prints the cache importer's failure as a build step and then builds anyway.
+# Measured on this daemon, both an unresolvable registry host and a resolvable-but-absent image
+# exit 0. A docker release that made either fatal would break the first build of every new image.
+set_build_cache_args() {
+  BUILD_CACHE_ARGS=(--cache-from "${REGISTRY}/$1:latest" --build-arg BUILDKIT_INLINE_CACHE=1)
 }
