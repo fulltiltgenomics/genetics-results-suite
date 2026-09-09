@@ -2,19 +2,14 @@
 """Recipe and checks for the per-project chat memory feature.
 
 Companion script to the "Proving ground" paragraph in docs/project-spec.md's "Chat memory
-(recent-work digest)" section (bd genetics-results-suite-idt3, Alternative A: projects as
-first-class containers — chat_sessions.project_id, the digest rendered over a project's
-sessions and frozen per session, an unfiled session gets no memory).
+(per-project digest)" section (Alternative A: projects as first-class containers —
+chat_sessions.project_id, the digest rendered over a project's sessions and frozen per
+session, an unfiled session gets no memory).
 
-STATUS — every check below references endpoints, columns or log-line shapes that do not
-exist yet on the branch this script ships with:
-  - chat_projects table, chat_sessions.project_id          lands with idt3.3/idt3.4
-  - GET /chat/v1/projects/{id}/memory                      lands with idt3.4/idt3.5
-  - the "project=<hash>" memory-digest log line, the
-    project name on the SSE memory event                   lands with idt3.5
-Each check function calls `_pending(...)` and exits SKIP with the landing bead id until its
-dependency is in place; a SKIP is not a PASS. Only `cleanup` and the context/exec plumbing
-they share are exercised against the live cluster today.
+STATUS — the endpoints, columns and log-line shapes the checks below reference now exist on
+this branch, but the seven check bodies themselves are not implemented yet: each still calls
+`_pending(...)` and exits SKIP; a SKIP is not a PASS. Only `cleanup` and the context/exec
+plumbing they share are exercised against the live cluster today.
 
 ENVIRONMENT. Staging only, because staging is where the *deployed build* can be observed:
 the pod's .status.startTime says which image is answering, `kubectl logs` carries the
@@ -46,8 +41,8 @@ headers auth-gateway would attach after a real oauth2-proxy session; they never 
 cluster and are never printed. The only email this script prints is a pseudonym of the
 --user value the caller supplied, never one read back from the database.
 
-CLEANUP. Every check subcommand is expected to leave synthetic state behind (sessions, and
-once idt3.4 lands, projects). Each check appends the ids it created to a state file, and the
+CLEANUP. Every check subcommand is expected to leave synthetic state behind (sessions and
+projects). Each check appends the ids it created to a state file, and the
 `cleanup` subcommand deletes exactly those ids — nothing is ever enumerated from the server,
 so a mistyped --user cannot reach anything this script did not create. --user is additionally
 constrained to the synthetic memory-check@broadinstitute.org family, and cleanup refuses to
@@ -77,8 +72,8 @@ def _fail(msg):
     sys.exit(1)
 
 
-def _pending(check_name, lands_with):
-    print(f"SKIP: {check_name} — {lands_with} not implemented yet")
+def _pending(check_name, needs):
+    print(f"SKIP: {check_name} — {needs} not implemented yet")
     return 2
 
 
@@ -236,7 +231,7 @@ def check1_log_line_project_only(context, user, state):
     """Log line 'memory digest: user=<hash> project=<hash> sessions=N chars=M' fires only
     for a session inside a project — never for an unfiled session or a user without the
     chat_memory setting."""
-    return _pending("check1 project-scoped log line", "idt3.5 (memory_gate/memory_digest per-project rewrite)")
+    return _pending("check1 project-scoped log line", "project-scoped log-line assertion")
 
 
 def check2_digest_byte_equality(context, user, state):
@@ -245,37 +240,37 @@ def check2_digest_byte_equality(context, user, state):
 
     The two differ in exclude_session_id, so only the `digest` field — not the whole
     response — is the comparable quantity."""
-    return _pending("check2 digest byte-equality", "idt3.4 (GET /chat/v1/projects/{id}/memory)")
+    return _pending("check2 digest byte-equality", "project memory endpoint comparison")
 
 
 def check3_cache_warm_second_turn(context, user, state):
     """Turn 2 cache_read >= turn 1 cache_create, on the default model, tools on, inside a
     project session — confirms the frozen digest is actually part of the cached prefix."""
-    return _pending("check3 turn-2 cache warm", "idt3.4/idt3.5 (project sessions + digest envelope)")
+    return _pending("check3 turn-2 cache warm", "cache-warm turn comparison")
 
 
 def check4_move_spike_then_stable(context, user, state):
     """Moving a session into a different project produces exactly one cache_create spike on
     its next turn (the digest re-renders and block 1 changes), then turns stay cached."""
-    return _pending("check4 move spike then stable", "idt3.4 (project membership + move endpoint)")
+    return _pending("check4 move spike then stable", "project-move cache-spike assertion")
 
 
 def check5_sse_memory_event_once(context, user, state):
     """The SSE stream's memory event — which already ships — carries the project's name,
     exactly once per session."""
-    return _pending("check5 project name on the SSE memory event", "idt3.5 (project name on the memory event)")
+    return _pending("check5 project name on the SSE memory event", "SSE memory-event project-name assertion")
 
 
 def check6_share_read_no_project_id(context, user, state):
     """A non-owner reading a shared session link never sees project_id (mirrors the existing
     rule that a non-owner read clears context_digest)."""
-    return _pending("check6 non-owner share read", "idt3.4 (project_id on chat_sessions + share path)")
+    return _pending("check6 non-owner share read", "non-owner share-read project_id assertion")
 
 
 def check7_fork_lands_unfiled(context, user, state):
     """Forking a session lands the fork with no project — D5: an unfiled conversation gets no
     memory, and a fork does not inherit the source session's project."""
-    return _pending("check7 fork lands unfiled", "idt3.4 (fork_session + project_id semantics)")
+    return _pending("check7 fork lands unfiled", "fork-lands-unfiled assertion")
 
 
 CHECKS = {
