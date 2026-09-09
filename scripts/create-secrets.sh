@@ -16,6 +16,8 @@ set -euo pipefail
 #   OPENAI_API_KEY        - OpenAI API key (optional for chat backend, required for rag-service)
 #   TAVILY_API_KEY        - Tavily API key (optional)
 #   PERPLEXITY_API_KEY    - Perplexity API key (optional)
+#   ALPHAGENOME_API_KEY   - AlphaGenome Atlas API key for chat-backend (optional; with no
+#                           key the AlphaGenome tool is not advertised at all)
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings (required only when ENABLE_RAG=true)
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
@@ -274,6 +276,7 @@ reuse_optional() {
 reuse_optional OPENAI_API_KEY       openai-api-key
 reuse_optional TAVILY_API_KEY       tavily-api-key
 reuse_optional PERPLEXITY_API_KEY   perplexity-api-key
+reuse_optional ALPHAGENOME_API_KEY alphagenome-api-key
 reuse_optional COHERE_API_KEY       cohere-api-key
 reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional ADMIN_USERS          admin-users
@@ -323,6 +326,7 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic genetics-secrets \
   --from-literal=openai-api-key="${OPENAI_API_KEY:-}" \
   --from-literal=tavily-api-key="${TAVILY_API_KEY:-}" \
   --from-literal=perplexity-api-key="${PERPLEXITY_API_KEY:-}" \
+  --from-literal=alphagenome-api-key="${ALPHAGENOME_API_KEY:-}" \
   --from-literal=mcp-api-key="${MCP_API_KEY}" \
   --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
