@@ -2263,6 +2263,122 @@ rather than a row removal, precisely so a restored `chat_messages` row keeps res
 `--llm-config-db` as `llm_config.db` beside `--db`, so its report names sets without any manifest
 change.
 
+## Chat memory (recent-work digest)
+
+A user can opt in to having the chat model remember the *shape* of their own earlier
+conversations — what they were about, not what was found. On a session's first turn, a
+derived index of the user's other recent sessions is rendered once and joined into system
+block 1 beside the instruction envelope, so it costs the same one cache write per session
+that the instructions already pay and no new cache breakpoint (`docs/chat-tool-reference.md`
+§4). Like instructions, the feature spans two service repos and needed no manifest or
+infrastructure change here.
+
+| Piece | Repo | Where |
+|-------|------|-------|
+| Entity extraction, digest rendering, caps | `../genetics-mcp-server` | `memory_digest.py` |
+| Opt-in setting, the four-condition gate, the log-line pseudonym | `../genetics-mcp-server` | `memory_gate.py` |
+| Envelope wrapping, per-turn resolution, block-1 assembly | `../genetics-mcp-server` | `config/defaults.py` (`memory_envelope`), `chat_api.py` (`_resolve_user_memory`, `_load_user_memory`), `llm_service.py` (`_stream_anthropic`) |
+| Storage columns, first-writer-wins write, pin | `../genetics-mcp-server` | `db/chat_history_db.py` |
+| `GET /chat/v1/memory`, `PUT /chat/v1/chat/sessions/{id}/pin` | `../genetics-mcp-server` | `routers/chat_history.py` |
+| Memory dialog, pin star on a session | `../genetics-results-browser` | `src/features/chat/MemoryDialog.tsx`, `memoryApi.ts` |
+
+**What is remembered.** `memory_digest.extract_entities` walks a session's assistant
+`tool_use` **inputs** only — never a tool's result — over the closed kind set in
+`memory_digest.KINDS` (gene, phenotype, variant, dataset, view). The renderer
+(`_render_unpinned`/`_render_pinned`) adds the session's title, `phenotype_code`,
+updated-at date, and a capped head of its first user message alongside those entities. A
+pinned session additionally carries a capped excerpt of that first question and of its last
+assistant turn's text. Anything that reads like a download link or artifact filename is
+scrubbed to a placeholder wherever free text enters the digest — the title, the
+first-message head, and, for a pinned session, its excerpted question and answer
+(`memory_digest._head`) — so a storage path that later expires never sits in a cached
+prompt describing it as still there. `phenotype_code` is collapsed and length-capped like the title but not scrubbed, because the artifact pattern cannot match a phenotype code. An extracted entity value
+that matches the same pattern is dropped outright rather than replaced
+(`memory_digest._entities_str`), because an entity line names each value once. **Never remembered:** tool results, plots,
+downloads, and secret chats — a secret conversation writes no `chat_sessions` row at all, so
+there is nothing for the digest to read. A session you only *read* as another user's shared
+link never enters your digest (`get_session_for_access` clears `context_digest` for a
+non-owner reader — that keeps a shared reader from seeing the *owner's* digest, a different
+property from what follows). A session you *fork* is not excluded: `fork_session` makes the
+fork your own session (title `"Fork of: ..."`, `content_json` copied), and
+`get_recent_sessions_for_digest` selects by `user_id`, so the fork's title and the entities
+mined from its copied messages do enter your digest. That is exactly why `memory_envelope`
+wraps the digest in the same guardrail treatment as an instruction body — its docstring
+notes the digest "can include content forked from another user's shared session," which is
+why the model is told to read the block as content, never as instruction.
+
+**Opt-in.** Off by default. `memory_gate.MEMORY_SETTING_KEY` (`chat_memory`) is a
+`user_settings` row read the same generic way the other chat options are (see below); until a
+user sets it to `"on"`, nothing is rendered into a prompt and nothing is stored, and no
+memory log line is emitted on a chat turn. `GET /chat/v1/memory` is the exception: it renders
+the digest fresh on request regardless of the setting, so the dialog can preview what memory
+would remember — that render is never stored.
+
+**Where it lives.** The rendered text sits in `chat_sessions.context_digest`, in
+`chat_history.db` on the same `chat-data` PVC and the same daily GCE disk snapshot as every
+other conversation row ("Chat instructions" above documents the same backup path for
+`llm_config.db`). Deleting a session deletes its row outright, so every digest rendered
+*after* the deletion — `GET /chat/v1/memory`, and any session started from then on — omits
+it. But every *other* session of that user that already carries a non-NULL `context_digest`
+keeps its frozen copy verbatim for the rest of that session's life, by design: the block is
+byte-stable, rendered once on a session's first turn, never rewritten afterward. Those stored
+copies are a second store that deletion does not purge today — this is the epic's decision D3
+territory: purging them would mean re-rendering `context_digest` on the user's other sessions
+at delete time, at the cost of one cache miss each.
+
+**Why it is pinned per session.** `set_context_digest` writes only when the session's
+`context_digest` is still NULL (first writer wins) and every later turn of that session reads
+the stored bytes back verbatim rather than re-rendering — the block must be byte-stable for
+the life of a session or it invalidates the cached prefix on every follow-up turn. That
+matters because block 1 is genuinely cold at the start of most sessions: measured 2026-09-09
+against production `chat_history.db` (`scripts/memory_premise_stats.py`, excluding
+`anonymous`/`mcp-tool`). All-time, inter-session gaps run past the ~5-minute ephemeral cache
+TTL for about 93% of returns (median gap 47.9h; only 6.7% of consecutive sessions from the
+same user start within 5 minutes of each other); the last-90-day window lands in the same
+place (median gap 61.5h; 6.9% under 5 minutes) — a cache design bought once per session, not
+once per turn, is what fits that distribution either way. The premise itself cleared its kill
+criteria by a wide margin on the same last-90-day measurement: 78.7% of sessions came from a
+returning user, and 22.9% of those re-mentioned a prior-session gene/phenotype/variant in
+their first message (re-run with the shared extractor; the kill thresholds were 20% and 15%).
+The digest's own steady-state cost — one rendering per session, cached for every turn after
+it — came out to roughly $0.005/turn, well under the 10%-of-median-turn-cost bar the epic set
+for reverting the feature on cost alone; that cost baseline came from the BigQuery log sink
+(`genetics_chat_logs.stdout`, `cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`)
+rather than from `memory_premise_stats.py` itself, because production's `chat_history.db`
+carries no `chat_turn_metrics` table to read a per-turn cost from.
+
+**Gates.** `memory_gate.memory_gate_open` — point at the code rather than this doc for the
+exact conditions; opt-in, `gateway_asserted` (the digest is private content keyed to an
+identity the auth gateway itself authenticated, the same rule `read_artifact` uses, stricter
+than instruction sets), non-secret, and a caller that names a real person rather than a
+service identity or the shared `anonymous` of an auth-less deployment are all independently
+required.
+
+**Cap.** `memory_digest.MAX_DIGEST_CHARS`, with `MAX_PINNED_SESSIONS` bounding how many pinned
+sessions are ever considered (both in `memory_digest.py`); the recency window on which sessions
+are candidates at all, `MEMORY_DIGEST_SESSION_LIMIT`, lives in `memory_gate.py` instead. Over
+the char cap, oldest unpinned entries drop first, then oldest pinned entries drop down to the
+newest one, which is truncated rather than dropped if it alone still overflows
+(`memory_digest._assemble`).
+
+**Endpoints**, both in `routers/chat_history.py`, and both 404ing for a caller that is not an
+identifiable person (a service identity, or the shared `anonymous` of an auth-less
+deployment): `GET /chat/v1/memory` renders the digest fresh for the caller regardless of the
+opt-in setting, so the dialog can preview what turning memory on would remember; `PUT
+/chat/v1/chat/sessions/{id}/pin` toggles a session's pin, 404ing (not 403ing) for a session the
+caller does not own — the same non-owner-invisible pattern the rest of the router uses — and
+404ing by construction for a secret chat's id, which never had a row to pin.
+
+**Proving-ground checks** (re-run after any staging rollout of this feature): the session-start
+`memory digest: user=<hash> sessions=N chars=M` log line; the streamed `usage` event's
+`cache_read` on a session's second turn is at least as large as the first turn's
+`cache_create`, confirming the block actually cached; the `digest` field of `GET
+/chat/v1/memory`, fetched before starting the user's next session, equals byte for byte the
+text that session's first turn pins — that session's log line reports `chars=M` where `M ==
+len(digest)` (the two calls differ in `exclude_session_id`, so only the `digest` field, not the
+whole response, is the comparable quantity); and, for a user with the setting off, system block
+1 is byte-identical to a build with no memory code at all and no log line is emitted.
+
 ## Chat option persistence
 
 The four chat options (**Answer** detail, **Instructions**, **Literature search**, **Tools**) are
@@ -2279,6 +2395,11 @@ Opening a conversation applies **its last message's** options to the controls an
 the next new chat. Starting a new chat (including secret chat) returns the controls to the default.
 A conversation that predates a column reads NULL there and falls through to the user's default
 rather than to the built-in one.
+
+**Chat memory's opt-in** (`chat_memory`, see "Chat memory (recent-work digest)" above) rides the
+same `user_settings` mechanism as the row above, read and written through the same generic
+endpoints — but it is not one of the four chat options: it has no `chat_messages` column and no
+per-conversation value, because it describes the user's account, not a single conversation.
 
 No new endpoints — the defaults ride on the generic `GET/PUT /chat/v1/llm-config/user/settings*`,
 and the per-message values on the existing message save. Because that save is an
