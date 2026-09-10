@@ -214,6 +214,11 @@ which is hardcoded in ~40 manifests.
       `--build-arg SHOW_TOOLS_CONTROL` to the browser image, so it takes effect on the next
       frontend build, not on a manifest-only deploy. A user who stored `nocode` before the row
       was hidden keeps it; the fix is the user-settings endpoint, not the browser.
+- [ ] **`alphagenome_enabled = true` in `terraform.tfvars.daly-staging`.** AlphaGenome is
+      enabled for daly (and daly-staging); finngen leaves the line out, so it defaults to
+      false regardless of whether a key is ever seeded in its `genetics-secrets`.
+      `scripts/deploy.sh` derives chat-backend's `ALPHAGENOME_ENABLED` from it the same way it
+      derives `ENABLE_SANDBOX` from `sandbox_pool_enabled`.
 - [ ] **Confirm there is no `terraform/terraform.tfvars`.** The daly values now live in
       `terraform/terraform.tfvars.daly`; the scripts refuse to run while both exist.
 - [ ] **`unset REGISTRY`** if your shell profile exports the production one (it currently does:

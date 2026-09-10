@@ -49,6 +49,12 @@ sandbox_machine_type = "e2-standard-2"
 # the monitor CronJob's BQ_DATASET; omit for genetics_results, and never set it empty.
 # bq_dataset = "genetics_results"
 
+# Whether this deployment offers the AlphaGenome Atlas tools. deploy.sh renders it into
+# chat-backend's ALPHAGENOME_ENABLED. A deployment that must not offer AlphaGenome (this one,
+# finngen) leaves the line out — it defaults to false regardless of whether an API key is
+# ever seeded in genetics-secrets.
+# alphagenome_enabled = true
+
 enable_log_sinks = false
 
 # Only needed when this deployment shares a GCP PROJECT with another one (as daly-staging does

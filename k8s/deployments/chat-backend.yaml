@@ -127,10 +127,15 @@ spec:
               name: genetics-secrets
               key: perplexity-api-key
               optional: true
-        # optional, and the absence is meaningful rather than degraded: with no key
-        # Settings.disabled_tools withdraws get_alphagenome_variant_predictions, so the
-        # model is never offered a tool whose every call would fail. chat-backend is the
-        # only holder — results-api and the sandbox never see it.
+        # the deployment's own switch (terraform/variables.tf alphagenome_enabled, resolved
+        # by scripts/deploy.sh). Settings.disabled_tools withdraws both AlphaGenome tools
+        # whenever this is false, independent of whether a key happens to be configured.
+        - name: ALPHAGENOME_ENABLED
+          value: "${ALPHAGENOME_ENABLED}"
+        # optional even where the flag above is true: with no key Settings.disabled_tools
+        # withdraws get_alphagenome_variant_predictions too, so the model is never offered a
+        # tool whose every call would fail. chat-backend is the only holder — results-api
+        # and the sandbox never see it.
         - name: ALPHAGENOME_API_KEY
           valueFrom:
             secretKeyRef:
