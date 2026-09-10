@@ -41,6 +41,11 @@ spec:
         # a redirect strips a POST's body, so the chat message is discarded and the SSE fetch
         # resolves against the landing page as a 200 text/html.
         - --cookie-refresh=2m
+        # re-issued with a fresh expiry on every refresh, so this is the longest gap between two
+        # visits, not the session's total life. It must be at least the realm's
+        # ssoSessionIdleTimeout (keycloak/realm-genetics.json.template): a shorter value has the
+        # browser drop the cookie while the refresh token behind it is still good.
+        - --cookie-expire=168h
         - --upstream=static://200
         - --skip-provider-button=true
         ports:
