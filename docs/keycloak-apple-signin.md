@@ -125,7 +125,39 @@ ANTHROPIC_API_KEY=... COHERE_API_KEY=... ./scripts/create-secrets.sh
 ```
 
 The realm is imported only on Keycloak's **first** start (empty DB). Later changes are made
-in the admin console (`https://<KEYCLOAK_HOST>/admin`, user/pass from `keycloak-secrets`).
+in the admin console (`https://<KEYCLOAK_HOST>/admin`, user/pass from `keycloak-secrets`) —
+except the three things this repo reconciles onto a live realm with scripts, so that a template
+edit reaches an already-imported realm: the allow-list (`scripts/keycloak-bind-allowlist.sh`,
+below), and the SSO session lifespans and the default-IdP redirect
+(`scripts/keycloak-sync-login-policy.sh`, next section).
+
+## Session lifetime and the login page
+
+A browser login is an oauth2-proxy cookie whose refresh token belongs to a Keycloak SSO session,
+so the session's lifespans are what a user feels: idle out, or reach the maximum, and the next
+request is a fresh login. Both lifespans are set in `keycloak/realm-genetics.json.template`
+(`ssoSessionIdleTimeout`, `ssoSessionMaxLifespan`); what a running realm actually has is
+`kcadm.sh get realms/genetics --fields ssoSessionIdleTimeout,ssoSessionMaxLifespan`, and the two
+only agree once the reconcile script has run:
+
+```sh
+DEPLOY_ENV=<env> ./scripts/keycloak-sync-login-policy.sh
+```
+
+It reads the lifespans out of the template (the numbers live nowhere else), writes them to the
+realm, and sets or clears the browser flow's **Identity Provider Redirector** default provider:
+
+- `KEYCLOAK_DEFAULT_IDP=<alias>` sends every login straight to that provider and the Keycloak
+  chooser page is never shown; empty keeps the chooser. It defaults to `google` for the
+  `finngen` profile, which offers no other provider, and to empty for `daly`, where a default
+  would hide Apple.
+
+Two couplings on the oauth2-proxy side (`k8s/deployments/oauth2-proxy.yaml`): `--cookie-refresh`
+must stay below the realm's `accessTokenLifespan`, or the proxy never refreshes and the login
+dies one access token after sign-in; `--cookie-expire` must be at least `ssoSessionIdleTimeout`,
+or the browser drops the cookie while its refresh token is still good. Keycloak persists user
+sessions in its Postgres and `create-secrets.sh` never rotates the oauth2-proxy cookie secret, so
+a redeploy — `deploy.sh` restarts both — does not end anyone's login.
 
 **Issuer hairpin**: oauth2-proxy fetches OIDC discovery from `https://<KEYCLOAK_HOST>/realms/genetics/...`,
 i.e. the public URL routed back through the ingress from inside the cluster. This is verified
@@ -169,12 +201,13 @@ The **brainzzz** integration ships as a confidential (web-application) client:
   client, its `mcp-audience` mapper and its `offline_access` optional scope. Re-run it to rotate
   the secret or change redirect URIs.
 
-### Sessions longer than 10 hours (`offline_access`)
+### Sessions longer than the SSO session (`offline_access`)
 
-The realm does not override Keycloak's session defaults, so **SSO Session Max is 10 hours**. An
-ordinary refresh token cannot outlive the SSO session it belongs to, so a client that only asks
-for `openid email profile` is hard-capped at 10h no matter how diligently it refreshes — after
-that its user has to go through an interactive browser login again.
+An ordinary refresh token cannot outlive the SSO session it belongs to (the realm's
+`ssoSessionMaxLifespan`, and `ssoSessionIdleTimeout` between refreshes — see
+[Session lifetime and the login page](#session-lifetime-and-the-login-page)), so a client that
+only asks for `openid email profile` is hard-capped at that lifespan no matter how diligently it
+refreshes — after that its user has to go through an interactive browser login again.
 
 `offline_access` is the way out. When the client includes it in the authorize request, Keycloak
 issues an **offline token**: a refresh token that survives logout and SSO-session expiry, bounded

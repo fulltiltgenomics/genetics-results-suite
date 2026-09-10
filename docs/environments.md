@@ -60,7 +60,8 @@ that holds it, so which apply depends on the script — see `project-spec.md`'s 
   then `kubectl exec … kcadm.sh` inside the pod to create or rotate OIDC clients, bind the
   allow-list authenticator and set realm attributes. None of them sources `lib/env.sh`, resolves
   `DEPLOY_ENV` or even echoes the context, so none can call this guard as it stands; guarding them
-  is separate work. Nothing is derived: the deployment **states** its cluster in a mandatory
+  is separate work. `keycloak-sync-login-policy.sh` is the one Keycloak script that does resolve
+  `DEPLOY_ENV`, call the guard and pin `--context`. Nothing is derived: the deployment **states** its cluster in a mandatory
   `kube_context = "<context name>"` line in its own tfvars, and `require_kube_context` refuses
   unless `kubectl config current-context` is exactly that string, then freezes that verdict
   (`readonly ACTING_CONTEXT`) and pins it with `--context` on every cluster-contacting call — so
@@ -122,15 +123,19 @@ Two shared-project hazards are handled explicitly:
   deployment, so a tfvars or manifest copied from production produces it verbatim and
   survives review.
   Two components set cookies on this host. `k8s/deployments/oauth2-proxy.yaml` passes
-  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` / `--cookie-refresh=2m`
-  and no `--cookie-domain`. `--cookie-refresh` is coupled to the realm rather than to the
-  cookie: it must stay below the realm's `accessTokenLifespan`, or oauth2-proxy stops
-  refreshing and `/oauth2/auth` answers 401 once the access token expires. That lifespan is
-  not in `realm-genetics.json.template` — it is Keycloak's own default, so it is whatever the
-  running realm says (`kcadm.sh get realms/genetics --fields accessTokenLifespan`) and a realm
-  edit in the admin console can change it with nothing in this repo moving. The gateway then 302s to `/oauth2/start`, which a GET survives invisibly and a
-  POST does not — the redirect strips the body. Lowering the realm's lifespan without
-  lowering this flag reintroduces that.
+  `--cookie-secure` / `--cookie-httponly` / `--cookie-samesite=lax` / `--cookie-refresh=2m` /
+  `--cookie-expire=168h` and no `--cookie-domain`. The last two are coupled to the realm rather
+  than to the cookie. `--cookie-refresh` must stay below the realm's `accessTokenLifespan`, or
+  oauth2-proxy stops refreshing and `/oauth2/auth` answers 401 once the access token expires.
+  That lifespan is not in `realm-genetics.json.template` — it is Keycloak's own default, so it
+  is whatever the running realm says (`kcadm.sh get realms/genetics --fields
+  accessTokenLifespan`) and a realm edit in the admin console can change it with nothing in
+  this repo moving. The gateway then 302s to `/oauth2/start`, which a GET survives invisibly
+  and a POST does not — the redirect strips the body. Lowering the realm's lifespan without
+  lowering this flag reintroduces that. `--cookie-expire` must be at least the realm's
+  `ssoSessionIdleTimeout`, which *is* in the template and reaches a live realm only through
+  `scripts/keycloak-sync-login-policy.sh`; a shorter cookie has the browser forget a login
+  whose refresh token is still valid.
   Keycloak is served on the *same* host under `/auth` (`deploy.sh` builds `KEYCLOAK_HOST` from
   `DOMAIN` + `KEYCLOAK_PATH`); `k8s/deployments/keycloak.yaml` sets no cookie attributes at
   all, and the gateway nginx block rewrites them with `proxy_cookie_flags ~ secure

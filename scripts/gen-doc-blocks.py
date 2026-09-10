@@ -424,6 +424,8 @@ LAYOUT = {
     "scripts/keycloak-register-brainzzz.sh": "the brainzzz client specifically",
     "scripts/keycloak-bind-allowlist.sh": "bind the email allow-list authenticator and realm "
                                           "attributes",
+    "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
+                                             "the template and the default IdP redirect",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
     "scripts/gen-sandbox-docs.py": (
         "generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema "

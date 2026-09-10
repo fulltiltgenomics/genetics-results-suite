@@ -33,7 +33,7 @@ arbitrary parties cannot register clients on the realm.
   time, so ask early.
 - **Whether their app holds a long-lived background session** rather than re-authenticating the
   user per interaction. If it does, it needs `offline_access` — see
-  [Sessions longer than 10 hours](#sessions-longer-than-10-hours).
+  [Sessions longer than the SSO session](#sessions-longer-than-the-sso-session).
 
 What you hand back: `client_id`, `client_secret`, `issuer`, `mcp_url`, scopes, and the flow
 (authorization code + PKCE S256). The registration script prints this block for you.
@@ -66,12 +66,14 @@ Send the secret over a secure channel, not email or Slack DM.
 > is kept only for that client's declarative template. **Do not copy it** for new customers —
 > use the generic script above.
 
-### Sessions longer than 10 hours
+### Sessions longer than the SSO session
 
-The realm keeps Keycloak's default **SSO Session Max of 10 hours**, and a normal refresh token
-cannot outlive the SSO session — so a customer app that holds a background session (rather than
-re-authenticating each user interaction) hits a hard 10h wall and has to send the user through a
-browser login again. Customers report this as "the session dies after 10 hours".
+A normal refresh token cannot outlive the SSO session it belongs to — the realm's
+`ssoSessionMaxLifespan`, and `ssoSessionIdleTimeout` between two refreshes, both set in
+`keycloak/realm-genetics.json.template` and reconciled onto the live realm by
+`scripts/keycloak-sync-login-policy.sh` — so a customer app that holds a background session
+(rather than re-authenticating each user interaction) hits that wall and has to send the user
+through a browser login again. Customers report this as "the session dies after N hours".
 
 The fix is the `offline_access` scope, which gets them an offline token instead: a refresh token
 that survives logout and SSO-session expiry, bounded by the offline-session idle timeout (30 days
@@ -99,7 +101,7 @@ Then tell the customer to add `offline_access` to the `scope` they send on the a
 without that, nothing changes. Keycloak does not error on a scope it will not grant; it silently
 omits it, so an unchanged 10h expiry is the only symptom. Full mechanics, including the
 `offline_access` realm role users need, are in
-[keycloak-apple-signin.md](keycloak-apple-signin.md) § Sessions longer than 10 hours.
+[keycloak-apple-signin.md](keycloak-apple-signin.md) § Sessions longer than the SSO session.
 
 ## Step 2 — allow-list their emails
 
@@ -330,4 +332,4 @@ test identity is a standing hole in the only access control on this path.
 | Forbidden page at sign-in, "not authorized to use this application" | realm allow-list attributes not synced — re-run `keycloak-bind-allowlist.sh` |
 | Sign-in succeeds but Keycloak has no email for the user | IdP returns no `email` claim; add the attribute mapper (Microsoft section, step 3) |
 | Customer's MCP client tries to self-register and fails | expected — DCR is off; they must use the pre-registered `client_id`/`client_secret` |
-| Session dies after ~10 hours, user must log in again | `offline_access` not requested by the client, or not assigned to it — see [Sessions longer than 10 hours](#sessions-longer-than-10-hours) |
+| Session dies at the SSO session lifespan, user must log in again | `offline_access` not requested by the client, or not assigned to it — see [Sessions longer than the SSO session](#sessions-longer-than-the-sso-session) |
