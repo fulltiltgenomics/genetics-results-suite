@@ -2348,7 +2348,10 @@ reading it as absent would re-render on every turn until the project gained a se
 i.e. memory appearing mid-session. Otherwise the digest is rendered over the project's window
 (`get_recent_sessions_for_digest` with the project id: `memory_gate.MEMORY_PROJECT_SESSION_CAP`
 most recent sessions plus that project's pinned ones, the current session excluded) and stored —
-an empty render included.
+an empty render included. A pin therefore only holds a conversation in its project's window,
+so the browser offers the star (sidebar row and conversation header) on filed conversations
+only; the sidebar row's "⋯" opens the project list directly, to the right of the button so it
+never covers the rows beneath it.
 
 **Moving a conversation costs one uncached turn, deliberately.** `set_session_project` nulls
 `context_digest` whenever the project actually changes, so the next turn renders the new project's
