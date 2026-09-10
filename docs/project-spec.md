@@ -2336,7 +2336,11 @@ travel with a fork. `chat_history_db.PROJECTS_MAX_PER_USER` bounds how many a us
 sidebar orders projects by last activity, which `list_projects` derives as the newest `updated_at`
 among a project's sessions (falling back to the project row's own, which only a rename touches):
 deriving it on read leaves the chat write path untouched, at the cost of one LEFT JOIN over a list
-the cap keeps short.
+the cap keeps short. The same read counts the sessions filed in each project; the sidebar shows
+that count after the project name and, because the browser re-reads the projects after anything
+that files, creates or deletes a chat, treats a moved count as the signal that a cached
+per-project list is stale. A chat the sidebar creates eagerly (New Chat, or a project's "+") is
+deleted again when the user leaves it before anything was said in it.
 
 **The read path** (`chat_api._load_user_memory`, one `to_thread` hop because every step is a
 database call). After the gate, the session row decides: **no project, no memory** — and the
