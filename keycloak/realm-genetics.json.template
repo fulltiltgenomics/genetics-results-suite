@@ -4,6 +4,8 @@
   "displayNameHtml": "${APP_NAME}",
   "enabled": true,
   "loginTheme": "genetics",
+  "ssoSessionIdleTimeout": 604800,
+  "ssoSessionMaxLifespan": 5184000,
   "attributes": {
     "allowedEmailDomains": "${OAUTH_EMAIL_DOMAIN}",
     "allowedEmails": "${OAUTH_ALLOWED_EMAILS}"

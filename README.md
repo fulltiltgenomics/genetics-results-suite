@@ -884,7 +884,9 @@ via `envFrom`:
 Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
-[docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)).
+[docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)). The realm's SSO session lifespans
+and the default-IdP redirect (`KEYCLOAK_DEFAULT_IDP`) are reconciled the same way, with
+`DEPLOY_ENV=<env> scripts/keycloak-sync-login-policy.sh`.
 
 ## Data Storage
 
