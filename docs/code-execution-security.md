@@ -700,6 +700,31 @@ Reserved but never emitted: `Killed`, `MemoryLimit`, `NonZeroExit`, `StartupFail
 
 <!-- END GENERATED: error-types -->
 
+**The child's working directory is `tmp/`, not `artifacts/`,** and only `artifacts/` is
+collected. A relative `savefig("x.png")` or `write_csv("x.csv")` therefore lands in scratch and
+is destroyed with the execution directory, producing an empty manifest and no error. That
+silence was the defect: a model that believed it had saved a file told the user the file
+existed. `_stray_writes` now lists the non-empty, non-dotfile regular names left directly in
+`tmp/` — but only when the run collected nothing, so it reads as "you saved to the wrong place"
+rather than as a list of incidental scratch — and the executor turns that list into a warning
+carried ahead of `output`, where the result-size truncation cannot cut it off. The write path
+itself is unchanged; this reports the loss, it does not prevent it. `SANDBOX_ARTIFACTS_DIR` is
+the directory that is kept, and the `genetics.plots` helpers resolve a relative path against it.
+
+**How an artifact reaches the person who asked for it.** Both routes are automatic, because
+both deliver something the model cannot use: an image it cannot look at, a file it should not
+paste. After a run the executor fetches up to four images and up to four non-image artifacts,
+each skipped rather than requested when the manifest's size is already over the read cap.
+They ride back on the tool result under `images` and `files`, and llm_service strips both
+before the result is serialised — base64 in a `tool_result` is tokens paid for bytes the model
+cannot read — replacing them with a note naming what the user was shown. The browser receives
+them as the SSE `image` and `file` events and keeps each inside the assistant's own text as an
+`[IMAGE:…]` or `[FILE:<mime>:<name>:<base64>]` marker, which is what makes them survive a
+reload: `content` is the only field a stored message carries. Both markers are stripped again
+on replay, at both ends. That is not an optimisation — leaving images in cost ~180k tokens per
+plotted turn and hit the context limit in six, and a CSV is worse than an image here, because
+the model *can* decode it and may answer from a stale copy instead of re-querying.
+
 **The artifact manifest** carries one entry per retrievable file and its shape is dictated by
 what `read_artifact` can consume: a **bare name**, never a path, never an execution id, never a
 URL. An entry carrying any of those would name something the read refuses by construction, and

@@ -123,7 +123,12 @@ every sandbox request"; results-api raises at import instead, and likewise when
 `SANDBOX_RESERVED_POD_SLOTS` exceeds the headroom between the two (a reserve that large would
 refuse a lone execution its own documented allowance — the same lie, from the other side).
 Raising any of the concurrency values raises peak buffered response memory against the pod's
-8Gi limit.
+memory limit, which is per-environment (`RESULTS_API_MEMORY_LIMIT`, defaulting to the 8Gi every
+cluster ran before it was parameterised; daly-staging sets 16Gi). That limit is the one this
+pod actually dies on: a PheWAS-shaped script — hundreds of variants against tens of phenotypes,
+each response held whole while it is merged — OOM-killed results-api at 8Gi twice, on
+2026-09-10 and 2026-09-11. A limit above the node's allocatable memory buys nothing, since the
+kernel reaps the pod first, so `machine_type` moves with it.
 
 ### Frontend CSP and the LD proxy
 
@@ -512,7 +517,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
 - **Region**: Configured via `region` in the deployment's tfvars
 - **GKE Cluster**: **one cluster per deployment, three today** — `finngenie` and `finngenie-staging` in project `daly-finngenie`, and `finngenie` in project `phewas-development` (`docs/environments.md`). **Two of the three are production** (`daly` and `finngen`); only `daly-staging` is not, and it is a rehearsal ground for manifests and images rather than for data — see "There is no development deployment" below. Each has Workload Identity available for GCP API access
-- **Node pool**: `e2-standard-4`, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging` pins `min = max = 2` in this working tree — that file is gitignored and untracked, not part of the repo, so no clone carries it; it is the **daly-staging** profile. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
+- **Node pool**: `e2-standard-4` on daly and finngen, **`e2-standard-8` on daly-staging** (raised with `RESULTS_API_MEMORY_LIMIT`; a 16Gi limit is unreachable on a node with 12.96 GiB allocatable), **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging` pins `min = max = 2` in this working tree — that file is gitignored and untracked, not part of the repo, so no clone carries it; it is the **daly-staging** profile. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
@@ -537,7 +542,7 @@ explicitly: pin the build, or match on something build-independent.
 There are **two** pools, and they are sized on different grounds.
 
 The **primary** pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
-`terraform.tfvars` profile (`terraform.tfvars.daly-staging` pins `min = max = 2`; it is the staging profile, and no production tfvars is committed), on `e2-standard-4`. Two general nodes are running on each of the two clusters this checkout can reach — see the Node pool bullet above for what is and is not measurable.
+`terraform.tfvars` profile (`terraform.tfvars.daly-staging` pins `min = max = 2`; it is the staging profile, and no production tfvars is committed), on `e2-standard-4` — except daly-staging, which is on `e2-standard-8`. Two general nodes are running on each of the two clusters this checkout can reach — see the Node pool bullet above for what is and is not measurable.
 
 The **sandbox** pool (`<cluster>-sandbox-pool`, `terraform/gke.tf`) is **pinned at one node**
 and exists for isolation, not capacity — see "The sandbox pool" below. It contributes **0m and
@@ -594,7 +599,10 @@ under the 3920m allocatable. It still must get a second node; only the reason is
 "both axes". Turning RAG on pushes CPU over as well, so daly+RAG is over on **both** axes. The
 **finngen** profile fits, with **775 Mi** of memory headroom — and that margin disappears if
 the analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
-at 500m / 4Gi, doubling to 8Gi mid-roll, dominates the memory term either way.
+dominates the memory term either way, and its request is now per-environment
+(`RESULTS_API_MEMORY_REQUEST`): the table above is the 4Gi default, which is what daly and
+finngen still deploy. daly-staging requests 6Gi and limits 16Gi on `e2-standard-8`, so its
+arithmetic is not this table's.
 
 **Nothing above changed when the sandbox was added, and that is the whole point of giving it
 its own pool.** The sandbox contributes 0m / 0 GiB here because it is on a different pool.
@@ -2336,7 +2344,11 @@ travel with a fork. `chat_history_db.PROJECTS_MAX_PER_USER` bounds how many a us
 sidebar orders projects by last activity, which `list_projects` derives as the newest `updated_at`
 among a project's sessions (falling back to the project row's own, which only a rename touches):
 deriving it on read leaves the chat write path untouched, at the cost of one LEFT JOIN over a list
-the cap keeps short.
+the cap keeps short. The same read counts the sessions filed in each project; the sidebar shows
+that count after the project name and, because the browser re-reads the projects after anything
+that files, creates or deletes a chat, treats a moved count as the signal that a cached
+per-project list is stale. A chat the sidebar creates eagerly (New Chat, or a project's "+") is
+deleted again when the user leaves it before anything was said in it.
 
 **The read path** (`chat_api._load_user_memory`, one `to_thread` hop because every step is a
 database call). After the gate, the session row decides: **no project, no memory** — and the
@@ -2348,7 +2360,10 @@ reading it as absent would re-render on every turn until the project gained a se
 i.e. memory appearing mid-session. Otherwise the digest is rendered over the project's window
 (`get_recent_sessions_for_digest` with the project id: `memory_gate.MEMORY_PROJECT_SESSION_CAP`
 most recent sessions plus that project's pinned ones, the current session excluded) and stored —
-an empty render included.
+an empty render included. A pin therefore only holds a conversation in its project's window,
+so the browser offers the star (sidebar row and conversation header) on filed conversations
+only; the sidebar row's "⋯" opens the project list directly, to the right of the button so it
+never covers the rows beneath it.
 
 **Moving a conversation costs one uncached turn, deliberately.** `set_session_project` nulls
 `context_digest` whenever the project actually changes, so the next turn renders the new project's
