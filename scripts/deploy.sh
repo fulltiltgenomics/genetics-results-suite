@@ -403,11 +403,7 @@ fi
 export SLACK_ALERT_USER_ID="${SLACK_ALERT_USER_ID:-}"
 
 # LLM model
-if [ "${CONFIG_PROFILE}" = "daly" ]; then
-  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
-else
-  export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
-fi
+export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
 
 # apply kubernetes manifests
 echo "=== Applying Kubernetes manifests ==="
