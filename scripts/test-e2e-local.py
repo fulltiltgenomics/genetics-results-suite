@@ -567,7 +567,7 @@ def main():
                              "started without an override makes the group skip by name.")
     args = parser.parse_args()
 
-    mcp = _reexec_under_mcp_venv()
+    _reexec_under_mcp_venv()
     # BEFORE ANY ASSERTION: the container has to be the source under test, or every check
     # below is a true statement about a different program. Fatal, not a check — there is no
     # useful partial run against the wrong binary.
