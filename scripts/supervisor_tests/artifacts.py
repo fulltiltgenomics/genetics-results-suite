@@ -934,3 +934,41 @@ def test_seal_fifo_does_not_block(tmp):
               sup.stat.S_ISREG(st.st_mode), f"mode={st.st_mode:o}")
     finally:
         os.close(dfd)
+
+
+def test_stray_writes(tmp):
+    """The script's cwd is tmp/ and only artifacts/ is collected, so a relative save is lost.
+
+    Nothing used to notice: the manifest was simply empty and the model, having "written" a
+    file, went on to tell the user it existed. These names are what lets the caller say so.
+    """
+    d = os.path.join(tmp, "straytmp")
+    os.makedirs(d)
+    with open(os.path.join(d, "phewas_long.csv"), "w") as fh:
+        fh.write("a,b\n")
+    with open(os.path.join(d, "scz_nmf_factors.png"), "wb") as fh:
+        fh.write(b"\x89PNG")
+    # library scratch, not a deliberate save
+    with open(os.path.join(d, ".fontconfig"), "w") as fh:
+        fh.write("x")
+    # a zero-byte file is an open() that never got its data, not a saved result
+    open(os.path.join(d, "empty.csv"), "w").close()
+    os.makedirs(os.path.join(d, "subdir"))
+
+    names = sup._stray_writes(d)
+    check("stray writes: reports the files the script meant to save",
+          names == ["phewas_long.csv", "scz_nmf_factors.png"], f"got {names}")
+    check("stray writes: skips dotfiles, empty files and directories",
+          ".fontconfig" not in names and "empty.csv" not in names and "subdir" not in names,
+          f"got {names}")
+
+    for i in range(sup.STRAY_WRITE_REPORT_MAX + 5):
+        with open(os.path.join(d, f"extra{i:02d}.csv"), "w") as fh:
+            fh.write("x")
+    capped = sup._stray_writes(d)
+    check("stray writes: bounded, so a loop cannot become the response body",
+          len(capped) == sup.STRAY_WRITE_REPORT_MAX, f"got {len(capped)}")
+
+    missing = sup._stray_writes(os.path.join(tmp, "does-not-exist"))
+    check("stray writes: an unreadable directory is empty, never an error",
+          missing == [], f"got {missing}")

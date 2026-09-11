@@ -226,6 +226,12 @@ export STATIC_IP_NAME="${STATIC_IP_NAME:-${TF_STATIC_IP_NAME}}"
 # chat-backend's starting tool profile; a deployment that sets nothing renders "" and its
 # users start on the browser's own default, the full surface
 export DEFAULT_TOOL_PROFILE="${DEFAULT_TOOL_PROFILE:-}"
+# results-api's memory, per environment. The defaults are what every cluster ran before this
+# was parameterised, so an environment that sets neither is unchanged. Raising the LIMIT past a
+# node's allocatable memory buys nothing — the kernel reaps the pod before the cgroup cap is
+# reached — so raise `machine_type` in the same change.
+export RESULTS_API_MEMORY_REQUEST="${RESULTS_API_MEMORY_REQUEST:-4Gi}"
+export RESULTS_API_MEMORY_LIMIT="${RESULTS_API_MEMORY_LIMIT:-8Gi}"
 TF_REGISTRY=$(terraform output -raw registry)
 resolve_registry "${TF_REGISTRY}"
 
@@ -674,7 +680,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
