@@ -11,6 +11,11 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      # the retry is reserved for a genuine crash. main.py returns 0 whenever the run
+      # completed — including days it found alerts — so an ordinary alerting run no longer
+      # consumes the budget and re-posts a second, contradictory report. OnFailure rather
+      # than Never keeps that retry inside the same pod, reusing the existing attachment of
+      # the ReadWriteOnce monitor-data PVC instead of waiting on a detach and re-attach.
       backoffLimit: 1
       template:
         metadata:
