@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from supervisor_tests import harness
 from supervisor_tests.parsing import test_nsswitch, test_parsing
 from supervisor_tests.queue import test_queue, test_peer_gone
-from supervisor_tests.artifacts import test_manifest, test_artifact_integrity, test_artifact_encryption, test_artifact_scoping, test_artifact_fifo_does_not_block, test_seal_fifo_does_not_block
+from supervisor_tests.artifacts import test_stray_writes, test_manifest, test_artifact_integrity, test_artifact_encryption, test_artifact_scoping, test_artifact_fifo_does_not_block, test_seal_fifo_does_not_block
 from supervisor_tests.wire import test_http, test_backpressure, test_limits, test_tokens, test_retained_ceiling, test_retention_expiry
 from supervisor_tests.units import test_cap_units, test_hardening_units
 from supervisor_tests.audit import test_audit_units, test_audit_stream
@@ -87,6 +87,7 @@ def run_in_process():
         test_queue(tmp)
         test_peer_gone()
         print("artifact manifest and retrieval")
+        test_stray_writes(tmp)
         test_manifest(tmp)
         test_artifact_scoping(tmp)
         test_artifact_fifo_does_not_block(tmp)

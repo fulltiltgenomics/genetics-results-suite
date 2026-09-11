@@ -146,10 +146,13 @@ spec:
         resources:
           requests:
             cpu: "500m"
-            memory: "4Gi"
+            # per-environment: bulk summary-stats fetches are what drives this, and the node
+            # size that can honour a raised limit differs by cluster. deploy.sh defaults both
+            # to the values every environment used before they were parameterised.
+            memory: "${RESULTS_API_MEMORY_REQUEST}"
           limits:
             cpu: "2"
-            memory: "8Gi"
+            memory: "${RESULTS_API_MEMORY_LIMIT}"
       volumes:
       - name: datasets-config
         configMap:

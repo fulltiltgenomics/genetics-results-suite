@@ -216,6 +216,12 @@ REAPER_POLL_S = 30.0
 DIRENT_COST_BYTES = 512
 ARTIFACT_ENTRY_BUDGET = 1024          # entries directly under artifacts/ AND the manifest cap
 
+# How many stray names _stray_writes reports. The list exists to tell a script it saved
+# to the wrong directory, and the first few names carry that as well as fifty would; the
+# cap is what keeps a loop that writes thousands from turning the warning into the
+# response body.
+STRAY_WRITE_REPORT_MAX = 8
+
 # What retention costs in RAM, which the artifact ceiling does not bound because it charges
 # st_size and 1024 zero-byte files measure 0. The per-execution digest map is bounded, but the
 # NUMBER of retained executions was not, so an authenticated caller submitting fast executions
@@ -1371,6 +1377,39 @@ def _artifact_digest(dfd, name, max_bytes=ARTIFACT_READ_MAX_BYTES):
         return None
     finally:
         os.close(fd)
+
+
+def _stray_writes(tmp_dir, limit=STRAY_WRITE_REPORT_MAX):
+    """Names the script wrote into its working directory instead of artifacts/.
+
+    The child runs with cwd set to tmp/ while only artifacts/ is collected, so a relative
+    `savefig("x.png")` or `write_csv("x.csv")` lands here and is destroyed with the execution
+    directory. Nothing else notices: the manifest is simply empty, and a model that believes
+    it saved a file goes on to tell the user the file exists. Reporting the names turns that
+    silent loss into something the caller can say out loud.
+
+    Best-effort by construction. The directory is writable by the script, so a name can vanish
+    between listing and stat; anything that raises is skipped rather than failing the run,
+    because a warning is never worth losing a completed analysis over.
+    """
+    found = []
+    try:
+        entries = sorted(os.listdir(tmp_dir))
+    except OSError:
+        return found
+    for name in entries:
+        if len(found) >= limit:
+            break
+        # dotfiles are library scratch (matplotlib, fontconfig), never a deliberate save
+        if name.startswith("."):
+            continue
+        try:
+            st = os.lstat(os.path.join(tmp_dir, name))
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+            found.append(name)
+    return found
 
 
 def build_manifest(artifacts_dir, max_entries=ARTIFACT_ENTRY_BUDGET,
@@ -3937,6 +3976,10 @@ class Supervisor:
         # are readable at this uid.
         artifacts, omitted, digests = build_manifest(dirs.artifacts, sealed=sealed)
         self._record_digests(job.req.execution_id, digests)
+        # only worth looking when the run produced nothing collectable: with a manifest in
+        # hand the script has demonstrated it knows where artifacts go, and leftover scratch
+        # in tmp/ is then just scratch.
+        stray = _stray_writes(dirs.tmp) if not artifacts else []
 
         return self._response(
             job,
@@ -3950,6 +3993,7 @@ class Supervisor:
             artifacts=artifacts,
             artifacts_omitted=omitted + trimmed + purged,
             artifacts_retained_in_clear=not secured,
+            stray_writes=stray,
         )
 
     def _response(
@@ -3965,6 +4009,7 @@ class Supervisor:
         artifacts,
         artifacts_omitted,
         artifacts_retained_in_clear=False,
+        stray_writes=(),
     ):
         child_error = None
         if status_raw:
@@ -4053,6 +4098,10 @@ class Supervisor:
             # nothing about exposure, while this says the seal pass could neither encrypt nor
             # delete what the script wrote.
             "artifacts_retained_in_clear": artifacts_retained_in_clear,
+            # Names the script wrote to its working directory, which is NOT collected. Present
+            # only when the run collected nothing, so it reads as "you saved to the wrong
+            # place" rather than as a list of incidental scratch.
+            "stray_writes": list(stray_writes),
         }
 
 
