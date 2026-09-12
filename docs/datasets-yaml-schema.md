@@ -58,6 +58,7 @@ column descriptions, example queries, and categorical column configuration.
 tables:
   <table_name>:                    # e.g. "credible_sets_v"
     exposed: true                  # optional (default: NOT exposed) -- see below
+    summary: string                # required -- a few words for the schema index; see below
     description: string            # required -- table-level description
 
     resource_derivation:           # required -- how the view's `resource` is produced
@@ -84,6 +85,17 @@ tables:
         # null: flat list of distinct values
         # string: values depend on this parent column (e.g. "resource")
 ```
+
+### Field details for `tables.<table>.summary`
+
+A few words naming what the view holds — the cell the view gets in the index table of
+`sandbox/schema/README.md`, which is also a section of chat-backend's `code` system prompt.
+It is written rather than derived, and `scripts/gen-sandbox-docs.py` refuses to render a
+view without one. Deriving it does not work: the description's first sentence costs ~1,800
+characters of prompt to repeat prose the reader already has below the table, and splitting
+on `. ` breaks on `Collins et al.` and `(e.g.` as readily as on a sentence end. Keep it
+short and distinguishing — what question routes a reader to this view, not what the view
+says about itself.
 
 ### Field details for `tables.<table>.examples`
 

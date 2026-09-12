@@ -227,6 +227,7 @@ tables:
         nothing, so load_data.py applies the rules at load time and stores the value; there
         is no CASE in the view SQL to lint, and a rule change reaches the data only through
         a reload or backfill
+    summary: "Fine-mapped credible sets, variant PIPs"
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
       Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
@@ -390,6 +391,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Colocalization between study pairs (coloc.susie)"
     description: >-
       Colocalization analysis results (coloc.susie) between pairs of studies.
       PP_H4_abf indicates shared causal variant probability. The view is partitioned by chr,
@@ -531,6 +533,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Variants inside colocalized credible sets"
     description: >-
       Individual credible set variants in colocalized credible sets. Partitioned by chr, so
       add a literal chr predicate whenever the chromosome is known.
@@ -664,6 +667,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Single-variant exome association results"
     description: >-
       Single-variant exome association results from multiple resources with different
       significance thresholds. Genebass contains variants filtered to p < 1e-4.
@@ -747,6 +751,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Gene-level exome burden tests"
     description: >-
       Gene-level burden test results from exome sequencing studies
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
@@ -837,6 +842,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Allele-specific methylation QTLs (deCODE)"
     description: >-
       Allele-specific methylation QTL (ASM-QTL) results from deCODE Genetics
       (Stefansson et al. 2024, doi:10.1038/s41588-024-01851-2), based on Oxford
@@ -925,6 +931,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Accessible-chromatin peak atlas by cell type"
     description: >-
       Atlas of accessible/active chromatin regions (peaks) labeled by cell
       type, tissue, and condition. Region-indexed presence/annotation atlas
@@ -1004,6 +1011,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Predicted variant effects on chromatin accessibility"
     description: >-
       In-silico PREDICTED effects of variants on chromatin accessibility from
       deep-learning models (ChromBPNet and FLARE). Variant-indexed: one row per
@@ -1082,6 +1090,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Measured MPRA allelic regulatory activity"
     description: >-
       MEASURED cis-regulatory allelic activity from a massively parallel reporter
       assay (Siraj et al. 2026 MPRA). Variant x cell_line indexed: one row per variant
@@ -1165,6 +1174,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Classical HLA allele associations (FinnGen R14)"
     description: >-
       Classical HLA allele associations from FinnGen R14 — every imputed HLA allele
       tested against every core R14 endpoint (~2,712 phenotypes x 187 alleles across
@@ -1294,6 +1304,7 @@ tables:
     dataset_cross_check:
       excluded_reason: >-
         gene coordinate reference, has no `dataset` column
+    summary: "Gene reference: HGNC, coordinates, gene groups"
     description: >-
       Whole-universe gene annotations, one row per gene: HGNC core fields joined to
       GENCODE GRCh38 coordinates, with full-lineage HGNC gene-group arrays
@@ -1408,6 +1419,7 @@ tables:
     dataset_cross_check:
       excluded_reason: >-
         published dosage-sensitivity scores, has no `dataset` column
+    summary: "Per-gene dosage sensitivity (pHaplo/pTriplo)"
     description: >-
       Rare-CNV dosage sensitivity scores from Collins et al. 2022, "A cross-disorder
       dosage sensitivity map of the human genome" (Cell 185:3041-3055,
@@ -1505,6 +1517,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Gene-level rare-CNV associations"
     description: >-
       Gene-level rare-CNV association statistics from Collins et al. 2022, "A cross-disorder
       dosage sensitivity map of the human genome" (Cell 185:3041-3055,
@@ -1684,6 +1697,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Disease-associated rare-CNV segments"
     description: >-
       The 163 disease-associated rare-CNV segments of Collins et al. 2022, "A cross-disorder
       dosage sensitivity map of the human genome" (Cell 185:3041-3055,
@@ -1864,6 +1878,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Sliding-window rare-CNV associations"
     description: >-
       Sliding-window rare-CNV association statistics from Collins et al. 2022, "A
       cross-disorder dosage sensitivity map of the human genome" (Cell 185:3041-3055,
@@ -2067,6 +2082,7 @@ tables:
     dataset_cross_check:
       excluded_reason: >-
         variant annotation reference, has no `dataset` column
+    summary: "Per-variant annotation, rsIDs, FinnGen frequencies"
     description: >-
       Per-variant functional annotation and FinnGen (R14) allele frequencies —
       one row per variant, covering all imputed variants, not only fine-mapped ones.
@@ -2153,6 +2169,7 @@ tables:
     exposed: true
     resource_derivation:
       mode: view_case
+    summary: "Peak-to-gene links (makes caQTL gene-based)"
     description: >-
       Open4Gene peak-to-gene links from FinnGen ATAC-seq: which genes a chromatin
       peak's accessibility is associated with, in which cell type. One row per
@@ -2267,6 +2284,7 @@ tables:
       excluded_reason: >-
         built by build_phenotypes.py from the same registry-to-dataset mapping the
         cross-check validates, so including it would make the check self-confirming
+    summary: "Phenotype metadata behind trait codes"
     description: >-
       Trait/phenotype metadata: the human-readable name, trait type, category and
       sample sizes behind the opaque phenotype codes the results tables store.
@@ -2390,6 +2408,7 @@ tables:
       excluded_reason: >-
         built by build_phenotypes.py from the same registry-to-dataset mapping the
         cross-check validates, so including it would make the check self-confirming
+    summary: "Dataset registry: resource, version, caveats"
     description: >-
       Dataset registry: what every `dataset` value appearing in the results views
       actually is — its resource, version, provenance, description and credible-set

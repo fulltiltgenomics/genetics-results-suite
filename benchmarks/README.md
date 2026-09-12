@@ -44,11 +44,35 @@ into any report produced from it:
    the system prompt for every profile. This set retires them a second time, on a second
    axis: these are not the questions those numbers were measured over. The paired run's own
    arm A is the only baseline.
-2. **The turn mix is asserted, not observed.** Production was 36% single-iteration turns,
-   with 13.5% of turns above 5 iterations consuming 35% of spend. Cases 01–07 here are
-   written to be single-iteration and 14–20 to be long-tail, which *approximates* that
-   shape. If the run's own arm-A iteration distribution comes out far from it, the set is
-   mis-weighted and the cost comparison is measuring a workload nobody has.
+2. **The turn mix is deliberately NOT production's.** Production was 36% single-iteration
+   turns, with 13.5% of turns above 5 iterations consuming 35% of spend. The set no longer
+   approximates that (see "What the set covers" below) — it is weighted to the long tail on
+   purpose, because the easy end had stopped separating anything. So a cost total from this
+   set is **not** a per-turn production cost and must never be quoted as one; what it
+   compares is two arms over the same hard questions.
+
+## What the set covers
+
+**Trimmed from 23 cases to 9 on 2026-09-12.** The cut was the easy end, and the reason is in
+the run that preceded it (a prompt A/B over the same 23 cases, 56 paired turns): **seven of
+the fourteen dropped cases tied on every turn** — 01, 02, 03, 06, 07, 12 and 21, 15 turns
+and 15 ties — while the nine kept cases carry **9 of the 17 decisive verdicts in 24 of the
+56 turns**. A question both arms answer identically in one iteration costs money on every
+run and separates nothing; it can only report that two arms agree about `PCSK9`'s
+coordinates.
+
+What is left is seven `complex` cases and two `moderate`, chosen to keep breadth while
+dropping the short tail. Between them they reach the fine-mapping, colocalization,
+gene-burden, caQTL/open-chromatin, peak-to-gene, HLA, variant-annotation and
+phenotype/dataset-registry verticals, plus the three surfaces that are not BigQuery at all:
+the plotting path (`local-22`), the external drug/literature/UniProt tools (`local-23`), and
+the multi-source evidence assembly that has to choose between them (`local-20`).
+
+**Not reached, and not to be read as covered:** the four rare-CNV and dosage-sensitivity
+views, ASM-QTL, single-variant exome results (`exome_variant_results_v` — gene-level burden
+is covered, per-variant is not), and MPRA except incidentally, when `local-20` reaches for
+it. Adding any of them means writing a case with a pre-registered answer, not repurposing
+one of these.
 
 ## Deliberate exclusions
 
@@ -185,8 +209,8 @@ still valid, it just cannot carry the proof.
 ## Raise the chat service's rate limit BEFORE a full run
 
 `chat_api` rate-limits per user: **`RATE_LIMIT_PER_HOUR` defaults to 20,
-`RATE_LIMIT_PER_DAY` to 40 and `RATE_LIMIT_PER_WEEK` to 100**. This set is 106 model turns,
-so a full run exceeds all three.
+`RATE_LIMIT_PER_DAY` to 40 and `RATE_LIMIT_PER_WEEK` to 100**. A full run is 48 model turns
+per user, so it exceeds all three.
 
 This does not fail cleanly, which is why it needs saying. Measured 2026-08-19: a full run
 against the defaults produced **8 ok / 16 error / 29 not_attempted per arm** — the turns
@@ -307,7 +331,7 @@ want when the scorecard says an arm was slower and you need to know where the ti
 
 ```bash
 .venv/bin/python -m genetics_mcp_server.scripts.benchmark_scorecard /tmp/full.json \
-  --transcript --case local-10-caqtl-peaks --width 200 --arg-lines 6
+  --transcript --case local-18-caqtl-ibd-celltypes --width 200 --arg-lines 6
 ```
 
 Each turn shows, per arm: wall clock, iteration count, call count, model time vs summed tool
@@ -371,9 +395,9 @@ is not the same as zero, and cost is half the decision.
 
 ## Cost
 
-Production averaged $2.01/turn. This set is 23 cases × 2–3 turns = 56 turns, run on **both**
-arms = 112 turns. Budget accordingly, and use `--limit` first. `--judge` prices itself before
-the first call.
+Production averaged $2.01/turn. This set is 9 cases × 2–3 turns = 24 turns, run on **both**
+arms = 48 turns; these are the expensive questions, so budget nearer the top of any per-turn
+range than the middle. Use `--limit` first. `--judge` prices itself before the first call.
 
 Every case carries a `class` — `retrieval`, `analysis`, `plot`, `catalogue` or `external` —
 naming what the case tests, so a result can be read per class rather than as one total: the

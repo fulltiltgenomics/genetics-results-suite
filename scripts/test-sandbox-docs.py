@@ -253,9 +253,9 @@ def main(argv=None):
     sdk_src = gen.resolve_sdk_src(args.sdk_src)
     sdk_dir = sdk_src and gen.sdk_dir_for(sdk_src)
     if not sdk_dir or not os.path.isdir(sdk_dir):
-        # exit 2, not a skip: four of the thirteen checks — including the only one that can
-        # catch a stub documenting a function the SDK does not export — need the source, and
-        # a green run that quietly covered nine of thirteen is how that gap ships. Same
+        # exit 2, not a skip: the stub checks — including the only one that can catch a
+        # stub documenting a function the SDK does not export — need the source, and a
+        # green run that quietly covered only the schema half is how that gap ships. Same
         # convention as gen-sandbox-docs.py and scripts/test-network-policies.py.
         print(f"harness cannot run: {gen.sdk_src_error(sdk_src)}", file=sys.stderr)
         return 2
@@ -386,17 +386,41 @@ def main(argv=None):
                 + " instead of refusing — the check fails open"
             )
 
-    @check("the index lists every view")
+    @check("the index lists every view with its summary")
     def _index():
-        """Matched on the table cell, not on a `(<view>.md)` link.
+        """Matched on the whole table row, not on a `(<view>.md)` link.
 
         The index carries no links any more: the same bytes are chat-backend's system
         prompt, where the per-view docs are inlined right below and a link is an
         invitation to fetch something the model already has. So the row is what has to
-        be there — the backticked name in the first column."""
+        be there — and asserting the summary cell too is what keeps the map derived from
+        `summary:` rather than from anything the generator could invent."""
         index = schema_files["README.md"]
-        for name in tables:
-            assert f"| `{name}` |" in index, f"{name} absent from README.md"
+        for name, table in tables.items():
+            summary = " ".join(str(table.get("summary") or "").split())
+            assert summary, (
+                f"{name}: no `summary:` in configs/datasets.yaml — the index row has "
+                "nothing to say about the view (docs/adding-datasets.md)"
+            )
+            row = f"| `{name}` | {summary} |"
+            assert row in index, f"{name} is not listed in README.md as {row!r}"
+
+    @check("a view with no summary is REFUSED, not rendered blank")
+    def _missing_summary_fails_closed():
+        """Same direction as the column-type check above: the failure mode is a view
+        added without a summary, and an index row reading `| `x_v` |  |` would pass a
+        name-only check while telling the model nothing about the view."""
+        view = sorted(tables)[0]
+        mutated = copy.deepcopy(config)
+        del mutated["tables"][view]["summary"]
+        try:
+            _render_mutated(gen, mutated)
+        except SystemExit:
+            return
+        raise AssertionError(
+            f"the generator rendered README.md with no summary for {view} instead of "
+            "refusing — the check fails open"
+        )
 
     @check("the correctness rules are present in configs/datasets.yaml")
     def _rules_in_yaml():

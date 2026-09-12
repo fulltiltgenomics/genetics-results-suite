@@ -1,136 +1,5 @@
 [
   {
-    "session_id": "local-01-gene-location",
-    "topic": "gene lookup",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration; the sandbox's fixed startup cost should be visible as a regression here",
-    "user_turns": [
-      {"role": "user", "content": "What chromosome is PCSK9 on, and what are its coordinates?"},
-      {"role": "user", "content": "How long is the gene in kb?"}
-    ]
-  },
-  {
-    "session_id": "local-02-phenotype-counts",
-    "topic": "phenotype metadata",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "How many cases and controls does type 2 diabetes have in FinnGen?"},
-      {"role": "user", "content": "What about rheumatoid arthritis and coeliac disease?"}
-    ]
-  },
-  {
-    "session_id": "local-03-hla-coeliac",
-    "topic": "HLA",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "Which HLA alleles are associated with coeliac disease?"},
-      {"role": "user", "content": "Which of those is the strongest, and what is its effect size?"}
-    ]
-  },
-  {
-    "session_id": "local-04-credible-sets-variant",
-    "topic": "fine-mapping",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "Is the variant 19:11089362:C:T in any fine-mapped credible set?"}
-    ]
-  },
-  {
-    "session_id": "local-05-open-chromatin-datasets",
-    "topic": "dataset inventory",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "What open chromatin datasets do you have, and what tissues do they cover?"},
-      {"role": "user", "content": "Which one has the most cell types?"}
-    ]
-  },
-  {
-    "session_id": "local-06-burden-ldlr",
-    "topic": "gene burden",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "What is the strongest gene burden association for LDLR?"},
-      {"role": "user", "content": "Is the direction of effect consistent with what you would expect for LDL cholesterol?"}
-    ]
-  },
-  {
-    "session_id": "local-07-nearest-genes",
-    "topic": "variant annotation",
-    "complexity": "simple",
-    "class": "retrieval",
-    "expected_shape": "single iteration",
-    "user_turns": [
-      {"role": "user", "content": "What genes are nearest to 6:32588205:T:C?"},
-      {"role": "user", "content": "Is that variant in a credible set for any autoimmune trait?"}
-    ]
-  },
-  {
-    "session_id": "local-08-finemap-locus",
-    "topic": "fine-mapping",
-    "complexity": "moderate",
-    "class": "retrieval",
-    "user_turns": [
-      {"role": "user", "content": "Show me the fine-mapped credible sets in a 500kb window around SEMA4B."},
-      {"role": "user", "content": "Which of those have a coding lead variant?"},
-      {"role": "user", "content": "For the strongest one, what is the effect direction and which trait is it?"}
-    ]
-  },
-  {
-    "session_id": "local-09-coloc-eqtl",
-    "topic": "colocalization",
-    "complexity": "moderate",
-    "class": "retrieval",
-    "user_turns": [
-      {"role": "user", "content": "Does the FinnGen inflammatory bowel disease signal near IL23R colocalize with any eQTL?"},
-      {"role": "user", "content": "Which tissues, and what are the PP.H4 values?"},
-      {"role": "user", "content": "Do the two credible sets share their lead variant?"}
-    ]
-  },
-  {
-    "session_id": "local-10-caqtl-peaks",
-    "topic": "caQTL",
-    "complexity": "moderate",
-    "class": "retrieval",
-    "user_turns": [
-      {"role": "user", "content": "How many caQTL associations does FOXP3 have, and in which cell types?"},
-      {"role": "user", "content": "Which chromatin peaks are associated to variants near FOXP3 (+-500kb), and how far are they from the gene?"},
-      {"role": "user", "content": "Are any of those peaks also open in B cells?"}
-    ]
-  },
-  {
-    "session_id": "local-11-exome-across-traits",
-    "topic": "exome",
-    "complexity": "moderate",
-    "class": "retrieval",
-    "user_turns": [
-      {"role": "user", "content": "What exome variant associations does TYK2 have across all traits?"},
-      {"role": "user", "content": "Restrict that to protein-altering variants with p < 1e-6."},
-      {"role": "user", "content": "Which traits show a protective direction?"}
-    ]
-  },
-  {
-    "session_id": "local-12-mpra-evidence",
-    "topic": "MPRA",
-    "complexity": "moderate",
-    "class": "retrieval",
-    "user_turns": [
-      {"role": "user", "content": "Do you have MPRA evidence for any variant in the FinnGen coeliac disease credible sets?"},
-      {"role": "user", "content": "Which of those show allelic effects, and in which cell lines?"},
-      {"role": "user", "content": "How do the MPRA effect sizes compare to the fine-mapping PIPs?"}
-    ]
-  },
-  {
     "session_id": "local-13-hla-autoimmune-compare",
     "topic": "HLA",
     "complexity": "moderate",
@@ -162,16 +31,6 @@
       {"role": "user", "content": "For pQTLs fine-mapped in both FinnGen and UKBB, how do credible set sizes compare?"},
       {"role": "user", "content": "Show the distribution: median, quartiles and the tail."},
       {"role": "user", "content": "Are FinnGen GWAS credible sets systematically smaller for traits with more cases?"}
-    ]
-  },
-  {
-    "session_id": "local-16-recurrent-loci",
-    "topic": "cross-trait aggregation",
-    "complexity": "complex",
-    "class": "analysis",
-    "user_turns": [
-      {"role": "user", "content": "Across FinnGen's immune-mediated disease endpoints, which loci appear in credible sets for more than three different traits?"},
-      {"role": "user", "content": "For the top five, what genes are nearby and is there any eQTL colocalization?"}
     ]
   },
   {
@@ -215,17 +74,6 @@
     "user_turns": [
       {"role": "user", "content": "Summarize every line of evidence you have linking SLC39A8 to disease."},
       {"role": "user", "content": "Is there any regulatory evidence (open chromatin, caQTL or MPRA) at the convincing variant(s)?"}
-    ]
-  },
-  {
-    "session_id": "local-21-schizophrenia-catalogue",
-    "topic": "dataset inventory",
-    "complexity": "simple",
-    "class": "catalogue",
-    "expected_shape": "one list_datasets call on the no-code surface; on staging (chat 1df4ffe4, 2026-09-08) the code arm spent 8 calls, 3 failed scripts and 100 s on this exact question",
-    "user_turns": [
-      {"role": "user", "content": "What schizophrenia data do we have?"},
-      {"role": "user", "content": "Which of those have fine-mapped credible sets, and how many each?"}
     ]
   },
   {
