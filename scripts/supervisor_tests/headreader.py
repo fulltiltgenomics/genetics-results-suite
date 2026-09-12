@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 import socket
@@ -6,6 +7,24 @@ import threading
 import time
 
 from .harness import _LogCapture, check, sup
+
+
+@contextlib.contextmanager
+def _bound(name, value):
+    """Drive a deadline check against a shrunken supervisor constant.
+
+    Every check below asserts WHERE a bound is enforced and on what event, never what the
+    number is — `_arm` and `_read_head` read these globals per request, so a smaller value
+    exercises the same branch. The production 10s head bound and 65s idle bound bought
+    nothing here but wall clock.
+    """
+    real = getattr(sup, name)
+    setattr(sup, name, value)
+    try:
+        yield value
+    finally:
+        setattr(sup, name, real)
+
 
 ENV_DROP_LF_CRLF = "SUPERVISOR_TEST_DROP_LF_CRLF"
 
@@ -434,20 +453,21 @@ def test_head_timeout(server):
     wire on purpose — the claim is about what a peer holding a socket can do.
     """
     # 1. THE MEASURED CASE. A head that starts and stops is answered, not held.
-    wire = _raw_wire(server)
-    wire.sendall(b"P")
-    began = time.monotonic()
-    answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
-    elapsed = time.monotonic() - began
-    wire.close()
+    with _bound("HEAD_READ_TIMEOUT_S", 2.0) as head_bound:
+        wire = _raw_wire(server)
+        wire.sendall(b"P")
+        began = time.monotonic()
+        answer = _slurp(wire, head_bound + 20)
+        elapsed = time.monotonic() - began
+        wire.close()
     check("head timeout: a head that starts and stalls is answered 408 in the uniform JSON "
           "shape and the connection is closed",
           answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer
           and b'"execution_id": null' in answer,
           f"got {answer[:160]!r} after {elapsed:.1f}s")
     check("head timeout: it waits for the deadline rather than refusing a slow client outright",
-          sup.HEAD_READ_TIMEOUT_S * 0.5 <= elapsed <= sup.HEAD_READ_TIMEOUT_S + 15,
-          f"answered after {elapsed:.1f}s, deadline is {sup.HEAD_READ_TIMEOUT_S}s")
+          head_bound * 0.5 <= elapsed <= head_bound + 15,
+          f"answered after {elapsed:.1f}s, deadline was {head_bound}s")
 
     # 2. A CONNECTION THAT SENDS NOTHING AT ALL is a different case and must not be answered
     # 408 after HEAD_READ_TIMEOUT_S: that is every kept-alive client between requests, the
@@ -456,9 +476,10 @@ def test_head_timeout(server):
           "client is not the thing being timed",
           sup.IDLE_READ_TIMEOUT_S >= 4 * sup.HEAD_READ_TIMEOUT_S,
           f"idle {sup.IDLE_READ_TIMEOUT_S}s vs head {sup.HEAD_READ_TIMEOUT_S}s")
-    wire = _raw_wire(server)
-    quiet = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 3)
-    wire.close()
+    with _bound("HEAD_READ_TIMEOUT_S", 2.0) as head_bound:
+        wire = _raw_wire(server)
+        quiet = _slurp(wire, head_bound + 3)
+        wire.close()
     check("head timeout: a connection that has sent NOTHING is not answered 408 at the head "
           "deadline", quiet == b"", f"got {quiet[:120]!r}")
 
@@ -471,19 +492,17 @@ def test_head_timeout(server):
     idle_installed = os.environ.get(ENV_IDLE_FOREVER) == "1"
     if idle_installed:
         sup._HeaderBoundedReader._arm = _arm_no_idle
-    real_idle = sup.IDLE_READ_TIMEOUT_S
-    sup.IDLE_READ_TIMEOUT_S = 3.0
     try:
-        wire = _raw_wire(server)
-        held, closed, waited = _await_eof(wire, 3.0 * 4)
-        wire.close()
+        with _bound("IDLE_READ_TIMEOUT_S", 3.0) as idle_bound:
+            wire = _raw_wire(server)
+            held, closed, waited = _await_eof(wire, idle_bound * 4)
+            wire.close()
     finally:
-        sup.IDLE_READ_TIMEOUT_S = real_idle
         sup._HeaderBoundedReader._arm = _real_arm
     check("head timeout: a connection that sends NOTHING is CLOSED at roughly "
           "IDLE_READ_TIMEOUT_S — silence is the response, not the outcome",
-          closed and held == b"" and 3.0 * 0.5 <= waited <= 3.0 + 6.0,
-          f"closed={closed} after {waited:.1f}s with {held[:80]!r}, bound was 3.0s"
+          closed and held == b"" and idle_bound * 0.5 <= waited <= idle_bound + 6.0,
+          f"closed={closed} after {waited:.1f}s with {held[:80]!r}, bound was {idle_bound}s"
           + (" (SUPERVISOR_TEST_IDLE_FOREVER=1 is installed: this is the control)"
              if idle_installed else ""))
 
@@ -505,23 +524,21 @@ def test_head_timeout(server):
     recv_installed = os.environ.get(ENV_PER_RECV) == "1"
     if recv_installed:
         sup._HeaderBoundedReader._arm = _arm_per_recv
-    real_head = sup.HEAD_READ_TIMEOUT_S
-    sup.HEAD_READ_TIMEOUT_S = 2.0
     try:
-        wire = _raw_wire(server)
-        feeder = _drip(wire, head, 1, 0.4)
-        began = time.monotonic()
-        answer = _slurp(wire, 2.0 + 30)
-        elapsed = time.monotonic() - began
-        wire.close()
-        feeder.join(30)
+        with _bound("HEAD_READ_TIMEOUT_S", 2.0) as head_bound:
+            wire = _raw_wire(server)
+            feeder = _drip(wire, head, 1, 0.4)
+            began = time.monotonic()
+            answer = _slurp(wire, head_bound + 30)
+            elapsed = time.monotonic() - began
+            wire.close()
+            feeder.join(30)
     finally:
-        sup.HEAD_READ_TIMEOUT_S = real_head
         sup._HeaderBoundedReader._arm = _real_arm
     check("head timeout: a drip inside the per-byte budget but over the TOTAL is answered 408 "
           "— the head has ONE deadline, not a timer each recv resets",
           answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
-          f"got {answer[:120]!r} after {elapsed:.1f}s against a 2.0s head bound"
+          f"got {answer[:120]!r} after {elapsed:.1f}s against a {head_bound}s head bound"
           + (" (SUPERVISOR_TEST_PER_RECV_TIMEOUT=1 is installed: this is the control)"
              if recv_installed else ""))
 
@@ -532,20 +549,22 @@ def test_head_timeout(server):
     if installed:
         sup._HeaderBoundedReader._arm = _arm_once
     try:
-        wire = _raw_wire(server)
-        body = b'{"code": 1}'
-        wire.sendall(b"POST /execute HTTP/1.1\r\nHost: h\r\n"
-                     b"Content-Type: application/json\r\n"
-                     b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
-        first = _one_response(wire, 40)
-        check("head timeout: the first request on the connection is read to the end of its body "
-              "and kept alive", first.startswith(b"HTTP/1.1 400 ") and b"Connection: close" not in first,
-              f"got {first[:160]!r}")
-        wire.sendall(b"G")
-        began = time.monotonic()
-        answer = _slurp(wire, sup.HEAD_READ_TIMEOUT_S + 20)
-        elapsed = time.monotonic() - began
-        wire.close()
+        with _bound("HEAD_READ_TIMEOUT_S", 2.0) as head_bound:
+            wire = _raw_wire(server)
+            body = b'{"code": 1}'
+            wire.sendall(b"POST /execute HTTP/1.1\r\nHost: h\r\n"
+                         b"Content-Type: application/json\r\n"
+                         b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+            first = _one_response(wire, 40)
+            check("head timeout: the first request on the connection is read to the end of its "
+                  "body and kept alive",
+                  first.startswith(b"HTTP/1.1 400 ") and b"Connection: close" not in first,
+                  f"got {first[:160]!r}")
+            wire.sendall(b"G")
+            began = time.monotonic()
+            answer = _slurp(wire, head_bound + 20)
+            elapsed = time.monotonic() - began
+            wire.close()
         check("head timeout: the SECOND head on a kept-alive connection is bounded too — the "
               "deadline is armed per head, not per connection",
               answer.startswith(b"HTTP/1.1 408 ") and b'"RequestTimeout"' in answer,
