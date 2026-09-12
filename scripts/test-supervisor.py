@@ -45,22 +45,47 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from supervisor_tests import harness
-from supervisor_tests.parsing import test_nsswitch, test_parsing
-from supervisor_tests.queue import test_queue, test_peer_gone
-from supervisor_tests.artifacts import test_stray_writes, test_manifest, test_artifact_integrity, test_artifact_encryption, test_artifact_scoping, test_artifact_fifo_does_not_block, test_seal_fifo_does_not_block
-from supervisor_tests.wire import test_http, test_backpressure, test_limits, test_tokens, test_retained_ceiling, test_retention_expiry
-from supervisor_tests.units import test_cap_units, test_hardening_units
-from supervisor_tests.audit import test_audit_units, test_audit_stream
+from supervisor_tests.artifacts import (
+    test_artifact_encryption,
+    test_artifact_fifo_does_not_block,
+    test_artifact_integrity,
+    test_artifact_scoping,
+    test_manifest,
+    test_seal_fifo_does_not_block,
+    test_stray_writes,
+)
+from supervisor_tests.audit import test_audit_stream, test_audit_units
+from supervisor_tests.forkserver import (
+    test_forkserver_death_mid_execution,
+    test_forkserver_lost_fork_reply,
+    test_forkserver_units,
+)
+from supervisor_tests.headreader import test_head_timeout, test_header_reader_units
 from supervisor_tests.image import test_container
-from supervisor_tests.startup import test_startup_wipe
-from supervisor_tests.tmpwipe import test_shared_tmp_wipe
 from supervisor_tests.isolation import test_isolation
-from supervisor_tests.forkserver import test_forkserver_units, test_forkserver_lost_fork_reply, test_forkserver_death_mid_execution
-from supervisor_tests.survivors import test_survivors, test_survivor_chain
-from supervisor_tests.preready import test_pre_ready_execute, test_pre_ready_body_bytes
-from supervisor_tests.headreader import test_header_reader_units, test_head_timeout
-from supervisor_tests.lifecycle import test_pipe_fd_ownership, test_shutdown_race, test_shutdown_count_units, test_shutdown_count_escapes, test_shutdown_ceiling
-from supervisor_tests.reaper import test_orphan_reaper, test_drain_continuous_writer
+from supervisor_tests.lifecycle import (
+    test_pipe_fd_ownership,
+    test_shutdown_ceiling,
+    test_shutdown_count_escapes,
+    test_shutdown_count_units,
+    test_shutdown_race,
+)
+from supervisor_tests.parsing import test_nsswitch, test_parsing
+from supervisor_tests.preready import test_pre_ready_body_bytes, test_pre_ready_execute
+from supervisor_tests.queue import test_peer_gone, test_queue
+from supervisor_tests.reaper import test_drain_continuous_writer, test_orphan_reaper
+from supervisor_tests.startup import test_startup_wipe
+from supervisor_tests.survivors import test_survivor_chain, test_survivors
+from supervisor_tests.tmpwipe import test_shared_tmp_wipe
+from supervisor_tests.units import test_cap_units, test_hardening_units
+from supervisor_tests.wire import (
+    test_backpressure,
+    test_http,
+    test_limits,
+    test_retained_ceiling,
+    test_retention_expiry,
+    test_tokens,
+)
 
 
 def run_in_process():
