@@ -141,22 +141,11 @@ def render_view(name, table):
     for col, desc in table["columns"].items():
         out.append(f"| `{col}` | `{_table_cell(types[col])}` | {_table_cell(desc)} |")
     out.append("")
-    out += [
-        _unfold(
-            "Types are the view's own BigQuery types. Match the literal to the type: a "
-            "quoted string never compares equal to a numeric column, and an ARRAY column "
-            "has to go through UNNEST (`<value> IN UNNEST(<column>)`), never a bare `=`."
-        ),
-        "",
-    ]
 
     categorical = table.get("categorical_columns") or {}
     if categorical:
         out += [
             "## Columns with a small, enumerable set of values",
-            "",
-            "`SELECT DISTINCT` these before filtering on them rather than guessing a value.",
-            "A parent means the values are scoped by that column, so enumerate the pair.",
             "",
             "| column | scoped by |",
             "| --- | --- |",
@@ -173,10 +162,7 @@ def render_view(name, table):
         out += [
             "## Worked examples",
             "",
-            _unfold(
-                f"Queries that run against {name} as written. Copy the shape rather than "
-                "inventing one — each shows the filters this view expects."
-            ),
+            _unfold(f"Queries that run against {name} as written."),
             "",
         ]
         for example in examples:
@@ -188,8 +174,8 @@ def render_view(name, table):
 
 def render_index(tables):
     """A single entry point so a script can see what exists without listing a directory
-    it may not have been told about. First sentence only: the summary table is a map, and
-    each view's own section carries the columns.
+    it may not have been told about. A few words per view: the table is a map, and each
+    view's own section carries the description and the columns.
 
     WORDED FOR TWO READERS. The same bytes are the sandbox image's `README.md`, where the
     per-view docs are separate files a script may open, and a section of chat-backend's
@@ -222,12 +208,33 @@ def render_index(tables):
             "partition predicate each view's section names."
         ),
         "",
+        _unfold(
+            "Every view's section below is laid out the same way. The `Columns` table's "
+            "types are that view's own BigQuery types — match the literal to the type: a "
+            "quoted string never compares equal to a numeric column, and an ARRAY column "
+            "has to go through UNNEST (`<value> IN UNNEST(<column>)`), never a bare `=`. "
+            "`SELECT DISTINCT` the columns listed under `Columns with a small, enumerable "
+            "set of values` before filtering on them rather than guessing a value; a "
+            "parent there means the values are scoped by that column, so enumerate the "
+            "pair. The worked examples run as written — copy the shape rather than "
+            "inventing one; each shows the filters that view expects."
+        ),
+        "",
         "| view | summary |",
         "| --- | --- |",
     ]
     for name, table in tables.items():
-        first = " ".join(str(table["description"]).split()).split(". ")[0].rstrip(".")
-        out.append(f"| `{name}` | {_table_cell(first)}. |")
+        summary = " ".join(str(table.get("summary") or "").split())
+        if not summary:
+            # nothing derivable does this job: the first sentence of the description is a
+            # second copy of prose the reader already has below, and splitting on ". "
+            # breaks on "Collins et al." and "(e.g." as readily as on a sentence end. A
+            # blank cell is worse than refusing, so demand a written one.
+            raise SystemExit(
+                f"{name}: no `summary:` in configs/datasets.yaml. Add a few words naming "
+                "what the view holds (see docs/adding-datasets.md)."
+            )
+        out.append(f"| `{name}` | {_table_cell(summary)} |")
     return "\n".join(out).rstrip() + "\n"
 
 

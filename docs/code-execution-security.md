@@ -456,7 +456,7 @@ So `gen-sandbox-docs.py` now writes the same rendered markdown to a **third** de
 prompt cannot describe a column the image does not have. **This is a disclosure decision as much
 as a cost one**: every view's columns, enumerable values and worked examples are now in the
 context of every request on that surface, where before a script had to ask for a view by name.
-The set disclosed is the same set — the image shipped all 16 files either way, readable by any
+The set disclosed is the same set — the image shipped every one of those files either way, readable by any
 script — so nothing is reachable now that was not reachable before; what changed is that it
 arrives unasked. The files stay in the image, because a script may still open one and the
 `PLACEHOLDER` gate still guards both staged trees. The stubs are still reached through

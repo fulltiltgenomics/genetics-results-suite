@@ -619,6 +619,11 @@ without writing SQL.
         registry-authoritative or single-source-constant. A wrong `view_case` makes `lint`
         demand a `CASE` the view should not have; a wrong `none` lets the view's `CASE` drift
         from `datasets.yaml` unnoticed.
+      - `summary:` on the same block — **required**, a few words naming what the view holds.
+        It is the view's row in the schema index (`sandbox/schema/README.md`), which is also
+        a section of chat-backend's `code` system prompt, so it is what routes a reader to
+        this view among nineteen. `gen-sandbox-docs.py` refuses to render a view without
+        one rather than emitting a blank cell.
       - `dataset_cross_check.excluded_reason` — **only** if the view contributes no `dataset`
         values to the registry cross-check, and then only with the reason. Omitting it for a
         view with no `dataset` column fails `load_phenotypes.sh` loudly, which is the point.
@@ -636,7 +641,7 @@ without writing SQL.
       re-derive `column_types:` from `genetics_results.INFORMATION_SCHEMA.COLUMNS` (query in
       §6), then `python3 scripts/gen-sandbox-docs.py` and commit the regenerated
       `sandbox/schema/*.md`. `scripts/test-sandbox-docs.py` (which gates `build.sh`) fails
-      on any documented column without a type.
+      on any documented column without a type, and on any view without a `summary:`.
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
