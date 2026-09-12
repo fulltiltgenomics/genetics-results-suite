@@ -38,13 +38,23 @@ and says so; that message is not a pass.
 The hook lives in `.beads/hooks/pre-commit`, which is **tracked**, and git finds it
 via `core.hooksPath` — **local config that no clone carries**. So a fresh clone has
 the hook file and no hooks running. Run `scripts/install-git-hooks.sh` once after
-cloning; it sets `core.hooksPath` and re-appends the doc-drift block if it has gone
+cloning; it sets `core.hooksPath` and re-appends any of its blocks that have gone
 missing, and is idempotent. `scripts/deploy.sh` and `scripts/build-all.sh` call it
 with `--check`, which warns loudly (never blocks) when the checkout is unwired.
 Beads owns the top of that hook file between its `BEGIN/END BEADS INTEGRATION`
 markers and patches between them rather than rewriting the file, so the appended
-doc-drift block survives a beads upgrade (measured against bd 1.0.3); the installer
-repairs it anyway rather than trusting that.
+blocks survive a beads upgrade (measured against bd 1.0.3); the installer repairs
+them anyway rather than trusting that.
+
+`core.hooksPath` is **shared across worktrees** — it lives in the common git dir — so
+installing once in the main checkout also wires every worktree, the ones that already
+exist and the ones made later. Nothing needs running inside a new worktree.
+
+The installer manages two blocks, and they differ in the one way that matters: the
+doc-drift block never blocks a commit, and the **lint block does**. `--check` compares
+each installed block against the text the installer would write, not merely against its
+marker, because the previous version could only see a *missing* block — a hand-edited
+one became a second source of truth that the next repair silently overwrote.
 
 | changed path | doc to update | what to check |
 |---|---|---|
@@ -53,6 +63,7 @@ repairs it anyway rather than trusting that.
 | `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh`, `check-siblings.sh`, `check-duplication.py`, `scripts/lib/**` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
+| `scripts/lint-staged.sh`, `ruff.toml` | `docs/project-spec.md`, `README.md` | which commits the lint gate blocks and which it lets through, the rule set and its per-file exclusions, how ruff is resolved when a worktree has no `.venv` |
 | `scripts/run-sandbox-local.sh` | `docs/project-spec.md`, `README.md` | how the sandbox image is built and staged locally, what the local supervisor run does and does not reproduce |
 | `scripts/dev-stack.sh` | `docs/local-dev-vm.md`, `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
 | `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |

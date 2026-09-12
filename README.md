@@ -424,10 +424,26 @@ step and builds anyway. Two limits:
 
 The hook files under `.beads/hooks/` are tracked, but `core.hooksPath` — the local
 git config that points git at them — is not, so a fresh clone runs **no** hooks:
-no `check-doc-drift.sh` warning on commits and no beads export, silently. This
-script sets it and repairs the doc-drift block if it has gone missing; it is
-idempotent and safe to re-run, and works from a worktree. `deploy.sh` and
-`build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+no `check-doc-drift.sh` warning on commits, no lint gate and no beads export,
+silently. This script sets it and repairs either managed block if it has gone
+missing; it is idempotent and safe to re-run, and works from a worktree. `deploy.sh`
+and `build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+
+`core.hooksPath` is shared across worktrees, so this one run also covers every
+worktree, existing and future — there is nothing to run inside a new one.
+
+Two checks then run on every commit, and they differ in what they do to it:
+
+| check | on a finding |
+|---|---|
+| `scripts/check-doc-drift.sh` | warns, commit proceeds |
+| `scripts/lint-staged.sh` (ruff, staged Python only) | **blocks the commit** |
+
+The lint gate reports only on files the commit touches, so pre-existing findings
+elsewhere never stand in your way; `scripts/lint-staged.sh --all` runs the repo-wide
+check. It looks for ruff in this checkout's `.venv`, then the main checkout's, then
+`PATH`, then `uvx` — and **fails the commit** if it finds none, rather than passing it
+unchecked. `git commit --no-verify` is the deliberate bypass.
 
 ### Working from a git worktree
 
@@ -739,6 +755,46 @@ killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **full
 copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) — any gene
 on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
 `docs/project-spec.md`.
+
+### Per-repo development setup (once per clone)
+
+The lint gate and the doc-drift check are wired the same way in all five repos, and
+neither runs until `core.hooksPath` is set — local git config that no clone carries, so
+a fresh clone has the tracked hook files and no hooks running. Run this **in each repo**:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+It is idempotent, works from a worktree, and because `core.hooksPath` is shared across
+worktrees, one run per repo also covers every worktree of it, existing and future. After
+it, a commit whose staged files the linter rejects is refused; `git commit --no-verify`
+is the bypass. `deploy.sh` and `build-all.sh` run it with `--check` and warn when a
+checkout is unwired.
+
+The gate finds ruff without a local install (it falls back to the main checkout's
+`.venv`, then `PATH`, then `uvx`), but the repos that ship a dev extra should have it
+installed so the pinned version is the one that runs:
+
+```bash
+cd ../genetics-results-api     && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-mcp-server      && uv sync --extra dev
+cd ../genetics-results-db      && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-results-browser && npm install
+```
+
+**Not `uv pip install -e '.[dev]'` for results-api or results-db.** Neither declares a
+`[build-system]`, so the build falls back to setuptools, whose flat-layout discovery
+ignores `docs/`, `scripts/` and `tests/` but **not** `configs/` — so the editable install
+fails with "Multiple top-level packages discovered" in any checkout where
+`sync-datasets.sh` has run, which is every working one. (It appears to succeed in a fresh
+worktree only because `configs/` is gitignored and therefore not there yet.) Nothing is
+lost by not installing either project: results-db's `api` is reached through `sys.path`,
+and results-api is run from its repo root.
+
+The browser needs a real `npm install` **per worktree**: eslint resolves the plugins named
+in `eslint.config.mjs` relative to that config, so the main checkout's `node_modules`
+cannot stand in for it.
 
 ### Running the sibling repos' tests
 
