@@ -686,7 +686,10 @@ first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schem
 signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 `/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
 copies are current, that every view and column reaches a file **with its BigQuery type**,
-and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
+that the stubs cover exactly the SDK's exported surface, and that every bare name a stub
+signature defaults to is defined in that same stub — the generator resolves such a default
+to its literal and refuses one it cannot, so a reader is never sent looking for a value the
+image does not carry. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
 Exit 1 = a property broke, 2 = the harness could not run (no SDK source). Run either script
 by hand with no `--sdk-src` and it resolves `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the

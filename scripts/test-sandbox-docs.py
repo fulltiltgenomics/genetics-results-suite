@@ -30,6 +30,7 @@ runs. A transcribed copy would keep shipping the old rule and nothing would repo
 
 import argparse
 import ast
+import builtins
 import copy
 import importlib.util
 import os
@@ -594,6 +595,33 @@ def main(argv=None):
                 ast.parse(content)
             except SyntaxError as exc:
                 raise AssertionError(f"{name}: {exc}") from None
+
+    @check("every default a stub signature names is defined in that stub")
+    def _stub_defaults_resolve():
+        """A stub is not importable and the real package sits in /opt/venv, so a default
+        spelled as a bare name is only useful if the same file says what it is. Asserted
+        over the shipped text rather than over the generator, because the reader's
+        question — what does this argument default to — is answered from the file alone."""
+        for name, content in stub_files.items():
+            tree = ast.parse(content)
+            defined = set(dir(builtins))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                    defined.add(node.id)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defined.add(node.name)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        defined.add((alias.asname or alias.name).split(".")[0])
+            funcs = [
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            missing = sorted(gen._default_names(funcs) - defined)
+            assert not missing, (
+                f"{name}: signature defaults name {missing}, which the file never defines"
+            )
 
     @check("stub signatures track the SDK source rather than a copy")
     def _stub_derived():

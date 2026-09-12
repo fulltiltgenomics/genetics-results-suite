@@ -14,10 +14,7 @@ exclude = [
     # the committed tree is byte-identical to a fresh generation. Linting it cannot end
     # well: the generator owns every byte, so a fix here is reverted by the next build
     # while the build gate fails on the difference in between. A finding in this tree is
-    # a bug report against the generator — `plots.pyi` promises
-    # `max_intersections: int = _UPSET_MAX_INTERSECTIONS`, a name that appears nowhere in
-    # the shipped tree, because the generator copies a signature default as source text
-    # without resolving it.
+    # a bug report against the generator, not something to fix in the file.
     "sandbox/stubs",
 ]
 

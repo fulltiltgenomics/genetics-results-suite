@@ -49,7 +49,6 @@ Exit 0 = written (or up to date under --check), 1 = out of date / a rule is miss
 import argparse
 import ast
 import os
-import re
 import subprocess
 import sys
 import textwrap
@@ -390,17 +389,33 @@ def _literal(value, package_root):
     return None
 
 
-def _render_constants(text, assignments, package_root):
-    """Every upper-case module constant of client.py that `text` actually mentions.
+def _default_names(funcs):
+    """The bare names `funcs` use as parameter defaults.
 
-    Emitted so the stub is self-contained: a signature whose default is a name the reader
-    cannot look up is worse than no default at all.
+    Read off the AST rather than the rendered stub text, which also carries docstrings:
+    an `x = y` written in prose there is indistinguishable from a signature default.
+    """
+    names = set()
+    for func in funcs:
+        defaults = list(func.args.defaults) + [d for d in func.args.kw_defaults if d]
+        for default in defaults:
+            names.update(n.id for n in ast.walk(default) if isinstance(n, ast.Name))
+    return names
+
+
+def _render_constants(names, assignments, package_root):
+    """Define every name the signatures in one stub default to.
+
+    A default the reader cannot look up is worse than no default at all, so an
+    unresolvable one stops the build rather than shipping. `assignments` must come from
+    the module the signatures were read from: checked against some other module's
+    constants this passes while defining nothing, which is how a stub comes to promise a
+    default named in no file the image carries.
     """
     lines = []
-    for name, value in assignments.items():
-        if not name.isupper() or not re.search(rf"= {re.escape(name)}\b", text):
-            continue
-        resolved = _literal(value, package_root)
+    for name in sorted(names):
+        value = assignments.get(name)
+        resolved = _literal(value, package_root) if value is not None else None
         if resolved is None:
             raise SystemExit(
                 f"a stub signature defaults to {name}, whose value could not be resolved "
@@ -485,15 +500,19 @@ def render_stubs(sdk_dir):
         "",
     ]
     body = []
+    rendered = []
     for name in exported:
+        rendered.append(methods[name])
         body += [_render_def(methods[name], is_async=False), ""]
     init_defs = _defs(init_tree)
     for name in ("configure", "get_client", "close"):
         if name in init_defs:
+            rendered.append(init_defs[name])
             body += [_render_def(init_defs[name], drop_self=False), ""]
     if "parse_region" in _defs(client_tree):
+        rendered.append(_defs(client_tree)["parse_region"])
         body += [_render_def(_defs(client_tree)["parse_region"], drop_self=False), ""]
-    constants = _render_constants("\n".join(body), client_constants, package_root)
+    constants = _render_constants(_default_names(rendered), client_constants, package_root)
     lines = header + (constants + [""] if constants else []) + body
     files["genetics.pyi"] = "\n".join(lines).rstrip() + "\n"
 
@@ -508,6 +527,7 @@ def render_stubs(sdk_dir):
         "",
     ]
     body = []
+    rendered = []
     class_doc = ast.get_docstring(client_class, clean=True)
     body.append("class GeneticsClient:")
     if class_doc:
@@ -516,8 +536,9 @@ def render_stubs(sdk_dir):
     for name, node in methods.items():
         if name.startswith("_") and name != "__init__":
             continue
+        rendered.append(node)
         body += [_render_def(node, indent="    ", drop_self=False), ""]
-    constants = _render_constants("\n".join(body), client_constants, package_root)
+    constants = _render_constants(_default_names(rendered), client_constants, package_root)
     lines = header + (constants + [""] if constants else []) + body
     files["client.pyi"] = "\n".join(lines).rstrip() + "\n"
 
@@ -557,6 +578,12 @@ def render_stubs(sdk_dir):
     if plots_doc:
         lines += [f'"""{plots_doc.rstrip()}\n"""', ""]
     lines += ["import polars as pl", "from typing import Any", ""]
+    constants = _render_constants(
+        _default_names([plots_defs[name] for name in plots_exported]),
+        _module_assignments(plots_tree),
+        package_root,
+    )
+    lines += (constants + [""]) if constants else []
     for name in plots_exported:
         lines += [_render_def(plots_defs[name], drop_self=False), ""]
     files["plots.pyi"] = "\n".join(lines).rstrip() + "\n"
