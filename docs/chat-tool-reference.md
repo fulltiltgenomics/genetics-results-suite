@@ -1920,7 +1920,7 @@ Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar
 Description as sent to the model:
 
 ```text
-Get Mendelian/rare disease gene-disease relationships from ClinGen/GENCC. Use ONLY for rare disease genetics questions, NOT for GWAS/common variant associations.
+Get Mendelian/rare disease gene-disease relationships from GenCC curation submissions (ClinGen, Genomics England PanelApp, Orphanet and other panels) and the Monarch Initiative knowledge graph (OMIM, Orphanet, ClinGen). One row per source assertion, so a gene carries several rows per disease and they need not agree. 'classification' is GenCC's validity term (Definitive, Strong, Moderate, Limited, Disputed Evidence, Refuted Evidence, Supportive, No Known Disease Relationship) on gencc rows and the Biolink predicate (causes, gene_associated_with_condition, contributes_to, associated_with_increased_likelihood_of) on monarch rows, so weigh the two vocabularies separately; 'mode_of_inheritance' is GenCC-only. Use ONLY for rare disease genetics questions, NOT for GWAS/common variant associations.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |

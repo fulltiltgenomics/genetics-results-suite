@@ -372,7 +372,7 @@ def expression(gene: str) -> pl.DataFrame:
     ...
 
 def gene_disease(gene: str) -> pl.DataFrame:
-    """Mendelian gene-disease associations.
+    """Mendelian gene-disease associations, from GenCC and the Monarch Initiative.
     """
     ...
 
