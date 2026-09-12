@@ -661,6 +661,61 @@ disease and source appear under two predicates. The key is now declared per prof
 bucket is not readable from here — a config key that says which columns *this file* needs is
 honest where a shared constant would have been a guess.
 
+## 14. Worked example: EstBB-UKBB NMR metabolic trait credible sets
+
+Context: a **published credible-set dataset whose source publishes no effect size**, and the
+first `metaboQTL` rows in `credible_sets_v`. Tambets et al. 2026 fine-mapped 249 Nightingale NMR
+biomarkers with SuSiE and deposited the credible sets on Zenodo. The table carries
+`molecular_trait_id, region, variant, chr, pos, ref, alt, maf, cs_id, cs_index, alpha1..alpha10,
+pip, z` — and nothing else. No beta, no standard error, no p-value.
+
+Changes made (new resource `nmr_meta`, one dataset `nmr_meta_finemap`, `dataset` column value
+`UKBB_EUR_NMR_2026`, no new view):
+
+1. `genetics-results-munge`: `scripts/munge_nmr_meta.{py,sh}`, `scripts/nmr_meta_phenotypes.py`
+   and `docs/nmr-metabolic-trait-finemapping.md`.
+2. `datasets.yaml`: the `nmr_meta` resource, the dataset in both profiles, and a
+   `UKBB_EUR_NMR%` rule **placed before** the existing `UKB%` rule.
+3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile only, the
+   `dataset_to_resource` entry in both, and a new `quantitative_pheweb` metadata harmonizer.
+4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID`, the same new harmonizer in
+   `build_phenotypes.py`, the file added to `load_credsets_coloc.sh`, an `ABSENT_FROM_RESULTS`
+   entry scoped to `finngen`, and `credible_sets.beta` relaxed to nullable.
+
+Five points of interest, all of which generalise.
+
+**A dataset can need a second source to be loadable at all.** The companion Zenodo record
+(10.5281/zenodo.18377015) holds the same cohort's published BETA, SE and LOG10P at every
+genome-wide significant lead variant. Without it this dataset would have had a derived effect
+size and no way to check it; with it, 49,815 rows carry the authors' own numbers and the derived
+remainder is calibrated against them per trait. Look for the companion record before deciding a
+column is underivable.
+
+**Derived columns need a calibration, not just a formula.** The textbook conversion from z, MAF
+and n assumes the trait has unit residual variance. It does not, once covariates are regressed
+out: assuming 1 made |beta| 8 % too large on the median trait and 21 % on the worst. The fix was
+to fit one scale per trait against the published standard errors. A formula that is right in
+shape and wrong in scale produces numbers nobody will question.
+
+**Allele orientation is worth proving, not inferring.** The fine-mapping file's `z` is signed on
+the *reference* allele while its own companion file's is signed on the alternative one. Both are
+correctly labelled against GRCh38; only their sign convention differs. The munge re-asserts the
+negation on every run, because the failure mode is a file that loads, indexes and queries
+perfectly with every direction of effect reversed.
+
+**A `NOT NULL` column is a claim about every dataset that will ever be loaded.**
+`credible_sets.beta` was `NOT NULL` while `mlog10p` and `se` beside it were not — incidental
+rather than designed, and it blocked this load outright for the 5,004 rows whose source z-score
+overflowed. Relaxing a BigQuery column is one-way without a table rebuild, so it is worth asking
+early whether a required column is genuinely required.
+
+**A profile you cannot stage into gets a registry entry and nothing else.** `finngen-commons` was
+not writable from where this landed, so the finngen profile has the `datasets.yaml` entry (which
+lists the dataset in `/datasets` with no products) but no `credible_sets.py` entry — pointing at
+an unstaged `all_cs_file` would fail that deployment's startup, since `startup_checks` tabix-header-checks
+every configured path. The same reasoning already governs `metadata_file` and
+`finngen/genes.py`'s `exon_file_by_version`.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
