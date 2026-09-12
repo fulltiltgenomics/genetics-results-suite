@@ -78,10 +78,14 @@ RULES = [
         "docs": ["peak_to_gene_v.md"],
     },
     {
-        "name": "chr alongside variant for partition pruning",
+        # was "chr alongside variant for partition pruning", pinning "partitioned by chr" and
+        # "bytes-billed". That advice inverted when credible_sets was re-clustered: variant is
+        # a stored clustering key now, so it prunes on its own and adding chr beside it
+        # measured ~13.6% worse. The rule this protects is the new one.
+        "name": "chr is optional beside variant, which clusters",
         "table": "credible_sets_v",
         "field": ("examples",),
-        "markers": ["partitioned by chr", "bytes-billed"],
+        "markers": ["clustering key", "13.6"],
         "docs": ["credible_sets_v.md"],
     },
     {
