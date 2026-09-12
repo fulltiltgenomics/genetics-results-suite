@@ -94,6 +94,16 @@ resources:
     description: "FinnGen Nightingale NMR metabolomics QTLs"
     aliases: ["finngen nmr", "NMR"]
 
+  nmr_meta:
+    label: "EstBB-UKBB NMR meta-analysis"
+    description: >-
+      Tambets et al. 2026 GWAS meta-analysis of 249 circulating Nightingale NMR metabolic
+      traits in the Estonian Biobank and UK Biobank, 619,372 individuals (Nature,
+      doi 10.1038/s41586-026-10532-5). Separate from the FinnGen NMR resource, which
+      measures the same platform in a different cohort.
+    aliases: ["EstBB-UKBB NMR", "NMR meta-analysis", "Tambets 2026", "metabolic traits",
+              "Nightingale NMR", "metabolomics"]
+
   gtex:
     label: "GTEx"
     description: "Genotype-Tissue Expression project — gene expression across human tissues"
@@ -230,7 +240,14 @@ tables:
     summary: "Fine-mapped credible sets, variant PIPs"
     description: >-
       Fine-mapped credible sets with variant-level posterior inclusion probabilities (PIP).
-      Contains GWAS, eQTL, pQTL, sQTL, caQTL results across multiple resources.
+      Contains GWAS, eQTL, pQTL, sQTL, caQTL and metaboQTL results across multiple resources.
+      NOTE ON metaboQTL: the trait is a Nightingale NMR biomarker code (Total_C, XXL_VLDL_P,
+      S_HDL_TG, bOHbutyrate), not a gene and not a disease endpoint; resolve a code to its
+      name through phenotypes_v rather than reading it. beta is in trait standard deviations
+      because the biomarkers are inverse-normal transformed, so it is not comparable with a
+      GWAS log-odds, and for the nmr_meta resource beta, se and mlog10p are NULL on 5,004 rows
+      whose z-score overflowed in the source — among them strong lipid signals such as APOE,
+      so a MAX(mlog10p) ranking silently drops some of the top hits; rank by pip.
       NOTE ON caQTL: for data_type = 'caQTL' the trait is a chromatin ACCESSIBILITY PEAK
       (e.g. chr5-35863122-35863905), never a gene symbol, so a gene-based caQTL question
       is NOT answerable from this table alone. Join peak_to_gene_v on
@@ -242,7 +259,7 @@ tables:
     columns:
       dataset: "Specific study/release name within a resource (e.g. FinnGen_R13, BipEx2)"
       data_type: "Type of association: GWAS, eQTL, pQTL, sQTL, caQTL, or metaboQTL"
-      trait: "Trait/phenotype name. For caQTL this is the peak id (chr-start-end), not a gene — join peak_to_gene_v to reach genes"
+      trait: "Trait/phenotype name. For caQTL this is the peak id (chr-start-end), not a gene — join peak_to_gene_v to reach genes. For metaboQTL it is a Nightingale NMR biomarker code (Total_C, XXL_VLDL_P), not a gene"
       trait_original: "Original trait name in the respective dataset, e.g. phenotype code"
       cell_type: "Cell type or tissue context (for QTL data)"
       chr: "Chromosome number"
@@ -300,7 +317,7 @@ tables:
       resource: STRING
 
     examples:
-      - description: "Everything a variant is fine-mapped for, across all resources and data types. Always add the chr filter next to variant — the table is partitioned by chr and without it the same query scans ~20x more data and can hit the bytes-billed limit."
+      - description: "Everything a variant is fine-mapped for, across all resources and data types. The chr filter is optional here: variant is a clustering key on the base table, so filtering on it alone already prunes, and adding chr measured ~13.6% worse. Keep chr where the query also scans a range rather than a single variant."
         sql: |-
           SELECT resource, dataset, data_type, trait, trait_original, cell_type,
                  pip, mlog10p, beta, cs_id, cs_size, most_severe, gene_most_severe
@@ -2522,6 +2539,13 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v", "peak_to_gene_v"]
     comment: "all other FinnGen datasets (peak_to_gene is FinnGen ATAC-seq only)"
 
+  - pattern: "UKBB_EUR_NMR%"
+    resource: "nmr_meta"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: >-
+      EstBB-UKBB NMR metabolic trait fine-mapping. Must precede the "UKB%" rule below, which
+      would otherwise claim it for the ukbb resource that holds UKB-PPP and UKB Finucane
+
   - pattern: "UKB%"
     resource: "ukbb"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
@@ -3642,6 +3666,40 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
+      nmr_meta_finemap:
+        resource: nmr_meta
+        version: "2026"
+        description: >-
+          Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
+          traits (Tambets et al. 2026, Zenodo 10.5281/zenodo.18132538). The GWAS is an
+          EstBB + UK Biobank meta-analysis of 619,372 individuals, but the FINE-MAPPING is
+          the UKBB_EUR subset alone (413,897 samples, in-sample LD), run at regions defined
+          by the meta-analysis European lead variants with MAF > 0.1%, MHC excluded. Traits
+          are inverse-normal transformed, so beta is in trait standard deviations.
+          beta, se and mlog10p are the authors' PUBLISHED values on the 49,815 rows that are
+          genome-wide significant lead variants (Zenodo 10.5281/zenodo.18377015), and are
+          DERIVED from the z-score elsewhere, with a per-trait effect scale calibrated against
+          those same published standard errors. 5,004 rows carry a null beta, se and mlog10p:
+          the source's z overflowed there (its largest finite |z| is 38.47, the
+          double-precision p-value limit) and no published value covers them. Strong lipid
+          signals such as APOE are among them, so ranking this dataset by mlog10p drops some
+          of its top hits -- rank by pip. pip is the credible set's own SuSiE alpha, matching
+          the rest of the suite, not the file's overall PIP. aaf
+          keeps the study's own frequency and takes only its allele orientation from the
+          FinnGen variant annotation, so it is null for the 5% of variants that annotation
+          does not carry. cs_min_r2 is not available for this dataset.
+        author: "Tambets et al. (Estonian Biobank, UK Biobank)"
+        publication_date: "2026-05-20"
+        data_type: metaboqtl
+        trait_type: quantitative
+        n_samples: 413897
+        n_phenotypes: 249
+        # the phenotype JSON has only been staged into the daly bucket; build_phenotypes.py
+        # opens every non-null metadata_file before it looks at the harmonizer, so naming a
+        # finngen-commons path that does not exist would fail the whole profile's load
+        metadata_file: null
+        metadata_harmonizer: null
+
   daly:
     datasets:
       # --- GWAS ---
@@ -4664,3 +4722,34 @@ profiles:
         metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
+
+      nmr_meta_finemap:
+        resource: nmr_meta
+        version: "2026"
+        description: >-
+          Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
+          traits (Tambets et al. 2026, Zenodo 10.5281/zenodo.18132538). The GWAS is an
+          EstBB + UK Biobank meta-analysis of 619,372 individuals, but the FINE-MAPPING is
+          the UKBB_EUR subset alone (413,897 samples, in-sample LD), run at regions defined
+          by the meta-analysis European lead variants with MAF > 0.1%, MHC excluded. Traits
+          are inverse-normal transformed, so beta is in trait standard deviations.
+          beta, se and mlog10p are the authors' PUBLISHED values on the 49,815 rows that are
+          genome-wide significant lead variants (Zenodo 10.5281/zenodo.18377015), and are
+          DERIVED from the z-score elsewhere, with a per-trait effect scale calibrated against
+          those same published standard errors. 5,004 rows carry a null beta, se and mlog10p:
+          the source's z overflowed there (its largest finite |z| is 38.47, the
+          double-precision p-value limit) and no published value covers them. Strong lipid
+          signals such as APOE are among them, so ranking this dataset by mlog10p drops some
+          of its top hits -- rank by pip. pip is the credible set's own SuSiE alpha, matching
+          the rest of the suite, not the file's overall PIP. aaf
+          keeps the study's own frequency and takes only its allele orientation from the
+          FinnGen variant annotation, so it is null for the 5% of variants that annotation
+          does not carry. cs_min_r2 is not available for this dataset.
+        author: "Tambets et al. (Estonian Biobank, UK Biobank)"
+        publication_date: "2026-05-20"
+        data_type: metaboqtl
+        trait_type: quantitative
+        n_samples: 413897
+        n_phenotypes: 249
+        metadata_file: "gs://daly-genetics-results/mapping_files/nmr_meta_pheno.json"
+        metadata_harmonizer: quantitative_pheweb
