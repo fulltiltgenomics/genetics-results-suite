@@ -135,7 +135,10 @@ flags, each defaulting to **false**:
 
 `k8s/deployments/chat-backend.yaml:128` sets `ENABLE_SUBAGENTS: "false"` explicitly and does
 not set the other two, so **in the deployed configuration all three are disabled** and the
-chat model at `tool_profile=null` — the no-code surface — sees **64** local tools.
+chat model at `tool_profile=null` — the no-code surface — sees the generated no-code count above
+less those three. The resolved set under the deployed flags is frozen in
+`genetics-mcp-server/tests/golden/tool_surface.json` (`chat_backend.profiles.nocode.local`); read
+the count from there rather than from a number written by hand here.
 
 `read_artifact` and `list_capabilities` have **no** feature flag; `run_analysis` is gated on
 `SANDBOX_ENABLED`. All three reach only the code surface. See section 7.

@@ -2658,8 +2658,12 @@ no-code surface.** That is the safe direction for a value read back from `chat_m
 written by older clients. The degrade is not silent to an operator: one WARNING per **distinct**
 unknown value (bounded at 64, because a stored profile is re-sent on every turn), and
 `GET /chat/v1/tools/resolved?tool_profile=<v>` answers `known_profile: false` for the same input.
-The proxied surfaces (gnomAD / Open Targets, and RAG) are still keyed on the profile name rather
-than on the boolean.
+The proxied surfaces (gnomAD / Open Targets, and RAG) are keyed on neither: `resolve_proxied_tools()`
+takes no surface argument, so both surfaces are handed whatever `EXTERNAL_MCP_SERVERS` and
+`RAG_MCP_SERVER` registered, minus what `EXTERNAL_MCP_EXCLUDE_TOOLS` removed at registration. The
+sandbox's egress allow-list admits db-api and results-api only, so an external tool withheld from
+the code surface would leave that surface no route to it at all; whether the RAG group is empty is
+a deployment fact rather than something a request chooses.
 
 The code surface **ships dark**: no server-side default moved, so a null `tool_profile` yields the
 no-code surface. The counts above are the definitions' own; what a deployment's feature flags then
