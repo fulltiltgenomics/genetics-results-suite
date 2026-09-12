@@ -16,6 +16,8 @@ set -euo pipefail
 #   OPENAI_API_KEY        - OpenAI API key (optional for chat backend, required for rag-service)
 #   TAVILY_API_KEY        - Tavily API key (optional)
 #   PERPLEXITY_API_KEY    - Perplexity API key (optional)
+#   ALPHAGENOME_API_KEY   - AlphaGenome Atlas API key for chat-backend (optional; withheld
+#                           unless the deployment's alphagenome_enabled tfvar is also true)
 #   COHERE_API_KEY        - Cohere API key for RAG service embeddings (required only when ENABLE_RAG=true)
 #   EXTERNAL_MCP_SERVERS  - comma-separated external MCP server URLs for chat-backend (optional)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
@@ -101,6 +103,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # resolve the target deployment (DEPLOY_ENV), which is all the guard below needs: it sets TFVARS.
 . "${SCRIPT_DIR}/lib/env.sh"
 resolve_deploy_env
+
+# alphagenome_enabled lives in tfvars, not the environment, so read it the same way
+# scripts/deploy.sh does; an explicit ALPHAGENOME_ENABLED still wins.
+TFVARS_ALPHAGENOME="false"
+if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*alphagenome_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
+  TFVARS_ALPHAGENOME="true"
+fi
+ALPHAGENOME_ENABLED="${ALPHAGENOME_ENABLED:-${TFVARS_ALPHAGENOME}}"
 
 # GUARD: refuse to write Secrets into a cluster this deployment's tfvars does not name. It
 # sits here, immediately after the deployment is resolved and ahead of EVERY
@@ -274,6 +284,7 @@ reuse_optional() {
 reuse_optional OPENAI_API_KEY       openai-api-key
 reuse_optional TAVILY_API_KEY       tavily-api-key
 reuse_optional PERPLEXITY_API_KEY   perplexity-api-key
+reuse_optional ALPHAGENOME_API_KEY alphagenome-api-key
 reuse_optional COHERE_API_KEY       cohere-api-key
 reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional ADMIN_USERS          admin-users
@@ -285,6 +296,13 @@ reuse_optional SLACK_WEBHOOK_URL    slack-webhook-url
 # the reuse above so a value already in the cluster satisfies it on a re-run.
 if [ "${ENABLE_RAG}" = "true" ]; then
   : "${COHERE_API_KEY:?Set COHERE_API_KEY (required when ENABLE_RAG=true)}"
+fi
+# unlike RAG, a missing key here is not fatal: the tool is simply withheld
+# (config/settings.py disabled_tools). ALPHAGENOME_ENABLED is now derived from tfvars
+# (or an explicit env override), so this fires when the tfvars flag is actually live —
+# it only warns the deployer, it does not block.
+if [ "${ALPHAGENOME_ENABLED}" = "true" ] && [ -z "${ALPHAGENOME_API_KEY:-}" ]; then
+  echo "WARNING: ALPHAGENOME_ENABLED=true but ALPHAGENOME_API_KEY is unset — the AlphaGenome tools will still be withheld until a key is configured."
 fi
 
 # reuse the internal API secret to avoid breaking service-to-service auth for
@@ -323,6 +341,7 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic genetics-secrets \
   --from-literal=openai-api-key="${OPENAI_API_KEY:-}" \
   --from-literal=tavily-api-key="${TAVILY_API_KEY:-}" \
   --from-literal=perplexity-api-key="${PERPLEXITY_API_KEY:-}" \
+  --from-literal=alphagenome-api-key="${ALPHAGENOME_API_KEY:-}" \
   --from-literal=mcp-api-key="${MCP_API_KEY}" \
   --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
