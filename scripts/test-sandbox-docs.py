@@ -468,7 +468,12 @@ def main(argv=None):
         for rule in RULES:
             mutated = copy.deepcopy(config)
             table = mutated["tables"][rule["table"]]
-            sentinel = f"SENTINEL-{rule['table']}-{'-'.join(rule['field'])}"
+            # alphanumeric only: the generator wraps prose with textwrap.fill, which breaks on
+            # hyphens and underscores, so a punctuated sentinel lands split across two lines
+            # and the `in` check below misses it — reporting "the generator is not reading
+            # that field" about a generator that is. Whether it breaks depends on where the
+            # wrap happens to fall, so editing an unrelated sentence can trip it.
+            sentinel = "SENTINEL" + (rule["table"] + "".join(rule["field"])).replace("_", "")
             if rule["field"] == ("examples",):
                 table["examples"][0]["description"] += " " + sentinel
             else:
