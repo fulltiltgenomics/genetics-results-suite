@@ -8,8 +8,7 @@ design overview.
 **Derived 2026-08-18** from these commits, with the `run_analysis`, `read_artifact` and
 `list_capabilities` descriptions refreshed 2026-08-19 for `genetics-results-suite-8z1`
 (image artifacts) and `-706` (the `genetics` import name), and every count re-derived
-2026-09-04 when the three ChEMBL tools landed (the `definitions.py:` line references in
-section 8 predate that and have not been re-derived; section 1's were):
+2026-09-04 when the three ChEMBL tools landed:
 
 | repo | worktree | commit |
 |---|---|---|
@@ -60,12 +59,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 66 | the data tools — `api` 46, `general` 20 |
+| `TOOL_DEFINITIONS` | 68 | the data tools — `api` 46, `general` 22 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**72 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 20, `orchestration` 4.
+**74 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 22, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -151,8 +150,9 @@ what is registered today is unchanged. Two definitions have **no handler at all*
 are therefore unreachable over `/mcp` by construction:
 
 - `launch_subagents` — never had one.
-- `run_analysis` — deliberately omitted; `definitions.py:2392-2401` explains that a missing
-  block is a control `disabled_tools` cannot undo, since that set can only subtract.
+- `run_analysis` — deliberately omitted; the comment standing in its place in
+  `register_mcp_tools` explains that a missing block is a control `disabled_tools` cannot
+  undo, since that set can only subtract.
 
 **This surface's bounds are not the `parameters` bounds.** FastMCP derives each MCP schema
 from the handler's Python signature, so `Annotated[..., Field(ge=…, le=…)]` here makes
@@ -218,12 +218,12 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 68 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
-| `True` — the code surface | 20 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 17 data tools whose `sdk_replaceable` is false |
+| `False` — the no-code surface | 70 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `True` — the code surface | 22 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 19 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
 
-The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_myvariant_annotations`.
+The code surface, in definition order: `list_capabilities`, `run_analysis`, `read_artifact`, then the data tools the SDK cannot stand in for — `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured`, `get_myvariant_annotations`.
 
 <!-- END GENERATED: tool-surfaces -->
 
@@ -427,7 +427,7 @@ path has never carried tools.
 
 Sections in the **unfiltered** text, in order: Core Principles; Analyzing data (the
 three-pass method); Tool Usage Guidelines; Mouse Model Evidence (search_mgi); Variant
-Annotation Sources; Functional / Regulatory Readouts; HLA / the MHC region; Protein
+Annotation Sources; Functional / Regulatory Readouts; AlphaGenome variant predictions (opt-in); HLA / the MHC region; Protein
 Annotation (UniProt); Drug and Target Evidence (ChEMBL); Data Sources and Resource Names; Pseudo Credible Sets; Subagent
 Orchestration; Choosing How to Get Data; Response Style; Handling Uncertainty; Out of Scope
 and Limitations; Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology;
@@ -437,17 +437,17 @@ What each surface actually gets, under the deployed flags (`ENABLE_SUBAGENTS`,
 `ENABLE_PHENOTYPE_REPORT`, `ENABLE_CREDIBLE_SETS_STATS` all false) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. As
 everywhere in this doc, the rows assume the **sandbox on** (`run_analysis` present); the
-unfiltered text is 40,789 chars. Measured 2026-09-06:
+unfiltered text is 165,110 chars. Measured 2026-09-09:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 64 | 31,980 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
-| `code` | 20 | 109,861 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (~77k chars) |
+| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 67 | 35,698 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance goes with it |
+| `code` | 21 | 155,013 | the above, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "the API tools are the data path" / "the database is the data path" wordings, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (~77k chars — an estimate, unlike the two prompt totals in this table, which are measured) |
 
 Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
-tool names, those five resolve to the same 64 tools, and the five prompts are byte-identical
-at 31,980 chars. Only `code` gates differently, and it is now the only value with two shapes.
-`SANDBOX_ENABLED=false` takes `run_analysis` off it, leaving 17 tools and 21,029 chars, and
+tool names, those five resolve to the same 67 tools, and the five prompts are byte-identical
+at 35,698 chars. Only `code` gates differently, and it is now the only value with two shapes.
+`SANDBOX_ENABLED=false` takes `run_analysis` off it, leaving 20 tools and 24,521 chars, and
 the loss is wider than the script guidance: HLA / the MHC region, Choosing How to Get Data
 and the database-routing blocks all go, because `genetics.sql` inside a script was this
 surface's only route to the database. What does NOT go is `get_variant_protein_effect` — it
@@ -457,11 +457,11 @@ only for a database-only shape with `get_variant_protein_effect` removed, which
 `tests/test_system_prompt.py` synthesises rather than resolving from a profile (see the
 route-completeness bullet below).
 
-`tests/test_system_prompt.py` holds **ten** test classes, **seven** of them parametrised
+`tests/test_system_prompt.py` holds **twelve** test classes, **eight** of them parametrised
 over its own `PROFILES` list — `[None, "api", "bigquery", "rag", "code", "nocode"]`, which
 now includes `nocode`, the arm the `code` arm is measured against; it was missing until
 `genetics-results-suite-4h6.78`/`.79`, so thirteen parametrised test functions never
-exercised the comparator. Every one of the seven reads the RENDERED prompt rather than
+exercised the comparator. Every one of them reads the RENDERED prompt rather than
 `_Block` metadata, so an assertion cannot pass by restating the constant it guards. Only
 **absence** and the body-under-heading half of **structure** are run with
 `ENABLE_SUBAGENTS` both true and false; the `products`-imperative check inside **capability
@@ -869,6 +869,7 @@ means approved somewhere in the world, NOT 'FDA-approved'"*.
 
 **Negative constraints on interpretation**
 
+- `get_alphagenome_variant_predictions` and `compare_alphagenome_with_measured` (the opt-in paragraph is ONE literal, `_ALPHAGENOME_OPT_IN`, spliced into both descriptions, so the two cannot drift): *"CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT"* … *"'What does this variant do?', 'tell me about rs...', 'is this variant causal?', 'why is this locus associated?' are NOT requests for AlphaGenome"* … *"This suite having nothing to say about a variant is NOT a reason to call it."* The opt-in has no enforcement behind it — no per-user setting, no per-conversation column, no UI toggle — so this description and the `### AlphaGenome variant predictions (opt-in)` prompt block are the whole of it. It also carries the reading rules the result's own `validation` block cannot state: *"`quantity: \"magnitude\"` — the direction is NOT reported and you must not state or infer one"*, and that the population rho *"is NOT a confidence for the variant in hand and must never be quoted as one"*. The comparison tool adds the rule its own response shape enforces: a magnitude-only modality's concordance carries *"NO `direction` key at all"*, and a modality with no measured substrate answers *"nothing measured to compare against"* rather than pairing something.
 - `search_cbioportal`: *"This is somatic tumour data. It says nothing about germline association — do not read a high mutation frequency here as evidence for a GWAS or disease-association claim"* and the GRCh37/GRCh38 build warning (*"Never compare a coordinate from this tool against a GRCh38 position."*).
 - `search_scientific_literature`: *"You do NOT choose the backend and there is no parameter for it"* … *"Do NOT invent hybrid labels like 'PubMed/Europe PMC' or 'Perplexity/PubMed'"*.
 - `get_summary_stats`: *"Do NOT use this as a discovery tool — use credible set tools or PheWAS for that."*
@@ -1010,7 +1011,7 @@ does not currently match, verified against source on 2026-08-18.
 
 ## 8. Full tool catalogue
 
-Every entry below is generated from `definitions.py` at the commit in the header. The
+Every entry below is transcribed by hand from `definitions.py` at the commit in the header — nothing regenerates this section, unlike sections 1 and 3. The
 description block is the **exact** string sent to the model — the definitions use implicit
 string concatenation and triple-quoted literals, so what appears here is the joined result.
 The parameter table is the `input_schema` `get_anthropic_tools()` builds; a `minimum`/
@@ -1021,10 +1022,15 @@ Read a row as: `type` is the JSON-schema type; `req` yes means the name is in
 `input_schema.required`; `default` is emitted into the schema and is **advisory to the
 model**, since the handler applies its own default when the key is absent.
 
-### Category `general` — 20 tools
+Entries carry the defining list and the category, and no line number: an index into a file
+that moves on every edit goes stale without anything noticing. The tool **name** is the
+stable key — grep for it. Per-category totals are in section 1's generated block, which is
+gated; the headings below deliberately carry no count of their own.
+
+### Category `general`
 
 #### `search_phenotypes`
-`TOOL_DEFINITIONS`, `definitions.py:16` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1040,7 +1046,7 @@ Look up phenotypes. Use when you need to find if there is a phenotype for a dise
 `required`: ['query']
 
 #### `search_genes`
-`TOOL_DEFINITIONS`, `definitions.py:33` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1056,7 +1062,7 @@ Look up gene symbols and positions. Use ONLY when you need to verify a gene symb
 `required`: ['query']
 
 #### `lookup_variants_by_rsid`
-`TOOL_DEFINITIONS`, `definitions.py:50` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1071,7 +1077,7 @@ Convert rsIDs to variant IDs (chr:pos:ref:alt format). Use this when you have rs
 `required`: ['rsids']
 
 #### `lookup_phenotype_names`
-`TOOL_DEFINITIONS`, `definitions.py:711` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1086,7 +1092,7 @@ Description as sent to the model:
 `required`: ['codes']
 
 #### `list_datasets`
-`TOOL_DEFINITIONS`, `definitions.py:724` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1102,7 +1108,7 @@ List all datasets available in the API with descriptions, provenance (author, ve
 `required`: []
 
 #### `get_resource_metadata`
-`TOOL_DEFINITIONS`, `definitions.py:750` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1117,7 +1123,7 @@ Get the harmonized per-trait metadata of one resource: every phenotype/study it 
 `required`: ['resource']
 
 #### `get_dataset_display_names`
-`TOOL_DEFINITIONS`, `definitions.py:762` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1128,7 +1134,7 @@ Get the display-name overrides for raw `dataset` column values. Use this when a 
 No parameters (`input_schema.properties` is empty, `required` is `[]`).
 
 #### `search_scientific_literature`
-`TOOL_DEFINITIONS`, `definitions.py:851` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1149,7 +1155,7 @@ When reporting results to the user, name the backend that was actually queried: 
 `required`: ['query']
 
 #### `web_search`
-`TOOL_DEFINITIONS`, `definitions.py:888` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1167,7 +1173,7 @@ Search the web for general information. Use for finding drug information, clinic
 `required`: ['query']
 
 #### `search_mgi`
-`TOOL_DEFINITIONS`, `definitions.py:915` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1185,7 +1191,7 @@ Search Jackson Lab Mouse Genome Informatics (MGI) for curated mouse gene → phe
 `required`: ['query']
 
 #### `search_cbioportal`
-`TOOL_DEFINITIONS`, `definitions.py:944` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1217,7 +1223,7 @@ Frequencies from gene_by_cancer_type are lower bounds: their denominator counts 
 `required`: ['query']
 
 #### `get_protein_annotations`
-`TOOL_DEFINITIONS`, `definitions.py:993` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1248,7 +1254,7 @@ Do NOT use this tool for protein-position → genomic-coordinate mapping — use
 `required`: ['query']
 
 #### `map_protein_variants`
-`TOOL_DEFINITIONS`, `definitions.py:1038` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1274,7 +1280,7 @@ Every result carries a resolution block naming the protein the variants were map
 `required`: ['variants', 'query']
 
 #### `get_variant_protein_effect`
-`TOOL_DEFINITIONS`, `definitions.py:1070` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1301,7 +1307,7 @@ Scope and limits:
 `required`: ['variants']
 
 #### `search_uniprot`
-`TOOL_DEFINITIONS`, `definitions.py:1095` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1334,7 +1340,7 @@ Do NOT use this to look up a protein you can already name; resolving a gene symb
 `required`: []
 
 #### `get_drug_targets_for_gene`
-`TOOL_DEFINITIONS`, `definitions.py:1224` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1366,7 +1372,7 @@ For one named drug (its targets, ATC class and indications) use get_drug_profile
 `required`: ['query']
 
 #### `get_drug_profile`
-`TOOL_DEFINITIONS`, `definitions.py:1271` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1391,7 +1397,7 @@ Start from a gene rather than a drug — "what drugs hit this gene?" — with ge
 `required`: ['query']
 
 #### `get_target_bioactivity`
-`TOOL_DEFINITIONS`, `definitions.py:1293` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1415,8 +1421,90 @@ NEVER cite a ChEMBL id, pChEMBL value or activity count from memory — they mus
 
 `required`: ['query']
 
+#### `get_alphagenome_variant_predictions`
+`TOOL_DEFINITIONS` — category `general`
+
+Description as sent to the model:
+
+```text
+MODEL PREDICTIONS from AlphaGenome (Google DeepMind) — what a deep-learning model predicts one variant does to regulatory activity: chromatin accessibility, histone and TF binding, transcription, splicing, optionally in a named cell type or tissue. NOTHING HERE WAS MEASURED IN ANYONE. It is not a FinnGen result and not an assay; never present a number from this tool as either.
+
+CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT. Exactly three things count as asking:
+1. the user names AlphaGenome;
+2. the user asks for a model prediction of a variant's regulatory effect;
+3. the user asks how a measured value in this suite compares with what a model predicts for the same variant — that comparison is a first-class use of this tool, not a workaround.
+
+Nothing else is. In particular:
+- Do NOT call it as background enrichment, and do not add a prediction to an answer nobody asked one for.
+- "What does this variant do?", "tell me about rs...", "is this variant causal?", "why is this locus associated?" are NOT requests for AlphaGenome. Answer them from this suite's own measured and fine-mapped data.
+- This suite having nothing to say about a variant is NOT a reason to call it. Say the data is silent; you may OFFER a prediction in one line and then wait to be asked.
+- It is an ADDITIONAL source of evidence, not a fallback for gaps — and having it available is not a reason to use it. It is a rate-limited external model under a non-commercial licence.
+
+READ THE `validation` BLOCK BEFORE QUOTING A NUMBER. Every modality in the result carries its own — `tier`, `status`, `quantity`, `calibrated_against`, `population_rho`, `rho_scope`:
+- `quantity: "signed"` — the sign is meaningful (negative is a predicted decrease). `quantity: "magnitude"` — the direction is NOT reported and you must not state or infer one.
+- `population_rho` with `rho_scope: "population"` is a cohort-level Spearman correlation between this MODALITY and `calibrated_against`, across many variants. It is a property of the modality. It is NOT a confidence for the variant in hand and must never be quoted as one.
+- `status: "unvalidated"` (no `population_rho`) means the modality was never checked against anything measured in this suite. Say so whenever you report one.
+- `quantile` ranks the score against a genome-wide background and usually says more than the raw value.
+
+SIDE BY SIDE WITH MEASURED DATA the labelling matters MORE, not less: label every number from this tool as predicted, name the source of every measured number, never merge or average the two into one figure, and where they disagree say that they disagree.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call, and one call per variant is the expensive mistake here. A variant the model cannot score comes back as its own failed row, leaving the rest of the batch intact. |
+| `cell_type` | `string` | no | — | — | Cell type or tissue to score in, matched against AlphaGenome's own biosample names (e.g. 'liver', 'K562'). Omit to take the strongest effect across all tracks. A request that matches nothing falls back to all tracks and says so in `cell_type_match`. |
+| `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to score. Omit for the default set, which is exactly the modalities calibrated against this suite's own measurements. Any modality NOT in that default is uncalibrated and has to be asked for by name; its result says so in `validation`. |
+
+`required`: ['variants']
+
+#### `compare_alphagenome_with_measured`
+`TOOL_DEFINITIONS` — category `general`
+
+Description as sent to the model:
+
+```text
+MEASURED RESULTS FROM THIS SUITE PLACED BESIDE ALPHAGENOME'S PREDICTION for the same variant, per modality, with their concordance. The measured side is this suite's own data — caQTL, eQTL and sQTL effect sizes from `credible_sets_v`, MPRA allelic skew from `mpra_v` — and the predicted side is the same model output `get_alphagenome_variant_predictions` returns. Use this when someone wants to know how a prediction stands up against what was actually measured.
+
+This is NOT for variants the suite is silent about: a comparison needs both halves, and it is worth most exactly where the measured data already exists.
+
+CALL THIS ONLY WHEN THE USER HAS ASKED FOR IT. Exactly three things count as asking:
+1. the user names AlphaGenome;
+2. the user asks for a model prediction of a variant's regulatory effect;
+3. the user asks how a measured value in this suite compares with what a model predicts for the same variant — that comparison is a first-class use of this tool, not a workaround.
+
+Nothing else is. In particular:
+- Do NOT call it as background enrichment, and do not add a prediction to an answer nobody asked one for.
+- "What does this variant do?", "tell me about rs...", "is this variant causal?", "why is this locus associated?" are NOT requests for AlphaGenome. Answer them from this suite's own measured and fine-mapped data.
+- This suite having nothing to say about a variant is NOT a reason to call it. Say the data is silent; you may OFFER a prediction in one line and then wait to be asked.
+- It is an ADDITIONAL source of evidence, not a fallback for gaps — and having it available is not a reason to use it. It is a rate-limited external model under a non-commercial licence.
+
+HOW TO READ THE RESULT. It carries BOTH kinds of number, so the envelope has no single `measured` flag — every value inside carries its own:
+- A `measured: true` value names its `source`: the view, the column, the assay, the resource, and the gene or accessibility peak that was measured. A `measured: false` value names AlphaGenome. Never merge, average or reconcile the two into one number, and never report a predicted value as a result from this suite.
+- `concordance.direction` is `"agrees"` or `"disagrees"` — the two signs match, or they do not. That is the whole claim. Do NOT compute a correlation, an error or an agreement score: with one variant there is nothing to correlate, and any such number would be fiction.
+- A modality whose `quantity` is `"magnitude"` has NO `direction` key at all, and both sides are reported unsigned. The absence IS the statement: a measured sQTL beta orients to a leafcutter intron cluster and the predicted splice delta has no corresponding orientation, so no direction agreement exists to report. Do not infer one, and do not describe such a pair as consistent or inconsistent in direction.
+- `measured_substrates[].population_rho`, with `rho_scope: "population"`, is how well that MODALITY tracked that substrate across a cohort of variants. It is a property of the pairing and NEVER this variant's confidence.
+- `context_match: "cross_tissue"` means the measurement is in a different cell type or tissue than the prediction was asked for. Say so — cell-type-matched comparisons are the stronger evidence.
+- The prediction's `cell_type_match` carries two independent flags: `matched` says whether the requested cell type resolved to tracks, and `resolution_failed` says the lookup itself failed. A failed lookup is "could not be checked", not "no match" — report them differently.
+- Empty `measurements` means one of two different things and the `note` says which: this suite has measured nothing for this variant, or the modality has no measured substrate here at all (the unvalidated tier-4 modalities). Never invent a comparison for the second — "nothing measured to compare against" is the answer.
+
+READ THE `validation` BLOCK BEFORE QUOTING A NUMBER. Every modality in the result carries its own — `tier`, `status`, `quantity`, `calibrated_against`, `population_rho`, `rho_scope`:
+- `tier` is how deeply the MODALITY was calibrated here — 1-3 against this suite's own measurements, 4 against nothing. It is a property of the modality and says nothing about how good this variant's prediction is; it is not a score, a rank or a confidence.
+- `quantity: "signed"` — the sign is meaningful (negative is a predicted decrease). `quantity: "magnitude"` — the direction is NOT reported and you must not state or infer one.
+- `population_rho` with `rho_scope: "population"` is a cohort-level Spearman correlation between this MODALITY and `calibrated_against`, across many variants. It is a property of the modality. It is NOT a confidence for the variant in hand and must never be quoted as one.
+- `status: "unvalidated"` (no `population_rho`) means the modality was never checked against anything measured in this suite. Say so whenever you report one.
+- `quantile` ranks the score against a genome-wide background and usually says more than the raw value.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call. |
+| `cell_type` | `string` | no | — | — | Cell type or tissue to compare in. It matches BOTH sides — AlphaGenome's biosample names and the measured assay's cell type or MPRA cell line (K562, HEPG2, SKNSH, HCT116, A549) — so passing it is what makes a matched comparison possible. Omit and every measurement comes back as `context_match: "not_requested"`. |
+| `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to compare. Omit for the default set, which is exactly the modalities that HAVE a measured substrate here. A modality outside it has nothing to compare against and comes back saying so. |
+
+`required`: ['variants']
+
 #### `get_gene_group_members`
-`TOOL_DEFINITIONS`, `definitions.py:1478` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1433,7 +1521,7 @@ Enumerate the member genes of an HGNC gene group / family (e.g. all GPCRs), retu
 `required`: []
 
 #### `normalize_gene_symbols`
-`TOOL_DEFINITIONS`, `definitions.py:1514` — category `general`
+`TOOL_DEFINITIONS` — category `general`
 
 Description as sent to the model:
 
@@ -1447,10 +1535,10 @@ Resolve input gene symbols / aliases / previous symbols to their current approve
 
 `required`: ['symbols']
 
-### Category `api` — 44 tools
+### Category `api`
 
 #### `get_credible_sets_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:62` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1469,7 +1557,7 @@ Get credible sets for variants near a gene. Returns fine-mapped variants with ph
 `required`: ['gene']
 
 #### `get_credible_sets_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:98` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1487,7 +1575,7 @@ Get credible sets containing a specific variant. Returns fine-mapped association
 `required`: ['variant']
 
 #### `get_credible_sets_by_region`
-`TOOL_DEFINITIONS`, `definitions.py:129` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1505,7 +1593,7 @@ Get credible sets overlapping a genomic region across all resources. Use this wh
 `required`: ['region']
 
 #### `get_credible_sets_by_phenotype`
-`TOOL_DEFINITIONS`, `definitions.py:160` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1522,7 +1610,7 @@ Description as sent to the model:
 `required`: ['phenotype']
 
 #### `get_credible_set_leads_by_phenotype`
-`TOOL_DEFINITIONS`, `definitions.py:182` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1538,7 +1626,7 @@ Get ONE row per credible set for a phenotype: the lead variant of each set (the 
 `required`: ['phenotype']
 
 #### `get_credible_set_by_id`
-`TOOL_DEFINITIONS`, `definitions.py:199` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1555,7 +1643,7 @@ Get all variants in a specific credible set. Use this to investigate a credible 
 `required`: ['resource', 'phenotype', 'credible_set_id']
 
 #### `get_credible_sets_by_qtl_gene`
-`TOOL_DEFINITIONS`, `definitions.py:221` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1573,7 +1661,7 @@ Get QTL associations where a gene is the molecular trait (target). Returns varia
 `required`: ['gene']
 
 #### `get_gene_expression`
-`TOOL_DEFINITIONS`, `definitions.py:270` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1588,7 +1676,7 @@ Get tissue-specific gene expression levels. Returns expression data across tissu
 `required`: ['gene']
 
 #### `get_asm_qtl_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:278` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1604,7 +1692,7 @@ Get allele-specific methylation QTL (ASM-QTL) data for a variant. Returns associ
 `required`: ['variant']
 
 #### `get_asm_qtl_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:294` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1621,7 +1709,7 @@ Get allele-specific methylation QTL (ASM-QTL) data for variants near a gene. Ret
 `required`: ['gene']
 
 #### `get_open_chromatin_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:315` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1637,7 +1725,7 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a 
 `required`: ['variant']
 
 #### `get_open_chromatin_by_region`
-`TOOL_DEFINITIONS`, `definitions.py:331` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1655,7 +1743,7 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks overlapping a 
 `required`: ['chrom', 'start', 'end']
 
 #### `get_open_chromatin_by_peak`
-`TOOL_DEFINITIONS`, `definitions.py:357` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1671,7 +1759,7 @@ Get one open-chromatin atlas peak by its peak id, returning every cell_type/tiss
 `required`: ['peak_id']
 
 #### `get_peak_to_genes`
-`TOOL_DEFINITIONS`, `definitions.py:373` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1688,7 +1776,7 @@ Get the GENES an Open4Gene chromatin peak is linked to, with the cell type each 
 `required`: ['peak_id']
 
 #### `get_gene_to_peaks`
-`TOOL_DEFINITIONS`, `definitions.py:393` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1705,7 +1793,7 @@ Get the Open4Gene chromatin PEAKS linked to a gene, per cell type — the invers
 `required`: ['gene']
 
 #### `get_open_chromatin_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:413` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1722,7 +1810,7 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks near a gene, s
 `required`: ['gene']
 
 #### `get_variant_effect_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:434` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1738,7 +1826,7 @@ Get in-silico PREDICTED variant effect on chromatin accessibility for a variant.
 `required`: ['variant']
 
 #### `get_variant_effect_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:450` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1755,7 +1843,7 @@ Get in-silico PREDICTED variant effects on chromatin accessibility for variants 
 `required`: ['gene']
 
 #### `get_mpra_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:471` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1771,7 +1859,7 @@ Get MEASURED cis-regulatory allelic activity for a variant from a massively para
 `required`: ['variant']
 
 #### `get_mpra_by_region`
-`TOOL_DEFINITIONS`, `definitions.py:487` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1789,7 +1877,7 @@ Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for varian
 `required`: ['chrom', 'start', 'end']
 
 #### `get_mpra_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:513` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1806,7 +1894,7 @@ Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for varian
 `required`: ['gene']
 
 #### `get_mpra_pip_concordance_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:534` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1824,7 +1912,7 @@ Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar
 `required`: ['gene']
 
 #### `get_gene_disease_associations`
-`TOOL_DEFINITIONS`, `definitions.py:561` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1839,7 +1927,7 @@ Get Mendelian/rare disease gene-disease relationships from ClinGen/GENCC. Use ON
 `required`: ['gene']
 
 #### `get_colocalization`
-`TOOL_DEFINITIONS`, `definitions.py:569` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1854,7 +1942,7 @@ Get colocalization results for a variant. Returns trait pairs that share the sam
 `required`: ['variant']
 
 #### `get_colocalization_by_credible_set`
-`TOOL_DEFINITIONS`, `definitions.py:581` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1872,7 +1960,7 @@ Get the credible sets that colocalize with ONE specific credible set, identified
 `required`: ['resource', 'phenotype', 'credible_set_id']
 
 #### `get_exome_results_by_gene`
-`TOOL_DEFINITIONS`, `definitions.py:608` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1887,7 +1975,7 @@ Get rare variant burden test results for a gene. Returns individual variant-leve
 `required`: ['gene']
 
 #### `get_exome_results_by_variant`
-`TOOL_DEFINITIONS`, `definitions.py:616` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1903,7 +1991,7 @@ Get rare-variant exome association results for one specific variant across exome
 `required`: ['variant']
 
 #### `get_exome_results_by_region`
-`TOOL_DEFINITIONS`, `definitions.py:632` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1919,7 +2007,7 @@ Get rare-variant exome association results overlapping a genomic region across e
 `required`: ['region']
 
 #### `get_exome_results_by_phenotype`
-`TOOL_DEFINITIONS`, `definitions.py:648` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1935,7 +2023,7 @@ Get individual variant exome results for a specific phenotype within an exome da
 `required`: ['resource', 'phenotype']
 
 #### `get_gene_based_results`
-`TOOL_DEFINITIONS`, `definitions.py:665` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1950,7 +2038,7 @@ Get gene-level burden test results from genebass, IBD, BipEx2, and SCHEMA datase
 `required`: ['gene']
 
 #### `get_gene_based_results_by_phenotype`
-`TOOL_DEFINITIONS`, `definitions.py:677` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1966,7 +2054,7 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 `required`: ['resource', 'phenotype']
 
 #### `get_phenotype_report`
-`TOOL_DEFINITIONS`, `definitions.py:694` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1982,7 +2070,7 @@ Get a detailed markdown report for a phenotype. Returns a markdown report with c
 `required`: ['phenotype_code']
 
 #### `get_credible_sets_stats`
-`TOOL_DEFINITIONS`, `definitions.py:768` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -1998,7 +2086,7 @@ Get summary statistics of credible sets (fine-mapped associations) for a dataset
 `required`: ['resource_or_dataset']
 
 #### `get_nearest_genes`
-`TOOL_DEFINITIONS`, `definitions.py:784` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2018,7 +2106,7 @@ Get genes nearest to a variant. Returns genes sorted by distance, with distance=
 `required`: ['variant']
 
 #### `get_genes_in_region`
-`TOOL_DEFINITIONS`, `definitions.py:820` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2037,7 +2125,7 @@ Get all genes in a genomic region. Returns genes overlapping the specified coord
 `required`: ['chr', 'start', 'end']
 
 #### `get_ld_between_variants`
-`TOOL_DEFINITIONS`, `definitions.py:1173` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2055,7 +2143,7 @@ Get linkage disequilibrium (LD) statistics between two specific variants. Return
 `required`: ['variant1', 'variant2']
 
 #### `get_variants_in_ld`
-`TOOL_DEFINITIONS`, `definitions.py:1201` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2073,7 +2161,7 @@ Get all variants in linkage disequilibrium (LD) with a given variant. Returns va
 `required`: ['variant']
 
 #### `get_summary_stats`
-`TOOL_DEFINITIONS`, `definitions.py:1229` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2099,7 +2187,7 @@ Do NOT use this as a discovery tool — use credible set tools or PheWAS for tha
 `required`: ['variants', 'phenotypes']
 
 #### `get_hla_by_phenotype`
-`TOOL_DEFINITIONS`, `definitions.py:1266` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2127,7 +2215,7 @@ For the reverse question — which traits an allele is associated with — use g
 `required`: ['phenotypes']
 
 #### `get_hla_by_allele`
-`TOOL_DEFINITIONS`, `definitions.py:1299` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2154,7 +2242,7 @@ Results are filtered to `min_info` (default 0.5) because rare badly-imputed alle
 `required`: ['allele']
 
 #### `get_summary_stats_by_region`
-`TOOL_DEFINITIONS`, `definitions.py:1339` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2178,7 +2266,7 @@ Phenotypes are REQUIRED: summary stats are stored per phenotype, so there is no 
 `required`: ['region', 'phenotypes']
 
 #### `analyze_variant_list`
-`TOOL_DEFINITIONS`, `definitions.py:1373` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2208,7 +2296,7 @@ Returns aggregated counts sorted by frequency. The response already includes nea
 `required`: ['variants']
 
 #### `get_variant_annotations`
-`TOOL_DEFINITIONS`, `definitions.py:1403` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2238,7 +2326,7 @@ Returns: variant ID, chromosome, position, ref/alt alleles, allele frequency (AF
 `required`: []
 
 #### `get_myvariant_annotations`
-`TOOL_DEFINITIONS`, `definitions.py:1443` — category `api`
+`TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
@@ -2268,10 +2356,10 @@ Returns: ClinVar clinical significance and conditions, CADD phred score, functio
 
 `required`: []
 
-### Category `bigquery` — 2 tools
+### Category `bigquery`
 
 #### `query_database`
-`BIGQUERY_TOOL_DEFINITIONS`, `definitions.py:1617` — category `bigquery`
+`BIGQUERY_TOOL_DEFINITIONS` — category `bigquery`
 
 Description as sent to the model:
 
@@ -2305,7 +2393,7 @@ If the download hits the 100,000-row cap, tell the user to add filters to narrow
 `required`: ['sql']
 
 #### `get_database_schema`
-`BIGQUERY_TOOL_DEFINITIONS`, `definitions.py:1656` — category `bigquery`
+`BIGQUERY_TOOL_DEFINITIONS` — category `bigquery`
 
 Description as sent to the model:
 
@@ -2319,10 +2407,10 @@ Get schema for database tables. **Always call this before query_database** to di
 
 `required`: []
 
-### Category `orchestration` — 4 tools
+### Category `orchestration`
 
 #### `list_capabilities`
-`TOOL_DEFINITIONS`, `definitions.py:1541` — category `orchestration`
+`TOOL_DEFINITIONS` — category `orchestration`
 
 Description as sent to the model:
 
@@ -2337,7 +2425,7 @@ List the `genetics` SDK surface available to analysis scripts, one module at a t
 `required`: []
 
 #### `run_analysis`
-`TOOL_DEFINITIONS`, `definitions.py:1560` — category `orchestration`
+`TOOL_DEFINITIONS` — category `orchestration`
 
 Description as sent to the model:
 
@@ -2359,7 +2447,7 @@ Each run is independent: no variables, files or imports survive from one call to
 `required`: ['code']
 
 #### `read_artifact`
-`TOOL_DEFINITIONS`, `definitions.py:1594` — category `orchestration`
+`TOOL_DEFINITIONS` — category `orchestration`
 
 Description as sent to the model:
 
@@ -2374,7 +2462,7 @@ Read a named file from this server's local artifacts directory. Takes the artifa
 `required`: ['name']
 
 #### `launch_subagents`
-`SUBAGENT_TOOL_DEFINITIONS`, `definitions.py:1670` — category `orchestration`
+`SUBAGENT_TOOL_DEFINITIONS` — category `orchestration`
 
 Description as sent to the model:
 
@@ -2439,8 +2527,8 @@ regenerate by hand with `scripts/gen-doc-blocks.py [--mcp-src DIR]`.
 **Everything else is hand-derived**, so re-derive it rather than trusting it: sections 2a, 2b
 and 2c (how each surface is assembled, and the handler and effective `/mcp` counts in them),
 section 3's profile-coercion table and the `KNOWN_TOOL_PROFILES` set quoted beside it,
-section 4a (the system prompt and its fragments), and section 8 (the catalogue, its
-per-category headings and the `definitions.py:` line references). To check any of those,
+section 4a (the system prompt and its fragments), and section 8 (the catalogue itself —
+its headings carry no counts and its entries no line numbers). To check any of those,
 parse the module rather than importing it (it has no runtime deps at module level, but `ast`
 avoids needing the venv at all):
 
