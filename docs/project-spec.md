@@ -378,6 +378,9 @@ External GWAS pseudo credible sets (COVID-19 HGI, PGC SCZ, PGC BIP, GP2 Parkinso
 
 PGC schizophrenia additionally has **published** fine-mapping served alongside its pseudo credible sets, under the same `pgc` resource: dataset `pgc_scz_finemap`, `dataset` column value `PGC_SCZ_2022`, from Trubetskoy et al. 2022 supplementary table ST11a (`gs://<bucket>/credible_sets/pgc_scz_finemap/2022/PGC_SCZ_2022_credible_sets.tsv.gz`, munged by `genetics-results-munge/scripts/munge_pgc_scz_finemap.sh`). Two datasets under one resource therefore now carry credible sets for the same trait code `SCZ`, one pseudo (`pgc_scz`, `dataset` = `PGC`) and one fine-mapped (`pgc_scz_finemap`), which is the intended state — queries that want only genuine fine-mapping must filter on `dataset`, not on `resource`. The `PGC` rule is an exact match, so a separate `PGC_SCZ%` rule maps the new value to `pgc`. Unlike the pseudo sets this file is loaded by `load_credsets_coloc.sh` rather than `load_pseudo.sh`, and it is not part of the shared `ext_pseudo` file. Its caveats are documented in `genetics-results-munge/docs/pgc-scz-finemapping.md`: FINEMAP was run with several causal variants allowed per locus (PIPs within a set sum to roughly *k*, not 1), `cs_min_r2` is unavailable, and the X-linked sets carry no `aaf` because the wave 3 summary statistics are autosomes only.
 
+The EstBB-UKBB NMR metabolic trait fine-mapping is the other published-credible-set dataset, and the first `metaboQTL` rows in `credible_sets_v`: resource `nmr_meta`, dataset `nmr_meta_finemap`, `dataset` column value `UKBB_EUR_NMR_2026`, from Tambets et al. 2026 (`gs://<bucket>/credible_sets/nmr_meta/2026/UKBB_EUR_NMR_2026_credible_sets.tsv.gz`, munged by `genetics-results-munge/scripts/munge_nmr_meta.sh`). 249 Nightingale NMR biomarkers, `cell_type` `plasma`, trait codes resolved through `phenotypes_v` from a 249-row metadata JSON whose names are matched against the authors' own GWAS Catalog registrations rather than hand-written. The GWAS is a 619,372-individual meta-analysis but the fine-mapping is the UKBB_EUR subset alone (413,897), which is the sample size the registry records. Two properties a consumer cannot see in a `SELECT *` and which `genetics-results-munge/docs/nmr-metabolic-trait-finemapping.md` derives in full: the source's `z` is signed on the **reference** allele, so `beta` is its negation (established against the companion lead-variant record, whose `Z` is the exact negative on all 48,742 shared rows); and `beta`/`se`/`mlog10p` are the authors' published values on the 49,815 lead-variant rows, derived from `z` elsewhere with a per-trait scale calibrated against those same published standard errors, and NULL on 5,004 rows whose `z` overflowed in the source. Those 5,004 are why `credible_sets.beta` is nullable. A `UKBB_EUR_NMR%` rule maps the dataset to `nmr_meta` and must precede the `UKB%` rule, which would otherwise claim it for the `ukbb` resource that holds UKB-PPP and UKB Finucane. Registered in both profiles but staged and loaded only in daly — `finngen-commons` is not writable from the machine this landed on, so the finngen profile has the registry entry, no `credible_sets.py` product entry (`startup_checks` would fail its startup on a missing `all_cs_file`) and a `build_phenotypes.ABSENT_FROM_RESULTS` entry scoped to that profile.
+
+
 ### Open chromatin and variant effect (Products A and B)
 
 Two data products cover chromatin accessibility rather than association statistics. Both carry
@@ -1548,11 +1551,21 @@ of the three production datasets or lacks a `dev` segment — there is no overri
 
 `docs/bigquery-dev-dataset.md` is the runbook: the expand/verify/contract cycle and the
 promotion path for each pending BigQuery change, and the ordering constraints between
-them — an irreversible ~27 GB `DROP` only after the change it depends on is verified, a
+them — an irreversible ~27 GB `DROP` only after the change it depends on is verified, and a
 contract phase only after all three code artifacts ship (see *HLA column rename rollout*
-below), and the `datasets.yaml` guidance updates held back because they are correct today
-and become wrong only once the schema change lands. The per-change ordering lives in that
-runbook, not here.
+below). The per-change ordering lives in that runbook, not here.
+
+One of those changes has since landed in the daly `genetics_results` dataset: `credible_sets`
+now stores `variant` and `resource` and clusters on `data_type, resource, variant, pos`, so
+`credible_sets_v` derives only `maf` and the old table survives as `credible_sets_pre_swap`.
+Two consequences that the runbook predicted and that are now in force, both of them the kind
+that rot silently. `resource` is frozen at load time: editing `dataset_to_resource_rules` no
+longer takes effect by recreating the view, it needs a reload or an `UPDATE` backfill. And the
+"always add a `chr` filter" advice on `credible_sets_v`'s single-variant example is gone from
+`configs/datasets.yaml`, because `variant` is a clustering key now and adding `chr` beside it
+measured ~13.6 % *worse*; the advice still holds for range queries, which prune partitions.
+The finngen deployment is unmigrated and unreachable from here, so both statements are about
+daly only.
 
 Note for anyone measuring: `--dry_run` proves syntax and reference resolution only. On a
 freshly created table BigQuery's dry-run estimate **ignores clustering** until the storage
