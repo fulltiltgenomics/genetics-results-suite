@@ -777,19 +777,24 @@ The gate finds ruff without a local install (it falls back to the main checkout'
 installed so the pinned version is the one that runs:
 
 ```bash
-cd ../genetics-results-api    && uv pip install -e '.[dev]'
-cd ../genetics-mcp-server     && uv sync --extra dev
-cd ../genetics-results-db     && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-results-api     && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-mcp-server      && uv sync --extra dev
+cd ../genetics-results-db      && uv pip install -r pyproject.toml --extra dev
 cd ../genetics-results-browser && npm install
 ```
 
-`genetics-results-db` is the odd one: `uv pip install -e '.[dev]'` **cannot** work there,
-because its `pyproject.toml` declares no `[build-system]` and setuptools refuses a flat
-layout with more than one top-level directory. Nothing is lost — its `api` package is
-reached through `sys.path` rather than as an installed package — but the extra has to be
-requested against the requirements file instead. The browser needs a real `npm install`
-**per worktree**: eslint resolves the plugins named in `eslint.config.mjs` relative to
-that config, so the main checkout's `node_modules` cannot stand in for it.
+**Not `uv pip install -e '.[dev]'` for results-api or results-db.** Neither declares a
+`[build-system]`, so the build falls back to setuptools, whose flat-layout discovery
+ignores `docs/`, `scripts/` and `tests/` but **not** `configs/` — so the editable install
+fails with "Multiple top-level packages discovered" in any checkout where
+`sync-datasets.sh` has run, which is every working one. (It appears to succeed in a fresh
+worktree only because `configs/` is gitignored and therefore not there yet.) Nothing is
+lost by not installing either project: results-db's `api` is reached through `sys.path`,
+and results-api is run from its repo root.
+
+The browser needs a real `npm install` **per worktree**: eslint resolves the plugins named
+in `eslint.config.mjs` relative to that config, so the main checkout's `node_modules`
+cannot stand in for it.
 
 ### Running the sibling repos' tests
 
