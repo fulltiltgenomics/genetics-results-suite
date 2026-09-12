@@ -532,6 +532,14 @@ in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
 
+A default written in the SDK as a bare name is resolved to its literal and that name
+defined at the top of the stub, so the file answers *what does this argument default to*
+on its own. The stub is not importable and the package it describes is in `/opt/venv`, so
+a name left unresolved would be a value the reader has no way to look up; the generator
+refuses to emit one it cannot resolve, and the harness re-checks the property over the
+shipped text. This is the one way a module-private name reaches the image — a private
+constant's value, never a private function, which the surface equality above still bars.
+
 What the shipped `plots.pyi` therefore discloses beyond the signatures is the guidance in
 those docstrings, and one line of it is load-bearing rather than descriptive: that the 250 kb
 default window is the house default and is not to be widened as a matter of course. That is
@@ -1137,7 +1145,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
-| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
+| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |

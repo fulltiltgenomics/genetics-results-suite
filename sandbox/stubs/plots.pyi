@@ -40,6 +40,8 @@ a script's author to discover it.
 import polars as pl
 from typing import Any
 
+_UPSET_MAX_INTERSECTIONS: int = 30
+
 def locuszoom(
     *,
     phenotype: str,
