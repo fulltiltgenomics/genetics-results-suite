@@ -7,7 +7,6 @@ import time
 
 from .harness import _LogCapture, check, sup
 
-
 ENV_DROP_LF_CRLF = "SUPERVISOR_TEST_DROP_LF_CRLF"
 
 

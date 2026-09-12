@@ -408,6 +408,7 @@ LAYOUT = {
     "scripts/build-all.sh": "build and push every image",
     "scripts/create-secrets.sh": "create the k8s Secrets from environment variables",
     "scripts/install-git-hooks.sh": "wire core.hooksPath; run once per clone",
+    "scripts/lint-staged.sh": "block a commit whose staged Python ruff rejects",
     "scripts/sync-datasets.sh": "copy datasets.yaml to the sibling repos for local dev",
     "scripts/dev-stack.sh": "start/stop the local dev servers from one tree "
                             "(docs/local-dev-vm.md)",
@@ -467,6 +468,7 @@ LAYOUT = {
     "CLAUDE.md": "the coding and documentation-ownership rules for this repo",
     "README.md": "deployment and operations guide",
     "LICENSE": "",
+    "ruff.toml": "the lint rule set the pre-commit gate enforces",
 }
 
 # expanded one level in the block below; everything else is listed as a single entry
