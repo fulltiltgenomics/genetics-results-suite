@@ -354,7 +354,7 @@ class GeneticsClient:
         ...
 
     async def gene_disease(self, gene: str) -> pl.DataFrame:
-        """Mendelian gene-disease associations.
+        """Mendelian gene-disease associations, from GenCC and the Monarch Initiative.
         """
         ...
 

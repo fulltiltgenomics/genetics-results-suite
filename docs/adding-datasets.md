@@ -142,7 +142,12 @@ the API-side resource grouping.
   have no `resource` column; `/gene_based/{gene}` appends one from the data file's
   `"resource"`, so a new entry's `"resource"` is what the SDK's `gene_burden(gene=...)`
   frame shows.
-- **Expression / coloc / chromatin / gene-disease** → the correspondingly named module.
+- **Expression / coloc / chromatin** → the correspondingly named module.
+- **Gene-disease** → `gene_disease.py`. Not a list of products but one block per source,
+  each with a `"file"` and a `"columns"` map from the endpoint's `output_columns` to that
+  source's own column names; a source that omits an output column serves `NA` for it.
+  Monarch additionally declares `uuid_from`, the columns its synthesised row id is composed
+  from. See section 13 for what a refresh of these involves.
 - **Open chromatin / variant effect** — unlike a plain new dataset (which only needs a
   `datasets.yaml` entry plus an existing product config), these are two **new products**.
   Each gets its own new results-api tabix vertical (`open_chromatin.py` / `variant_effect.py`,
@@ -592,6 +597,70 @@ need every other list a view lives on: `exposed: true`, `resource_derivation`, t
 view list, the phenotype registry mapping, and an MCP tool if an agent is meant to reach it
 without writing SQL.
 
+## 13. Worked example: refreshing GenCC and Monarch, a source with no view and no index
+
+Context: the other direction — **not a new dataset, a new release of one**. `gencc` and
+`monarch` are API-only resources (`api/yaml_loader.py`'s `_API_ONLY_RESOURCES`): no BigQuery
+view, no tabix index, no product config beyond a file path. results-api reads both TSVs out of
+GCS at startup and answers `/gene_disease/{gene}` from memory, and the registry entry exists
+only so the catalogue and `datasets_v` can describe them. A refresh therefore touches a file
+path, a version string and a description — and, as it turned out, rather more than that.
+
+Changes made:
+
+1. `genetics-results-munge`: `scripts/munge_gene_disease.{py,sh}` with a `--product`
+   (`gencc` | `monarch`) and `docs/gene-disease-associations.md`. GenCC is a validating
+   pass-through; Monarch concatenates the KG's causal and non-causal gene-disease exports,
+   drops the non-gene, non-human and negated rows and collapses verbatim duplicates.
+2. GCS: the new files are staged under **version-bearing names**
+   (`gencc-submissions-export.<download date>.tsv`,
+   `monarch-gene_to_disease.<kg release>.tsv`) alongside the ones they replace, which stay.
+3. `genetics-results-api`: the `daly` profile's `gene_disease.py` points at the new names.
+   `_read_tsv` now reads every column as text; Monarch's `uuid_from` is declared per profile.
+4. `datasets.yaml`: `version`, `publication_date` and `description` on the **daly** entries
+   only — the finngen profile reads its own copies out of `finngen-commons`, which this
+   refresh did not touch, and its entries would be wrong if they claimed the new release.
+5. `genetics-mcp-server`: the `get_gene_disease_associations` description and the SDK's
+   `gene_disease()` docstring; `docs/chat-tool-reference.md` here carries the tool description
+   verbatim and is not generated, so it is edited by hand in the same commit.
+
+Four points of interest, and they generalise past this dataset.
+
+**A published file path is a cutover switch, so never overwrite one.** Publishing under a
+version-bearing name and editing the profile are two steps, which means the previous release
+stays readable until the second one lands and a rollback is a one-line revert. Overwriting in
+place cuts every profile reading that path over at upload time, at whatever moment the next pod
+restarts, with nothing to roll back to. It also makes "which release is deployed?" unanswerable
+from the bucket.
+
+**A source's quoting is part of its schema, and type inference will find that out for you.**
+GenCC's export used to quote every field and now quotes only the fields that need it. Both
+parse — but polars had been inferring column types from the first rows of a fully quoted file,
+which made everything a string. Unquoted, `submitted_as_submission_id` looks like an integer
+for the first few thousand rows and is a UUID further down, and the load raised
+`could not parse ... as dtype i64` at startup. Nothing served from this endpoint is numeric, so
+`infer_schema_length=0` is both the fix and the honest description of the data. Any reader that
+takes its types from a sample of a curated text table has the same latent failure.
+
+**When a source is combined, the column that separates the parts has to reach the API.** The
+Monarch release contracted — about a quarter of the gene-disease pairs the previous file
+carried are in no current export — so the non-causal file is taken as well, and Orphanet
+arrives with it. That makes `causes` and `gene_associated_with_condition` rows neighbours in
+one table, which they were never meant to be, so the Biolink predicate is mapped onto
+`classification`. That column already held GenCC's validity vocabulary: `/gene_disease`'s
+`output_columns` are a **harmonization of per-source vocabularies, not a shared one** — as
+`submitter` has always shown, holding both `Ambry Genetics` and `infores:omim`. Adding a
+Monarch-only column instead would have broken that shape and left every GenCC row with an
+`NA` in it.
+
+**A synthesised identifier must key on everything the file distinguishes.** Monarch ships no
+per-row id, so results-api composes one. Composed from subject, object and source it was
+unique in the old causal-only file and collides in the combined one, where the same gene,
+disease and source appear under two predicates. The key is now declared per profile
+(`uuid_from`), because the finngen profile still reads the old three-column-unique file and its
+bucket is not readable from here — a config key that says which columns *this file* needs is
+honest where a shared constant would have been a guess.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
@@ -646,6 +715,11 @@ without writing SQL.
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
       `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.
+- [ ] Refreshing an existing dataset rather than adding one? Stage the new file under a
+      version-bearing name beside the old one, never over it; bump `version`,
+      `publication_date` and `description` on the profiles whose bucket you actually
+      restaged; and re-run `scripts/load_phenotypes.sh` so `datasets_v` carries the new
+      version. See section 13.
 - [ ] Build + roll out results-api if its configs changed; `deploy.sh` for datasets.yaml.
 - [ ] Verify `/datasets`, the data endpoint, the agent, and (if applicable) the BQ view —
       for **both** profiles.

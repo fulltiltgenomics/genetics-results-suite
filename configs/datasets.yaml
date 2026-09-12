@@ -111,7 +111,7 @@ resources:
 
   monarch:
     label: "Monarch Initiative"
-    description: "Monarch Initiative causal gene-to-disease associations"
+    description: "Monarch Initiative gene-to-disease associations from the Monarch knowledge graph"
     aliases: ["Monarch"]
 
   covid_hgi:
@@ -4440,12 +4440,16 @@ profiles:
       # --- gene-disease ---
       gencc:
         resource: gencc
-        version: "2025-11-13"
+        version: "2026-09-12"
         description: >-
-          GenCC (Gene Curation Coalition) gene-disease validity classifications. Curated
-          submissions from ClinGen, DECIPHER, Genomics England PanelApp, and other panels.
+          GenCC (Gene Curation Coalition) gene-disease validity classifications. One row per
+          curation submission: each submitting panel states its own validity classification
+          (Definitive through Refuted) and mode of inheritance for a gene-disease pair, so a
+          gene carries as many rows as panels have curated it and they need not agree. The
+          export publishes no release identifier of its own, so the version is the date it was
+          downloaded.
         author: "GenCC"
-        publication_date: "2025-11-13"
+        publication_date: "2026-09-12"
         data_type: gene_disease
         trait_type: null
         metadata_file: null
@@ -4453,12 +4457,17 @@ profiles:
 
       monarch:
         resource: monarch
-        version: "2025-12-07"
+        version: "2026-09-02"
         description: >-
-          Monarch Initiative causal gene-to-disease associations. Integrated Mendelian
-          disease-gene relationships from OMIM, Orphanet, and other sources.
+          Monarch Initiative gene-to-disease associations, from the Monarch knowledge graph
+          release named by the version. Both of the KG's gene-disease exports are served: the
+          causal one (Biolink causes and associated_with_increased_likelihood_of, from OMIM and
+          ClinGen) and the non-causal one (gene_associated_with_condition from Orphanet,
+          contributes_to from OMIM). The Biolink predicate is carried in the classification
+          column, which is what separates a causal claim from an association; unlike GenCC, a
+          row states no evidence strength and no mode of inheritance.
         author: "Monarch Initiative"
-        publication_date: "2025-12-07"
+        publication_date: "2026-09-02"
         data_type: gene_disease
         trait_type: null
         metadata_file: null
