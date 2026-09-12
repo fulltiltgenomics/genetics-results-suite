@@ -40,3 +40,6 @@ __pycache__/
 # has to cover the autosave, not just the original. Emacs LOCK files are named .#file and
 # start with a dot, so this pattern does not match them.
 \#*
+
+# harness-created git worktrees; never part of the repo
+.claude/worktrees/
