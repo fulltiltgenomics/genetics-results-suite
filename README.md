@@ -168,6 +168,11 @@ terraform apply -var-file=terraform.tfvars.<env>    # review the plan before con
 single-deployment instance you may instead keep a bare `terraform.tfvars` and leave `DEPLOY_ENV`
 unset.)
 
+`terraform/.terraform.lock.hcl` is tracked, so every checkout runs the same provider versions
+against the shared GCS state. A state written by a newer provider than the lock makes `plan`
+fail with "managed by newer provider version"; upgrade with `terraform init -upgrade` and
+commit the lock change rather than working around it on one machine.
+
 > The tfvars files are gitignored and live only in your main checkout. Terraform refuses to plan
 > or apply when none of them is present (`require_tfvars`, default `true`) — otherwise a run from
 > a git worktree or a fresh clone would use variable defaults and destroy the log sinks and
