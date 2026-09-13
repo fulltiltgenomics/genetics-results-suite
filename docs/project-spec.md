@@ -523,7 +523,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
 - **Region**: Configured via `region` in the deployment's tfvars
 - **GKE Cluster**: **one cluster per deployment, three today** — `finngenie` and `finngenie-staging` in project `daly-finngenie`, and `finngenie` in project `phewas-development` (`docs/environments.md`). **Two of the three are production** (`daly` and `finngen`); only `daly-staging` is not, and it is a rehearsal ground for manifests and images rather than for data — see "There is no development deployment" below. Each has Workload Identity available for GCP API access
-- **Node pool**: `e2-standard-4` on daly and finngen, **`e2-standard-8` on daly-staging** (raised with `RESULTS_API_MEMORY_LIMIT`; a 16Gi limit is unreachable on a node with 12.96 GiB allocatable), **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging` pins `min = max = 2` in this working tree — that file is gitignored and untracked, not part of the repo, so no clone carries it; it is the **daly-staging** profile. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
+- **Node pool**: **`e2-standard-8` on daly and daly-staging** (raised with `RESULTS_API_MEMORY_LIMIT`; a 16Gi limit is unreachable on an `e2-standard-4`'s 12.96 GiB allocatable), `e2-standard-4` on finngen, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging` pins `min = max = 2` in this working tree — that file is gitignored and untracked, not part of the repo, so no clone carries it; it is the **daly-staging** profile. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
@@ -606,8 +606,8 @@ under the 3920m allocatable. It still must get a second node; only the reason is
 **finngen** profile fits, with **775 Mi** of memory headroom — and that margin disappears if
 the analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
 dominates the memory term either way, and its request is now per-environment
-(`RESULTS_API_MEMORY_REQUEST`): the table above is the 4Gi default, which is what daly and
-finngen still deploy. daly-staging requests 6Gi and limits 16Gi on `e2-standard-8`, so its
+(`RESULTS_API_MEMORY_REQUEST`): the table above is the 4Gi default, which is what finngen
+still deploys. Both daly deployments request 6Gi and limit 16Gi on `e2-standard-8`, so their
 arithmetic is not this table's.
 
 **Nothing above changed when the sandbox was added, and that is the whole point of giving it
@@ -1505,9 +1505,10 @@ two clusters this admin instance can reach:
 - **Which dataset a cluster serves is a per-deployment tfvars key, `bq_dataset`.**
   `deploy.sh` renders it into db-api's `DATASET_ID` and the monitor CronJob's `BQ_DATASET`;
   absent, it is `genetics_results`, so daly production is unaffected.
-  `terraform.tfvars.daly-staging` names `genetics_results_dev`, the rehearsal clone. **Read the
-  cluster, not this file, for what is running**: both daly clusters served `genetics_results`
-  until a deploy carries the new render, and `kubectl get deploy db-api -n genetics -o
+  Both daly tfvars leave it absent, so both clusters serve `genetics_results`; the rehearsal
+  clone daly-staging served for two weeks was retired on 2026-09-13 once its last change was
+  promoted. **Read the cluster, not the tfvars, for what is running**: `kubectl get deploy
+  db-api -n genetics -o
   jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DATASET_ID")].value}'` answers it.
 - **`DEPLOY_ENV` does not discriminate them at runtime.** results-api reports
   `DEPLOY_ENV=prod` and `CONFIG_PROFILE=daly` on *both* daly clusters; the only
@@ -1568,6 +1569,16 @@ longer takes effect by recreating the view, it needs a reload or an `UPDATE` bac
 measured ~13.6 % *worse*; the advice still holds for range queries, which prune partitions.
 The finngen deployment is unmigrated and unreachable from here, so both statements are about
 daly only.
+
+Two more have landed in daly `genetics_results` since, and the rehearsal clone they were
+rehearsed in has been torn down. `hla_associations_v` is **contracted**: it serves the house
+spelling only, as the committed `schemas/hla_associations_v.sql` states, so an external
+consumer still reading `mlogp`/`sebeta`/`af_alt` out of the MCP tool breaks and the rollback
+is the expand statement below. The six chr-string tables (`asm_qtl`,
+`hla_associations`, `mpra`, `open_chromatin`, `peak_to_gene`, `variant_effect`) were rebuilt
+from their DDL so they carry the committed `NOT NULL` modes and column descriptions again; each
+rollback window is BigQuery time travel on the dropped originals (`maxTimeTravelHours` on the
+dataset, 168 h), not a kept copy.
 
 Note for anyone measuring: `--dry_run` proves syntax and reference resolution only. On a
 freshly created table BigQuery's dry-run estimate **ignores clustering** until the storage
