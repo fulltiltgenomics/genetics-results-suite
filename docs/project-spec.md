@@ -2849,7 +2849,8 @@ the analysis through the chat backend's admin API:
 - **Conversations tab** gains 4 analysis-derived columns, each server-side filterable
   (consistent with the existing user/date filters): disposition, issue count (with a tooltip
   listing the issue categories), LLM rating (1-5 or `NA` for unrated), and a
-  successful / neutral / unsuccessful icon.
+  successful / neutral / unsuccessful icon. A USD column between Messages and Created shows
+  the conversation's recorded list-price cost, a dash when no turn is attributed to it.
 - **Usage tab** (after Conversations) shows LLM spend: a week / month / year toggle (week by
   default), one Chart.js line of USD per day, and under it a sortable, filterable table
   (`UsageTable.tsx`, the same material-react-table setup as the Conversations table) with one
