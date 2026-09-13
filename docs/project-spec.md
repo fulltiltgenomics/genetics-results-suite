@@ -523,7 +523,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
 - **Region**: Configured via `region` in the deployment's tfvars
 - **GKE Cluster**: **one cluster per deployment, three today** — `finngenie` and `finngenie-staging` in project `daly-finngenie`, and `finngenie` in project `phewas-development` (`docs/environments.md`). **Two of the three are production** (`daly` and `finngen`); only `daly-staging` is not, and it is a rehearsal ground for manifests and images rather than for data — see "There is no development deployment" below. Each has Workload Identity available for GCP API access
-- **Node pool**: **`e2-standard-8` on daly and daly-staging** (raised with `RESULTS_API_MEMORY_LIMIT`; a 16Gi limit is unreachable on an `e2-standard-4`'s 12.96 GiB allocatable), `e2-standard-4` on finngen, **autoscaling** `min_node_count = 1` / `max_node_count = 3` (`terraform/terraform.tfvars.daly-staging` pins `min = max = 2` in this working tree — that file is gitignored and untracked, not part of the repo, so no clone carries it; it is the **daly-staging** profile. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable). Measured 2026-08-30, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) runs **two** general nodes, and `finngenie-staging` runs **two** general nodes plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy can surge past a single node; nothing prevents the subsequent scale-down from evicting chat-backend — what keeps that eviction from truncating an in-flight stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
+- **Node pool**: **`e2-highmem-4`, pinned at one node (`min_node_count = max_node_count = 1`), on daly and daly-staging** — 32 GiB so that results-api's 16Gi `RESULTS_API_MEMORY_LIMIT` is reachable (unreachable on an `e2-standard-4`'s 12.96 GiB allocatable), and 4 vCPU because no node exceeded 1.8 cores in the 30 days measured on 2026-09-13; `e2-standard-4` autoscaling `1`–`3` on finngen. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable. Measured 2026-09-13, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) and `finngenie-staging` each run **one** general node plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy's surge fits on that node, and a pinned pool has no autoscaler scale-down; what keeps a node-upgrade drain from truncating an in-flight chat-backend stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
@@ -547,20 +547,25 @@ explicitly: pin the build, or match on something build-independent.
 
 There are **two** pools, and they are sized on different grounds.
 
-The **primary** pool **autoscales**: `min_node_count = 1`, `max_node_count = 3` in every live
-`terraform.tfvars` profile (`terraform.tfvars.daly-staging` pins `min = max = 2`; it is the staging profile, and no production tfvars is committed), on `e2-standard-4` — except daly-staging, which is on `e2-standard-8`. Two general nodes are running on each of the two clusters this checkout can reach — see the Node pool bullet above for what is and is not measurable.
+The **primary** pool is **pinned at one `e2-highmem-4`** (`min_node_count = max_node_count = 1`)
+on daly and daly-staging; finngen autoscales `1`–`3` on `e2-standard-4`. The pin is deliberate:
+the full-deploy surge fits on one node (table below), and an autoscaler-added surge node is
+reaped ~15 minutes after the rollout, evicting whatever was scheduled onto it mid-request. One
+general node is running on each of the two clusters this checkout can reach — see the Node
+pool bullet above for what is and is not measurable. Two things `terraform apply` does **not**
+do here: a `machine_type` change is applied in place as a GKE surge replacement of every node
+(measured 9m4s for two nodes on 2026-09-13, no pod left unscheduled), not a pool recreate; and
+lowering `max_node_count` changes only the autoscaler bound, so the pool keeps its node count
+until the autoscaler's idle timer or an explicit
+`gcloud container clusters resize --node-pool=<pool> --num-nodes=1` drains the surplus.
 
 The **sandbox** pool (`<cluster>-sandbox-pool`, `terraform/gke.tf`) is **pinned at one node**
 and exists for isolation, not capacity — see "The sandbox pool" below. It contributes **0m and
 0 GiB** to everything in the surge table that follows.
 
-> An earlier version of this section claimed the pool was pinned at
-> `min_node_count == max_node_count == 2`. That pinning was written into
-> `terraform.tfvars.example` by commit 6db94e8 but **never applied to any live profile**
->. The decision has since been to keep autoscaling and handle
-> the eviction case with graceful shutdown, which also covers node auto-upgrade — something
-> pinning never did. PodDisruptionBudgets are declared for the two expensive workloads but,
-> at `replicas: 1`, do not currently block anything (see below).
+Pinning does not cover node auto-upgrade; graceful shutdown does. PodDisruptionBudgets are
+declared for the two expensive workloads but, at `replicas: 1`, do not currently block
+anything (see below).
 
 **Why the surge matters.** A full `deploy.sh` rolls every deployment at once. All of them
 except chat-backend, keycloak-postgres and rag-service (which are `strategy: Recreate`) use
@@ -599,16 +604,22 @@ deployments, not 11.
 | **peak during a full deploy — finngen** | 3226m | 12.21 GiB (12498 Mi) |
 | the sandbox, on **either** primary-pool profile | **0m** | **0 GiB** (separate pool) |
 
-So the **daly** profile as actually deployed overshoots a single node on **memory only** —
+So on an `e2-standard-4` the **daly** profile overshoots a single node on **memory only** —
 13778 Mi against 13273 Mi allocatable, **over by 505 Mi** — while its 3826m CPU peak stays
-under the 3920m allocatable. It still must get a second node; only the reason is narrower than
-"both axes". Turning RAG on pushes CPU over as well, so daly+RAG is over on **both** axes. The
-**finngen** profile fits, with **775 Mi** of memory headroom — and that margin disappears if
-the analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
-dominates the memory term either way, and its request is now per-environment
+under the 3920m allocatable; turning RAG on pushes CPU over as well. The **finngen** profile
+fits, with **775 Mi** of memory headroom — and that margin disappears if the
+analyze-conversations (512Mi) or monitor (256Mi) CronJob overlaps the rollout. `results-api`
+dominates the memory term either way, and its request is per-environment
 (`RESULTS_API_MEMORY_REQUEST`): the table above is the 4Gi default, which is what finngen
-still deploys. Both daly deployments request 6Gi and limit 16Gi on `e2-standard-8`, so their
-arithmetic is not this table's.
+still deploys.
+
+Both daly deployments request 6Gi and limit 16Gi on an **`e2-highmem-4`**, which has the same
+3920m CPU allocatable and 27.7 GiB of memory. There the axes swap: peak requests during a full
+deploy are ~3826m against 3920m and ~17.5 GiB against 27.7, so **CPU is the binding
+constraint**. A CronJob overlapping the rollout can leave one surge pod `Pending` until the
+job ends; the old pod keeps serving, so the cost is a slower deploy. Measured usage is far
+inside both: no node exceeded 1.8 cores in the 30 days to 2026-09-13, and the memory peak was
+the PheWAS-shaped run that took results-api to 13.75 GiB on staging.
 
 **Nothing above changed when the sandbox was added, and that is the whole point of giving it
 its own pool.** The sandbox contributes 0m / 0 GiB here because it is on a different pool.
@@ -679,8 +690,7 @@ and the expensive one is the autoscaler:
 before the old pod dies. The old pod then goes away and node 1 frees up — but the new pod
 stays on node 2, and under a blocking budget node 2 would host a pod that can never be
 selected for scale-down. **The pool would ratchet to two nodes and stay there** — a permanent
-cost arrived at as a side effect, and effectively the `min == max == 2` pinning that was
-explicitly rejected. That is the reason for choosing `1` over `0`, accepting that the
+cost arrived at as a side effect, and effectively a two-node pinning arrived at by accident. That is the reason for choosing `1` over `0`, accepting that the
 budgets are protectively inert until a second replica exists. At `maxUnavailable: 1` this
 ratchet does not occur.
 
@@ -740,7 +750,8 @@ reading `Cannot evict pod as it would violate the pod's disruption budget`.
 Other consequences to keep in mind:
 
 - **Raising any deployment's requests, or adding a service, changes the table above.**
-  Re-derive the surge total against 3920m / 12.96 GiB per node before merging such a change.
+  Re-derive the surge total against the node's allocatable — 3920m on either 4-vCPU type,
+  12.96 GiB on `e2-standard-4`, 27.7 GiB on `e2-highmem-4` — before merging such a change.
 - The `chat-data` PVC is `ReadWriteOnce`, so once a second node exists a `Recreate` rollout can
   land chat-backend on the *other* node and stall ~20s on `Multi-Attach error` while the volume
   detaches. That is a slower deploy, not a dropped request.
@@ -767,12 +778,9 @@ nothing else drifts onto it. Two further properties need the pool rather than th
 `pod_pids_limit` is a **kubelet** setting, and the node service account is node-scoped, so a
 sandbox node can carry a minimal identity instead of the suite's.
 
-**Why pinned when the primary pool is not.** The primary pool autoscales because its pods are
-restartable request-servers with graceful shutdown. A scale-down here would kill an in-flight
-script, and there is no second replica. The accepted cost is one permanently-running
-`e2-standard-2` — chosen on isolation grounds alone. Do not repeat the "nearly free" framing an
-earlier revision used: it rested on a belief that the primary pool was pinned at two nodes,
-which measurement contradicted.
+**Why pinned.** A scale-down here would kill an in-flight script, and there is no second
+replica. The accepted cost is one permanently-running `e2-standard-2` — chosen on isolation
+grounds alone, and not "nearly free": it is a third of the general node's price.
 
 **Budget on that node.** CPU allocatable is arithmetic (2 vCPU, GKE reserves 70m → 1930m).
 **Memory allocatable cannot be derived offline**: the usual capacity-minus-reservation method

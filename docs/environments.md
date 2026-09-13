@@ -233,8 +233,8 @@ which is hardcoded in ~40 manifests.
       `us-central1-docker.pkg.dev/daly-finngenie/genetics-results`). The scripts stop on the
       mismatch rather than push staging images over production tags, but unsetting it avoids
       the interruption — the right value is derived per environment.
-- [ ] **Quota.** The staging node pool adds 2 × `e2-standard-8` (16 vCPU) in `us-central1-a`
-      on top of production's 2 × `e2-standard-8`, plus one `e2-standard-2` sandbox node each. Check `CPUS` /
+- [ ] **Quota.** The staging node pool adds one `e2-highmem-4` (4 vCPU) in `us-central1-a`
+      on top of production's, plus one `e2-standard-2` sandbox node each. Check `CPUS` /
       `IN_USE_ADDRESSES` regional quota.
 - [ ] **Cost.** Staging roughly doubles the fixed spend: 2 nodes, a second GKE control plane,
       four PVCs (10Gi chat-data, 50Gi rag-stores only if `ENABLE_RAG=true`, 1Gi monitor-data,
