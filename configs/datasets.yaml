@@ -83,27 +83,18 @@ resources:
     collection_id_prefix: "qtd"
     collection_data_types: ["eQTL", "sQTL"]
 
-  # resources not in db _RESOURCE_METADATA but referenced by API datasets
-  ukbb_finucane:
-    label: "UKB Finucane"
-    description: "UK Biobank GWAS of 119 traits (Kanai et al. 2021)"
-    aliases: []
-
-  finngen_nmr:
-    label: "FinnGen NMR"
-    description: "FinnGen Nightingale NMR metabolomics QTLs"
-    aliases: ["finngen nmr", "NMR"]
-
-  nmr_meta:
+  nmr_ukbb_est:
     label: "EstBB-UKBB NMR meta-analysis"
     description: >-
       Tambets et al. 2026 GWAS meta-analysis of 249 circulating Nightingale NMR metabolic
       traits in the Estonian Biobank and UK Biobank, 619,372 individuals (Nature,
-      doi 10.1038/s41586-026-10532-5). Separate from the FinnGen NMR resource, which
-      measures the same platform in a different cohort.
+      doi 10.1038/s41586-026-10532-5). Separate from FinnGen's NMR dataset (FinnGen_NMR,
+      under the finngen resource), which measures the same platform in a different cohort.
     aliases: ["EstBB-UKBB NMR", "NMR meta-analysis", "Tambets 2026", "metabolic traits",
               "Nightingale NMR", "metabolomics"]
 
+  # resources with rows in no results view; db-api keeps them out of the agent-facing
+  # resource metadata (see its yaml_loader)
   gtex:
     label: "GTEx"
     description: "Genotype-Tissue Expression project — gene expression across human tissues"
@@ -245,7 +236,7 @@ tables:
       S_HDL_TG, bOHbutyrate), not a gene and not a disease endpoint; resolve a code to its
       name through phenotypes_v rather than reading it. beta is in trait standard deviations
       because the biomarkers are inverse-normal transformed, so it is not comparable with a
-      GWAS log-odds, and for the nmr_meta resource beta, se and mlog10p are NULL on 5,004 rows
+      GWAS log-odds, and for the nmr_ukbb_est resource beta, se and mlog10p are NULL on 5,004 rows
       whose z-score overflowed in the source — among them strong lipid signals such as APOE,
       so a MAX(mlog10p) ranking silently drops some of the top hits; rank by pip.
       NOTE ON caQTL: for data_type = 'caQTL' the trait is a chromatin ACCESSIBILITY PEAK
@@ -2539,12 +2530,13 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v", "peak_to_gene_v"]
     comment: "all other FinnGen datasets (peak_to_gene is FinnGen ATAC-seq only)"
 
-  - pattern: "UKBB_EUR_NMR%"
-    resource: "nmr_meta"
+  - pattern: "nmr_ukbb_est"
+    resource: "nmr_ukbb_est"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: >-
-      EstBB-UKBB NMR metabolic trait fine-mapping. Must precede the "UKB%" rule below, which
-      would otherwise claim it for the ukbb resource that holds UKB-PPP and UKB Finucane
+      EstBB-UKBB NMR metabolic trait fine-mapping (exact match). NOT the ukbb resource despite
+      the cohort: the GWAS is an EstBB + UK Biobank meta-analysis and only its fine-mapping is
+      UKBB-only, so the name deliberately does not start with UKB
 
   - pattern: "UKB%"
     resource: "ukbb"
@@ -3101,7 +3093,7 @@ profiles:
         metadata_harmonizer: null
 
       ukbb_finucane:
-        resource: ukbb_finucane
+        resource: ukbb
         version: "NA"
         description: >-
           UK Biobank GWAS of 119 traits.
@@ -3663,8 +3655,8 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
-      nmr_meta_finemap:
-        resource: nmr_meta
+      nmr_ukbb_est:
+        resource: nmr_ukbb_est
         version: "2026"
         description: >-
           Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
@@ -4137,7 +4129,7 @@ profiles:
         metadata_harmonizer: null
 
       ukbb_finucane:
-        resource: ukbb_finucane
+        resource: ukbb
         version: "NA"
         description: >-
           UK Biobank GWAS of 119 traits.
@@ -4713,8 +4705,8 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
-      nmr_meta_finemap:
-        resource: nmr_meta
+      nmr_ukbb_est:
+        resource: nmr_ukbb_est
         version: "2026"
         description: >-
           Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
@@ -4737,5 +4729,5 @@ profiles:
         trait_type: quantitative
         n_samples: 413897
         n_phenotypes: 249
-        metadata_file: "gs://daly-genetics-results/mapping_files/nmr_meta_pheno.json"
+        metadata_file: "gs://daly-genetics-results/mapping_files/nmr_ukbb_est_pheno.json"
         metadata_harmonizer: quantitative_pheweb
