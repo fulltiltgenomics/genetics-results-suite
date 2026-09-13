@@ -2683,8 +2683,6 @@ profiles:
           core R14 endpoints. The tested unit is presence of an allele, not a nucleotide
           variant, so these results carry no ref/alt and do not join to variant-keyed data
           on chr/pos/ref/alt; every allele of a gene shares that gene's anchor position.
-          Each row carries the allele's imputation INFO, which is what separates a real
-          association from a rare badly-imputed allele with a large unstable effect.
           Source endpoints with no R14 phenotype metadata (96 extra _WIDE codes) are not
           served, and 4 core endpoints have no HLA run.
         author: "FinnGen Consortium"
@@ -3491,8 +3489,7 @@ profiles:
           protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
           54 HPO phenotypes, together with the per-phenotype DEL/DUP gene association
           statistics those scores were learned from (54 HPO groups x 2 CNV types x 17,263
-          genes). Gene-keyed and coordinate-free: both products were built on GENCODE v19
-          (GRCh37), so only the gene identifiers carry over to the suite's GRCh38 views.
+          genes).
         author: "Collins et al. (Talkowski lab)"
         publication_date: "2022-08-04"
         data_type: rcnv
@@ -3683,11 +3680,7 @@ profiles:
           the source's z overflowed there (its largest finite |z| is 38.47, the
           double-precision p-value limit) and no published value covers them. Strong lipid
           signals such as APOE are among them, so ranking this dataset by mlog10p drops some
-          of its top hits -- rank by pip. pip is the credible set's own SuSiE alpha, matching
-          the rest of the suite, not the file's overall PIP. aaf
-          keeps the study's own frequency and takes only its allele orientation from the
-          FinnGen variant annotation, so it is null for the 5% of variants that annotation
-          does not carry. cs_min_r2 is not available for this dataset.
+          of its top hits -- rank by pip.
         author: "Tambets et al. (Estonian Biobank, UK Biobank)"
         publication_date: "2026-05-20"
         data_type: metaboqtl
@@ -3726,8 +3719,6 @@ profiles:
           core R14 endpoints. The tested unit is presence of an allele, not a nucleotide
           variant, so these results carry no ref/alt and do not join to variant-keyed data
           on chr/pos/ref/alt; every allele of a gene shares that gene's anchor position.
-          Each row carries the allele's imputation INFO, which is what separates a real
-          association from a rare badly-imputed allele with a large unstable effect.
           Source endpoints with no R14 phenotype metadata (96 extra _WIDE codes) are not
           served, and 4 core endpoints have no HLA run.
         author: "FinnGen Consortium"
@@ -4543,8 +4534,7 @@ profiles:
           protein-coding gene, learned from rare CNVs in 950,278 individuals tested against
           54 HPO phenotypes, together with the per-phenotype DEL/DUP gene association
           statistics those scores were learned from (54 HPO groups x 2 CNV types x 17,263
-          genes). Gene-keyed and coordinate-free: both products were built on GENCODE v19
-          (GRCh37), so only the gene identifiers carry over to the suite's GRCh38 views.
+          genes).
         author: "Collins et al. (Talkowski lab)"
         publication_date: "2022-08-04"
         data_type: rcnv
@@ -4740,11 +4730,7 @@ profiles:
           the source's z overflowed there (its largest finite |z| is 38.47, the
           double-precision p-value limit) and no published value covers them. Strong lipid
           signals such as APOE are among them, so ranking this dataset by mlog10p drops some
-          of its top hits -- rank by pip. pip is the credible set's own SuSiE alpha, matching
-          the rest of the suite, not the file's overall PIP. aaf
-          keeps the study's own frequency and takes only its allele orientation from the
-          FinnGen variant annotation, so it is null for the 5% of variants that annotation
-          does not carry. cs_min_r2 is not available for this dataset.
+          of its top hits -- rank by pip.
         author: "Tambets et al. (Estonian Biobank, UK Biobank)"
         publication_date: "2026-05-20"
         data_type: metaboqtl
