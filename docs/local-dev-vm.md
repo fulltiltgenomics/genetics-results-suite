@@ -225,8 +225,8 @@ tables, 115 M rows each, which dev deliberately does not have — they are `4h6.
   no longer applies. Zero rows for a common gene now means a broken stack, not a subset.
 - Two views differ from production on purpose: `hla_associations_v` has different column
   names and `credible_sets` has a different storage layout
-  (`genetics-results-suite-eyg`, consumer-transparent through `credible_sets_v`). The other
-  13 are byte-identical.
+  (`genetics-results-suite-eyg`, consumer-transparent through `credible_sets_v`). Every
+  other product table and view is byte-identical.
 - **`genetics_dev` is the FIXED state for HLA, not the broken one, and the failing
   combination is the mixed one.** `genetics_dev.hla_associations_v` is built from the
   committed schemas and carries the house spelling (`mlog10p`, `se`, `af`, `af_cases`,
@@ -249,10 +249,10 @@ running the stack.
 
 **Reloading it: `TRUNCATE` + `INSERT … SELECT`, never `CREATE OR REPLACE TABLE`.** Dev is
 not a copy of production and a CTAS or a `bq cp`/clone would silently destroy what makes
-it dev. Measured on 2026-08-18, **no dev table's schema is identical to its production
-counterpart**: all 15 carry column descriptions and `NOT NULL` (`REQUIRED`) modes that
-production lacks entirely — production's columns are without exception `NULLABLE` and
-undescribed. (Partitioning is *not* a difference: production range-partitions on `chr`
+it dev. Measured in `phewas-development` on 2026-08-18, **no dev table's schema is
+identical to its production counterpart**: every product table carries column descriptions
+and `NOT NULL` (`REQUIRED`) modes that that project's `genetics_results` lacks — its columns
+are `NULLABLE` and undescribed. (Partitioning is *not* a difference: production range-partitions on `chr`
 the same way, and clusters identically on every table except `credible_sets`, whose keys
 `eyg` swapped to `data_type, resource, variant, pos`.) A CTAS inherits neither the
 partitioning nor the clustering nor the descriptions, and flattens every column to
@@ -604,7 +604,7 @@ Two things look testable here and are not. Do not record either as verified from
 | Frontend ignores `.env.dev` | vite's default mode is `development`, which loads `.env`/`.env.development`/`.env.local` — **not** `.env.dev`, which needs `--mode dev`. `.env.dev` is tracked; `.env.local` is gitignored. Exported `VITE_*` variables beat both |
 | Every by-gene query returns zero rows | Not the dataset: `genetics_dev` has been full-size since 2026-08-18, so a common gene returning nothing is a real fault. Confirm the dataset with `dev-stack.sh status`, then look at db-api itself |
 | `SandboxNotConfigured: SANDBOX_URL is not set` | Nothing set the variable — the client has no default any more, deliberately; set `http://127.0.0.1:8081`, what `run-sandbox-local.sh` publishes |
-| An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names's expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
+| An HLA query fails with "unrecognized name: mlog10p" (or `se`, `af_cases`) | worktree code is pointed at `genetics_results` (`up --dataset genetics_results`). Production's `hla_associations_v` still has FinnGen's native column names because the rename's expand phase has not been applied there. `genetics_dev` and `--tree main` both work; only the mixed combination fails |
 | Chat page errors, rest of app fine | chat-backend down, or `ANTHROPIC_API_KEY` unset |
 | Chat answers but BigQuery tools fail | db-api not running or `BIGQUERY_API_URL` unset |
 | db-api logs `bigquery.tables.get` / `bigquery.jobs.create` denied | the VM runs as the default compute service account, which has no roles. Attach one with `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` (`gcloud compute instances set-service-account`, VM stopped) and restart the servers |
