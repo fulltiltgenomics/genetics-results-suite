@@ -21,11 +21,11 @@ been one that is still standing.** A read-only survey on 2026-08-13 established,
   `genetics_dev` — a persistent **full-size** copy the local dev stack points db-api at,
   `genetics-results-suite-g08`, widened from its original chr22-only subset to all
   755,813,602 rows / 136.69 GB on 2026-08-18. It is a different object from the `genetics_results_dev`
-  clone this document builds. **The daly one now has a second life**: the
-  `daly-staging` cluster serves `daly-finngenie:genetics_results_dev` via `bq_dataset`, so
-  tearing it down takes staging's db-api with it — check what the cluster serves before
-  running `teardown` against that project. In `phewas-development` the clone is still a
-  per-rehearsal object. See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
+  clone this document builds. The daly clone is a per-rehearsal object again: `daly-staging`
+  served it via `bq_dataset` for one batch of changes and was pointed back at
+  `genetics_results` when the batch was promoted, so **check what a cluster serves before
+  running `teardown`** — `kubectl get deploy db-api -n genetics -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DATASET_ID")].value}'`.
+  See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
 - the `daly` profile is a **second production brand** (its own project, region, domain,
   Keycloak realm and real Broad users), not a staging copy. It is not a canary.
 

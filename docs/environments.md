@@ -100,9 +100,10 @@ Two shared-project hazards are handled explicitly:
 
 - **The dataset the cluster serves.** `bq_dataset` in the tfvars (default `genetics_results`)
   is rendered by `deploy.sh` into db-api's `DATASET_ID` *and* the monitor CronJob's
-  `BQ_DATASET`, so both readers of a deployment see the same data. daly-staging sets
-  `genetics_results_dev`, the rehearsal clone (`docs/bigquery-dev-dataset.md`). `deploy.sh`
-  refuses an empty value rather than defaulting it: db-api's own fallback is
+  `BQ_DATASET`, so both readers of a deployment see the same data. Both daly deployments
+  leave it at the default and serve `genetics_results`; the key exists so a cluster can be
+  pointed at a rehearsal clone (`docs/bigquery-dev-dataset.md`) for the life of one change.
+  `deploy.sh` refuses an empty value rather than defaulting it: db-api's own fallback is
   `genetics_results`, so an empty render serves production data from staging without failing.
 - **Log sinks.** `terraform/logging.tf` filters both sinks on
   `resource.labels.cluster_name`. Without it a namespace/container-only filter routes both
@@ -200,16 +201,17 @@ which is hardcoded in ~40 manifests.
       `oauth2-proxy-secrets` *and* rendered into the realm import, so both sides agree).
       Use a **different `SLACK_WEBHOOK_URL`** than production, or leave it empty; otherwise
       staging's daily monitor report lands in the production alert channel.
-- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging`.** Staging starts its chat users on
-      the `code` profile — the code-execution surface — while production leaves the
-      variable unset and starts them on **All**. It is rendered into chat-backend by
-      `scripts/deploy.sh` and served to the browser as the profile of anyone who has not chosen
-      one; a user's own choice still wins and persists (`docs/project-spec.md`, "Tool profiles").
-      Since it is read from `.env.<name>`, a deploy run without the line silently returns staging
-      to All — that is the drift to look for when staging answers with direct tools again.
-- [ ] **`SHOW_TOOLS_CONTROL=false` in `.env.daly-staging`.** Staging hides the chat options'
-      Tools row (the Code execution switch), so its users stay on the profile above with no
-      control to leave it; production leaves the variable unset and shows the row. It is a
+- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging` and `.env.daly`.** Both daly
+      deployments start their chat users on the `code` profile — the code-execution surface;
+      a deployment that leaves the variable unset starts them on **All**. It is rendered into
+      chat-backend by `scripts/deploy.sh` and served to the browser as the profile of anyone who
+      has not chosen one; a user's own choice still wins and persists (`docs/project-spec.md`,
+      "Tool profiles"). Since it is read from `.env.<name>`, a deploy run without the line
+      silently returns that deployment to All — that is the drift to look for when a cluster
+      answers with direct tools again.
+- [ ] **`SHOW_TOOLS_CONTROL=false` in `.env.daly-staging` and `.env.daly`.** Both daly
+      deployments hide the chat options' Tools row (the Code execution switch), so their users
+      stay on the profile above with no control to leave it; unset, the row is shown. It is a
       build-time setting: `build.sh`/`build-all.sh` read it from `.env.<name>` and pass
       `--build-arg SHOW_TOOLS_CONTROL` to the browser image, so it takes effect on the next
       frontend build, not on a manifest-only deploy. A user who stored `nocode` before the row
@@ -232,7 +234,7 @@ which is hardcoded in ~40 manifests.
       mismatch rather than push staging images over production tags, but unsetting it avoids
       the interruption — the right value is derived per environment.
 - [ ] **Quota.** The staging node pool adds 2 × `e2-standard-8` (16 vCPU) in `us-central1-a`
-      on top of production's, which stays on `e2-standard-4`. Check `CPUS` /
+      on top of production's 2 × `e2-standard-8`, plus one `e2-standard-2` sandbox node each. Check `CPUS` /
       `IN_USE_ADDRESSES` regional quota.
 - [ ] **Cost.** Staging roughly doubles the fixed spend: 2 nodes, a second GKE control plane,
       four PVCs (10Gi chat-data, 50Gi rag-stores only if `ENABLE_RAG=true`, 1Gi monitor-data,
