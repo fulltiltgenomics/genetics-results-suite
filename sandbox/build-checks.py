@@ -15,7 +15,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from prune_venv import SDK_ALLOWLIST  # noqa: E402  single source of truth for the closure
+from prune_venv import (
+    SDK_ALLOWLIST,  # noqa: E402  single source of truth for the closure
+)
 
 DL = "/dl"
 VENV = "/opt/venv"

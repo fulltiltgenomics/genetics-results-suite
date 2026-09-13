@@ -77,6 +77,9 @@ check '^terraform/' "$DOCS_SPEC" \
 check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|lib/)' "$DOCS_SPEC" \
     'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, what the preflights check and when they stay silent)'
 
+check '^(scripts/lint-staged\.sh|ruff\.toml)$' "$DOCS_SPEC" \
+    'lint gate (scripts/lint-staged.sh, ruff.toml) -> docs/project-spec.md + README.md (which commits are blocked, the rule set and its exclusions, how ruff is resolved in a worktree)'
+
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 

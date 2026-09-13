@@ -38,13 +38,23 @@ and says so; that message is not a pass.
 The hook lives in `.beads/hooks/pre-commit`, which is **tracked**, and git finds it
 via `core.hooksPath` — **local config that no clone carries**. So a fresh clone has
 the hook file and no hooks running. Run `scripts/install-git-hooks.sh` once after
-cloning; it sets `core.hooksPath` and re-appends the doc-drift block if it has gone
+cloning; it sets `core.hooksPath` and re-appends any of its blocks that have gone
 missing, and is idempotent. `scripts/deploy.sh` and `scripts/build-all.sh` call it
 with `--check`, which warns loudly (never blocks) when the checkout is unwired.
 Beads owns the top of that hook file between its `BEGIN/END BEADS INTEGRATION`
 markers and patches between them rather than rewriting the file, so the appended
-doc-drift block survives a beads upgrade (measured against bd 1.0.3); the installer
-repairs it anyway rather than trusting that.
+blocks survive a beads upgrade (measured against bd 1.0.3); the installer repairs
+them anyway rather than trusting that.
+
+`core.hooksPath` is **shared across worktrees** — it lives in the common git dir — so
+installing once in the main checkout also wires every worktree, the ones that already
+exist and the ones made later. Nothing needs running inside a new worktree.
+
+The installer manages two blocks, and they differ in the one way that matters: the
+doc-drift block never blocks a commit, and the **lint block does**. `--check` compares
+each installed block against the text the installer would write, not merely against its
+marker, because the previous version could only see a *missing* block — a hand-edited
+one became a second source of truth that the next repair silently overwrote.
 
 | changed path | doc to update | what to check |
 |---|---|---|
@@ -53,6 +63,7 @@ repairs it anyway rather than trusting that.
 | `k8s/**` | `docs/project-spec.md`, `README.md` | services table, request routing, PVCs, container hardening |
 | `terraform/**` | `docs/project-spec.md`, `README.md` | infrastructure, log sinks, tfvars and access control |
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh`, `check-siblings.sh`, `check-duplication.py`, `scripts/lib/**` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
+| `scripts/lint-staged.sh`, `ruff.toml` | `docs/project-spec.md`, `README.md` | which commits the lint gate blocks and which it lets through, the rule set and its per-file exclusions, how ruff is resolved when a worktree has no `.venv` |
 | `scripts/run-sandbox-local.sh` | `docs/project-spec.md`, `README.md` | how the sandbox image is built and staged locally, what the local supervisor run does and does not reproduce |
 | `scripts/dev-stack.sh` | `docs/local-dev-vm.md`, `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
 | `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
@@ -63,7 +74,7 @@ repairs it anyway rather than trusting that.
 | `sandbox/**` (**including** the generated trees), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/project-spec.md` | services table, isolation-boundary summary, sandbox network policy, what the sandbox exposes |
 | `scripts/gen-sandbox-docs.py`, `scripts/test-sandbox-docs.py` | `docs/code-execution-security.md` | the schema-doc contract the generator *owns*: that neither generated tree is empty, that no `PLACEHOLDER` file survives the build gate, that each view's file carries its description, columns and worked-example SQL, and that the stubs cover exactly the SDK's exported surface |
 | `scripts/gen-sandbox-docs.py`, `scripts/test-sandbox-docs.py` | `docs/project-spec.md` | the build-step spec: what the generator emits (one `sandbox/schema/*.md` per view in `configs/datasets.yaml` plus an index, `sandbox/stubs/*.pyi` read out of the staged SDK), what the test asserts (every view, column, enumerable column and worked example reaches a file; every documented column carries a well-formed BigQuery type; the stubs cover exactly the SDK's exported surface), the `--sdk-src` resolution order, the `PLACEHOLDER` build gate, and the shared 0/1/2 exit-code convention |
-| `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
+| `scripts/test-network-policies.py` | `docs/code-execution-security.md` | the controls this harness is cited as enforcing — the sandbox's ingress/egress allow-lists, layer 2 of the MCP exclusion (layers 1 and 3 live in genetics-mcp-server's tests, not here), the `SANDBOX_ENABLED` pairing, which pod-spec fields are still treated as sandbox tells |
 | `scripts/test-network-policies.py` | `docs/project-spec.md` | the harness's own enumerated spec: the checks it runs, its discovery tells and both locks, the workload kinds it sweeps, and its three-way answer on the live-sandbox probe |
 | `scripts/gen-doc-blocks.py` | `docs/code-execution-security.md`, `docs/project-spec.md` | which blocks are generated, what each derives from, and the build gate that runs it. The blocks themselves need no row: `--check` fails the build when they are stale |
 | `scripts/gen-doc-blocks.py` | `docs/adding-datasets.md` | the phenotype-join block: the views whose phenotype code is spelled `phenotype`, derived from each `tables.<view>` block's `column_types` in `configs/datasets.yaml` |

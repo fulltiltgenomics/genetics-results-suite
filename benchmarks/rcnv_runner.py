@@ -3,7 +3,11 @@ Sends the nocode arm as the internal-secret identity and the code arm with the e
 headers needed to pass `run_analysis`; resumable — reruns skip question ids already in the
 output file.
 """
-import json, os, sys, time, urllib.request
+import json
+import os
+import sys
+import time
+import urllib.request
 
 BASE = "http://localhost:18000"
 INT = os.environ["INT_SECRET"]; GW = os.environ["GW_SECRET"]

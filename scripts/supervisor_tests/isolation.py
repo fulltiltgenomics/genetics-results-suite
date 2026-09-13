@@ -6,7 +6,6 @@ import time
 
 from .harness import Server, check, make_body, skip, sup
 
-
 _ISOLATION_PROBE = r'''
 import gc, json, os, sys, time
 import collections

@@ -10,7 +10,6 @@ import types
 
 from .harness import ROOT, _LogCapture, check, make_body, skip, sup
 
-
 ENV_REAPER_UNBOUNDED = "SUPERVISOR_TEST_REAPER_UNBOUNDED"
 
 

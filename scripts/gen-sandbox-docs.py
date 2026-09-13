@@ -49,7 +49,6 @@ Exit 0 = written (or up to date under --check), 1 = out of date / a rule is miss
 import argparse
 import ast
 import os
-import re
 import subprocess
 import sys
 import textwrap
@@ -141,22 +140,11 @@ def render_view(name, table):
     for col, desc in table["columns"].items():
         out.append(f"| `{col}` | `{_table_cell(types[col])}` | {_table_cell(desc)} |")
     out.append("")
-    out += [
-        _unfold(
-            "Types are the view's own BigQuery types. Match the literal to the type: a "
-            "quoted string never compares equal to a numeric column, and an ARRAY column "
-            "has to go through UNNEST (`<value> IN UNNEST(<column>)`), never a bare `=`."
-        ),
-        "",
-    ]
 
     categorical = table.get("categorical_columns") or {}
     if categorical:
         out += [
             "## Columns with a small, enumerable set of values",
-            "",
-            "`SELECT DISTINCT` these before filtering on them rather than guessing a value.",
-            "A parent means the values are scoped by that column, so enumerate the pair.",
             "",
             "| column | scoped by |",
             "| --- | --- |",
@@ -173,10 +161,7 @@ def render_view(name, table):
         out += [
             "## Worked examples",
             "",
-            _unfold(
-                f"Queries that run against {name} as written. Copy the shape rather than "
-                "inventing one — each shows the filters this view expects."
-            ),
+            _unfold(f"Queries that run against {name} as written."),
             "",
         ]
         for example in examples:
@@ -188,8 +173,8 @@ def render_view(name, table):
 
 def render_index(tables):
     """A single entry point so a script can see what exists without listing a directory
-    it may not have been told about. First sentence only: the summary table is a map, and
-    each view's own section carries the columns.
+    it may not have been told about. A few words per view: the table is a map, and each
+    view's own section carries the description and the columns.
 
     WORDED FOR TWO READERS. The same bytes are the sandbox image's `README.md`, where the
     per-view docs are separate files a script may open, and a section of chat-backend's
@@ -222,12 +207,33 @@ def render_index(tables):
             "partition predicate each view's section names."
         ),
         "",
+        _unfold(
+            "Every view's section below is laid out the same way. The `Columns` table's "
+            "types are that view's own BigQuery types — match the literal to the type: a "
+            "quoted string never compares equal to a numeric column, and an ARRAY column "
+            "has to go through UNNEST (`<value> IN UNNEST(<column>)`), never a bare `=`. "
+            "`SELECT DISTINCT` the columns listed under `Columns with a small, enumerable "
+            "set of values` before filtering on them rather than guessing a value; a "
+            "parent there means the values are scoped by that column, so enumerate the "
+            "pair. The worked examples run as written — copy the shape rather than "
+            "inventing one; each shows the filters that view expects."
+        ),
+        "",
         "| view | summary |",
         "| --- | --- |",
     ]
     for name, table in tables.items():
-        first = " ".join(str(table["description"]).split()).split(". ")[0].rstrip(".")
-        out.append(f"| `{name}` | {_table_cell(first)}. |")
+        summary = " ".join(str(table.get("summary") or "").split())
+        if not summary:
+            # nothing derivable does this job: the first sentence of the description is a
+            # second copy of prose the reader already has below, and splitting on ". "
+            # breaks on "Collins et al." and "(e.g." as readily as on a sentence end. A
+            # blank cell is worse than refusing, so demand a written one.
+            raise SystemExit(
+                f"{name}: no `summary:` in configs/datasets.yaml. Add a few words naming "
+                "what the view holds (see docs/adding-datasets.md)."
+            )
+        out.append(f"| `{name}` | {_table_cell(summary)} |")
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -383,17 +389,33 @@ def _literal(value, package_root):
     return None
 
 
-def _render_constants(text, assignments, package_root):
-    """Every upper-case module constant of client.py that `text` actually mentions.
+def _default_names(funcs):
+    """The bare names `funcs` use as parameter defaults.
 
-    Emitted so the stub is self-contained: a signature whose default is a name the reader
-    cannot look up is worse than no default at all.
+    Read off the AST rather than the rendered stub text, which also carries docstrings:
+    an `x = y` written in prose there is indistinguishable from a signature default.
+    """
+    names = set()
+    for func in funcs:
+        defaults = list(func.args.defaults) + [d for d in func.args.kw_defaults if d]
+        for default in defaults:
+            names.update(n.id for n in ast.walk(default) if isinstance(n, ast.Name))
+    return names
+
+
+def _render_constants(names, assignments, package_root):
+    """Define every name the signatures in one stub default to.
+
+    A default the reader cannot look up is worse than no default at all, so an
+    unresolvable one stops the build rather than shipping. `assignments` must come from
+    the module the signatures were read from: checked against some other module's
+    constants this passes while defining nothing, which is how a stub comes to promise a
+    default named in no file the image carries.
     """
     lines = []
-    for name, value in assignments.items():
-        if not name.isupper() or not re.search(rf"= {re.escape(name)}\b", text):
-            continue
-        resolved = _literal(value, package_root)
+    for name in sorted(names):
+        value = assignments.get(name)
+        resolved = _literal(value, package_root) if value is not None else None
         if resolved is None:
             raise SystemExit(
                 f"a stub signature defaults to {name}, whose value could not be resolved "
@@ -478,15 +500,19 @@ def render_stubs(sdk_dir):
         "",
     ]
     body = []
+    rendered = []
     for name in exported:
+        rendered.append(methods[name])
         body += [_render_def(methods[name], is_async=False), ""]
     init_defs = _defs(init_tree)
     for name in ("configure", "get_client", "close"):
         if name in init_defs:
+            rendered.append(init_defs[name])
             body += [_render_def(init_defs[name], drop_self=False), ""]
     if "parse_region" in _defs(client_tree):
+        rendered.append(_defs(client_tree)["parse_region"])
         body += [_render_def(_defs(client_tree)["parse_region"], drop_self=False), ""]
-    constants = _render_constants("\n".join(body), client_constants, package_root)
+    constants = _render_constants(_default_names(rendered), client_constants, package_root)
     lines = header + (constants + [""] if constants else []) + body
     files["genetics.pyi"] = "\n".join(lines).rstrip() + "\n"
 
@@ -501,6 +527,7 @@ def render_stubs(sdk_dir):
         "",
     ]
     body = []
+    rendered = []
     class_doc = ast.get_docstring(client_class, clean=True)
     body.append("class GeneticsClient:")
     if class_doc:
@@ -509,8 +536,9 @@ def render_stubs(sdk_dir):
     for name, node in methods.items():
         if name.startswith("_") and name != "__init__":
             continue
+        rendered.append(node)
         body += [_render_def(node, indent="    ", drop_self=False), ""]
-    constants = _render_constants("\n".join(body), client_constants, package_root)
+    constants = _render_constants(_default_names(rendered), client_constants, package_root)
     lines = header + (constants + [""] if constants else []) + body
     files["client.pyi"] = "\n".join(lines).rstrip() + "\n"
 
@@ -550,6 +578,12 @@ def render_stubs(sdk_dir):
     if plots_doc:
         lines += [f'"""{plots_doc.rstrip()}\n"""', ""]
     lines += ["import polars as pl", "from typing import Any", ""]
+    constants = _render_constants(
+        _default_names([plots_defs[name] for name in plots_exported]),
+        _module_assignments(plots_tree),
+        package_root,
+    )
+    lines += (constants + [""]) if constants else []
     for name in plots_exported:
         lines += [_render_def(plots_defs[name], drop_self=False), ""]
     files["plots.pyi"] = "\n".join(lines).rstrip() + "\n"

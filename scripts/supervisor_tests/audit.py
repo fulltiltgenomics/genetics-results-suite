@@ -6,7 +6,6 @@ import uuid
 
 from .harness import ROOT, _StdoutCapture, check, make_body, skip, sup
 
-
 PROBE = r"""
 import json, os, sys
 out = {"uid": os.getuid(), "gid": os.getgid(), "cwd": os.getcwd(),

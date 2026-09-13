@@ -7,7 +7,6 @@ import time
 
 from .harness import Server, _LogCapture, check, make_body, sup
 
-
 ENV_PIPES_OUTSIDE_TRY = "SUPERVISOR_TEST_PIPES_OUTSIDE_TRY"
 
 

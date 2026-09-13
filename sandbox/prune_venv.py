@@ -44,6 +44,16 @@ PKG = os.path.join(SITE, "genetics_mcp_server")
 # against this one in BOTH directions, so a module that starts shipping fails the build; and
 # because nothing in the closure names the cut modules, one re-merged into it fails the same
 # build's `import genetics_mcp_server.sdk` instead.
+#
+# What this gate does NOT catch: it proves what SHIPS, not what a shipped module will
+# REACH. A deferred intra-package import inside a method of an allow-listed file --
+# `from genetics_mcp_server.tools.<module> import ...` written inside a ToolExecutor
+# method rather than at the top of the file -- passes every check. build-checks.py's
+# _shipped_imports resolves it to the top-level name `genetics_mcp_server`, which IS
+# installed; the module body never executes it, so importing the SDK stays clean; and
+# neither error raised below can name a file this script deleted -- one asserts the package
+# directory is present at all, the other fires only for allow-listed files that are ABSENT. It surfaces as ModuleNotFoundError at call time, inside
+# a container with no shell. Anything a shipped module can reach belongs on this list.
 SDK_ALLOWLIST = frozenset(
     {
         "__init__.py",

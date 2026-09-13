@@ -49,6 +49,19 @@ variable "bq_dataset" {
   default     = "genetics_results"
 }
 
+variable "alphagenome_enabled" {
+  description = <<-EOT
+    Whether this deployment offers the AlphaGenome Atlas tools at all. Read by
+    scripts/deploy.sh, which derives ALPHAGENOME_ENABLED from this value and renders it into
+    chat-backend's env. NO resource reads it; declared here only so terraform does not warn
+    "Value for undeclared variable" on every plan.
+    Leave it out (or false) for a deployment that must not offer AlphaGenome: the tools stay
+    withheld even if an API key is ever seeded there.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "namespace" {
   description = "Kubernetes namespace"
   default     = "genetics"
