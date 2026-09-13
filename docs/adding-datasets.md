@@ -669,13 +669,14 @@ biomarkers with SuSiE and deposited the credible sets on Zenodo. The table carri
 `molecular_trait_id, region, variant, chr, pos, ref, alt, maf, cs_id, cs_index, alpha1..alpha10,
 pip, z` — and nothing else. No beta, no standard error, no p-value.
 
-Changes made (new resource `nmr_meta`, one dataset `nmr_meta_finemap`, `dataset` column value
-`UKBB_EUR_NMR_2026`, no new view):
+Changes made (new resource `nmr_meta`, one dataset `nmr_ukbb_est` whose `dataset` column value
+is the same string, no new view):
 
 1. `genetics-results-munge`: `scripts/munge_nmr_meta.{py,sh}`, `scripts/nmr_meta_phenotypes.py`
    and `docs/nmr-metabolic-trait-finemapping.md`.
-2. `datasets.yaml`: the `nmr_meta` resource, the dataset in both profiles, and a
-   `UKBB_EUR_NMR%` rule **placed before** the existing `UKB%` rule.
+2. `datasets.yaml`: the `nmr_meta` resource, the dataset in both profiles, and an exact-match
+   `nmr_ukbb_est` rule. The value deliberately does not start with `UKB`: the `UKB%` rule would
+   otherwise claim it for the `ukbb` resource, and the GWAS is an EstBB + UK Biobank meta-analysis.
 3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile only, the
    `dataset_to_resource` entry in both, and a new `quantitative_pheweb` metadata harmonizer.
 4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID`, the same new harmonizer in
