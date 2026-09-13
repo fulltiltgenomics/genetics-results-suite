@@ -79,8 +79,8 @@ nginx configured by `deploy.sh`.
 
 ### results-api deployment tuning
 
-`k8s/deployments/results-api.yaml` sets two env vars that bound the resources its
-range-query path (in-process bgzf/tabix reads over GCS) consumes; both have safe
+results-api's range-query path (in-process bgzf/tabix reads over GCS) is bounded by
+four env vars, of which `k8s/deployments/results-api.yaml` sets two; all have safe
 in-code defaults, so they are tuning knobs, not requirements. The sandbox
 per-execution limits below are declared the same way, for the same reason:
 
@@ -88,6 +88,8 @@ per-execution limits below are declared the same way, for the same reason:
 |---------|------------------|-----------------|---------|
 | `TABIX_FILTER_WORKERS` | `2` | `min(4, cpu-1)` | Size of the decompress/filter `ProcessPoolExecutor`. The default reads `os.cpu_count()` (host cores, **not** the cgroup CPU quota), so on a large node an unbounded count would spawn many idle, FD-holding workers. Set to match the container's CPU limit (currently `2`). |
 | `GCS_MAX_CONNECTIONS` | `128` | `128` | Process-wide cap on concurrent GCS range-fetch sockets. A single all-resources variant batch fans out across ~12-15 data files; without a cap the simultaneously-open sockets exhausted the file-descriptor limit ("Too many open files"). Lower if the pod's `NOFILE` limit is tight, raise for more fetch parallelism. |
+| `TABIX_INDEX_CACHE_BYTES` | unset | `2 GiB` | Byte budget of the process-wide LRU of parsed `.tbi` indexes (~5 MiB each for an R14 GWAS file). `0` removes the bound, which is what let a PheWAS over a few hundred phenotypes park 13 GiB in the pod for good. A miss re-parses from the on-disk `.tbi` cache in ~0.2 s. |
+| `TABIX_MAX_FILES_IN_FLIGHT` | unset | `32` | How many files may sit between fetch and filter at once, across all requests. A request still fans out over every phenotype it names; this bounds the fetched-but-unfiltered blocks (~70 KiB per variant per file) that a primed fan-out otherwise holds all at once. |
 
 The container entrypoint (`genetics-results-api`'s `start.sh`) also raises `ulimit -n`
 to 65536 as defense-in-depth. Keep `TABIX_FILTER_WORKERS` in step with the deployment's
@@ -125,10 +127,13 @@ refuse a lone execution its own documented allowance — the same lie, from the 
 Raising any of the concurrency values raises peak buffered response memory against the pod's
 memory limit, which is per-environment (`RESULTS_API_MEMORY_LIMIT`, defaulting to the 8Gi every
 cluster ran before it was parameterised; daly-staging sets 16Gi). That limit is the one this
-pod actually dies on: a PheWAS-shaped script — hundreds of variants against tens of phenotypes,
-each response held whole while it is merged — OOM-killed results-api at 8Gi twice, on
-2026-09-10 and 2026-09-11. A limit above the node's allocatable memory buys nothing, since the
-kernel reaps the pod first, so `machine_type` moves with it.
+pod actually dies on: a PheWAS-shaped script — hundreds of lead variants against a few hundred
+FinnGen phenotypes — OOM-killed results-api at 8Gi twice, on 2026-09-10 and 2026-09-11, and at
+16Gi plateaued at 13.4 GiB for a day. The responses were not the weight (the largest body was
+2.8 MB); the parsed tabix index of every phenotype file touched was, at 52.5 MiB each in an
+unbounded in-process cache — see `TABIX_INDEX_CACHE_BYTES` and `TABIX_MAX_FILES_IN_FLIGHT`
+above for what now bounds it. A limit above the node's allocatable memory buys nothing, since
+the kernel reaps the pod first, so `machine_type` moves with it.
 
 ### Frontend CSP and the LD proxy
 
@@ -265,6 +270,7 @@ scripts/                             build, deploy and verification scripts
   test-sandbox-docs.py               offline: the generated schema docs and SDK stubs
   test-supervisor.py                 offline: the sandbox supervisor, in process or against a container
 terraform/                           infrastructure
+  .terraform.lock.hcl                provider versions, tracked so every checkout applies the same provider against the shared state
   backups.tf                         disk snapshot schedule and the Keycloak backup bucket
   daly-staging.tfbackend             per-environment GCS state backends, selected by DEPLOY_ENV
   daly.tfbackend                     per-environment GCS state backends, selected by DEPLOY_ENV

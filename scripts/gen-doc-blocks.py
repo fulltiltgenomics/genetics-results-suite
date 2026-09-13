@@ -461,6 +461,8 @@ LAYOUT = {
     "terraform/kubernetes.tf": "namespace and Kubernetes service accounts",
     "terraform/variables.tf": "input variables",
     "terraform/outputs.tf": "output values",
+    "terraform/.terraform.lock.hcl": "provider versions, tracked so every checkout applies "
+                                     "the same provider against the shared state",
     "terraform/*.tfbackend": "per-environment GCS state backends, selected by DEPLOY_ENV",
     "terraform/terraform.tfvars.*": "per-environment values; **not committed** except the "
                                     "`.example`. A bare `terraform.tfvars` is the legacy "
