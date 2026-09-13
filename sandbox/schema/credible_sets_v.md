@@ -9,7 +9,7 @@ ON metaboQTL: the trait is a Nightingale NMR biomarker code (Total_C, XXL_VLDL_P
 bOHbutyrate), not a gene and not a disease endpoint; resolve a code to its name through
 phenotypes_v rather than reading it. beta is in trait standard deviations because the
 biomarkers are inverse-normal transformed, so it is not comparable with a GWAS log-odds, and
-for the nmr_meta resource beta, se and mlog10p are NULL on 5,004 rows whose z-score
+for the nmr_ukbb_est resource beta, se and mlog10p are NULL on 5,004 rows whose z-score
 overflowed in the source — among them strong lipid signals such as APOE, so a MAX(mlog10p)
 ranking silently drops some of the top hits; rank by pip. NOTE ON caQTL: for data_type =
 'caQTL' the trait is a chromatin ACCESSIBILITY PEAK (e.g. chr5-35863122-35863905), never a
