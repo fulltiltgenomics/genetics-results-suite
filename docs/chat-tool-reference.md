@@ -2054,7 +2054,7 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema', 'bipex', 'ibd') |
+| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema2', 'bipex2', 'ibd_exome_2026') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use |
 
 `required`: ['resource', 'phenotype']
