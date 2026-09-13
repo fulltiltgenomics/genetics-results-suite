@@ -90,7 +90,8 @@ already enforces the bound, derived from the enforcing code rather than the desc
 16 parameters carry one today (section 8 lists them per tool). Where prose and enforcement
 disagree the parameter stays bare: `search_scientific_literature.max_results` says "max 25"
 but that clamp exists only on the europepmc path and the default backend is perplexity, and
-`query_database.max_rows` is capped downstream in db-api. No parameter declares a `pattern`
+`query_database.max_rows` is enforced by db-api — a value above 100 000 is rejected with
+HTTP 422, one at or below it is capped per credential. No parameter declares a `pattern`
 — the candidates are validated after a normalising step that widens what is accepted, so a
 regex matching the validator would reject inputs the server handles.
 
@@ -1009,8 +1010,10 @@ does not currently match, verified against source on 2026-08-18.
    all. 12 parameters now do (`timeout_s` 1–120 among them), each mirroring code that
    already rejects or clamps the value; enforcement is still server-side, the schema only
    declares it. Every other numeric bound in a description — `search_scientific_literature`'s
-   "max 25", `query_database.max_rows` — remains unenforced at the schema layer, and
-   deliberately so, because no single code path applies it.
+   "max 25", `query_database.max_rows` — remains unenforced at the schema layer.
+   `search_scientific_literature.max_results` stays bare because no single code path
+   applies it; `query_database.max_rows` because its enforcement is db-api's, which rejects
+   a value above 100 000 with HTTP 422 and caps one at or below it per credential.
 
 ## 8. Full tool catalogue
 
@@ -2051,7 +2054,7 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema', 'bipex', 'ibd') |
+| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema2', 'bipex2', 'ibd_exome_2026') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use |
 
 `required`: ['resource', 'phenotype']
@@ -2390,7 +2393,7 @@ If the download hits the 100,000-row cap, tell the user to add filters to narrow
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `sql` | `string` | yes | — | — | SQL query to execute. Refer to views by their bare name (e.g., credible_sets_v) — do not prefix them with a project or dataset. Call get_database_schema first to discover available tables. Always include LIMIT clause. |
-| `max_rows` | `integer` | no | `1000` | — | Maximum rows to return to the LLM (default 1000). The download file is not affected by this limit. |
+| `max_rows` | `integer` | no | `1000` | `maximum` 100000 | Maximum rows to return to the LLM (default 1000, at most 100 000; larger values are rejected). The download file is not affected by this limit. |
 | `dry_run` | `boolean` | no | `false` | — | If true, estimate cost without executing |
 
 `required`: ['sql']
@@ -2406,7 +2409,7 @@ Get schema for database tables. **Always call this before query_database** to di
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `table` | `string` | no | — | — | Optional: return schema for just this table (e.g. 'gene_burden_results_v'). Omit for all tables. Available: credible_sets_v, colocalization_v, coloc_credsets_v, exome_variant_results_v, gene_burden_results_v |
+| `table` | `string` | no | — | — | Optional: return schema for just this table (e.g. 'gene_burden_results_v'). Omit for all tables. Available: every exposed `_v` view, listed from the shipped schema docs at import time |
 
 `required`: []
 
