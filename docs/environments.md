@@ -214,6 +214,12 @@ which is hardcoded in ~40 manifests.
       `--build-arg SHOW_TOOLS_CONTROL` to the browser image, so it takes effect on the next
       frontend build, not on a manifest-only deploy. A user who stored `nocode` before the row
       was hidden keeps it; the fix is the user-settings endpoint, not the browser.
+- [ ] **`SHOW_TOOLS_BUTTON=false` in every `.env.<name>`.** Hides the chat header's Tools
+      button (the list of what the assistant can call) in daly, daly-staging and finngen alike;
+      the variable exists so a deployment can opt back in, not to tell them apart. Build-time
+      like `SHOW_TOOLS_CONTROL` and independent of it — hiding the button leaves the Code
+      execution switch alone. `.env.<name>` is per machine and gitignored, so a machine whose
+      copy lacks the line builds the button back in.
 - [ ] **`alphagenome_enabled = true` in `terraform.tfvars.daly-staging`.** AlphaGenome is
       enabled for daly (and daly-staging); finngen leaves the line out, so it defaults to
       false regardless of whether a key is ever seeded in its `genetics-secrets`.
