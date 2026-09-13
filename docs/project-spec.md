@@ -2851,16 +2851,20 @@ the analysis through the chat backend's admin API:
   listing the issue categories), LLM rating (1-5 or `NA` for unrated), and a
   successful / neutral / unsuccessful icon.
 - **Usage tab** (after Conversations) shows LLM spend: a week / month / year toggle (week by
-  default), one Chart.js line of USD per day, and under it one row per user — conversations
-  opened in the window, mean messages per conversation to one decimal, USD — over the same
-  window. It is fed by `GET /chat/v1/admin/analytics/cost`, whose source is the per-turn
-  `chat_turn_metrics` table in `chat_history.db`; the figure is the Anthropic **list** price
-  `cost.py` charged the turn at, and no negotiated discount is applied anywhere. Turns from
-  before the table existed are recovered from the chat-backend log sink by
-  `genetics-mcp-server`'s `scripts/turn_metrics_from_logs.sql` piped into
-  `backfill_turn_metrics` inside the pod (both documented in that repo's spec, "Per-turn
-  metrics"); the backfill is idempotent and stops at the first live row, so it can be re-run
-  after every deployment that first creates the table.
+  default), one Chart.js line of USD per day, and under it a sortable, filterable table
+  (`UsageTable.tsx`, the same material-react-table setup as the Conversations table) with one
+  row per user — username only, full address on hover — giving conversations opened in the
+  window, mean and max messages per conversation, USD, and mean and max USD per conversation,
+  all over the same window. The page states above the plot that the amounts are list prices
+  with no discount considered. It is fed by `GET /chat/v1/admin/analytics/cost`, whose source
+  is the per-turn `chat_turn_metrics` table in `chat_history.db`; the figure is the Anthropic
+  **list** price `cost.py` charged the turn at, and no negotiated discount is applied anywhere.
+  Secret chat is in neither: the live path records nothing for it, and the backfill drops any
+  session that logged a secret-chat start line. Turns from before the table existed are
+  recovered from the chat-backend log sink by `genetics-mcp-server`'s
+  `scripts/turn_metrics_from_logs.sql` piped into `backfill_turn_metrics` inside the pod (both
+  documented in that repo's spec, "Per-turn metrics"); the backfill is idempotent and stops at
+  the first live row, so it can be re-run after every deployment that first creates the table.
 - **Quality plots tab** (after Feedback) renders 4 interactive Chart.js line charts —
   per-score share, rolling mean + volume, disposition mix, and issue-category mix — that mirror
   the PNG plots. Hovering a line highlights it and dims the others so a single issue category or
