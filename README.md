@@ -88,11 +88,12 @@ DEPLOY_ENV=daly-staging ./scripts/build-all.sh
 DEPLOY_ENV=daly-staging ./scripts/deploy.sh
 ```
 
-Two lines of `.env.<env>` shape the chat surface a deployment's users get, and they act at
+Three lines of `.env.<env>` shape the chat surface a deployment's users get, and they act at
 different times: `DEFAULT_TOOL_PROFILE` is rendered into chat-backend by `deploy.sh`, while
-`SHOW_TOOLS_CONTROL=false` hides the browser's Tools row and is baked into the frontend image by
-`build.sh`/`build-all.sh` (`--build-arg SHOW_TOOLS_CONTROL`), so it needs a build, not only a
-deploy. Both are documented per deployment in `docs/environments.md`.
+`SHOW_TOOLS_CONTROL=false` (the Tools row in the chat options) and `SHOW_TOOLS_BUTTON=false` (the
+Tools button in the chat header) are baked into the frontend image by `build.sh`/`build-all.sh`
+(`--build-arg SHOW_TOOLS_CONTROL` / `SHOW_TOOLS_BUTTON`), so they need a build, not only a
+deploy. All three are documented per deployment in `docs/environments.md`.
 
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
@@ -308,6 +309,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."           # optional
 export TAVILY_API_KEY="tvly-..."         # optional
 export PERPLEXITY_API_KEY="pplx-..."     # optional
+export ALPHAGENOME_API_KEY="..."         # optional; withheld unless alphagenome_enabled = true
+                                         # in this deployment's tfvars too (see below)
 export COHERE_API_KEY="..."              # optional, for rag-service embeddings (required when ENABLE_RAG=true)
 export ADMIN_USERS="a@example.com,b@example.com"  # optional, emails allowed on the chat admin page
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."  # optional, for the monitor CronJob
@@ -424,10 +427,26 @@ step and builds anyway. Two limits:
 
 The hook files under `.beads/hooks/` are tracked, but `core.hooksPath` — the local
 git config that points git at them — is not, so a fresh clone runs **no** hooks:
-no `check-doc-drift.sh` warning on commits and no beads export, silently. This
-script sets it and repairs the doc-drift block if it has gone missing; it is
-idempotent and safe to re-run, and works from a worktree. `deploy.sh` and
-`build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+no `check-doc-drift.sh` warning on commits, no lint gate and no beads export,
+silently. This script sets it and repairs either managed block if it has gone
+missing; it is idempotent and safe to re-run, and works from a worktree. `deploy.sh`
+and `build-all.sh` run it with `--check` and warn (never block) if it was skipped.
+
+`core.hooksPath` is shared across worktrees, so this one run also covers every
+worktree, existing and future — there is nothing to run inside a new one.
+
+Two checks then run on every commit, and they differ in what they do to it:
+
+| check | on a finding |
+|---|---|
+| `scripts/check-doc-drift.sh` | warns, commit proceeds |
+| `scripts/lint-staged.sh` (ruff, staged Python only) | **blocks the commit** |
+
+The lint gate reports only on files the commit touches, so pre-existing findings
+elsewhere never stand in your way; `scripts/lint-staged.sh --all` runs the repo-wide
+check. It looks for ruff in this checkout's `.venv`, then the main checkout's, then
+`PATH`, then `uvx` — and **fails the commit** if it finds none, rather than passing it
+unchecked. `git commit --no-verify` is the deliberate bypass.
 
 ### Working from a git worktree
 
@@ -668,7 +687,10 @@ first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schem
 signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
 `/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
 copies are current, that every view and column reaches a file **with its BigQuery type**,
-and that the stubs cover exactly the SDK's exported surface. `build.sh sandbox` fails on
+that the stubs cover exactly the SDK's exported surface, and that every bare name a stub
+signature defaults to is defined in that same stub — the generator resolves such a default
+to its literal and refuses one it cannot, so a reader is never sent looking for a value the
+image does not carry. `build.sh sandbox` fails on
 a non-zero exit; `build-all.sh` folds it into the same skip branch as the generator.
 Exit 1 = a property broke, 2 = the harness could not run (no SDK source). Run either script
 by hand with no `--sdk-src` and it resolves `GENETICS_SDK_SRC`, then `MCP_SERVER_DIR`, then the
@@ -739,6 +761,46 @@ killed. `--tree worktree` points db-api at `genetics_dev`, the persistent **full
 copy of production's 15 tables (755,813,602 rows / 136.69 GB since 2026-08-18) — any gene
 on any chromosome smoke-tests, `APOE` included. Nothing in this script touches the cluster. See "Running the local dev stack" in
 `docs/project-spec.md`.
+
+### Per-repo development setup (once per clone)
+
+The lint gate and the doc-drift check are wired the same way in all five repos, and
+neither runs until `core.hooksPath` is set — local git config that no clone carries, so
+a fresh clone has the tracked hook files and no hooks running. Run this **in each repo**:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+It is idempotent, works from a worktree, and because `core.hooksPath` is shared across
+worktrees, one run per repo also covers every worktree of it, existing and future. After
+it, a commit whose staged files the linter rejects is refused; `git commit --no-verify`
+is the bypass. `deploy.sh` and `build-all.sh` run it with `--check` and warn when a
+checkout is unwired.
+
+The gate finds ruff without a local install (it falls back to the main checkout's
+`.venv`, then `PATH`, then `uvx`), but the repos that ship a dev extra should have it
+installed so the pinned version is the one that runs:
+
+```bash
+cd ../genetics-results-api     && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-mcp-server      && uv sync --extra dev
+cd ../genetics-results-db      && uv pip install -r pyproject.toml --extra dev
+cd ../genetics-results-browser && npm install
+```
+
+**Not `uv pip install -e '.[dev]'` for results-api or results-db.** Neither declares a
+`[build-system]`, so the build falls back to setuptools, whose flat-layout discovery
+ignores `docs/`, `scripts/` and `tests/` but **not** `configs/` — so the editable install
+fails with "Multiple top-level packages discovered" in any checkout where
+`sync-datasets.sh` has run, which is every working one. (It appears to succeed in a fresh
+worktree only because `configs/` is gitignored and therefore not there yet.) Nothing is
+lost by not installing either project: results-db's `api` is reached through `sys.path`,
+and results-api is run from its repo root.
+
+The browser needs a real `npm install` **per worktree**: eslint resolves the plugins named
+in `eslint.config.mjs` relative to that config, so the main checkout's `node_modules`
+cannot stand in for it.
 
 ### Running the sibling repos' tests
 

@@ -456,7 +456,7 @@ So `gen-sandbox-docs.py` now writes the same rendered markdown to a **third** de
 prompt cannot describe a column the image does not have. **This is a disclosure decision as much
 as a cost one**: every view's columns, enumerable values and worked examples are now in the
 context of every request on that surface, where before a script had to ask for a view by name.
-The set disclosed is the same set — the image shipped all 16 files either way, readable by any
+The set disclosed is the same set — the image shipped every one of those files either way, readable by any
 script — so nothing is reachable now that was not reachable before; what changed is that it
 arrives unasked. The files stay in the image, because a script may still open one and the
 `PLACEHOLDER` gate still guards both staged trees. The stubs are still reached through
@@ -531,6 +531,14 @@ the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OU
 in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree
 by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
 equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
+
+A default written in the SDK as a bare name is resolved to its literal and that name
+defined at the top of the stub, so the file answers *what does this argument default to*
+on its own. The stub is not importable and the package it describes is in `/opt/venv`, so
+a name left unresolved would be a value the reader has no way to look up; the generator
+refuses to emit one it cannot resolve, and the harness re-checks the property over the
+shipped text. This is the one way a module-private name reaches the image — a private
+constant's value, never a private function, which the surface equality above still bars.
 
 What the shipped `plots.pyi` therefore discloses beyond the signatures is the guidance in
 those docstrings, and one line of it is load-bearing rather than descriptive: that the 250 kb
@@ -765,6 +773,14 @@ The receiving end has to admit it too — a sandbox egress allow is necessary an
 
 <!-- END GENERATED: network -->
 
+**AlphaGenome changed nothing above, deliberately — the absence is the claim.** Its two tools
+sit on `ServerToolExecutor` in `tools/orchestration.py`, which `sandbox/prune_venv.py`'s
+`SDK_ALLOWLIST` does not ship, and the image installs the SDK `--no-deps` against
+`sandbox/requirements.txt` (`sandbox/Dockerfile`), so the `alphagenome` package is never in
+the sandbox venv — the sibling's `tests/test_alphagenome.py` AST-walks every allow-listed
+module to hold that; the allow-list above is untouched, and no rule was added to let a script
+reach the Atlas API.
+
 **Label contract.** A `podSelector` that matches no pod is not an error — it is silent
 no-coverage, and since this is the only egress policy in the namespace a label mismatch yields
 a sandbox with *unrestricted* egress and no signal anywhere. `scripts/test-network-policies.py`
@@ -947,7 +963,9 @@ denied at the network layer. Read it as a **hop-level** control, not a capabilit
 namespace admits mcp-server to chat-backend, mcp-server holds both `INTERNAL_API_SECRET` and
 `CHAT_BACKEND_URL`, and chat-backend is the one pod the sandbox admits — so
 `mcp-server → chat-backend → sandbox` is open at the network level by construction. That
-transitive path is held shut by layer 1 and by the identity check, not by this policy.
+transitive path is held shut by layer 1 and by the identity check, not by this policy. The
+collapse to one `code_execution` boolean leaves this layer alone: it names pods, and no choice of
+tool surface can make the sandbox admit one it does not already admit.
 
 **Layer 3 — tests.** `tests/test_mcp_server.py` asserts the two names are absent from the
 **actual `/mcp` tool list**, enumerated from the live `FastMCP` instance rather than from the
@@ -1125,9 +1143,9 @@ Stated plainly. This design contains code execution; it does not make it safe in
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
-| `scripts/test-network-policies.py` | the egress and ingress allow-lists, the three MCP-exclusion layers, the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
+| `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
-| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, and no placeholder survives | a genetics-mcp-server checkout |
+| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |

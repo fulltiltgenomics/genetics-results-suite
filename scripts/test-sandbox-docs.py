@@ -30,6 +30,7 @@ runs. A transcribed copy would keep shipping the old rule and nothing would repo
 
 import argparse
 import ast
+import builtins
 import copy
 import importlib.util
 import os
@@ -77,10 +78,14 @@ RULES = [
         "docs": ["peak_to_gene_v.md"],
     },
     {
-        "name": "chr alongside variant for partition pruning",
+        # was "chr alongside variant for partition pruning", pinning "partitioned by chr" and
+        # "bytes-billed". That advice inverted when credible_sets was re-clustered: variant is
+        # a stored clustering key now, so it prunes on its own and adding chr beside it
+        # measured ~13.6% worse. The rule this protects is the new one.
+        "name": "chr is optional beside variant, which clusters",
         "table": "credible_sets_v",
         "field": ("examples",),
-        "markers": ["partitioned by chr", "bytes-billed"],
+        "markers": ["clustering key", "13.6"],
         "docs": ["credible_sets_v.md"],
     },
     {
@@ -253,9 +258,9 @@ def main(argv=None):
     sdk_src = gen.resolve_sdk_src(args.sdk_src)
     sdk_dir = sdk_src and gen.sdk_dir_for(sdk_src)
     if not sdk_dir or not os.path.isdir(sdk_dir):
-        # exit 2, not a skip: four of the thirteen checks — including the only one that can
-        # catch a stub documenting a function the SDK does not export — need the source, and
-        # a green run that quietly covered nine of thirteen is how that gap ships. Same
+        # exit 2, not a skip: the stub checks — including the only one that can catch a
+        # stub documenting a function the SDK does not export — need the source, and a
+        # green run that quietly covered only the schema half is how that gap ships. Same
         # convention as gen-sandbox-docs.py and scripts/test-network-policies.py.
         print(f"harness cannot run: {gen.sdk_src_error(sdk_src)}", file=sys.stderr)
         return 2
@@ -386,17 +391,41 @@ def main(argv=None):
                 + " instead of refusing — the check fails open"
             )
 
-    @check("the index lists every view")
+    @check("the index lists every view with its summary")
     def _index():
-        """Matched on the table cell, not on a `(<view>.md)` link.
+        """Matched on the whole table row, not on a `(<view>.md)` link.
 
         The index carries no links any more: the same bytes are chat-backend's system
         prompt, where the per-view docs are inlined right below and a link is an
         invitation to fetch something the model already has. So the row is what has to
-        be there — the backticked name in the first column."""
+        be there — and asserting the summary cell too is what keeps the map derived from
+        `summary:` rather than from anything the generator could invent."""
         index = schema_files["README.md"]
-        for name in tables:
-            assert f"| `{name}` |" in index, f"{name} absent from README.md"
+        for name, table in tables.items():
+            summary = " ".join(str(table.get("summary") or "").split())
+            assert summary, (
+                f"{name}: no `summary:` in configs/datasets.yaml — the index row has "
+                "nothing to say about the view (docs/adding-datasets.md)"
+            )
+            row = f"| `{name}` | {summary} |"
+            assert row in index, f"{name} is not listed in README.md as {row!r}"
+
+    @check("a view with no summary is REFUSED, not rendered blank")
+    def _missing_summary_fails_closed():
+        """Same direction as the column-type check above: the failure mode is a view
+        added without a summary, and an index row reading `| `x_v` |  |` would pass a
+        name-only check while telling the model nothing about the view."""
+        view = sorted(tables)[0]
+        mutated = copy.deepcopy(config)
+        del mutated["tables"][view]["summary"]
+        try:
+            _render_mutated(gen, mutated)
+        except SystemExit:
+            return
+        raise AssertionError(
+            f"the generator rendered README.md with no summary for {view} instead of "
+            "refusing — the check fails open"
+        )
 
     @check("the correctness rules are present in configs/datasets.yaml")
     def _rules_in_yaml():
@@ -443,7 +472,12 @@ def main(argv=None):
         for rule in RULES:
             mutated = copy.deepcopy(config)
             table = mutated["tables"][rule["table"]]
-            sentinel = f"SENTINEL-{rule['table']}-{'-'.join(rule['field'])}"
+            # alphanumeric only: the generator wraps prose with textwrap.fill, which breaks on
+            # hyphens and underscores, so a punctuated sentinel lands split across two lines
+            # and the `in` check below misses it — reporting "the generator is not reading
+            # that field" about a generator that is. Whether it breaks depends on where the
+            # wrap happens to fall, so editing an unrelated sentence can trip it.
+            sentinel = "SENTINEL" + (rule["table"] + "".join(rule["field"])).replace("_", "")
             if rule["field"] == ("examples",):
                 table["examples"][0]["description"] += " " + sentinel
             else:
@@ -570,6 +604,33 @@ def main(argv=None):
                 ast.parse(content)
             except SyntaxError as exc:
                 raise AssertionError(f"{name}: {exc}") from None
+
+    @check("every default a stub signature names is defined in that stub")
+    def _stub_defaults_resolve():
+        """A stub is not importable and the real package sits in /opt/venv, so a default
+        spelled as a bare name is only useful if the same file says what it is. Asserted
+        over the shipped text rather than over the generator, because the reader's
+        question — what does this argument default to — is answered from the file alone."""
+        for name, content in stub_files.items():
+            tree = ast.parse(content)
+            defined = set(dir(builtins))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                    defined.add(node.id)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defined.add(node.name)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        defined.add((alias.asname or alias.name).split(".")[0])
+            funcs = [
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            missing = sorted(gen._default_names(funcs) - defined)
+            assert not missing, (
+                f"{name}: signature defaults name {missing}, which the file never defines"
+            )
 
     @check("stub signatures track the SDK source rather than a copy")
     def _stub_derived():
