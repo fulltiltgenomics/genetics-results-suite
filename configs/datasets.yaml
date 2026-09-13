@@ -2539,12 +2539,13 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v", "peak_to_gene_v"]
     comment: "all other FinnGen datasets (peak_to_gene is FinnGen ATAC-seq only)"
 
-  - pattern: "UKBB_EUR_NMR%"
+  - pattern: "nmr_ukbb_est"
     resource: "nmr_meta"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: >-
-      EstBB-UKBB NMR metabolic trait fine-mapping. Must precede the "UKB%" rule below, which
-      would otherwise claim it for the ukbb resource that holds UKB-PPP and UKB Finucane
+      EstBB-UKBB NMR metabolic trait fine-mapping (exact match). NOT the ukbb resource despite
+      the cohort: the GWAS is an EstBB + UK Biobank meta-analysis and only its fine-mapping is
+      UKBB-only, so the name deliberately does not start with UKB
 
   - pattern: "UKB%"
     resource: "ukbb"
@@ -3666,7 +3667,7 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
-      nmr_meta_finemap:
+      nmr_ukbb_est:
         resource: nmr_meta
         version: "2026"
         description: >-
@@ -4723,7 +4724,7 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
-      nmr_meta_finemap:
+      nmr_ukbb_est:
         resource: nmr_meta
         version: "2026"
         description: >-
