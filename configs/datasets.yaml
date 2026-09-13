@@ -706,8 +706,8 @@ tables:
       af_controls: "Alternative allele frequency in controls"
       ac: "Alternative allele count"
       an: "Alternative allele number (total alleles genotyped)"
-      n_cases: "Number of cases in the analysis (may be NA)"
-      n_controls: "Number of controls in the analysis (may be NA)"
+      n_cases: "Number of cases in the analysis (may be NULL)"
+      n_controls: "Number of controls in the analysis (may be NULL)"
       trait: "Trait/phenotype name"
       trait_original: "Original trait name in the respective dataset"
       variant: "Variant identifier as chr:pos:ref:alt"
@@ -971,7 +971,7 @@ tables:
       life_stage: "Developmental stage (fetal, adult, unknown)"
       condition: "Experimental condition (resting, stimulated, AD, control, unknown)"
       assay: "Assay type (scATAC, snATAC, bulk_ATAC, chromHMM)"
-      score: "Peak signal strength (NA for presence/ChromHMM data)"
+      score: "Peak signal strength (NULL for presence/ChromHMM data)"
       score_type: "Meaning of score (e.g. signal, cpm, presence, chromhmm:<State>)"
       n_cells: "Number of cells supporting the peak (single-cell assays)"
       cell_ontology_id: "Cell Ontology (CL) identifier where available"
@@ -1050,7 +1050,7 @@ tables:
       life_stage: "Developmental stage (fetal, adult, unknown)"
       score: "Predicted effect magnitude on accessibility"
       score_type: "Meaning of score (chrombpnet_abs_logfc, flare_score)"
-      mlog10p: "-log10(p) per-context significance (ChromBPNet; NA for FLARE)"
+      mlog10p: "-log10(p) per-context significance (ChromBPNet; NULL for FLARE)"
       predicted_direction: "Predicted direction of the accessibility effect"
       quantile_rank: "Effect-strength rank (how strongly the variant is predicted to act)"
       is_significant: "Whether the predicted effect passes the model's significance threshold"
@@ -1203,9 +1203,10 @@ tables:
       reads per-phenotype files and can only go the other way.
 
       JOIN KEY WARNING — this view is the THIRD spelling of the trait column in this
-      schema. credible_sets_v / colocalization_v / coloc_credsets_v /
-      exome_variant_results_v / gene_burden_results_v carry both `trait_original` (the
-      phenocode, the join key) and `trait` (a display string); hla_associations_v carries
+      schema. credible_sets_v / coloc_credsets_v / exome_variant_results_v /
+      gene_burden_results_v carry both `trait_original` (the phenocode, the join key)
+      and `trait` (a display string), and colocalization_v carries the same pair per
+      side as trait1/trait2 and trait1_original/trait2_original; hla_associations_v carries
       NEITHER and calls its phenocode `phenotype`. Joining phenotypes_v on h.trait or
       h.trait_original is a query error; joining on p.trait is a SILENT ZERO-ROW join.
       The only correct join is
@@ -1560,7 +1561,8 @@ tables:
 
       65% OF ROWS ARE "TESTED, NO ESTIMATE". Every gene appears for every phenotype and
       CNV type, including those where the meta-analysis produced no estimate because no
-      qualifying CNV was observed; those rows carry NULL from `beta` onward. Filter
+      qualifying CNV was observed; those rows carry NULL in every statistic column (`beta` through
+      `mlog10_fdr_q_secondary`). Filter
       `beta IS NOT NULL` to get the estimated associations. Do NOT filter on
       `n_nominal_cohorts` for this — the NULL rows are not the rows with
       n_nominal_cohorts = 0, and using it as a proxy silently drops real estimates.
@@ -2103,10 +2105,12 @@ tables:
     description: >-
       Per-variant functional annotation and FinnGen (R14) allele frequencies —
       one row per variant, covering all imputed variants, not only fine-mapped ones.
-      This is the only view with rsIDs and genotype counts: join to it whenever a
-      question needs an rsID, an allele frequency, imputation quality, or Finnish
-      enrichment for variants found in the association views. Association results
-      are not here — use credible_sets_v, exome_variant_results_v etc. for those.
+      This is the only view with genotype counts, and the rsID source for the
+      credible-set, colocalization and exome views (asm_qtl_v and variant_effect_v
+      carry their own rsid): join to it whenever a question needs an rsID, an allele
+      frequency, imputation quality, or Finnish enrichment for variants found in
+      those views. Association results are not here — use credible_sets_v,
+      exome_variant_results_v etc. for those.
 
     columns:
       variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23. Same format as the variant column in the association views, so it joins directly"
@@ -2120,7 +2124,7 @@ tables:
       AC_Hom: "Number of homozygous (alt/alt) genotypes in FinnGen"
       most_severe: "Most severe VEP-predicted variant consequence"
       gene_most_severe: "Gene symbol associated with the most severe consequence"
-      rsid: "dbSNP rsID when available. The only place rsIDs are stored — the association views have none"
+      rsid: "dbSNP rsID when available. The rsID source for the credible-set, colocalization and exome views, which have none of their own; asm_qtl_v and variant_effect_v carry their own rsid"
       EXOME_enrichment_nfe: "Finnish vs non-Finnish European allele-frequency ratio from gnomAD exomes. Values above ~2 mark Finnish-enriched variants"
       GENOME_enrichment_nfe: "Finnish vs non-Finnish European allele-frequency ratio from gnomAD genomes"
       index: "Row index in the source annotation file, not a genetic quantity"
