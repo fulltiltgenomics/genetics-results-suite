@@ -424,10 +424,9 @@ column values in BigQuery are mapped to resource identifiers in SQL views.
 
 ### Resource ID reconciliation note
 
-Some BigQuery tables use versioned resource IDs (e.g. `bipex2`, `schema2`) while the
-API dataset registry references unversioned IDs (e.g. `bipex`, `schema`). When
-populating the real `datasets.yaml`, these must be reconciled so that mapping rules,
-resource definitions, and dataset entries all use consistent identifiers.
+Mapping rules, resource definitions, dataset entries and results-api's per-profile
+data-file configs all spell a resource the same way (`bipex2`, `schema2`,
+`ibd_exome_2026`), so a `resource` value read from one surface is valid on every other.
 
 ## Dev environment
 

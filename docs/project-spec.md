@@ -437,8 +437,9 @@ the same query.
   `trait_original`, never on `trait`**: in every results view that has both columns
   `trait_original` is the phenotype code and `trait` is a display form for most rows (`HEIGHT_IRN` vs
   `Height,_inverse-rank_normalized`; `continuous_30040_both_sexes__irnt` vs `Mean corpuscular
-  volume`), so joining on `trait` returns zero rows silently. `hla_associations_v` is the
-  exception with neither column: it spells its phenocode `phenotype`, so its join is
+  volume`), so joining on `trait` returns zero rows silently. The views with neither column
+  spell their phenocode `phenotype` — the generated `phenotype-join-views` block in
+  [docs/adding-datasets.md](adding-datasets.md) lists them — so their join is
   `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
   QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
   `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
@@ -1659,14 +1660,15 @@ What is load-bearing about it:
   report it and an unset `DATASET_ID` means production — `api/main.py` defaults it to
   `genetics_results`. It prints that case as `PRODUCTION` rather than as a blank.
 - **`--tree worktree` defaults db-api to `genetics_dev`**, the persistent full-size copy
- : all 15 tables and views, and since 2026-08-18 every
+  in `phewas-development`: every product table and view, and since 2026-08-18 every
   production row — 755,813,602 rows / 136.69 GB, each table matching its `genetics_results`
   counterpart exactly. Production's 1.1 B is larger only by the three `credible_sets_exp_*`
   tables dev deliberately omits. Any gene smoke-tests, on any of the 23 chromosomes;
   `APOE` no longer returns zero. Reload it with `TRUNCATE` + `INSERT … SELECT` and an
-  explicit column list, never a CTAS or clone — no dev table's schema equals production's
-  (all 15 carry descriptions and `REQUIRED` modes that production, uniformly `NULLABLE`
-  and undescribed, does not), and a CTAS inherits neither those, nor the `chr` range
+  explicit column list, never a CTAS or clone — as measured in `phewas-development` on
+  2026-08-18, no dev table's schema equals production's (every product table carries
+  descriptions and `REQUIRED` modes that that project's `genetics_results`, `NULLABLE` and
+  undescribed, does not), and a CTAS inherits neither those, nor the `chr` range
   partitioning, nor the clustering. It is a
   different object from the `genetics_results_dev` *rehearsal* clone of
   [docs/bigquery-dev-dataset.md](bigquery-dev-dataset.md), which is created and torn down
@@ -2125,9 +2127,9 @@ hand-maintained list per router is exactly the thing that rots, no declaration i
   `tabix -h` prints even for a locus with no hits, and the SDK was simply dropping it —
   `ToolExecutor` now takes those names from the reader it already built. The burden files
   carry no `resource` column, so results-api's `/gene_based/{gene}` appends one from each
-  data file's config; its values are results-api's resource ids, not the strings
-  `gene_burden_results_v.resource` holds (`schema` vs `schema2`), so a script must not join
-  the two on it.
+  data file's config; its values are the registry's resource ids (`schema2`, `bipex2`,
+  `ibd_exome_2026`), the same strings `gene_burden_results_v.resource` holds, so a script
+  can join the two on it.
   `gene_burden(phenotype=...)` reads a file, so it advertises that file's real header via
   `json_phenotype_with_header`.
 - `gene_disease` expresses "no associations" as a **404** that the SDK reads as an empty
