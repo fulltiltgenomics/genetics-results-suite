@@ -2552,9 +2552,11 @@ in-project window; 404 by construction for a secret chat, which never had a row 
 takes no project and is the global opt-in switch plus a pointer to projects. From a project's
 sidebar menu, or from the "Used *&lt;name&gt;* memory" chip under a turn (the label falls back to
 "project" when the project has no name), it takes the project id and
-shows that project's freshly rendered digest, the character counter against the cap, and the
-project's sessions with their pin stars, alongside what removes a line from it: unfile or delete
-the conversation, unpin it, or turn memory off. The chip is driven by the SSE `memory` event,
+shows that project's freshly rendered digest, the character counter against the cap, the size
+of the in-project window (quoted from the payload's `session_cap`, so the sentence follows
+`memory_gate.MEMORY_PROJECT_SESSION_CAP` rather than a copy), and the project's sessions with
+their pin stars, alongside what removes a line from it: unfile or delete the conversation, unpin
+it, or turn memory off. The chip is driven by the SSE `memory` event,
 which carries the project name and the session and character counts once per session — read back
 from what the turn actually rendered, so the event and the `memory digest:` log line cannot
 disagree.
