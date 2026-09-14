@@ -954,13 +954,18 @@ Values in this repo:
   `RAG_MCP_SERVER` is commented out. `k8s/deployments/mcp-server.yaml` has
   `EXTERNAL_MCP_SERVERS` commented out, so **the standalone MCP server proxies nothing**.
 - **What is actually configured lives in a k8s secret and cannot be read from the
-  repository** — read it off the pod. Measured 2026-09-14 on both daly clusters
-  (`kubectl -n genetics exec deploy/chat-backend -- env`): `EXTERNAL_MCP_SERVERS` is
-  **empty**, so today neither deployment proxies gnomAD or Open Targets and the chat model's
-  tool list is the local surface alone. The tool names an external server advertises cannot be
-  derived from code here either — they are fetched at startup over the wire. The gnomAD tool
-  table under "gnomAD MCP" in `genetics-mcp-server/docs/project-spec.md` is a hand-maintained
-  snapshot, not a derivation.
+  repository** — read it off the pod, and read the whole value: a `grep -o` on the name alone
+  prints an empty-looking match and was misread as "unset" once. Measured 2026-09-14
+  (`kubectl -n genetics exec deploy/chat-backend -- env | grep '^EXTERNAL_MCP_SERVERS='`):
+  production carries two entries, the gnomAD MCP Cloud Run service and
+  `https://mcp.platform.opentargets.org`, seeded from `.env.daly` by `create-secrets.sh`; the
+  pod's startup log records **15 tools registered from gnomAD (5 AoU tools excluded) and 5
+  from Open Targets, 20 in all**. Staging carries an empty value — `.env.daly-staging` sets
+  `EXTERNAL_MCP_SERVERS=""` — so the staging chat model has the local surface alone. The tool
+  names an external server advertises cannot be derived from code here — they are fetched at
+  startup over the wire, and the startup log line `Registered N tools from <url>` is where to
+  read the count. The gnomAD tool table under "gnomAD MCP" in
+  `genetics-mcp-server/docs/project-spec.md` is a hand-maintained snapshot, not a derivation.
 
 **Namespacing.** `MCPProxyClient.get_prefixed_name()` returns `f"{prefix}_{name}"` when the
 client has a `prefix` and the bare name otherwise. `_parse_server_config` splits an entry
