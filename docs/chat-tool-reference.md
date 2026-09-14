@@ -10,7 +10,7 @@ design overview.
 | repo | commit |
 |---|---|
 | `genetics-results-suite` | `87eb1d6` (+ this working tree) |
-| `genetics-mcp-server` | `06814da` |
+| `genetics-mcp-server` | `13cb1e4` |
 | `genetics-results-api` | `4949191` |
 | `genetics-results-db` | `2d09abf` |
 | `genetics-results-browser` | `16ba11e` |
@@ -2551,7 +2551,9 @@ Write the script against the `genetics` SDK — `import genetics` — and call l
 
 SAVE FILES INTO THE ARTIFACTS DIRECTORY, NOT THE WORKING DIRECTORY. The script's cwd is a scratch directory that is DISCARDED — a relative `savefig("x.png")` or `write_csv("x.csv")` is thrown away and reported as no artifact at all. Write to `os.path.join(os.environ["SANDBOX_ARTIFACTS_DIR"], name)`, or use a `genetics.plots` helper, which resolves a relative path there for you.
 
-Files in the artifacts directory are reported as a manifest of names and sizes. An IMAGE artifact is fetched and shown to the user automatically — save a figure and it appears, so do not also render the plot as text or emit a markdown image placeholder for it. Non-image artifacts are offered to the user as DOWNLOAD LINKS automatically (the first few, smallest first): name them in your answer, but never paste their contents and never invent a URL. Any artifact can also be read back with read_artifact by name, for about 5 minutes after the run; printing what you need is still cheaper than reading a file back, so print anything small.
+Files in the artifacts directory are reported as a manifest of names and sizes. An IMAGE artifact is fetched and shown to the user automatically — save a figure and it appears, so do not also render the plot as text or emit a markdown image placeholder for it. Non-image artifacts are offered to the user as DOWNLOAD LINKS automatically: name them in your answer, but never paste their contents and never invent a URL. Any artifact can also be read back with read_artifact by name, for about 5 minutes after the run; printing what you need is still cheaper than reading a file back, so print anything small.
+
+DELIVERY LIMITS: an artifact over 512 KB is delivered nowhere — not shown, not offered, not readable — and at most 4 images and 4 other files are delivered per run, in name order. A heatmap with hundreds of rows at 130 dpi is over the cap: keep figures to 100 dpi and a few thousand pixels a side, and write one combined table rather than many. The result lists anything not delivered under artifacts_not_delivered with the reason; never describe a plot that was not shown or name a file the user was not offered.
 
 CONCURRENCY: at most 4 data requests may be in flight at once from one script. Going over answers 429 and, under `asyncio.gather`, loses the results of the requests that did succeed — batch at 4 and pass `return_exceptions=True`.
 
