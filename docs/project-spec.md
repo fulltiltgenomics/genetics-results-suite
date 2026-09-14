@@ -529,7 +529,7 @@ explicitly: pin the build, or match on something build-independent.
 - **GCP Project**: Configured via `project_id` in the deployment's tfvars (`terraform/terraform.tfvars.<DEPLOY_ENV>`)
 - **Region**: Configured via `region` in the deployment's tfvars
 - **GKE Cluster**: **one cluster per deployment, three today** — `finngenie` and `finngenie-staging` in project `daly-finngenie`, and `finngenie` in project `phewas-development` (`docs/environments.md`). **Two of the three are production** (`daly` and `finngen`); only `daly-staging` is not, and it is a rehearsal ground for manifests and images rather than for data — see "There is no development deployment" below. Each has Workload Identity available for GCP API access
-- **Node pool**: **`e2-highmem-4`, pinned at one node (`min_node_count = max_node_count = 1`), on daly and daly-staging** — 32 GiB so that results-api's 16Gi `RESULTS_API_MEMORY_LIMIT` is reachable (unreachable on an `e2-standard-4`'s 12.96 GiB allocatable), and 4 vCPU because no node exceeded 1.8 cores in the 30 days measured on 2026-09-13; `e2-standard-4` autoscaling `1`–`3` on finngen. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable. Measured 2026-09-13, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) and `finngenie-staging` each run **one** general node plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy's surge fits on that node, and a pinned pool has no autoscaler scale-down; what keeps a node-upgrade drain from truncating an in-flight chat-backend stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
+- **Node pool**: **`e2-standard-4`, pinned at one node (`min_node_count = max_node_count = 1`), on daly and daly-staging** — 4 vCPU because no node exceeded 1.8 cores in the 30 days measured on 2026-09-13, and 16 GB because results-api's real need is ~4 GiB now that its tabix index cache is compact and bounded (`RESULTS_API_MEMORY_REQUEST=3Gi`, `RESULTS_API_MEMORY_LIMIT=8Gi`; the 32 GB `e2-highmem-4` interlude existed only to make a 16Gi limit reachable while that cache was the weight); `e2-standard-4` autoscaling `1`–`3` on finngen. No tfvars for any deployment is committed, so node counts for **no** deployment — production included — are repo-derivable. Measured 2026-09-13, and **only for the two clusters this checkout can reach**: `finngenie` (daly production, project `daly-finngenie`) and `finngenie-staging` each run **one** general node plus the single-node gVisor sandbox pool. The **finngen** production cluster lives in a separate project (`phewas-development`, `europe-west1-b`), has no kubeconfig context here and 403s on `container.clusters.list`, so its node count is **not observable from this machine** — do not assert one. This line previously said "one node is running today", and `k8s/deployments/auth-gateway.yaml` reasoned from that. A full deploy's surge fits on that node, and a pinned pool has no autoscaler scale-down; what keeps a node-upgrade drain from truncating an in-flight chat-backend stream is its graceful-shutdown configuration, not the PodDisruptionBudgets in `k8s/disruption-budgets/` (which are declarative only at `replicas: 1`) — see "Node pool sizing" below
 - **Networking**: VPC with private subnet, static IP for ingress
 - **SSL**: Google-managed certificates for the domains configured in the deployment's tfvars
 - **Storage**: 10Gi PVC (`chat-data`) for chat-backend SQLite databases (`chat_history.db` and `llm_config.db` — the latter now holds **user-authored prompt text**, see "Chat instructions" below), file attachments, and tool result downloads; 50Gi PV/PVC (`rag-stores`) for rag-service embedding stores; 1Gi PVC (`monitor-data`) for the monitor's alert-dedup SQLite DB; 5Gi PVC (`keycloak-postgres-data`) for the Keycloak database
@@ -553,7 +553,7 @@ explicitly: pin the build, or match on something build-independent.
 
 There are **two** pools, and they are sized on different grounds.
 
-The **primary** pool is **pinned at one `e2-highmem-4`** (`min_node_count = max_node_count = 1`)
+The **primary** pool is **pinned at one `e2-standard-4`** (`min_node_count = max_node_count = 1`)
 on daly and daly-staging; finngen autoscales `1`–`3` on `e2-standard-4`. The pin is deliberate:
 the full-deploy surge fits on one node (table below), and an autoscaler-added surge node is
 reaped ~15 minutes after the rollout, evicting whatever was scheduled onto it mid-request. One
@@ -619,13 +619,14 @@ dominates the memory term either way, and its request is per-environment
 (`RESULTS_API_MEMORY_REQUEST`): the table above is the 4Gi default, which is what finngen
 still deploys.
 
-Both daly deployments request 6Gi and limit 16Gi on an **`e2-highmem-4`**, which has the same
-3920m CPU allocatable and 27.7 GiB of memory. There the axes swap: peak requests during a full
-deploy are ~3826m against 3920m and ~17.5 GiB against 27.7, so **CPU is the binding
-constraint**. A CronJob overlapping the rollout can leave one surge pod `Pending` until the
-job ends; the old pod keeps serving, so the cost is a slower deploy. Measured usage is far
-inside both: no node exceeded 1.8 cores in the 30 days to 2026-09-13, and the memory peak was
-the PheWAS-shaped run that took results-api to 13.75 GiB on staging.
+Both daly deployments now request 3Gi and limit 8Gi on an **`e2-standard-4`**, so their
+peak is the table's daly-default row less 1 GiB: ~3826m against 3920m and ~12.46 GiB against
+12.96. Both axes are tight, and a CronJob overlapping the rollout can leave one surge pod
+`Pending` until the job ends; the old pod keeps serving, so the cost is a slower deploy.
+Measured usage is far inside both: no node exceeded 1.8 cores in the 30 days to 2026-09-13,
+and the memory peak was the PheWAS-shaped run that took results-api to 13.75 GiB on staging —
+which its bounded index cache (`TABIX_INDEX_CACHE_BYTES`, default 2 GiB) has since capped:
+the same 100-phenotype probe against the fixed image settled at ~2 GB and stayed there.
 
 **Nothing above changed when the sandbox was added, and that is the whole point of giving it
 its own pool.** The sandbox contributes 0m / 0 GiB here because it is on a different pool.
@@ -757,7 +758,7 @@ Other consequences to keep in mind:
 
 - **Raising any deployment's requests, or adding a service, changes the table above.**
   Re-derive the surge total against the node's allocatable — 3920m on either 4-vCPU type,
-  12.96 GiB on `e2-standard-4`, 27.7 GiB on `e2-highmem-4` — before merging such a change.
+  12.96 GiB on `e2-standard-4` — before merging such a change.
 - The `chat-data` PVC is `ReadWriteOnce`, so once a second node exists a `Recreate` rollout can
   land chat-backend on the *other* node and stall ~20s on `Multi-Attach error` while the volume
   detaches. That is a slower deploy, not a dropped request.
