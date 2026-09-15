@@ -2888,6 +2888,11 @@ the analysis through the chat backend's admin API:
   with no discount considered. It is fed by `GET /chat/v1/admin/analytics/cost`, whose source
   is the per-turn `chat_turn_metrics` table in `chat_history.db`; the figure is the Anthropic
   **list** price `cost.py` charged the turn at, and no negotiated discount is applied anywhere.
+  Turns that end abnormally — an error, the model-call timeout, or the browser going away —
+  are in it too, recorded from the stream's `finally` with their `outcome` and the cost of
+  the model calls that finished, so the spend the page shows is the whole spend rather than
+  that of completed turns only. Each row keys to the assistant message it produced, because
+  the browser sends the message id it will save the answer under with the request.
   Secret chat is in neither: the live path records nothing for it, and the backfill drops any
   session that logged a secret-chat start line. Turns from before the table existed are
   recovered from the chat-backend log sink by `genetics-mcp-server`'s
