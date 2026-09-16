@@ -438,6 +438,9 @@ LAYOUT = {
     "scripts/check-duplication.py": "ratchet on the suite's UNDECLARED duplication count "
                                     "(and on the declared one), measured from the trees "
                                     "themselves",
+    "scripts/check-example-scans.py": "live BigQuery: dry-run every worked example against "
+                                      "the sandbox scan cap and hold each view's declared "
+                                      "table layout to its base table; run by deploy.sh",
     "scripts/check-siblings.sh": "run each sibling repo's own discovered test lane from "
                                  "one place",
     "scripts/check-worktree-paths.sh": "warn when a tool would resolve a path into the main "
