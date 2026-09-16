@@ -74,7 +74,7 @@ check '^k8s/' "$DOCS_SPEC" \
 check '^terraform/' "$DOCS_SPEC" \
     'terraform/ -> docs/project-spec.md + README.md (infrastructure, log sinks, tfvars)'
 
-check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|lib/)' "$DOCS_SPEC" \
+check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|check-example-scans\.py|lib/)' "$DOCS_SPEC" \
     'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, what the preflights check and when they stay silent)'
 
 check '^(scripts/lint-staged\.sh|ruff\.toml)$' "$DOCS_SPEC" \

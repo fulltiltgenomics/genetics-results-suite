@@ -89,6 +89,20 @@ RULES = [
         "docs": ["credible_sets_v.md"],
     },
     {
+        # the sandbox cap is checked against the partition-pruned estimate, so `gene =` alone
+        # (the shape the first example used to ship) is refused on production data; the
+        # description has to keep saying that chr is the predicate that lowers it
+        "name": "gene burden needs the chr partition predicate",
+        "table": "gene_burden_results_v",
+        "field": ("description",),
+        "markers": [
+            "refused under the sandbox's per-query scan cap",
+            "only a literal `chr = <n>` predicate lowers that",
+            "derived from dataset in the view",
+        ],
+        "docs": ["gene_burden_results_v.md"],
+    },
+    {
         "name": "credible-set key is not cs_id alone",
         "table": "credible_sets_v",
         "field": ("columns", "cs_id"),

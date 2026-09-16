@@ -134,9 +134,26 @@ def gene_burden(
     *,
     gene: str | None = None,
     phenotype: str | None = None,
+    phenotypes: str | list[str] | None = None,
     resource: str | None = None,
 ) -> pl.DataFrame:
     """Gene-level burden test results (genebass, IBD, BipEx2, SCHEMA, ...).
+
+    gene       — one gene (or 'A,B' for several) across every study and trait. Genebass
+                 rows here are only its significant hits (mlog10p_burden > 4), so a gene
+                 missing from the frame was not necessarily null — it was filtered.
+    gene=... with phenotypes=[...]
+               — the same gene(s) in the named trait codes, UNFILTERED: the row is
+                 present whether or not it is significant, which is what "was this
+                 gene tested in this trait and what came out" needs. Codes are
+                 `trait_original` values (`search_phenotypes` / `phenotypes()` return
+                 them); results-api bounds how many one call may name and answers 422
+                 over it.
+    phenotype  — every gene tested in one trait, unfiltered, from `resource`
+                 (default 'finngen'). A Genebass trait is every gene x annotation and
+                 exceeds the sandbox's per-response byte cap: for one gene in a Genebass
+                 trait use gene= with phenotypes=, for a genome-wide ranking query
+                 `gene_burden_results_v` with the predicates its schema section names.
     """
     ...
 

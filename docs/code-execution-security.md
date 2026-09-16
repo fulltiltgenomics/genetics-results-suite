@@ -454,8 +454,10 @@ So `gen-sandbox-docs.py` now writes the same rendered markdown to a **third** de
 `# BigQuery view reference` section, gated to exactly the surface that had been paying: one with
 `run_analysis` and no `query_database`. `--check` covers that copy like the other two, so the
 prompt cannot describe a column the image does not have. **This is a disclosure decision as much
-as a cost one**: every view's columns, enumerable values and worked examples are now in the
-context of every request on that surface, where before a script had to ask for a view by name.
+as a cost one**: every view's columns, enumerable values, scan-pruning predicate (the base
+table's partition and clustering columns, declared in `configs/datasets.yaml` and held to the
+live table by `scripts/check-example-scans.py` at deploy time) and worked examples are now in
+the context of every request on that surface, where before a script had to ask for a view by name.
 The set disclosed is the same set — the image shipped every one of those files either way, readable by any
 script — so nothing is reachable now that was not reachable before; what changed is that it
 arrives unasked. The files stay in the image, because a script may still open one and the

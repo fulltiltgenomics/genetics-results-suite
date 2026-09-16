@@ -309,7 +309,18 @@ own `DATASET_ID` (`genetics-results-suite-bee`; see `docs/datasets-yaml-schema.m
 ```bash
 python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type
 python3 scripts/test-sandbox-docs.py      # gates scripts/build.sh
+scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results
 ```
+
+The third command is the one the offline harness cannot replace: it dry-runs every example on
+live BigQuery against the sandbox's per-query scan cap (`deploy.sh` runs it again before the
+first `kubectl apply`). BigQuery checks that cap against its partition-pruned estimate, so on
+a large view an example needs a literal predicate on the view's `partition_column` (`chr`
+on the association views) however few rows its other filters match — an equality on a
+clustering key or on the derived `resource` column lowers the bytes billed, not the
+estimate. Declare a new view's `partition_column` and `clustering_columns` from the
+`PARTITION BY` / `CLUSTER BY` in genetics-results-db's `schemas/<table>.sql`; the same
+script holds the declaration to the live table.
 
 The harness fails on a missing entry, on a stale entry naming a column that no longer
 exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted
