@@ -171,26 +171,61 @@ Two consequences worth keeping in mind when editing either side:
 - The CSP lives in the frontend image, the proxy in the bff image. They share a repo and tag, so
   ship them together (`build.sh frontend` + `build.sh bff`, then `rollout.sh` both).
 
-### chat-backend shutdown and stream draining
+### chat-backend turns: server-owned, reattachable, drained on shutdown
 
-A chat turn is a single long-lived SSE response — with tool-calling loops it routinely runs
-1-3 minutes. Under the default 30s termination grace period, any pod deletion (deploy, eviction,
-drain) SIGKILLed uvicorn mid-stream and truncated the answer on screen. `chat-backend.yaml`
-therefore sets three related knobs:
+A chat turn used to be the lifetime of one SSE response — the browser opened `POST /chat/v1/chat`,
+the model ran inside that response, and the browser was the only writer of the answer to chat
+history. Anything that closed the tab's connection mid-answer (a laptop sleeping, a deploy, a
+node eviction) cancelled the run and lost what it had produced, the user's own message included.
+
+Now the run is a task owned by an in-process registry (`turns.py` in genetics-mcp-server) and
+every HTTP response is a *subscriber* to it:
+
+- `POST /chat/v1/chat` starts the turn under the browser-minted `message_id` and returns the
+  first subscription. Each SSE event carries its sequence number as the event `id`.
+- `GET /chat/v1/chat/turns/{message_id}/events?from_seq=N` replays the buffered events from `N`
+  and then tails the turn — the same event shape as the POST. Owner only; 404 once the turn has
+  left the buffer (ten minutes after it settled) or the pod restarted.
+- `POST /chat/v1/chat/turns/{message_id}/cancel` stops the run. Closing the stream no longer
+  does, so the browser's Stop button and its 90s inactivity timeout both call this. A stopped
+  turn ends its stream with a `cancelled` event, so a subscriber can tell it from a lost
+  connection.
+- `GET /chat/v1/chat/sessions/{id}` reports `active_turn` (owner only) while a turn of that
+  session is running or not yet written, so a reopened session reattaches from sequence 0.
+
+When the turn ends — complete, error or cancelled — its finish hook renders the buffered events
+into the same `content` string the browser builds (prose plus the `[IMAGE:…]`, `[FILE:…]` and
+`[TOOLUSE:…]` markers) and writes the assistant row itself, with `content_json` and
+`tool_results_json` from the `done` event. The browser writes the **user** message before the
+request goes out and no longer writes the assistant message at all; secret chats and turns with
+no session write nothing. The marker grammar is therefore stated on both ends — the browser's
+`*Marker.ts` files and `render_transcript` — because the two cannot import one module.
+
+The browser reattaches on its own when a stream ends without `done`, `error` or `cancelled`:
+from the last sequence number seen, with waits of 0, 2, 5, 10, 20 and then 30 seconds three
+times. A 404 hands over to ChatPage, which reloads the session from history.
+
+The buffer is in-process, which chat-backend's single replica and `strategy: Recreate` make
+sufficient: there is no second pod a reconnect could land on. A pod restart loses the buffer, so
+shutdown has to let the running turns finish. `chat-backend.yaml` sets three knobs and the
+service adds a fourth:
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| `terminationGracePeriodSeconds` (pod spec) | `300` | Window for the in-flight SSE response to finish before SIGKILL. |
+| `terminationGracePeriodSeconds` (pod spec) | `300` | Window for in-flight turns to finish before SIGKILL. |
 | `lifecycle.preStop.sleep` | `10` seconds | Leaves the Service endpoints before uvicorn stops accepting, so a request arriving as SIGTERM lands isn't met with connection refused. Uses the native `sleep` hook (GA since Kubernetes 1.30), so it needs no shell in an image that drops `ALL` capabilities. |
-| `--timeout-graceful-shutdown` (uvicorn arg) | `280` | Uvicorn's graceful shutdown is unbounded by default and would sit out the whole grace period, then take SIGKILL. Exiting inside the window closes the `chat_history.db` / `llm_config.db` handles on the `chat-data` PVC cleanly. |
+| `--timeout-graceful-shutdown` (uvicorn arg) | `280` | Bounds uvicorn's wait for open connections, which is unbounded by default. |
+| `TURN_DRAIN_TIMEOUT_S` (chat-backend env, default `270`) | `270` | The lifespan shutdown waits this long for turns whose subscribers are gone before cancelling them and closing the SQLite handles. Only this covers a detached turn: uvicorn's drain counts connections, not tasks. |
 
-Keep the uvicorn timeout below `terminationGracePeriodSeconds`, with room for the preStop sleep.
+sse-starlette closes every open SSE stream at SIGTERM, so connected browsers are cut at once and
+reattach to the new pod; the answer reaches them through history if the buffer did not survive.
+Keep the uvicorn timeout and the drain timeout each below `terminationGracePeriodSeconds`, with
+room for the preStop sleep; they run in sequence only when a connected turn and a detached one
+both outlast the deploy.
 
 The cost is deploy latency: chat-backend is `strategy: Recreate`, so `deploy.sh` blocks on the
 old pod for up to ~5 minutes when someone is mid-conversation. That stays inside the
-deployment's `progressDeadlineSeconds` (600). This makes shutdown graceful; it does not make it
-resumable — a stream cut short by a hard node failure is still lost, since there is no
-client-side reconnect and no persistence of partial assistant turns.
+deployment's `progressDeadlineSeconds` (600).
 
 ## Project structure
 
@@ -654,9 +689,11 @@ scale down`. For chat-backend that killed an in-flight SSE response mid-answer.
 **One mitigation is actually in place, and it is not the pinning.**
 
 Graceful shutdown on chat-backend (`k8s/deployments/chat-backend.yaml`):
-`terminationGracePeriodSeconds: 300`, a `preStop` sleep of 10s, and uvicorn
-`--timeout-graceful-shutdown 280`. An evicted pod finishes the stream it is serving. This is
-the whole of the live protection for a mid-stream eviction.
+`terminationGracePeriodSeconds: 300`, a `preStop` sleep of 10s, uvicorn
+`--timeout-graceful-shutdown 280` and the service's own turn drain (see "chat-backend turns"
+under Services). An evicted pod finishes the turns it is running and writes their answers to
+history; the browser reattaches and, failing that, reloads the session. This is the whole of
+the live protection for a mid-stream eviction.
 
 **The PodDisruptionBudgets** (`k8s/disruption-budgets/budgets.yaml`) on **chat-backend** and
 **results-api** are set to `maxUnavailable: 1` and are **declarative only today**. Both
