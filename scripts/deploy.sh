@@ -315,6 +315,25 @@ if [ -z "${BQ_DATASET:-}" ]; then
 fi
 export BQ_DATASET
 echo "BigQuery dataset: ${BQ_DATASET}"
+# THE SHIPPED WORKED EXAMPLES MUST RUN UNDER THE SANDBOX SCAN CAP on the dataset this
+# deployment serves. They are chat-backend's system prompt as much as the sandbox's schema
+# docs, so an example the cap refuses teaches the model a query shape that fails. Only live
+# BigQuery can answer this — the cap is checked against BigQuery's own estimate — so it runs
+# here, once the project and dataset are known, rather than in build.sh's offline gate.
+# exit 1 = an example is over the cap or a declared table layout is wrong; abort.
+# exit 2 = could not tell (no bq, no credentials); warn and continue, as the other preflights do.
+set +e
+python3 "${SCRIPT_DIR}/check-example-scans.py" --project "${GCP_PROJECT}" --dataset "${BQ_DATASET}"
+scan_check=$?
+set -e
+if [ "${scan_check}" -eq 1 ]; then
+  echo "ERROR: a worked example in configs/datasets.yaml does not run under the sandbox scan cap"
+  echo "       on ${GCP_PROJECT}:${BQ_DATASET}, or a declared partition/clustering layout is wrong."
+  echo "       Fix the example (add the view's partition predicate) and regenerate sandbox/schema."
+  exit 1
+elif [ "${scan_check}" -ne 0 ]; then
+  echo "WARNING: scripts/check-example-scans.py could not run (exit ${scan_check}); deploying unverified."
+fi
 # WHETHER THIS DEPLOYMENT OFFERS ALPHAGENOME — a deployment fact read from the resolved
 # tfvars, the same grep shape as ENABLE_SANDBOX above. An explicit ALPHAGENOME_ENABLED in the
 # environment still wins, for SKIP_TERRAFORM=true re-applies where this file cannot see the

@@ -136,6 +136,31 @@ def render_view(name, table):
             "(see docs/adding-datasets.md)."
         )
 
+    partition = table.get("partition_column")
+    clustering = list(table.get("clustering_columns") or [])
+    if partition or clustering:
+        # the sandbox's scan cap is checked against BigQuery's partition-pruned estimate, so
+        # the partition column is the one predicate that gets a query under it; clustering
+        # only lowers what is billed. scripts/check-example-scans.py holds these
+        # declarations to the live base table at deploy time
+        pruning = []
+        if partition:
+            pruning.append(
+                f"Partitioned on `{partition}`: a literal `{partition} = <n>` predicate is what "
+                "keeps a query under the sandbox's per-query scan cap, which BigQuery checks "
+                "against its partition-pruned estimate before running anything."
+            )
+        if clustering:
+            keys = ", ".join(f"`{c}`" for c in clustering)
+            pruning.append(
+                f"Clustered on {keys}: an equality on these cuts the bytes actually billed "
+                "but does not lower that estimate, so it never substitutes for the "
+                "partition predicate."
+                if partition
+                else f"Clustered on {keys}: an equality on these cuts the bytes billed."
+            )
+        out += ["## Scan pruning", "", " ".join(pruning), ""]
+
     out += ["## Columns", "", "| column | type | description |", "| --- | --- | --- |"]
     for col, desc in table["columns"].items():
         out.append(f"| `{col}` | `{_table_cell(types[col])}` | {_table_cell(desc)} |")

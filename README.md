@@ -502,6 +502,16 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 > **Note:** The k8s YAMLs use variable placeholders (`${REGISTRY}`, `${GCP_PROJECT}`, etc.) — `deploy.sh` substitutes these automatically from terraform output. Do not `kubectl apply -f` the YAMLs directly; always use `deploy.sh` or `rollout.sh`.
 
 > **Note:** the substitution is over the **whole document**, not over selected fields —
+> The worked examples in `configs/datasets.yaml` are chat-backend's system prompt as much as
+> the sandbox's schema docs, so one the sandbox's scan cap refuses teaches the model a query
+> that fails. `scripts/check-example-scans.py` is the guard: once `deploy.sh` knows the project
+> and dataset it dry-runs every example on live BigQuery against the cap and holds each view's
+> declared partition/clustering layout to its base table, aborting the deploy on a failure and
+> only warning when it cannot run (no `bq`, no credentials). The cap is checked against
+> BigQuery's partition-pruned estimate, so a literal predicate on the partition column is the
+> one thing that gets a large-view example under it — run the script by hand against
+> production before committing a new example.
+
 > `deploy.sh` pipes each file in `k8s/configs/`, `k8s/deployments/` and `k8s/cronjobs/` through
 > `envsubst '<whitelist>'` in full. A whitelisted name spelled `${...}` in a *comment* is
 > therefore substituted too, and two of the values (`LEGACY_REDIRECT`, `KEYCLOAK_SERVER`) are

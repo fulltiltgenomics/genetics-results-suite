@@ -221,6 +221,8 @@ resources:
 tables:
   credible_sets_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [data_type, resource, variant, pos]
     resource_derivation:
       mode: load_time
       reason: >-
@@ -397,6 +399,8 @@ tables:
 
   colocalization_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset1, data_type1, dataset2, data_type2]
     resource_derivation:
       mode: view_case
     summary: "Colocalization between study pairs (coloc.susie)"
@@ -539,6 +543,8 @@ tables:
 
   coloc_credsets_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, data_type, cs_id]
     resource_derivation:
       mode: view_case
     summary: "Variants inside colocalized credible sets"
@@ -673,6 +679,8 @@ tables:
 
   exome_variant_results_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene, trait]
     resource_derivation:
       mode: view_case
     summary: "Single-variant exome association results"
@@ -757,6 +765,8 @@ tables:
 
   gene_burden_results_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene, trait]
     resource_derivation:
       mode: view_case
     summary: "Gene-level exome burden tests"
@@ -765,15 +775,20 @@ tables:
       (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
       annotation x trait combination is present, so a null result for a specific
       gene in a specific trait is a real null result and not a missing row.
-      Genebass alone contributes ~343M rows, so always constrain on gene and/or
-      trait rather than scanning.
+      Genebass contributes the bulk of the rows, and a query that names only a gene
+      or a trait is refused under the sandbox's per-query scan cap: the cap is
+      checked against BigQuery's partition-pruned estimate, and only a literal
+      `chr = <n>` predicate lowers that. Always add the gene's chromosome (from
+      gene_annotations_v or search_genes) beside `gene =`; `dataset =` (a
+      clustering key) then cuts what is actually billed, which `resource =` does
+      not, being derived from dataset in the view.
 
     columns:
       dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome)"
       trait: "Trait/phenotype name"
       gene: "Gene symbol (e.g. PCSK9)"
       gene_id: "Ensembl gene ID (e.g. ENSG00000169174)"
-      chr: "Chromosome number, chromosome X is 23"
+      chr: "Chromosome number, chromosome X is 23. The partitioning column: a literal `chr = <n>` is what keeps a query under the sandbox scan cap"
       gene_start_pos: "Gene start position (GRCh38)"
       gene_end_pos: "Gene end position (GRCh38)"
       annotation: "Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous)"
@@ -786,7 +801,7 @@ tables:
       n_controls: "Number of controls in the analysis"
       trait_original: "Original trait name in the respective dataset"
       flags: "Quality or analysis flags (NA if none)"
-      resource: "Data source identifier (lowercase). Use this for filtering, not dataset"
+      resource: "Data source identifier (lowercase), derived from dataset in the view. Filtering on it selects the right rows but prunes nothing; `dataset` (exact spelling, see the enumerable values) is the clustering key"
 
     column_types:
       dataset: STRING
@@ -809,38 +824,34 @@ tables:
       resource: STRING
 
     examples:
-      - description: "All burden tests for a gene across every exome study and phenotype — the usual starting point for 'is this gene implicated anywhere'"
+      - description: "All burden tests for a gene across every exome study and phenotype — the usual starting point for 'is this gene implicated anywhere'. The literal chr is not optional: without it the same query estimates over the sandbox cap and is refused."
         sql: |-
           SELECT resource, dataset, trait, trait_original, annotation,
                  mlog10p_burden, beta, se, n_cases, n_controls, total_variants
           FROM gene_burden_results_v
-          WHERE gene = 'TLN1'
+          WHERE chr = 9 AND gene = 'TLN1'
           ORDER BY mlog10p_burden DESC
-
-      - description: "pLoF burden hits for a disease. Trait names are source-specific strings, so match them case-insensitively rather than assuming an exact label."
+      - description: "pLoF burden hits for a disease. Trait names are source-specific strings, so match them case-insensitively rather than assuming an exact label. Genome-wide, so no chr predicate; the narrow column list is what keeps it under the cap."
         sql: |-
           SELECT gene, annotation, trait, mlog10p_burden, beta, se,
                  n_cases, n_controls, total_variants
           FROM gene_burden_results_v
-          WHERE resource = 'genebass' AND annotation = 'pLoF'
+          WHERE dataset = 'genebass' AND annotation = 'pLoF'
             AND LOWER(trait) LIKE '%crohn%'
           ORDER BY mlog10p_burden DESC
-
       - description: "Top burden signals in a single exome study"
         sql: |-
           SELECT gene, annotation, trait, mlog10p_burden, beta, n_cases, n_controls
           FROM gene_burden_results_v
-          WHERE resource = 'bipex2' AND mlog10p_burden > 3
+          WHERE dataset = 'BipEx2' AND mlog10p_burden > 3
           ORDER BY mlog10p_burden DESC LIMIT 20
-
-      - description: "One gene's burden result in specific traits, significant or not — the table is unfiltered, so this answers 'was this gene tested and what came out'"
+      - description: "One gene's burden result in specific traits, significant or not — the table is unfiltered, so this answers 'was this gene tested and what came out'. chr beside gene as in the first example; dataset pins the study whose trait codes these are."
         sql: |-
           SELECT trait_original, annotation, mlog10p_burden, beta, se, total_variants
           FROM gene_burden_results_v
-          WHERE gene = 'PCSK9'
+          WHERE chr = 1 AND gene = 'PCSK9' AND dataset = 'genebass'
             AND trait_original IN ('continuous_30780_both_sexes__irnt', 'icd10_E78_both_sexes__')
           ORDER BY mlog10p_burden DESC
-
     categorical_columns:
       resource: null
       dataset: "resource"
@@ -848,6 +859,8 @@ tables:
 
   asm_qtl_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene_most_severe, most_severe]
     resource_derivation:
       mode: view_case
     summary: "Allele-specific methylation QTLs (deCODE)"
@@ -937,6 +950,8 @@ tables:
 
   open_chromatin_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, tissue, cell_type]
     resource_derivation:
       mode: view_case
     summary: "Accessible-chromatin peak atlas by cell type"
@@ -1017,6 +1032,8 @@ tables:
 
   variant_effect_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, tissue, model]
     resource_derivation:
       mode: view_case
     summary: "Predicted variant effects on chromatin accessibility"
@@ -1096,6 +1113,8 @@ tables:
 
   mpra_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, cell_line]
     resource_derivation:
       mode: view_case
     summary: "Measured MPRA allelic regulatory activity"
@@ -1180,6 +1199,7 @@ tables:
 
   hla_associations_v:
     exposed: true
+    clustering_columns: [phenotype, gene, allele]
     resource_derivation:
       mode: view_case
     summary: "Classical HLA allele associations (FinnGen R14)"
@@ -2084,6 +2104,8 @@ tables:
       phenotype: null
   variant_annotation_v:
     exposed: true
+    partition_column: chr
+    clustering_columns: [most_severe, gene_most_severe]
     resource_derivation:
       mode: none
       reason: >-
@@ -2179,6 +2201,7 @@ tables:
 
   peak_to_gene_v:
     exposed: true
+    clustering_columns: [symbol, cell_type, peak_id]
     resource_derivation:
       mode: view_case
     summary: "Peak-to-gene links (makes caQTL gene-based)"
@@ -2286,6 +2309,7 @@ tables:
 
   phenotypes_v:
     exposed: true
+    clustering_columns: [dataset, trait_original]
     resource_derivation:
       mode: none
       reason: >-
@@ -2410,6 +2434,7 @@ tables:
 
   datasets_v:
     exposed: true
+    clustering_columns: [dataset, resource]
     resource_derivation:
       mode: none
       reason: >-

@@ -68,6 +68,9 @@ tables:
     dataset_cross_check:           # optional -- opt out of the live `dataset` cross-check
       excluded_reason: string      # required when the block is present
 
+    partition_column: string       # optional -- the base table's partitioning column
+    clustering_columns: [string]   # optional -- the base table's clustering keys, in order
+
     columns:                       # optional -- per-column descriptions
       <column_name>: string        # description text; overrides BQ field descriptions
 
@@ -114,6 +117,28 @@ consistency, not for correctness. The one way still to get this wrong is silent 
 loud later: **qualifying the name yourself pins the example to one dataset**, and the
 allow-list compares fully-qualified ids, so an example carrying the wrong project or dataset
 is refused rather than quietly reading the wrong table.
+
+### Field details for `tables.<table>.partition_column` and `tables.<table>.clustering_columns`
+
+The base table's storage layout, declared so the generated schema doc can render a
+"Scan pruning" section naming the predicate that keeps a query under the sandbox's
+per-query scan cap. The cap matters more than it looks: BigQuery enforces
+`maximum_bytes_billed` against its **pre-execution estimate**, and that estimate reflects
+partition pruning only — an equality on a clustering key lowers what is billed once the
+query runs, but never the number the cap is checked against. So a query that names only a
+clustering key (or a derived column such as `resource`) on a large view is refused however
+few rows it would return, and the partition column is the one predicate that changes that.
+Measured on the view that prompted this: `gene_burden_results_v` filtered on `gene` alone
+estimates over the cap on production data; the same query with `chr = <n>` estimates a few
+GB.
+
+The layout itself is defined in genetics-results-db's `schemas/*.sql`, so the declaration
+here is a **checkable claim**: `scripts/check-example-scans.py`, run by `deploy.sh` once the
+target project and dataset are known, reads the live base table and fails the deploy on a
+mismatch, warns when a partitioned or clustered base table has no declaration here, and
+dry-runs every worked example against the cap. Only the `chr` partition is worth a
+predicate in examples; a `clustering_columns` entry is documentation of what cuts cost, not
+a filter the examples are required to carry.
 
 ### Field details for `tables.<table>.exposed`
 

@@ -244,6 +244,7 @@ scripts/                             build, deploy and verification scripts
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
   check-duplication.py               ratchet on the suite's UNDECLARED duplication count (and on the declared one), measured from the trees themselves
+  check-example-scans.py             live BigQuery: dry-run every worked example against the sandbox scan cap and hold each view's declared table layout to its base table; run by deploy.sh
   check-siblings.sh                  run each sibling repo's own discovered test lane from one place
   check-worktree-paths.sh            warn when a tool would resolve a path into the main checkout
   create-secrets.sh                  create the k8s Secrets from environment variables
@@ -1266,6 +1267,42 @@ GC minimum-free threshold. README's "Layer cache" has the host-side procedure.
 - **The chat Tools control**: whether the chat options show the Tools row (the Code execution switch) is a per-deployment build-time setting, `SHOW_TOOLS_CONTROL` in the deployment's `.env.<name>`; `build.sh`/`build-all.sh` read it (unset means shown) and pass `--build-arg SHOW_TOOLS_CONTROL` → the browser's Dockerfile writes `VITE_SHOW_TOOLS_CONTROL` into `.env` → `src/config/showToolsControl.ts`, where only the literal `false` hides the row. A deployment that hides it decides its users' surface through `DEFAULT_TOOL_PROFILE` on chat-backend; a user's earlier stored choice still applies, there is just no control left to change it with. Staging hides it (`docs/environments.md`).
 - **The chat Tools button**: whether the chat header shows the Tools button (the list of what the assistant can call) is the same kind of setting, `SHOW_TOOLS_BUTTON` in `.env.<name>` → `--build-arg SHOW_TOOLS_BUTTON` → `VITE_SHOW_TOOLS_BUTTON` → `src/config/showToolsButton.ts`, unset means shown. Independent of `SHOW_TOOLS_CONTROL`: the button is informational, the row changes what the assistant may do. Every deployment hides it (`docs/environments.md`).
 - **Branding (product name)**: the displayed product name is configurable per deployment via the `app_name` terraform variable in `terraform.tfvars` (single source of truth; default `FinnGenie`, e.g. `GeneGenie` for the daly profile). Resolution order everywhere is **`APP_NAME` env override → `app_name` in `terraform.tfvars` → `FinnGenie`**. `deploy.sh` reads it from terraform output and injects `APP_NAME` into the chat-backend pod (used by the MCP server's assistant persona in `default_system_prompt`). The frontend bakes it in at build time: `build.sh`/`build-all.sh` resolve `APP_NAME` (via `tfvar app_name` from `scripts/lib/env.sh`, reading the tfvars `DEPLOY_ENV` selected) and pass `--build-arg APP_NAME` → Dockerfile writes `VITE_APP_NAME` into `.env` → `import.meta.env.VITE_APP_NAME` (read via `src/config/appName.ts`). So setting `app_name` once in the deployment's tfvars covers both the frontend build and the backend deploy. Logos and the `finngen.fi` CORS/domain identifiers are unchanged.
+### Example-scan preflight (`scripts/check-example-scans.py`)
+
+The worked examples under `tables.<view>.examples` in `configs/datasets.yaml` are copied into
+`sandbox/schema/<view>.md` under "Queries that run against `<view>` as written", and that text
+is chat-backend's system prompt on the `code` surface. So an example db-api refuses under the
+sandbox's per-query scan cap teaches the model a query shape that fails, and it retries blind:
+measured on one production turn, the first `gene_burden_results_v` example (`WHERE gene =
+'TLN1'`) estimated over the 50 GB cap on production data, and the model spent five
+`run_analysis` calls finding the predicate that works.
+
+Only live BigQuery can answer whether an example fits: BigQuery enforces
+`maximum_bytes_billed` against its own pre-execution estimate, which reflects **partition
+pruning only** — an equality on a clustering key, or on a column the view derives such as
+`resource`, lowers what is billed once the query runs but never the number the cap is checked
+against. The offline harness (`test-sandbox-docs.py`) deliberately has no BigQuery access, so
+this check runs in `deploy.sh` once `GCP_PROJECT` and `BQ_DATASET` are resolved, ahead of the
+first `kubectl apply`. With the `bq` CLI it:
+
+- **dry-runs every example** of every exposed view exactly as db-api submits it (bare names
+  resolved against the served dataset) and fails on any estimate over the cap. The cap is
+  db-api's `SANDBOX_MAX_BYTES_BILLED`, repeated here as a default and overridable with the
+  env var of the same name — a drift shows up as an example this gate passes and the sandbox
+  refuses;
+- **holds each view's declared `partition_column` / `clustering_columns` to the live base
+  table** and fails on a mismatch. The declarations are what `gen-sandbox-docs.py` renders as
+  the view's "Scan pruning" section, so a wrong one would ship a wrong predicate; the layout
+  itself is defined in genetics-results-db's `schemas/*.sql`. A partitioned or clustered base
+  table whose view declares neither is a warning, since the doc is then silent where it
+  should guide.
+
+Exit 0 pass / 1 an example is over the cap or a declaration is wrong (the deploy aborts) / 2
+could not tell — no `bq`, no credentials, no PyYAML — which warns and continues, the answer
+the other preflights give when they cannot run. The invocations run in parallel: `bq` spends
+most of each call starting up, and one call per example in sequence made this the slowest
+step of a deploy.
+
 ### Manifest-render preflight (`scripts/test-manifest-render.py`)
 
 `deploy.sh` does not substitute *fields*; it pipes each file in `k8s/configs/`,
