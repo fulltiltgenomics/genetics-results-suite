@@ -201,16 +201,17 @@ which is hardcoded in ~40 manifests.
       `oauth2-proxy-secrets` *and* rendered into the realm import, so both sides agree).
       Use a **different `SLACK_WEBHOOK_URL`** than production, or leave it empty; otherwise
       staging's daily monitor report lands in the production alert channel.
-- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging` and `.env.daly`.** Both daly
-      deployments start their chat users on the `code` profile — the code-execution surface;
-      a deployment that leaves the variable unset starts them on **All**. It is rendered into
+- [ ] **`DEFAULT_TOOL_PROFILE=code` in `.env.daly-staging`, `.env.daly` and finngen's `.env`.**
+      Every deployment starts its chat users on the `code` profile — the code-execution surface;
+      a deployment that leaves the variable unset starts them on the browser's own default, the
+      no-code surface. It only makes sense on a cluster whose sandbox pool exists. It is rendered into
       chat-backend by `scripts/deploy.sh` and served to the browser as the profile of anyone who
       has not chosen one; a user's own choice still wins and persists (`docs/project-spec.md`,
       "Tool profiles"). Since it is read from `.env.<name>`, a deploy run without the line
       silently returns that deployment to All — that is the drift to look for when a cluster
       answers with direct tools again.
-- [ ] **`SHOW_TOOLS_CONTROL=false` in `.env.daly-staging` and `.env.daly`.** Both daly
-      deployments hide the chat options' Tools row (the Code execution switch), so their users
+- [ ] **`SHOW_TOOLS_CONTROL=false` in `.env.daly-staging`, `.env.daly` and finngen's `.env`.** Every
+      deployment hides the chat options' Tools row (the Code execution switch), so its users
       stay on the profile above with no control to leave it; unset, the row is shown. It is a
       build-time setting: `build.sh`/`build-all.sh` read it from `.env.<name>` and pass
       `--build-arg SHOW_TOOLS_CONTROL` to the browser image, so it takes effect on the next
