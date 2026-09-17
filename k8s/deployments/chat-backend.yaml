@@ -39,7 +39,9 @@ spec:
         image: ${REGISTRY}/genetics-mcp-server:latest
         # uvicorn's graceful shutdown is unbounded by default, so it would wait out the full
         # grace period and then take SIGKILL. Exiting at 280s closes the SQLite handles on the
-        # chat-data PVC cleanly instead.
+        # chat-data PVC cleanly instead. This bounds the wait for open connections only; a chat
+        # turn whose browser is gone is a task, not a connection, and the service's lifespan
+        # waits for those itself (TURN_DRAIN_TIMEOUT_S, default 270) before closing.
         command: ["uvicorn", "genetics_mcp_server.chat_api:app", "--host", "0.0.0.0", "--port", "8000",
                   "--timeout-graceful-shutdown", "280"]
         ports:
