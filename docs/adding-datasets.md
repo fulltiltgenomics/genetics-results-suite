@@ -103,7 +103,11 @@ In `genetics-results-suite/configs/datasets.yaml`:
    fallback already produces the correct resource id. It does **not** when the column value
    lowercased differs from the resource id (e.g. `IIBDGC` → would give `iibdgc`, but the
    resource is `ibd_gwas`, so an explicit rule is required). Put more specific patterns
-   before broader ones; the `*` fallback stays last.
+   before broader ones; the `*` fallback stays last. A rule the fallback would have got
+   right anyway is still worth adding (`BRaVa` → `brava`): `scripts/monitor/bq_summary.py`
+   builds the resources it expects in each view from the rules that carry `applies_to`
+   (`_get_config_expected`), so a dataset the fallback resolves silently is monitored by
+   nothing.
 
 Then propagate to the sibling repos:
 
@@ -728,6 +732,42 @@ an unstaged `all_cs_file` would fail that deployment's startup, since `startup_c
 every configured path. The same reasoning already governs `metadata_file` and
 `finngen/genes.py`'s `exon_file_by_version`.
 
+## 15. Worked example: BRaVa cross-ancestry exome gene burden
+
+Context: a **second source for an existing view and an existing API product shape** — no new
+view, no new endpoint, no DDL. BRaVa's gene-level meta-analysis loads into
+`gene_burden_results` beside Genebass, and two source shapes had nowhere to go in that
+layout: the source's test classes (class Burden with type Inverse variance weighted is loaded;
+the Stouffer burden rows and the SKAT and SKAT-O rows, p-value only, are not) and up to six
+ancestry strata per phenotype, varying by phenotype.
+
+Changes made (new resource `brava`, dataset `brava_gene_based` in the **daly** profile only):
+
+1. `genetics-results-munge`: `scripts/munge_brava.{py,sh}`, `scripts/brava_phenotypes.py`.
+2. `datasets.yaml`: the `brava` resource, `profiles.daly.datasets.brava_gene_based`, an exact
+   `BRaVa` rule scoped to `gene_burden_results_v`, and the `gene_burden_results_v` text and
+   worked example describing the two conventions below.
+3. `genetics-results-api`: a `gene_based_results.py` entry and a `common.py`
+   `dataset_to_resource` entry in the daly profile, plus a new `pheweb` metadata harmonizer.
+4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID` and the same new harmonizer in
+   `build_phenotypes.py`.
+
+Three points of interest.
+
+**Rows a schema cannot carry are dropped, not widened.** `gene_burden_results.beta` is
+`NOT NULL`, so only the Burden inverse-variance-weighted rows load; Stouffer, SKAT and SKAT-O
+are not loaded rather than relaxing the column for a dataset that will never fill it.
+
+**A dimension with nowhere to go can become part of the phenotype code.** The ancestry strata
+are `<code>|<STRATUM>` in `trait_original` (the cross-ancestry meta keeps the bare code), which
+needs no column, no view change and no router change, and gives exact per-stratum
+`phenotypes_v` rows and `n_cases`/`n_controls`. `|` round-trips through the results-api path
+and query parameters unencoded.
+
+**A composite `annotation` stays enumerable.** BRaVa's mask x max-MAF pair is one
+`<mask>|MAF<<cutoff>` string, so the existing `categorical_columns` entry (`annotation`
+scoped by `resource`) keeps serving its values — nothing lists them by hand.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
@@ -737,7 +777,9 @@ every configured path. The same reasoning already governs `metadata_file` and
 - [ ] `./scripts/sync-datasets.sh`.
 - [ ] genetics-results-api: product config path entry for each profile (matching `id`).
 - [ ] genetics-results-api: `common.py` `dataset_to_resource` entry if the data shares a
-      combined credible-set file (per-row resource attribution).
+      combined credible-set file (per-row resource attribution), or, as with BRaVa, if
+      exome/gene-based range queries would otherwise drop rows whose `dataset` value is
+      unmapped.
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
       apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
       decision with a separate consequence:
