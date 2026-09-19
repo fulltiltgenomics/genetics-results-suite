@@ -602,7 +602,7 @@ that tool):
 ```text
 - Three or more variants in one request go to analyze_variant_list, not to repeated per-variant calls
 - **Investigating a gene means both lines of evidence**: GWAS (get_credible_sets_by_gene) and rare-variant burden (get_gene_based_results, get_exome_results_by_gene). Burden is independent of GWAS and belongs in any gene-focused analysis
-- **A gene missing from get_gene_based_results is not a gene without a burden result** — those rows are cut at genebass p < 1e-4. For tested-and-null in a given trait use get_gene_based_results_by_phenotype (one trait, unfiltered) or `gene_burden_results_v`
+- **A gene missing from get_gene_based_results is not a gene without a burden result** — those rows are cut at genebass and BRaVa p < 1e-4. For tested-and-null in a given trait use get_gene_based_results_by_phenotype (one trait, unfiltered) or `gene_burden_results_v`
 ```
 
 The truncation rule's remedy is four gated clauses, so the rendered bullet DIFFERS PER
@@ -2087,7 +2087,7 @@ Get individual variant exome results for a specific phenotype within an exome da
 Description as sent to the model:
 
 ```text
-Get gene-level burden test results from genebass, IBD, BipEx2, and SCHEMA datasets. Returns gene-based association statistics aggregated at the gene level. Different from get_exome_results_by_gene which returns individual variant-level exome results. genebass rows here are limited to p<1e-4; for a gene's result in a specific trait regardless of significance use get_gene_based_results_by_phenotype, or the gene_burden_results table in the database (unfiltered) for batch queries across many genes or traits.
+Get gene-level burden test results from genebass, BRaVa, IBD, BipEx2, and SCHEMA datasets. Returns gene-based association statistics aggregated at the gene level. Different from get_exome_results_by_gene which returns individual variant-level exome results. genebass and BRaVa rows here are limited to p<1e-4; for a gene's result in a specific trait regardless of significance use get_gene_based_results_by_phenotype, or the gene_burden_results table in the database (unfiltered) for batch queries across many genes or traits.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2107,8 +2107,8 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'schema2', 'bipex2', 'ibd_exome_2026') |
-| `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use |
+| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'brava', 'schema2', 'bipex2', 'ibd_exome_2026') |
+| `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use, and which for BRaVa address an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
 
 `required`: ['resource', 'phenotype']
 

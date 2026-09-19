@@ -333,7 +333,7 @@ For local development, `scripts/sync-datasets.sh` copies the canonical file to s
 
 Both services load all dataset/resource metadata exclusively from the YAML -- there are no hardcoded fallback dicts. In genetics-results-api, the profile `datasets.py` files are empty placeholders (datasets come from YAML via `app.config.yaml_loader`). The `dataset_to_resource` mapping in `profiles/*/common.py` is still hardcoded as the YAML schema does not yet support exact BQ dataset name to (resource, version) tuples.
 
-The YAML defines two exome dataset resources with different filtering levels: `genebass_exome` (filtered to p < 1e-4) and `ibd_exome` (resource: `ibd_exome_2026`, containing only exome-wide significant variants at p < 3e-7 plus LD-curated variants at p < 5e-6, with 3 phenotypes: IBD, UC, CD). The `dataset_to_resource_rules` map `IBD_exome_2026` to `ibd_exome_2026` for `exome_variant_results_v` and `gene_burden_results_v` views.
+The exome and gene-based resources, and the filtering level each carries, are defined in `configs/datasets.yaml` — read them there rather than from a list here. `genebass_exome` is filtered to p < 1e-4; `ibd_exome` (resource: `ibd_exome_2026`) contains only exome-wide significant variants at p < 3e-7 plus LD-curated variants at p < 5e-6, with 3 phenotypes: IBD, UC, CD. `brava` (dataset `brava_gene_based`, **daly profile only**) is the BRaVa consortium cross-ancestry exome meta-analysis and is **gene-burden only**: it loads into `gene_burden_results` beside Genebass with no variant-level product and no DDL change. Two conventions of that load reach every consumer, and both are described with the worked example in [adding-datasets.md](adding-datasets.md): the ancestry strata are phenotype codes rather than a column (`AFib` is the cross-ancestry meta, `AFib|EUR` the EUR stratum), and `annotation` spells the source's mask x max-MAF pair as one `<mask>|MAF<<cutoff>` string, whose values the `categorical_columns` mechanism enumerates. Only the Burden inverse-variance-weighted rows load, because `beta` is `NOT NULL`. The combined file behind `/gene_based/{gene}` (and so `get_gene_based_results`) is the mlog10p > 4 cut for BRaVa exactly as for Genebass, while the per-trait files behind `/gene_based_results_by_phenotype` are unfiltered. The `dataset_to_resource_rules` map `IBD_exome` to `ibd_exome_2026` for `exome_variant_results_v` and `gene_burden_results_v` views, and the exact value `BRaVa` to `brava` for `gene_burden_results_v`.
 
 Summary statistics are served by results-api from per-phenotype tabix files two ways: `/api/v1/summary_stats/{resource}/{data_type}` (GET/POST) for named variants, and `/api/v1/summary_stats_by_region/{resource}/{data_type}/{region}` for every record in a `chr:start-end` region. Both require `phenotypes=<comma-separated>` — there is no combined file spanning a region across traits, unlike `credible_sets_by_region`. The genetics-mcp-server exposes both as `get_summary_stats` and `get_summary_stats_by_region`.
 
@@ -485,8 +485,10 @@ the same query.
   `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
   QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
   `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
-  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. Use a `LEFT JOIN` when the dataset
-  is not known in advance.
+  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. `BRaVa` does have rows, one per
+  `trait_original` — so one per ancestry stratum as well as one for the cross-ancestry meta,
+  and a row count for that dataset counts strata rather than phenotypes. Use a `LEFT JOIN`
+  when the dataset is not known in advance.
 - `datasets` — one row per results-view `dataset` value, most of them eQTL Catalogue QTD
   sub-studies, unique on `dataset` so the join never fans results out, plus a
   `dataset IS NULL` row for each registry entry with no BigQuery presence. Carries

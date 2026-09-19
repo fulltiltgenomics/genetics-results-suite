@@ -768,6 +768,16 @@ and query parameters unencoded.
 `<mask>|MAF<<cutoff>` string, so the existing `categorical_columns` entry (`annotation`
 scoped by `resource`) keeps serving its values — nothing lists them by hand.
 
+**A second source into an existing view still changes agent-facing text.** `brava` had to be
+added to the dataset list in `get_gene_based_results`'s description and to the resource enum
+in `get_gene_based_results_by_phenotype`'s (in genetics-mcp-server, and to the SDK's
+`gene_burden()` docstring), the phenotype-parameter text had to spell the `AFib|EUR` shape,
+and the prompt bullet warning that a missing gene may only have been filtered had to name
+BRaVa beside Genebass — the combined file behind the gene-keyed call is the same mlog10p > 4
+cut, while the per-trait call is unfiltered. `gen-doc-blocks.py --check --mcp-src` catches a
+tool-surface change here as staleness, but no gate requires that a resource be *named* in a
+description — a convention the tool descriptions do not state is one the agent will not use.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
