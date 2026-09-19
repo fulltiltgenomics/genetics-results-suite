@@ -46,6 +46,14 @@ resources:
     description: "Gene burden results and EWAS exome variant results from UK Biobank"
     aliases: ["gene bass", "uk biobank exome", "UKB exome"]
 
+  brava:
+    label: "BRaVa"
+    description: >-
+      Biobank Rare Variant Analysis (BRaVa) consortium cross-ancestry exome meta-analysis —
+      gene-level rare variant burden results for 44 phenotypes across 10 biobanks and
+      ~1.2M individuals (medRxiv 10.64898/2026.05.21.26353759)
+    aliases: ["BRaVa", "brava", "Biobank Rare Variant", "Biobank Rare Variant Analysis", "rare variant meta-analysis"]
+
   ibd_gwas:
     label: "IBD GWAS"
     description: "IBD (inflammatory bowel disease) GWAS meta-analysis (European, East Asian, South Asian)"
@@ -782,6 +790,17 @@ tables:
       gene_annotations_v or search_genes) beside `gene =`; `dataset =` (a
       clustering key) then cuts what is actually billed, which `resource =` does
       not, being derived from dataset in the view.
+      BRaVa rows are the Burden inverse-variance-weighted test only — the source's
+      Stouffer, SKAT and SKAT-O rows are not loaded — and their `annotation` is a
+      composite `<mask>|MAF<<cutoff>` string rather than a bare mask name; read the
+      spellings from the enumerable values of `annotation` scoped by `resource`,
+      not from memory. BRaVa's per-ancestry strata are phenotype codes, not a
+      column: `trait_original` is the phenotype code for the cross-ancestry
+      meta-analysis and `<code>|<STRATUM>` (AFR, AMR, EAS, EUR, SAS, non_EUR) for a
+      stratum, and `n_cases`/`n_controls` are that stratum's counts — on BRaVa's
+      quantitative traits `n_cases` carries the analysed sample size and
+      `n_controls` is NULL. `total_variants` and `total_variants_pheno` are NULL for
+      every BRaVa row; the published files carry no variant counts.
 
     columns:
       dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome)"
@@ -791,7 +810,7 @@ tables:
       chr: "Chromosome number, chromosome X is 23. The partitioning column: a literal `chr = <n>` is what keeps a query under the sandbox scan cap"
       gene_start_pos: "Gene start position (GRCh38)"
       gene_end_pos: "Gene end position (GRCh38)"
-      annotation: "Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous)"
+      annotation: "Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous); BRaVa spells it `<mask>|MAF<<cutoff>`"
       mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
       beta: "Effect size estimate from burden test"
       se: "Standard error of beta"
@@ -851,6 +870,13 @@ tables:
           FROM gene_burden_results_v
           WHERE chr = 1 AND gene = 'PCSK9' AND dataset = 'genebass'
             AND trait_original IN ('continuous_30780_both_sexes__irnt', 'icd10_E78_both_sexes__')
+          ORDER BY mlog10p_burden DESC
+      - description: "One gene across BRaVa's ancestry strata. A stratum is a phenotype code, not a column, so the strata of a trait are matched with LIKE 'AFib|%' — use the equality trait_original = 'AFib' for the cross-ancestry meta-analysis row instead. chr beside gene as in the first example."
+        sql: |-
+          SELECT trait_original, annotation, mlog10p_burden, beta, se, n_cases, n_controls
+          FROM gene_burden_results_v
+          WHERE chr = 2 AND gene = 'TTN' AND dataset = 'BRaVa'
+            AND trait_original LIKE 'AFib|%'
           ORDER BY mlog10p_burden DESC
     categorical_columns:
       resource: null
@@ -2337,7 +2363,7 @@ tables:
       zero rows silently.
       COVERAGE IS PARTIAL BY DESIGN. Only datasets that ship a phenotype metadata file
       have rows: FinnGen R14/R12/Kanta/drugs, the FinnGen+UKBB and FinnGen+MVP+UKBB
-      meta-analyses, Open Targets, Genebass, COVID-19 HGI and IIBDGC. QTL datasets
+      meta-analyses, Open Targets, Genebass, BRaVa, COVID-19 HGI and IIBDGC. QTL datasets
       (FinnGen_snRNAseq, FinnGen_ATACseq, FinnGen_Olink*, UKB_PPP, every QTD*) have
       NO rows — their traits are genes, proteins and peaks, resolved through
       gene_annotations_v and peak_to_gene_v instead. Datasets whose codes are already
@@ -2593,6 +2619,14 @@ dataset_to_resource_rules:
     resource: "ibd_exome_2026"
     applies_to: ["exome_variant_results_v", "gene_burden_results_v"]
     comment: "IBD exome variant and gene burden results"
+
+  - pattern: "BRaVa"
+    resource: "brava"
+    applies_to: ["gene_burden_results_v"]
+    comment: >-
+      exact match; the lowercase fallback already yields brava, but a dataset with no
+      explicit rule is invisible to scripts/monitor/bq_summary.py, which derives the
+      resources it expects per view from the rules that carry applies_to
 
   - pattern: "COVID19_HGI%"
     resource: "covid_hgi"
@@ -4240,6 +4274,24 @@ profiles:
         n_samples: 394841
         metadata_file: "gs://daly-genetics-results/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
+
+      brava_gene_based:
+        resource: brava
+        version: "2026"
+        description: >-
+          BRaVa consortium gene-level burden test results. Cross-ancestry exome-sequencing
+          rare variant meta-analysis of 44 phenotypes over 10 biobanks and ~1.2M individuals.
+          Only the Burden inverse-variance-weighted rows are loaded (the source also publishes
+          Stouffer, SKAT and SKAT-O rows). Per-trait results are unfiltered (~19.4k genes x
+          mask x max-MAF cutoff); the cross-ancestry meta-analysis and each per-ancestry
+          stratum are separate phenotype codes (`AFib`, `AFib|EUR`).
+        author: "BRaVa Consortium"
+        publication_date: "2026-05-24"
+        data_type: gene_based
+        trait_type: mixed
+        n_samples: 1200000
+        metadata_file: "gs://daly-genetics-results/mapping_files/brava_pheno.json"
+        metadata_harmonizer: pheweb
 
       schema_gene_based:
         resource: schema2

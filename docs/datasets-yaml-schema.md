@@ -265,6 +265,11 @@ dataset_to_resource_rules:
 **Order matters**: more specific patterns must come before broader ones (e.g.
 `FinnGen%MVP_UKBB%` before `FinnGen%`).
 
+An exact rule is also worth writing where the `*` fallback already yields the right resource
+(`BRaVa` → `brava`): `scripts/monitor/bq_summary.py` derives the resources it expects in each
+view from the rules that carry `applies_to`, so a dataset resolved only by the fallback is
+monitored by nothing.
+
 Different views may use different subsets of these rules. The `applies_to` field
 (optional) restricts a rule to specific views:
 
@@ -383,8 +388,10 @@ they join to the rest of the schema on gene identifiers only.
 
 ### Profile differences
 
-The finngen and daly profiles share identical dataset definitions and descriptions.
-They differ in `metadata_file` GCS paths, which point to different buckets:
+The finngen and daly profiles mostly share identical dataset definitions and descriptions,
+differing in `metadata_file` GCS paths, which point to different buckets. A dataset entry
+may also exist in one profile only — `brava_gene_based` is the first such case, staged only
+into the daly bucket:
 
 - **finngen**: `gs://finngen-commons/results_api_data/...`
 - **daly**: `gs://daly-genetics-results/...`
@@ -399,6 +406,13 @@ phenotype load for the entire profile. A null `metadata_file` with a non-null
 `metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and the
 dataset's trait codes simply stay unresolved in `phenotypes_v` -- a silent no-op that looks
 configured.
+
+The harmonizer names are not enumerated here: each is implemented twice, in results-api's
+`metadata_harmonizer.py` and in `genetics-results-db`'s `build_phenotypes.py`
+(`_PHENOTYPE_HARMONIZERS`), and a name only one of them knows is the quiet half above. A
+harmonizer is per source *format*, not per dataset -- `pheweb` reads a pheweb-shaped
+phenotype JSON whose items may be binary or quantitative (BRaVa), which is why it is separate
+from `quantitative_pheweb`.
 
 **Consumer**: results-api (`datasets` registry, dataset-to-resource mapping)
 
