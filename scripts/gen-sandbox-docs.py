@@ -490,6 +490,25 @@ def _module_all(tree, where):
     raise SystemExit(f"{where} has no __all__ to read the surface from")
 
 
+def _init_exports(init_tree):
+    """The plain names in sdk/__init__.py's `__all__`.
+
+    `*_LAZY_MODULES` is spliced in there, so this cannot go through `_module_all`; the
+    starred element is skipped because the lazy modules get their own stub files rather than
+    a def in genetics.pyi.
+    """
+    for node in init_tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
+            return {
+                e.value
+                for e in node.value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            }
+    raise SystemExit("sdk/__init__.py has no __all__ to read the helper surface from")
+
+
 def render_stubs(sdk_dir):
     init_tree = _module(os.path.join(sdk_dir, "__init__.py"))
     client_tree = _module(os.path.join(sdk_dir, "client.py"))
@@ -534,11 +553,19 @@ def render_stubs(sdk_dir):
     for name in exported:
         rendered.append(methods[name])
         body += [_render_def(methods[name], is_async=False), ""]
+    # the helpers sdk/__init__.py defines itself rather than wrapping a client method. Read
+    # off the module rather than listed here, for _FUNCTIONS' reason: a list would be a
+    # second place to update, and the one that goes stale documents a surface the script
+    # cannot see. Intersected with `__all__` rather than taken from every non-underscore def:
+    # the stub is the model's whole view of the SDK, so what reaches it is the surface the
+    # package declares, not whatever happens to lack a leading underscore.
     init_defs = _defs(init_tree)
-    for name in ("configure", "get_client", "close"):
-        if name in init_defs:
-            rendered.append(init_defs[name])
-            body += [_render_def(init_defs[name], drop_self=False), ""]
+    init_exports = _init_exports(init_tree)
+    for name, node in init_defs.items():
+        if name not in init_exports:
+            continue
+        rendered.append(node)
+        body += [_render_def(node, drop_self=False), ""]
     if "parse_region" in _defs(client_tree):
         rendered.append(_defs(client_tree)["parse_region"])
         body += [_render_def(_defs(client_tree)["parse_region"], drop_self=False), ""]

@@ -677,6 +677,40 @@ and letting the model report on a file it never read. That is the whole reason t
 rule exists. In the other order — supervisor first, caller later — nothing sends the field and
 nothing changes.
 
+**The sending end.** `SandboxClient.execute(inputs=...)` in genetics-mcp-server takes each
+input as raw bytes (`SandboxInput(name, content, content_type=None, expected_sha256=None)`)
+and computes the base64
+and the `sha256` itself, so a caller cannot send a digest that does not describe the bytes and
+the decoded-byte caps are measured on what the supervisor measures. `content` must be
+immutable `bytes`: validation runs once and the body is re-encoded per attempt, so a buffer
+mutated in between would pass the cap here and be refused there. All three caps, the name
+rule, the duplicate-name rule and the media-type rule for `content_type` are mirrored there as
+named constants — everything the body carries is checked before it leaves — which makes a
+`413 InputsTooLarge` coming back a **contract drift** — the two ends disagreeing about the
+numbers — rather than a caller error, and it is logged as one. Because the client re-declares
+those constants (the repo split forbids importing the supervisor), the mirror is a property
+nothing would notice breaking, so `scripts/test-sandbox-docs.py` compares the client's caps,
+name pattern, media-type pattern and `InputsTooLarge` name against `sandbox/supervisor.py`'s
+and reports which one diverged and in which direction.
+
+`expected_sha256` is the caller's own digest of the bytes — the url-fetcher reports one for
+what it fetched — verified against `content` here and then **discarded**. It is never put on
+the wire: the supervisor must keep computing its own digest from the bytes it decoded, or
+`DigestMismatch` stops covering the hop it exists for, and a mismatch is raised before
+anything leaves the process. The field is omitted entirely
+when there are no inputs, so the strict-field rule above fails the first call that actually
+carries data instead of every call. Inputs are re-sent on **every** submit attempt: a retry
+re-mints the execution id, so nothing about an input may be keyed to one — which is why the
+staged-upload design, where the bytes are uploaded against an id first, was rejected.
+
+**How a script reads them.** `genetics.open_input(name)` opens one for reading (binary by
+default; `input_path(name)` returns the path), resolving under `SANDBOX_INPUTS_DIR` and
+refusing a name that is a path. When the name was not delivered it raises the SDK's own usage
+error and names what was, so a wrong guess costs one message rather than one execution. The
+helpers add nothing to the image: `sdk/__init__.py` is already in `prune_venv.py`'s
+`SDK_ALLOWLIST`, and they reach `sandbox/stubs/genetics.pyi` through the generator's
+equality gate like every other exported name.
+
 **Where the bytes land.** One more per-execution directory, `inputs/`, created at dequeue with
 the six `ExecutionDirs.create` already made so the `mkdir` on the execution directory stays the
 single duplicate check, and named to the child as **`SANDBOX_INPUTS_DIR`** beside
