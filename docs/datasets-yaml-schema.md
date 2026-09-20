@@ -390,8 +390,8 @@ they join to the rest of the schema on gene identifiers only.
 
 The finngen and daly profiles mostly share identical dataset definitions and descriptions,
 differing in `metadata_file` GCS paths, which point to different buckets. A dataset entry
-may also exist in one profile only — `brava_gene_based` is the first such case, staged only
-into the daly bucket:
+may also exist in one profile only, while its files are staged into one bucket and not the
+other:
 
 - **finngen**: `gs://finngen-commons/results_api_data/...`
 - **daly**: `gs://daly-genetics-results/...`

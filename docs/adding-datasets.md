@@ -741,14 +741,14 @@ layout: the source's test classes (class Burden with type Inverse variance weigh
 the Stouffer burden rows and the SKAT and SKAT-O rows, p-value only, are not) and up to six
 ancestry strata per phenotype, varying by phenotype.
 
-Changes made (new resource `brava`, dataset `brava_gene_based` in the **daly** profile only):
+Changes made (new resource `brava`, dataset `brava_gene_based` in both profiles):
 
 1. `genetics-results-munge`: `scripts/munge_brava.{py,sh}`, `scripts/brava_phenotypes.py`.
-2. `datasets.yaml`: the `brava` resource, `profiles.daly.datasets.brava_gene_based`, an exact
+2. `datasets.yaml`: the `brava` resource, `profiles.<profile>.datasets.brava_gene_based`, an exact
    `BRaVa` rule scoped to `gene_burden_results_v`, and the `gene_burden_results_v` text and
    worked example describing the two conventions below.
 3. `genetics-results-api`: a `gene_based_results.py` entry and a `common.py`
-   `dataset_to_resource` entry in the daly profile, plus a new `pheweb` metadata harmonizer.
+   `dataset_to_resource` entry in each profile, plus a new `pheweb` metadata harmonizer.
 4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID` and the same new harmonizer in
    `build_phenotypes.py`.
 

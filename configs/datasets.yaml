@@ -3237,6 +3237,24 @@ profiles:
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
 
+      brava_gene_based:
+        resource: brava
+        version: "2026"
+        description: >-
+          BRaVa consortium gene-level burden test results. Cross-ancestry exome-sequencing
+          rare variant meta-analysis of 44 phenotypes over 10 biobanks and ~1.2M individuals.
+          Only the Burden inverse-variance-weighted rows are loaded (the source also publishes
+          Stouffer, SKAT and SKAT-O rows). Per-trait results are unfiltered (~19.4k genes x
+          mask x max-MAF cutoff); the cross-ancestry meta-analysis and each per-ancestry
+          stratum are separate phenotype codes (`AFib`, `AFib|EUR`).
+        author: "BRaVa Consortium"
+        publication_date: "2026-05-24"
+        data_type: gene_based
+        trait_type: mixed
+        n_samples: 1200000
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/brava_pheno.json"
+        metadata_harmonizer: pheweb
+
       schema_gene_based:
         resource: schema2
         version: "v2"
