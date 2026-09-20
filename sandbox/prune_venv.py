@@ -61,12 +61,13 @@ SDK_ALLOWLIST = frozenset(
         "sdk/_runner.py",
         "sdk/client.py",
         "sdk/errors.py",
-        # NOT in the import closure — sdk/__init__.py resolves it through a module
-        # __getattr__ so the servers never import matplotlib — so it survives on this list
-        # alone. That is the one entry here whose absence would be a missing FEATURE rather
-        # than a broken import: without it `genetics.plots` raises ModuleNotFoundError inside
-        # the child, where the standard plots are the whole point of shipping it.
+        # NOT in the import closure — sdk/__init__.py resolves these through a module
+        # __getattr__ so the servers never import matplotlib or numpy — so they survive on
+        # this list alone. These are the entries whose absence would be a missing FEATURE
+        # rather than a broken import: without them `genetics.plots` or `genetics.linemodels`
+        # raises ModuleNotFoundError inside the child, where they are the point of shipping.
         "sdk/plots.py",
+        "sdk/linemodels.py",
         "tools/__init__.py",
         "tools/executor.py",
         "tools/sql_safety.py",
