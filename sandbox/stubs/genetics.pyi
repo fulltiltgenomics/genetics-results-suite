@@ -68,6 +68,12 @@ the results of every sibling that had already succeeded.
 SAVE FILES INTO `os.environ["SANDBOX_ARTIFACTS_DIR"]`. The working directory is scratch and is
 discarded when the run ends, so a relative `write_csv("x.csv")` is lost with it and reported as
 no artifact. `genetics.plots` helpers already resolve a relative path there.
+
+READ ATTACHED FILES WITH `open_input(name)`. A file attached to the analysis is delivered
+into the run and read by its bare name; `input_path(name)` gives the path for a reader that
+wants one. Egress is an allow-list of the suite's own APIs, so a script cannot fetch anything
+from the internet itself — a file that is not attached cannot be reached, and urllib or
+requests will not get it.
 """
 
 import polars as pl
@@ -631,6 +637,34 @@ def get_client() -> GeneticsClient:
 
 def close() -> None:
     """Close the shared client's HTTP connections.
+    """
+    ...
+
+def input_path(name: str) -> str:
+    """The path of one file delivered into this execution, or a usage error.
+
+    Files are attached to the call that starts the script and fetched outside the sandbox —
+    egress here is an allow-list of the suite's own APIs, so a script cannot fetch a file from
+    anywhere else itself — and are ephemeral to this one run. The directory is named
+    to the child by `SANDBOX_INPUTS_DIR`; resolving through this function rather than joining
+    that variable by hand is what turns "the model guessed a file name" into a message that
+    lists what was actually delivered.
+
+    `name` is a bare file name: the delivering end validates it as one and refuses a path, so
+    a name with a separator in it could never have been delivered under that spelling.
+    """
+    ...
+
+def open_input(name: str, mode: str = 'rb', encoding: str | None = None) -> Any:
+    """Open a delivered input file for reading. Read-only by design.
+
+    Binary by default, because the delivering end writes bytes and no content type it was
+    given is trusted; pass `mode="r"` for text. The file is written mode 0400 so that a
+    script saving its output over its input fails instead of destroying what it was given —
+    an accident guard, not a boundary, since the script owns the file.
+
+        with genetics.open_input("data.tsv", "r") as fh:
+            df = pl.read_csv(fh.read().encode(), separator="\t")
     """
     ...
 

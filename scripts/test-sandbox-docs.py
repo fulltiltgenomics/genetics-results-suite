@@ -34,6 +34,7 @@ import builtins
 import copy
 import importlib.util
 import os
+import re
 import shutil
 import sys
 
@@ -42,12 +43,39 @@ GENERATOR = os.path.join(ROOT, "scripts", "gen-sandbox-docs.py")
 DATASETS_YAML = os.path.join(ROOT, "configs", "datasets.yaml")
 SCHEMA_DIR = os.path.join(ROOT, "sandbox", "schema")
 STUBS_DIR = os.path.join(ROOT, "sandbox", "stubs")
+SUPERVISOR = os.path.join(ROOT, "sandbox", "supervisor.py")
 
 try:
     import yaml
 except ImportError:
     print("harness cannot run: PyYAML is missing (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
+
+
+def _module_constants(path):
+    """Module-level constants of a Python file, evaluated without importing it.
+
+    Only assignments to a bare name whose right-hand side evaluates from `re` plus the names
+    already bound above it, which is what a cap, a pattern or an error-type name is; anything
+    else is skipped. Importing is not an option in either direction here — the supervisor
+    module starts a server and lives in a different image from the client.
+    """
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), path)
+    namespace = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            namespace[target.id] = eval(  # noqa: S307
+                compile(ast.Expression(body=node.value), path, "eval"), {"re": re}, namespace
+            )
+        except Exception:
+            continue
+    return namespace
 
 
 def _load_generator():
@@ -541,12 +569,16 @@ def main(argv=None):
 
         EQUALITY, not containment: a stub is the only description of the SDK the
         sandbox agent gets, so an extra name in it is a function the model will call
-        and the interpreter will not find. The four names below are the ones the
-        generator adds on purpose (module-level lifecycle helpers plus the region
-        parser); anything else appearing here means the generator invented a name."""
+        and the interpreter will not find. Beyond _FUNCTIONS the stub may carry the
+        helpers sdk/__init__.py both defines and lists in `__all__`, and client.py's
+        region parser — all read out of the source here, so a name the generator invented
+        is still a failure while a helper the SDK really exported is not. A public-looking
+        helper that `__all__` does not name reaches no stub, and so gets reviewed before it
+        becomes something the model is told to call."""
         init_tree = ast.parse(open(os.path.join(sdk_dir, "__init__.py")).read())
         exported = gen._exported_functions(init_tree)
-        allowed_extra = {"configure", "get_client", "close", "parse_region"}
+        allowed_extra = {n for n in gen._defs(init_tree) if n in gen._init_exports(init_tree)}
+        allowed_extra.add("parse_region")
         stub_tree = ast.parse(stub_files["genetics.pyi"])
         stubbed = {n.name for n in stub_tree.body if isinstance(n, ast.FunctionDef)}
         assert stubbed == set(exported) | allowed_extra, (
@@ -669,6 +701,55 @@ def main(argv=None):
             assert open(path).read() == content, (
                 f"{name} differs from a fresh generation — run scripts/gen-sandbox-docs.py"
             )
+
+    @check("the sandbox client mirrors the supervisor's input caps and rules")
+    def _client_mirrors_supervisor():
+        """The two ends cannot share a module — different repos, different images — so
+        chat-backend's SandboxClient re-declares every input cap as a literal, and
+        docs/code-execution-security.md states the agreement as a property. Nothing enforced
+        it: a number changed on one side produces a request the other refuses, and the only
+        thing that would notice is a drift warning in a log after a user's call has failed.
+        This is the cross-repo gate for it, in the harness that already reaches into a
+        genetics-mcp-server checkout."""
+        client_path = os.path.join(os.path.dirname(sdk_dir), "sandbox_client.py")
+        assert os.path.isfile(client_path), (
+            f"no sandbox_client.py in the resolved checkout ({client_path})"
+        )
+        client = _module_constants(client_path)
+        supervisor = _module_constants(SUPERVISOR)
+        drift = []
+        for ours_name, theirs_name in (
+            ("MAX_INPUT_BYTES", "MAX_INPUT_BYTES"),
+            ("MAX_INPUTS_TOTAL_BYTES", "MAX_INPUTS_TOTAL_BYTES"),
+            ("MAX_INPUTS", "MAX_INPUTS"),
+            ("MAX_BODY_BYTES", "MAX_BODY_BYTES"),
+            ("INPUT_NAME_PATTERN", "INPUT_NAME_RE"),
+            ("INPUT_CONTENT_TYPE_PATTERN", "INPUT_CONTENT_TYPE_RE"),
+            ("ERROR_INPUTS_TOO_LARGE", "ERR_INPUTS_TOO_LARGE"),
+        ):
+            assert ours_name in client, f"sandbox_client.py no longer defines {ours_name}"
+            assert theirs_name in supervisor, (
+                f"sandbox/supervisor.py no longer defines {theirs_name}"
+            )
+            ours, theirs = client[ours_name], supervisor[theirs_name]
+            ours = ours.pattern if isinstance(ours, re.Pattern) else ours
+            theirs = theirs.pattern if isinstance(theirs, re.Pattern) else theirs
+            if ours == theirs:
+                continue
+            if isinstance(ours, int) and isinstance(theirs, int):
+                direction = (
+                    "the client accepts more than the supervisor allows, so requests it "
+                    "should have refused locally come back 413"
+                    if ours > theirs
+                    else "the client refuses requests the supervisor would have accepted"
+                )
+            else:
+                direction = "the two ends disagree about the rule itself"
+            drift.append(
+                f"{ours_name}={ours!r} in sandbox_client.py but {theirs_name}={theirs!r} in "
+                f"sandbox/supervisor.py — {direction}"
+            )
+        assert not drift, "; ".join(drift)
 
     @check("the SDK source is never resolved to the staged sandbox/.sdk-src")
     def _never_the_staged_copy():

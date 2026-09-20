@@ -45,12 +45,17 @@ spelling and must fix it here in the same change:
   POST /fetch {"url"} -> {"name", "size_bytes", "content_b64"}   -> SETTLED, url-fetcher
   a refusal as non-2xx with {"error": {"type", "message"}}       -> SETTLED, url-fetcher
   the fetcher's health path, probed as /healthz then /health     -> SETTLED, /healthz
+  `genetics.open_input(name)`, plus `genetics.input_path(name)`  -> SETTLED, SDK
+  `inputs=` on SandboxClient.execute                             -> SETTLED, client
 
 The three fetcher names above shipped as guessed; the response and the error envelope each
 carry more fields than are named here (docs/code-execution-security.md has the contract), and
 a superset does not change what this file asserts.
-  `genetics.open_input(name)`                                    -> SDK helper subtask
-  `inputs=` on SandboxClient.execute                             -> client subtask
+
+`inputs=` takes SandboxInput(name, content, content_type=None) — raw bytes, with the base64
+and the digest computed inside the client — so the wire shape above is what leaves that
+client rather than what a caller hands it. This file posts to /execute directly and is
+unaffected either way; the check is that the parameter exists at all.
 
 THE LOOPBACK PROBLEM, and why there are two fetcher URLs. The fetcher's job is to refuse
 loopback, and this harness serves its fixture over loopback. Both cannot hold at once, so
