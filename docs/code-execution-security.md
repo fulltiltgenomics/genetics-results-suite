@@ -893,8 +893,10 @@ module to hold that; the allow-list above is untouched, and no rule was added to
 reach the Atlas API.
 
 **Label contract.** A `podSelector` that matches no pod is not an error — it is silent
-no-coverage, and since this is the only egress policy in the namespace a label mismatch yields
-a sandbox with *unrestricted* egress and no signal anywhere. `scripts/test-network-policies.py`
+no-coverage, and since `sandbox-policy.yaml` is the only file declaring egress for these pods a
+label mismatch yields a sandbox with *unrestricted* egress and no signal anywhere. (The
+namespace has one other egress policy, the URL fetcher's; it selects `app: url-fetcher`,
+permits nothing to or from the sandbox, and stands behind none of the claims here.) `scripts/test-network-policies.py`
 is the offline guard: it parses every file in `k8s/network-policies/` at once, because
 NetworkPolicies are additive and "mcp-server cannot reach the sandbox" is a property of all of
 them together, and it fails on any rule that selects the sandbox and admits mcp-server —
@@ -982,7 +984,11 @@ account with no GCP binding, no mounted token, no secret, a read-only rootfs and
 route is the only thing in it, and there is nothing behind the route to steal.
 
 **Two layers, and neither substitutes for the other.** The NetworkPolicy is the outer one and
-is stated in the fetcher's own manifest. The in-process guard is the inner one, and it exists
+is stated in the fetcher's own file, `k8s/network-policies/url-fetcher-policy.yaml`: ingress
+from `app: chat-backend` only, egress 443 to `0.0.0.0/0` with RFC1918, `169.254.0.0/16` and
+`100.64.0.0/10` excepted, plus the DNS rule this pod needs and the sandbox refuses. It is the
+namespace's second egress policy; `sandbox-policy.yaml`'s reasoning is unaffected, because
+neither policy selects the other's pod. The in-process guard is the inner one, and it exists
 because an `except`-block egress policy still permits every public address: a permitted host
 that redirects to another permitted host which proxies inward is not visible at the network
 layer at all.
@@ -1041,6 +1047,29 @@ refusal. A tripwire that asks only "was something refused" passes with the addre
 deleted, which is the one edit it exists to catch. `url-fetcher/devserver.py` is the test
 entrypoint; it differs by that one argument, binds loopback by default, and is not in the
 image.
+
+**Both halves of that are enforced at build time, not asserted.** `url-fetcher/.dockerignore`
+keeps `devserver.py` out of the build context, and `url-fetcher/build-checks.py` — which runs
+inside the builder stage, the way `sandbox/build-checks.py` does — fails the build if it finds
+it there, if any shipped module passes `allow_loopback_origin` as anything but a literal
+`False`, if `Guard`'s own default is flipped, if the final stage ships a module outside the
+four production ones, or if the entrypoint is anything but exec-form `/usr/bin/python3
+/app/main.py` with no `CMD`. It also runs `main.py`'s startup tripwire against the staged
+sources, so a guard that stopped refusing the three literals fails the build rather than
+CrashLoopBackOffing the pod.
+
+None of that is enforcement unless the builder stage is in the build, and a check inside that
+stage cannot establish it: BuildKit builds only the stages the target depends on, so a final
+stage that copies the four modules straight from the context prunes the builder and the build
+exits 0 having run no assertion at all — measured twice. The dependency is the final stage's
+`COPY --from=builder` lines, and what holds them there is out of the image:
+`assert_fetcher_dockerfile_gated` in `scripts/lib/env.sh`, which both `scripts/build.sh` and
+`scripts/build-all.sh` call before `docker build` and which refuses a final stage whose `COPY`
+lines do not come from a stage that runs `build-checks.py`.
+
+The last gap is the one no image can close — a manifest
+`command:` overrides any `ENTRYPOINT` — so `scripts/deploy.sh` refuses to apply
+`k8s/deployments/url-fetcher.yaml` when its container declares `command:` or `args:`.
 
 The allowance unlocks a loopback origin and **nothing else**. That is what lets
 `scripts/external-inputs-proving-ground.py` measure the four dangerous classes —
@@ -1384,7 +1413,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
-| `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union | the manifests; one live cluster call for the sandbox probe |
+| `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union. It covers **both** pods whose NetworkPolicy is the reason they are safe: for the URL fetcher, that only chat-backend may reach it and the **sandbox may not** (a sandbox that can call the fetcher has internet egress through a proxy), that its egress is 443 with every one of the five `except` blocks present, that its KSA carries no Workload Identity annotation and mounts no token, that no credential reaches its environment in any form, and that it is distroless, non-root and read-only | the manifests and `url-fetcher/Dockerfile`; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |

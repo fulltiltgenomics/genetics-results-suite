@@ -504,3 +504,104 @@ require_kube_context() {
 set_build_cache_args() {
   BUILD_CACHE_ARGS=(--cache-from "${REGISTRY}/$1:latest" --build-arg BUILDKIT_INLINE_CACHE=1)
 }
+
+# THE OUT-OF-IMAGE HALF OF THE URL-FETCHER BUILD GATE.
+#
+# url-fetcher/build-checks.py runs inside a BUILDER STAGE, and BuildKit builds only the stages
+# the target actually depends on. The final stage's `COPY --from=builder` lines are the whole of
+# that dependency: rewrite them into plain `COPY x.py /app/x.py` and the builder is pruned, every
+# assertion is skipped, and the build exits 0 having printed no check output at all — measured.
+# build-checks.py does assert the `--from=builder` flag, but that assertion lives in the stage the
+# flag is what runs, so it cannot witness its own removal. Same for the `RUN ... build-checks.py`
+# line: delete it and nothing inside the image notices. This is the check that can see both,
+# because it is a separate process that runs before `docker build` and nothing in the Dockerfile
+# can reach it.
+#
+# It lives in lib/ rather than in build.sh because the two entry points build this image by
+# different code paths — build.sh has its own `docker build` for it, build-all.sh goes through its
+# own build_and_push — and this file is the one both already source. A gate installed in only one
+# of them would be absent from the path a full deploy takes.
+assert_fetcher_dockerfile_gated() {
+  local dockerfile="${1:?usage: assert_fetcher_dockerfile_gated <Dockerfile>}"
+  if ! python3 - "${dockerfile}" <<'FETCHERGATE'
+import shlex
+import sys
+
+path = sys.argv[1]
+CHECKS = "build-checks.py"
+
+try:
+    lines = open(path).read().splitlines()
+except OSError as exc:
+    print(f"cannot read {path}: {exc}")
+    sys.exit(1)
+
+# join continuations, drop comments and blanks
+joined, buf = [], ""
+for line in lines:
+    if not buf and (not line.strip() or line.lstrip().startswith("#")):
+        continue
+    if line.rstrip().endswith("\\"):
+        buf += line.rstrip()[:-1] + " "
+        continue
+    joined.append((buf + line).strip())
+    buf = ""
+if buf.strip():
+    joined.append(buf.strip())
+
+instr = []
+for line in joined:
+    verb, _, arg = line.partition(" ")
+    instr.append((verb.upper(), arg.strip()))
+
+froms = [i for i, (v, _) in enumerate(instr) if v == "FROM"]
+if not froms:
+    print(f"{path} has no FROM instruction")
+    sys.exit(1)
+
+stages = []  # (name or None, body)
+for n, i in enumerate(froms):
+    end = froms[n + 1] if n + 1 < len(froms) else len(instr)
+    parts = shlex.split(instr[i][1])
+    name = None
+    for j, p in enumerate(parts[:-1]):
+        if p.upper() == "AS":
+            name = parts[j + 1].lower()
+    stages.append((name, instr[i + 1:end]))
+
+checked = {name for name, body in stages
+           if name and any(v == "RUN" and CHECKS in arg for v, arg in body)}
+if not checked:
+    print(f"{path}: no named stage runs {CHECKS}. The image's build-time assertions are not "
+          f"in the build at all")
+    sys.exit(1)
+
+final_body = stages[-1][1]
+copies = [arg for v, arg in final_body if v == "COPY"]
+if not copies:
+    print(f"{path}: the final stage copies nothing. The shipped files must come out of a "
+          f"stage that runs {CHECKS}, or nothing depends on it and BuildKit prunes it")
+    sys.exit(1)
+
+bad = []
+for arg in copies:
+    flags = [p for p in shlex.split(arg) if p.startswith("--")]
+    froms_ = [f.split("=", 1)[1].lower() for f in flags if f.startswith("--from=")]
+    if len(froms_) != 1 or froms_[0] not in checked:
+        bad.append(arg)
+if bad:
+    for arg in bad:
+        print(f"{path}: final-stage `COPY {arg}` does not take its source from a stage that "
+              f"runs {CHECKS} (checked stages: {sorted(checked)})")
+    sys.exit(1)
+
+print(f"  ok   {path}: {len(copies)} final-stage COPY, all --from a stage that runs {CHECKS}")
+FETCHERGATE
+  then
+    echo "ERROR: ${dockerfile} would build the url-fetcher image WITHOUT running its"
+    echo "       build-time assertions. BuildKit prunes a stage nothing depends on, so a"
+    echo "       final stage that does not COPY --from the checking stage skips every check"
+    echo "       in silence and still exits 0. Refusing to build."
+    return 1
+  fi
+}

@@ -567,13 +567,15 @@ valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migr
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
-`rollout.sh` knows nine services — `frontend`, `bff`, `results-api`, `chat-backend`,
-`mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak` — and only swaps container images,
-so ConfigMap-driven pods (auth-gateway) and the CronJobs still need `deploy.sh`. `monitor` is
+`rollout.sh` knows ten services — `frontend`, `bff`, `results-api`, `chat-backend`,
+`mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak`, `url-fetcher` — and only swaps
+container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs still need
+`deploy.sh`. `monitor` is
 deliberately not in that list, for the only reason that actually discriminates: it is a CronJob,
 not a Deployment, so `kubectl set image deployment/monitor` cannot address it. A service with no
 Deployment on the current context gets a "Not deployed" message and exit 1 — the ordinary case
-for `sandbox` and `keycloak`, which are applied only when their gates are on. A query that
+for `sandbox` and `keycloak`, which are applied only when their gates are on; `url-fetcher` is
+ungated, so it is always there to roll. A query that
 *failed* rather than answered (no context, expired credentials, unreachable API server) is
 reported as "could not ask", with kubectl's own error, instead of as a missing service.
 
@@ -863,6 +865,15 @@ baseline" in `docs/project-spec.md`.
 | db-api | genetics-results-db | genetics-results-db | 8080 | BigQuery query proxy (internal only) |
 | sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
+| url-fetcher | url-fetcher/ (local context; pure standard library) | url-fetcher | 8090 | Fetches a URL on chat-backend's behalf so the pod holding the secrets never dials an address a model chose: own KSA with no GCP identity, no mounted token, no secret, no volume, and the namespace's second egress policy (443 to public addresses only) |
+
+`build.sh url-fetcher` and `build-all.sh` both run `assert_fetcher_dockerfile_gated`
+(`scripts/lib/env.sh`) before `docker build`. The image's own assertions
+(`url-fetcher/build-checks.py`) run inside a builder stage, and BuildKit prunes a stage nothing
+depends on — so a final stage that copies its modules straight from the context skips every
+assertion and still exits 0. The gate refuses that Dockerfile from outside the build, which is
+the only place it can be seen. It stays silent on a Dockerfile that is wired correctly, beyond
+one `ok` line.
 | monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
@@ -981,12 +992,16 @@ All services output structured JSON to stdout, automatically captured by GKE's f
 
 - Network policies source-scope **every** service, and `k8s/network-policies/` is the whole
   inventory — re-derive from it rather than from a list in prose. `auth-gateway` (8080) is the
-  only service reached from outside and the only one using an `ipBlock` (Google's LB and
-  health-check ranges; no node CIDR, because a NEG fronts it so the load balancer talks to pod
-  IPs directly — nginx therefore always sees the GFE's own address, never the client's, so
-  client IPs cannot be filtered at this layer). The `sandbox` is the one pod in the namespace
-  with an **Egress** policy at all. `scripts/test-network-policies.py` asserts the sandbox half
-  of the inventory offline, including that no rule is `from`-less.
+  only service reached from outside, and the only one whose *ingress* uses an `ipBlock`
+  (Google's LB and health-check ranges; no node CIDR, because a NEG fronts it so the load
+  balancer talks to pod IPs directly — nginx therefore always sees the GFE's own address, never
+  the client's, so client IPs cannot be filtered at this layer). Two pods have an **Egress**
+  policy and no others do: the `sandbox`, which may reach two in-cluster services and nothing
+  else, and `url-fetcher`, which may reach 443 on public addresses only — `0.0.0.0/0` with
+  RFC1918, link-local and CGNAT excepted, which is the namespace's other `ipBlock`.
+  `scripts/test-network-policies.py` asserts both halves of the inventory offline —
+  including that no rule is `from`-less, that the fetcher's `except` blocks are all present,
+  and that the sandbox is not among the pods admitted to the fetcher.
 - Every workload under `k8s/` sets a `securityContext`; none runs with the container defaults.
   The per-workload uid and hardening flags are tabulated in `docs/project-spec.md` → Services,
   **generated from the manifests** by `scripts/gen-doc-blocks.py`, so re-read it rather than a

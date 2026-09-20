@@ -143,6 +143,13 @@ declare -A IMAGE_MAP=(
   # keycloak is a Deployment named `keycloak`, whose container is named `keycloak`, running
   # ${REGISTRY}/keycloak:latest, which is exactly the shape this script handles.
   [keycloak]=keycloak
+  # Same shape again, and the same reasoning: the image repo, the Deployment and the container
+  # are all `url-fetcher`, so CONTAINER_NAME resolves with no special-casing, and "built from
+  # this repo's working tree" is not a discriminator. It is ungated — deploy.sh applies
+  # url-fetcher.yaml unconditionally — so unlike sandbox and keycloak it is always there to
+  # roll. Without an entry here a security-critical image had no single-service update path and
+  # every fix to it needed a full deploy.sh.
+  [url-fetcher]=url-fetcher
 )
 # `monitor` is the one deliberate absence, for a reason that does discriminate: it is a CronJob,
 # so `kubectl set image deployment/monitor` cannot address it at all. Update it with deploy.sh.
