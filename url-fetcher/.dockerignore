@@ -1,0 +1,11 @@
+# The build context is url-fetcher/, and devserver.py is the ONE file in it that constructs a
+# guard permitting loopback origins. Excluding it here is half of what makes
+# "a manifest cannot produce the permissive construction" a property rather than a sentence:
+# the file is not in the context, so no COPY in the Dockerfile can ship it by accident and no
+# `command:` can reach it in the image. build-checks.py copies the WHOLE context into the
+# builder stage and fails the build if it finds devserver.py there, so deleting this line
+# fails the build rather than quietly shipping the file.
+devserver.py
+
+# build artefacts of a local run; the image compiles nothing and writes nothing
+__pycache__

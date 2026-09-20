@@ -24,6 +24,15 @@ statement about *every* policy in the directory at once, and a single new rule a
 undoes it silently. Each check below names the control it defends in
 docs/code-execution-security.md so a failure can be judged rather than deleted.
 
+TWO pods are the subject rather than one. The sandbox runs untrusted code and may reach two
+in-cluster services with no IP range and no DNS at all; url-fetcher dials addresses a model
+chose and may reach every PUBLIC address on 443 — the private ranges excepted — plus DNS,
+and holds no credential to lose. Their policies are opposite shapes, so no check here
+generalises from one to the other, and a rule satisfying either would fail the other. What
+they share is that the NetworkPolicy is the reason the pod is safe rather than hardening on
+top of something already safe, which is why both get a label-contract check: a podSelector
+matching no pod is not an error, it is silent no-coverage.
+
 Run: python3 scripts/test-network-policies.py
 Live drift check: LIVE_POLICY_CHECK=true [KUBE_CONTEXT=...] python3 scripts/test-network-policies.py
 Exit 0 = pass, 1 = a control is broken, 2 = the harness could not run.
@@ -69,10 +78,52 @@ WORKLOAD_KINDS = {
     "Pod",
 }
 
+# the label contract declared by k8s/network-policies/url-fetcher-policy.yaml
+FETCHER_LABELS = {"app": "url-fetcher"}
+FETCHER_PORT = 8090
+
+# the address classes url-fetcher-policy.yaml's `except:` list must carve out of 0.0.0.0/0.
+# Without them a 443 rule to the whole internet includes every pod in the cluster, the node,
+# the kubelet and 169.254.169.254 — i.e. the server-side request forgery the fetcher pod was
+# split out of chat-backend to contain, with the network layer contributing nothing
+FETCHER_EGRESS_EXCEPT = {
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "100.64.0.0/10",
+}
+FETCHER_EGRESS_PORT = 443
+DNS_PORT = 53
+
+# an env var name carrying any of these is treated as a credential wherever a credential is
+# forbidden, alongside the structural forms (secretKeyRef, envFrom.secretRef, a secret volume)
+CREDENTIAL_NAME_MARKERS = ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "_KEY", "APIKEY")
+
+# the Workload Identity annotation. Its ABSENCE is the whole of what makes a dedicated KSA
+# safe: a KSA with no binding has no GCP identity to steal, mounted token or not
+WORKLOAD_IDENTITY_ANNOTATION = "iam.gke.io/gcp-service-account"
+
 # every pod in this namespace but the sandbox runs as this KSA (docs/code-execution-security.md
 # section 2, "Service account"), which Workload Identity binds to a GSA holding BigQuery and GCS
 # reader roles — the sandbox running as it would forfeit the no-usable-credential guarantee
 SUITE_SERVICE_ACCOUNT = "genetics-suite"
+
+# Workloads permitted to name a service account other than `genetics-suite`, as
+# {pod `app` label: KSA name}. Naming one is a sandbox tell (see sandbox_tells()), and the
+# ONLY way out of that tell is an entry here — which is not an exemption but an enrolment:
+# credential_free_workloads() asserts, for every entry, that the KSA carries no Workload
+# Identity annotation, that the token is not mounted, that no secret reaches the environment
+# and that the container is non-root on a read-only rootfs. A workload whose identity is not
+# worth those assertions does not belong here; it belongs on `genetics-suite`.
+#
+# So a THIRD workload with an identity of its own still fires the tell and still stops the
+# deploy, exactly as url-fetcher did before it was enrolled. Adding a line here to silence
+# that is not free: it buys the whole check below, and a workload that cannot pass it fails
+# louder than it did as an unrecognised tell.
+DEDICATED_SA_WORKLOADS = {
+    "url-fetcher": "url-fetcher",
+}
 # GKE taints the gVisor node pool with this key, and the doc (~line 1668) states the sandbox is
 # the only pod tolerating it
 GVISOR_TAINT_KEY = "sandbox.gke.io/runtime"
@@ -88,6 +139,7 @@ POD_LABELS = {
     "bff": {"app": "bff"},
     "rag-service": {"app": "rag-service"},
     "sandbox": SANDBOX_LABELS,
+    "url-fetcher": FETCHER_LABELS,
 }
 
 # every pod `app` value k8s/deployments/ is known to carry. This is the inventory the
@@ -178,6 +230,7 @@ except HarnessError as e:
     sys.exit(2)
 
 _SANDBOX_DOCS = None
+_DEPLOY_DOCS = None
 
 
 def pod_template(fname, doc):
@@ -238,6 +291,12 @@ def sandbox_tells(fname, doc):
 
     An ABSENT serviceAccountName is not a tell: auth-gateway, bff, frontend, keycloak, postgres
     and oauth2-proxy declare none, and counting absence would fire on all of them.
+
+    The serviceAccountName tell is NOT relaxed by name. It is relaxed only for a workload
+    ENROLLED in DEDICATED_SA_WORKLOADS, whose identity properties credential_free_workloads()
+    then asserts in full — so the tell still fires for a workload nothing asserts anything
+    about, which is the case it exists for. Exempting the string "url-fetcher" instead would
+    have made the next pod that wants its own identity a rename away from invisible.
     """
     spec = pod_template(fname, doc).get("spec") or {}
     if not isinstance(spec, dict):
@@ -250,7 +309,9 @@ def sandbox_tells(fname, doc):
             tells.append(f"tolerates {GVISOR_TAINT_KEY}")
     sa = spec.get("serviceAccountName")
     if sa is not None and sa != SUITE_SERVICE_ACCOUNT:
-        tells.append(f"serviceAccountName: {sa!r}")
+        app = pod_template_labels(fname, doc).get("app")
+        if DEDICATED_SA_WORKLOADS.get(app) != sa:
+            tells.append(f"serviceAccountName: {sa!r}")
     return tells
 
 
@@ -376,8 +437,13 @@ def sandbox_pod_labels():
     return first
 
 
-def sweep_labels():
-    """Every non-sandbox pod this namespace is known to run, as {name: labels}.
+def sweep_labels(exclude):
+    """Every pod this namespace is known to run except `exclude`, as {name: labels}.
+
+    `exclude` has no default: it is the pod the "and nobody else" assertion is ABOUT, and
+    there are now two of them. Defaulting it to the sandbox would have let the fetcher's
+    sweep quietly omit the sandbox — the one source whose admission would turn this epic
+    into option B by the back door.
 
     The "nobody else" sweep has to cover the whole inventory: it ran over POD_LABELS alone
     while KNOWN_APPS enumerated three more apps, so `from: [podSelector {app: frontend}]` on
@@ -397,12 +463,124 @@ def sweep_labels():
             if app:
                 labels[app] = discovered
     labels.update(POD_LABELS)
-    labels.pop("sandbox", None)
+    labels.pop(exclude, None)
     return labels
 
 
 def sandbox_policies():
     return [p for p in POLICIES if may_select(p["spec"].get("podSelector"), sandbox_pod_labels())]
+
+
+def deploy_docs():
+    """Every document in k8s/deployments/, parsed once, as (filename, doc)."""
+    global _DEPLOY_DOCS
+    if _DEPLOY_DOCS is None:
+        _DEPLOY_DOCS = [
+            (fname, doc)
+            for fname in manifest_names(DEPLOY_DIR)
+            for doc in load_docs(os.path.join(DEPLOY_DIR, fname))
+        ]
+    return _DEPLOY_DOCS
+
+
+def workloads_labelled(app):
+    """Workload docs whose POD TEMPLATE carries `app: <app>` — what a podSelector selects.
+
+    Keyed on the pod label rather than on the object name or the file, because the podSelector
+    is: an object renamed to `fetcher` with the label kept is still covered by the policy, and
+    an object that keeps the name while the label drifts is not covered by anything.
+    """
+    return [
+        (f, d)
+        for f, d in deploy_docs()
+        if d.get("kind") in WORKLOAD_KINDS and pod_template_labels(f, d).get("app") == app
+    ]
+
+
+def services_selecting(app):
+    return [
+        (f, d)
+        for f, d in deploy_docs()
+        if d.get("kind") == "Service" and ((d.get("spec") or {}).get("selector") or {}).get("app") == app
+    ]
+
+
+def service_account_doc(name):
+    for f, d in deploy_docs():
+        if d.get("kind") == "ServiceAccount" and (d.get("metadata") or {}).get("name") == name:
+            return (f, d)
+    return None
+
+
+def pod_labels_of(app):
+    """The full label set of `app`'s pods, or the policy-contract subset if none has landed."""
+    workloads = workloads_labelled(app)
+    if not workloads:
+        return dict(POD_LABELS.get(app) or {"app": app})
+    first = pod_template_labels(*workloads[0])
+    for fname, doc in workloads[1:]:
+        labels = pod_template_labels(fname, doc)
+        assert labels == first, (
+            f"{app} workloads declare differing pod labels ({workloads[0][0]}: {first}, "
+            f"{fname}: {labels}); this harness cannot decide which set the policies select"
+        )
+    return first
+
+
+def fetcher_policies():
+    return [p for p in POLICIES if may_select(p["spec"].get("podSelector"), pod_labels_of("url-fetcher"))]
+
+
+def fetcher_named_policies():
+    """Policies that NAME the fetcher, i.e. excluding the namespace-wide catch-all."""
+    return [p for p in fetcher_policies() if (p["spec"].get("podSelector") or {}).get("matchLabels")]
+
+
+def containers(fname, doc):
+    spec = pod_template(fname, doc).get("spec") or {}
+    return (spec.get("containers") or []) + (spec.get("initContainers") or [])
+
+
+def credential_env(fname, doc):
+    """Every way a credential could reach this workload's containers, as readable strings.
+
+    Structural forms first (a secretKeyRef, an envFrom secretRef, a Secret volume, a projected
+    serviceAccountToken) and then the name heuristic, because a literal value that is a
+    credential is indistinguishable from any other literal — the name is all there is.
+    """
+    found = []
+    for c in containers(fname, doc):
+        cname = c.get("name")
+        for env in c.get("env") or []:
+            name = str(env.get("name") or "")
+            if (env.get("valueFrom") or {}).get("secretKeyRef"):
+                found.append(f"{cname} env {name} from a secretKeyRef")
+            elif any(m in name.upper() for m in CREDENTIAL_NAME_MARKERS):
+                found.append(f"{cname} env {name}")
+        for src in c.get("envFrom") or []:
+            if src.get("secretRef"):
+                found.append(f"{cname} envFrom secretRef {src['secretRef'].get('name')}")
+    for vol in (pod_template(fname, doc).get("spec") or {}).get("volumes") or []:
+        if vol.get("secret"):
+            found.append(f"volume {vol.get('name')} is a Secret")
+        for src in (vol.get("projected") or {}).get("sources") or []:
+            if src.get("serviceAccountToken"):
+                found.append(f"volume {vol.get('name')} projects a serviceAccountToken")
+    return found
+
+
+def dockerfile_base_images(path):
+    """The image ref of every FROM in a Dockerfile, in order."""
+    try:
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    except OSError as e:
+        raise HarnessError(f"cannot read {path}: {e}") from e
+    return [
+        line.split()[1]
+        for line in (ln.strip() for ln in lines)
+        if line.upper().startswith("FROM ") and len(line.split()) > 1
+    ]
 
 
 def kubectl_argv():
@@ -792,7 +970,7 @@ def _():
     # (widen), and must NOT count as reaching for chat-backend, who must (narrow)
     admitted = {
         name
-        for name, labels in sweep_labels().items()
+        for name, labels in sweep_labels("sandbox").items()
         if name != "chat-backend" and rules_reaching(pols, "ingress", labels, widen=True)
     }
     if rules_reaching(pols, "ingress", POD_LABELS["chat-backend"], widen=False):
@@ -828,7 +1006,10 @@ def _():
 def _():
     assert any("Egress" in policy_types(p["spec"]) for p in sandbox_policies()), (
         "no policy selecting the sandbox lists Egress in policyTypes, so its egress is "
-        "unrestricted — this is the only egress policy in the namespace"
+        "unrestricted. There is no namespace-wide default-deny-egress: egress is restricted "
+        "for a pod only once some policy selecting THAT pod declares Egress, and the "
+        "namespace's other egress policy (url-fetcher-egress) selects app: url-fetcher and "
+        "does nothing for this one"
     )
 
 
@@ -869,8 +1050,13 @@ def _():
     )
 
 
-@check("no DNS egress: the design eliminates DNS rather than allowing it")
+@check("no DNS egress FOR THE SANDBOX: the design eliminates DNS rather than allowing it")
 def _():
+    # scoped to policies selecting the sandbox, and the name says so, because the namespace
+    # now contains a DNS rule: url-fetcher-egress has one, deliberately. The reasoning below
+    # is about a pod that runs untrusted code and has a token to steal, neither of which is
+    # true of the fetcher — so the fetcher is not a precedent, and this check must not be
+    # widened into a namespace-wide one that the fetcher would then be exempted from
     for p in sandbox_policies():
         for rule in p["spec"].get("egress") or []:
             for port in rule.get("ports") or []:
@@ -989,7 +1175,290 @@ def _():
         "sandbox check in this harness is inert while the pod runs with unrestricted egress. "
         "If it is something else, say so here: these properties are the gVisor node pool and "
         "the non-genetics-suite KSA, and nothing ordinary needs them "
-        "(docs/code-execution-security.md section 2)."
+        "(docs/code-execution-security.md section 2). A workload that legitimately needs an "
+        "identity of its own — url-fetcher is the one that does — is ENROLLED in "
+        "DEDICATED_SA_WORKLOADS, which silences this tell only by subjecting it to the "
+        "credential-free assertions below; enrolling one that cannot pass them fails louder "
+        "than leaving it here."
+    )
+
+
+# ---------------------------------------------------------------------------
+# url-fetcher. The namespace's SECOND egress policy, and the second pod whose
+# NetworkPolicy is the whole reason it exists rather than an ordinary service's
+# hardening. The two are opposite shapes — the sandbox reaches two in-cluster
+# services and no IP range at all, the fetcher reaches every PUBLIC address on 443
+# and nothing in-cluster — so nothing below is a generalisation of a sandbox check,
+# and a rule that satisfies one would fail the other.
+# ---------------------------------------------------------------------------
+
+
+@check("label contract: the url-fetcher workload matches the policy selector")
+def _():
+    workloads = workloads_labelled("url-fetcher")
+    named = fetcher_named_policies()
+    if not workloads and not named:
+        notes.append(
+            "no url-fetcher workload and no policy naming it; the fetcher checks are inert. "
+            "A pod that does not exist dials nothing"
+        )
+        return
+    assert workloads, (
+        "k8s/network-policies/ carries policies naming app: url-fetcher ("
+        + ", ".join(sorted(p["__file__"] for p in named))
+        + ") but no workload in k8s/deployments/ carries that pod label. A podSelector "
+        "matching no pod is not an error, it is silent no-coverage — and if the pod is "
+        "there under a different label it has unrestricted egress to this cluster"
+    )
+    assert named, (
+        "a url-fetcher workload exists in k8s/deployments/ but no NetworkPolicy names "
+        f"{FETCHER_LABELS}. There is no namespace-wide default-deny-egress, so this pod — the "
+        "one that dials addresses a model chose — would reach every pod, the node, the kubelet "
+        "and 169.254.169.254"
+    )
+    labels = pod_labels_of("url-fetcher")
+    assert selects({"matchLabels": FETCHER_LABELS}, labels), (
+        f"url-fetcher pod labels {labels} are not selected by {FETCHER_LABELS}"
+    )
+    for fname, doc in workloads:
+        ports = [p.get("containerPort") for c in containers(fname, doc) for p in c.get("ports") or []]
+        assert FETCHER_PORT in ports, (
+            f"{fname}: the url-fetcher pod declares containerPorts {ports}, not {FETCHER_PORT}; "
+            "the ingress rule allows a port nothing listens on and chat-backend reaches nothing"
+        )
+    for fname, doc in services_selecting("url-fetcher"):
+        for port in doc["spec"].get("ports") or []:
+            tp = port.get("targetPort", port.get("port"))
+            assert isinstance(tp, int), (
+                f"url-fetcher Service port {port} uses a named targetPort ({tp!r}) in {fname}; "
+                "this harness does not resolve port names, so write it numerically"
+            )
+            assert tp == FETCHER_PORT, (
+                f"url-fetcher Service targets pod port {tp} but the ingress rule allows "
+                f"{FETCHER_PORT}; NetworkPolicy ports are pod ports, not Service ports"
+            )
+
+
+@check("url-fetcher ingress admits chat-backend and nobody else — the sandbox least of all")
+def _():
+    pols = fetcher_policies()
+    if not fetcher_named_policies():
+        return  # the label-contract check above owns this failure
+    # the sandbox gets its own assertion before the sweep, because it is the one source whose
+    # admission would not merely widen the boundary but change what this epic built: a sandbox
+    # that can call the fetcher has egress to the internet through a proxy, which is option B
+    # by the back door and the single worst outcome available here
+    reached = rules_reaching(pols, "ingress", sandbox_pod_labels(), widen=True)
+    assert not reached, (
+        "the sandbox is admitted to the url-fetcher by "
+        + ", ".join(f"{n} ({f})" for n, f, _ in reached)
+        + " — that hands a pod with zero egress a proxy to every public address on the "
+        "internet, which is exactly the design this epic rejected (epic vxtv, option B)"
+    )
+    admitted = {
+        name
+        for name, labels in sweep_labels("url-fetcher").items()
+        if name != "chat-backend" and rules_reaching(pols, "ingress", labels, widen=True)
+    }
+    if rules_reaching(pols, "ingress", POD_LABELS["chat-backend"], widen=False):
+        admitted.add("chat-backend")
+    assert admitted == {"chat-backend"}, (
+        f"expected {{'chat-backend'}}, got {admitted or set()}. The /fetch route carries no "
+        "authentication by design — the pod holds no credential it could verify a caller "
+        "against — so this ingress rule IS the access control on it"
+    )
+
+
+@check("url-fetcher ingress is on 8090/TCP only")
+def _():
+    for _n, _f, rule in rules_reaching(
+        fetcher_policies(), "ingress", POD_LABELS["chat-backend"], widen=True
+    ):
+        ports = rule.get("ports")
+        assert ports, "a portless ingress rule admits every port on the url-fetcher"
+        for port in ports:
+            assert port.get("port") == FETCHER_PORT, f"unexpected url-fetcher ingress port {port}"
+
+
+@check("url-fetcher egress is deny-by-default")
+def _():
+    if not fetcher_named_policies():
+        return  # the label-contract check above owns this failure
+    assert any("Egress" in policy_types(p["spec"]) for p in fetcher_named_policies()), (
+        "no policy selecting app: url-fetcher lists Egress in policyTypes, so its egress is "
+        "unrestricted. Egress is deny-by-default for a pod only once some policy selecting it "
+        "declares Egress, and this namespace has no default-deny-egress"
+    )
+
+
+@check("url-fetcher egress: 443 to public addresses only, the private ranges excepted, plus DNS")
+def _():
+    """The except blocks are the difference between containment and decoration.
+
+    0.0.0.0/0 on 443 with no `except:` admits every pod in the cluster, the node, the kubelet
+    and 169.254.169.254 — the SSRF this pod was split out of chat-backend to contain. This
+    parses the rules directly rather than going through rules_reaching(), which refuses
+    ipBlock peers on purpose: an ipBlock's coverage of POD IPs cannot be decided offline, and
+    here the ipBlock is the subject rather than an obstacle.
+    """
+    if not fetcher_named_policies():
+        return  # the label-contract check above owns this failure
+    public = []
+    dns = []
+    for p in fetcher_named_policies():
+        if "Egress" not in policy_types(p["spec"]):
+            continue
+        for rule in p["spec"].get("egress") or []:
+            where = f"{p['metadata']['name']} ({p['__file__']})"
+            peers = rule.get("to")
+            assert peers, f"{where} has an egress rule with no 'to:' — that permits every destination"
+            ports = rule.get("ports")
+            assert ports, f"{where} has a portless egress rule — that permits every port"
+            portset = {(pt.get("port"), pt.get("protocol", "TCP")) for pt in ports}
+            for peer in peers:
+                if "ipBlock" in peer:
+                    public.append((where, peer["ipBlock"], portset))
+                elif portset <= {(DNS_PORT, "UDP"), (DNS_PORT, "TCP")}:
+                    dns.append((where, peer, portset))
+                else:
+                    raise AssertionError(
+                        f"{where}: egress peer {peer!r} on {sorted(portset)} is neither the "
+                        "public-internet ipBlock nor the DNS rule. This pod is allowed exactly "
+                        "two destinations; anything in-cluster reintroduces the SSRF"
+                    )
+    assert public, (
+        "no ipBlock egress rule selects app: url-fetcher, so the pod cannot reach the public "
+        "internet at all and every fetch fails — or, if a rule was removed rather than "
+        "narrowed, it can reach everything"
+    )
+    for where, block, portset in public:
+        assert portset == {(FETCHER_EGRESS_PORT, "TCP")}, (
+            f"{where}: the public egress rule allows {sorted(portset)}, not 443/TCP alone. "
+            "Port 443 only is the network-layer twin of the guard's https-only rule: a "
+            "redirect to http then fails at the socket even if the guard were wrong about it"
+        )
+        assert block.get("cidr") == "0.0.0.0/0", (
+            f"{where}: egress ipBlock cidr is {block.get('cidr')!r}; this harness judges the "
+            "except list against 0.0.0.0/0 and cannot decide a narrower CIDR offline"
+        )
+        missing = FETCHER_EGRESS_EXCEPT - set(block.get("except") or [])
+        assert not missing, (
+            f"{where}: the 0.0.0.0/0 egress rule does not except {sorted(missing)}. Without "
+            "every one of them this rule permits the pod, node and Service CIDRs, the kubelet "
+            "and 169.254.169.254, and the pod is decoration rather than containment "
+            "(docs/code-execution-security.md, 'The URL fetcher')"
+        )
+    assert dns, (
+        "the url-fetcher has no DNS egress rule, so it can resolve no host name and fetches "
+        "nothing. THIS IS NOT A PRECEDENT FOR THE SANDBOX: the sandbox's missing DNS rule is "
+        "the design of record and the 'no DNS egress' check above still holds it"
+    )
+    for where, peer, _ports in dns:
+        ns = (peer.get("namespaceSelector") or {}).get("matchLabels") or {}
+        assert ns.get("kubernetes.io/metadata.name") == "kube-system", (
+            f"{where}: the DNS rule's namespaceSelector is {ns!r}. An unlabelled or empty "
+            "namespaceSelector on a 53 rule admits every pod in every namespace on that port"
+        )
+        pod_sel = (peer.get("podSelector") or {}).get("matchLabels") or {}
+        assert pod_sel.get("k8s-app") == "kube-dns", (
+            f"{where}: the DNS rule selects {pod_sel!r} in kube-system rather than kube-dns"
+        )
+
+
+@check("workloads with a service account of their own carry no credential")
+def _():
+    """What an entry in DEDICATED_SA_WORKLOADS buys, and why it is not an exemption.
+
+    Naming a KSA other than genetics-suite is a sandbox tell. Being enrolled here silences
+    that tell and replaces it with these assertions, which are the properties that made the
+    dedicated identity the safe choice in the first place. A workload with an identity of its
+    own and none of these properties is a workload that still fires the tell.
+    """
+    for app, ksa in sorted(DEDICATED_SA_WORKLOADS.items()):
+        workloads = workloads_labelled(app)
+        if not workloads:
+            notes.append(
+                f"{app} is enrolled in DEDICATED_SA_WORKLOADS but no workload carries "
+                f"app: {app}; the enrolment asserts nothing until one lands"
+            )
+            continue
+        sa_doc = service_account_doc(ksa)
+        assert sa_doc is not None, (
+            f"{app} names serviceAccountName: {ksa!r} but no ServiceAccount object of that "
+            f"name is declared in {DEPLOY_DIR}. Kubernetes will not create it, the pod will "
+            "not schedule, and nothing in this repo states what identity it has"
+        )
+        sa_file, sa = sa_doc
+        annotations = (sa.get("metadata") or {}).get("annotations") or {}
+        bound = [k for k in annotations if "gcp-service-account" in k]
+        assert not bound, (
+            f"ServiceAccount {ksa} ({sa_file}) carries {bound} — a Workload Identity binding. "
+            f"That is the one annotation that must never appear here: it gives this pod's "
+            "outbound connections a GCP identity to steal, which is the whole of what the "
+            f"split from chat-backend removed ({WORKLOAD_IDENTITY_ANNOTATION})"
+        )
+        assert sa.get("automountServiceAccountToken") is False, (
+            f"ServiceAccount {ksa} ({sa_file}) does not set automountServiceAccountToken: "
+            "false"
+        )
+        for fname, doc in workloads:
+            spec = pod_template(fname, doc).get("spec") or {}
+            assert spec.get("serviceAccountName") == ksa, (
+                f"{fname}: {app} runs as {spec.get('serviceAccountName')!r}, not {ksa!r}"
+            )
+            assert spec.get("automountServiceAccountToken") is False, (
+                f"{fname}: {app} does not set automountServiceAccountToken: false on the pod "
+                "spec, so a projected Kubernetes API token is mounted into a pod that makes "
+                "no API calls"
+            )
+            creds = credential_env(fname, doc)
+            assert not creds, (
+                f"{fname}: a credential reaches {app}'s containers ({'; '.join(creds)}). This "
+                "pod is unauthenticated on purpose — the ingress allow-list is the control — "
+                "precisely because there is nothing behind the route to protect; a secret here "
+                "ends that and makes the ingress rule the only thing left"
+            )
+
+
+@check("url-fetcher container hardening: distroless, non-root, read-only rootfs")
+def _():
+    for fname, doc in workloads_labelled("url-fetcher"):
+        pod_sc = (pod_template(fname, doc).get("spec") or {}).get("securityContext") or {}
+        for c in containers(fname, doc):
+            sc = c.get("securityContext") or {}
+            effective = {**pod_sc, **sc}
+            where = f"{fname}: container {c.get('name')!r}"
+            assert effective.get("runAsNonRoot") is True, f"{where} does not set runAsNonRoot"
+            assert effective.get("runAsUser") not in (None, 0), (
+                f"{where} runs as uid {effective.get('runAsUser')!r}"
+            )
+            assert sc.get("readOnlyRootFilesystem") is True, (
+                f"{where} does not set readOnlyRootFilesystem; this image writes nothing and "
+                "the bytes it fetches must never land on a filesystem"
+            )
+            assert sc.get("allowPrivilegeEscalation") is False, (
+                f"{where} does not set allowPrivilegeEscalation: false"
+            )
+            assert (sc.get("capabilities") or {}).get("drop") == ["ALL"], (
+                f"{where} does not drop ALL capabilities"
+            )
+            assert not sc.get("privileged"), f"{where} is privileged"
+    # the base image, from the repo like everything else here. url-fetcher/build-checks.py is
+    # the stronger statement — it asserts against the built image that no shell is present —
+    # but it runs at build time only, and a base swapped here would ship on the next deploy
+    # without the build ever being re-run from this checkout
+    dockerfile = os.path.join(ROOT, "url-fetcher", "Dockerfile")
+    if not workloads_labelled("url-fetcher"):
+        return
+    assert os.path.exists(dockerfile), (
+        "a url-fetcher workload is deployed but url-fetcher/Dockerfile is missing, so nothing "
+        "in this repo says what the image is"
+    )
+    final = dockerfile_base_images(dockerfile)[-1:]
+    assert final and "distroless" in final[0], (
+        f"url-fetcher/Dockerfile's final stage builds on {final or ['nothing']}, which is not "
+        "a distroless base. A shell in this image turns a bug in the fetch route into command "
+        "execution in the one pod allowed to dial the open internet"
     )
 
 

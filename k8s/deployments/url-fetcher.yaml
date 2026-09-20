@@ -1,0 +1,142 @@
+# The URL fetcher: the pod that dials addresses a model named. Design of record:
+# docs/code-execution-security.md, "The URL fetcher: a second pod, because the fetch must not
+# happen in the first one"; the shape around it is in docs/project-spec.md ("The URL fetcher").
+#
+# WHY THIS FILE EXISTS AT ALL is the whole of what makes it worth reading: chat-backend already
+# has internet egress and could have made the request. It also holds INTERNAL_API_SECRET,
+# GATEWAY_IDENTITY_SECRET, SANDBOX_TOKEN_SIGNING_KEY and the model API keys, and runs under a
+# service account bound by Workload Identity to a GSA with BigQuery and GCS roles. A
+# server-side request forgery there walks out with all of it. So every property below is
+# subtractive — this pod is defined by what it does NOT have, and anything added here has to be
+# judged against that, not against what a normal service would carry.
+#
+# The label contract (`app: url-fetcher`, container port 8090/TCP, Service `url-fetcher` on
+# 8090 -> 8090) is dictated by k8s/network-policies/url-fetcher-policy.yaml. Every rule there
+# selects `app: url-fetcher`; a podSelector matching nothing is not an error, it is silent
+# no-coverage, and this pod would then have unrestricted egress to the cluster it is meant to
+# be kept away from.
+#
+# NO `command:` AND NO `args:` ON THE CONTAINER BELOW, and scripts/deploy.sh refuses to apply
+# this file if either appears. The image's ENTRYPOINT names url-fetcher/main.py, the production
+# entrypoint, which offers no way to ask for a guard that permits loopback origins; a
+# `command:` would override it and a `command: ["/usr/bin/python3", "-c", ...]` could construct
+# one in process. No image can prevent that, so the manifest is where it is prevented.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: url-fetcher
+  namespace: genetics
+  # NO iam.gke.io/gcp-service-account ANNOTATION, EVER, and no google_service_account_iam_member
+  # binding in terraform/iam.tf. This pod's job is to connect to an address chosen by whoever is
+  # talking to the model; an annotation here would give that connection a GCP identity to steal.
+  # Reusing `genetics-suite` (bigquery.dataViewer, bigquery.jobUser, storage.objectViewer,
+  # artifactregistry.reader, logging.viewer) would hand it exactly the credentials the split from
+  # chat-backend exists to remove. The namespace `default` SA is equally unacceptable: a shared,
+  # unattributable identity for the one pod that must be attributable to itself alone.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: url-fetcher
+  namespace: genetics
+spec:
+  # One fetch is a few hundred milliseconds of socket and at most a 512 KiB body, and
+  # chat-backend caches per user, so the load this sees is a small fraction of chat turns.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: url-fetcher
+  template:
+    metadata:
+      labels:
+        app: url-fetcher
+    spec:
+      serviceAccountName: url-fetcher
+      # No projected token in the container, so an RCE in the route gets no Kubernetes API
+      # access. It says nothing about the GCP metadata server, which needs no mounted token —
+      # that is the KSA above having no Workload Identity binding, plus the egress policy's
+      # 169.254.0.0/16 exclusion.
+      automountServiceAccountToken: false
+      # Kubernetes otherwise injects DB_API_SERVICE_HOST / _PORT style variables for every
+      # Service in the namespace. This pod needs to reach none of them and must not be handed
+      # the inventory and their ClusterIPs.
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: url-fetcher
+        image: ${REGISTRY}/url-fetcher:latest
+        ports:
+        - name: http
+          containerPort: 8090
+        env:
+        # NO SECRET OF ANY KIND MAY BE DECLARED HERE. Not INTERNAL_API_SECRET, not
+        # GATEWAY_IDENTITY_SECRET, not SANDBOX_TOKEN_SIGNING_KEY, not a model API key, not a
+        # GCP credential. The pod is unauthenticated on purpose (the ingress allow-list is the
+        # control) precisely because there is nothing behind the route to protect — a secret
+        # here would end that and make the ingress rule the only thing left.
+        #
+        # URL_FETCHER_ALLOWED_HOSTS is deliberately UNSET: unset means the seeded allow-list in
+        # url-fetcher/guard.py, and spelling the same hosts here would be a second list to rot.
+        # Widening is a manifest change — add it here, as a comma-separated list, and roll.
+        # It cannot relax an address class: the host policy and the address-class policy are
+        # conjunctive, so 127.0.0.1 in this list is still refused.
+        - name: URL_FETCHER_PORT
+          value: "8090"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8090
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        # No livenessProbe, deliberately. A fetch of a slow upstream holds a thread for up to
+        # the fetcher's own wall-clock deadline; a liveness probe that loses that race restarts
+        # the pod and kills every in-flight fetch, which buys nothing the deadline does not
+        # already do.
+        securityContext:
+          # The image writes nothing: it compiles no bytecode (PYTHONDONTWRITEBYTECODE),
+          # streams response bodies through memory under a byte cap, and never touches a file.
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          # Sized by the caps the fetch enforces, not by measurement: one 512 KiB body plus its
+          # base64 encoding, a few concurrent requests, and a stdlib HTTP server with no
+          # dependencies to import. The memory limit is a backstop on the threading server
+          # rather than a tuned figure.
+          requests:
+            cpu: "25m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+      # NO VOLUMES. No PVC (chat-data holds every conversation in the deployment), no ConfigMap,
+      # no Secret, and no writable scratch: bytes fetched from the open internet are returned in
+      # the response and never land on a filesystem in this pod.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: url-fetcher
+  namespace: genetics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8090
+    targetPort: 8090
+  selector:
+    app: url-fetcher

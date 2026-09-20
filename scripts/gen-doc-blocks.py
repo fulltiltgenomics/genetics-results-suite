@@ -465,8 +465,9 @@ LAYOUT = {
                                    "pinned fetch core, each control also driven as the "
                                    "failure",
     "scripts/test-e2e-local.py": "end-to-end run_analysis against the live local stack",
-    "url-fetcher": "the URL fetcher's source: the address-class guard, the pinned-connection "
-                   "fetch core and the one POST route chat-backend calls",
+    "url-fetcher": "URL-fetcher image build context: the address-class guard, the "
+                   "pinned-connection fetch core, the one POST route chat-backend calls, and "
+                   "the build-time assertions that keep the test entrypoint out of the image",
     "terraform": "infrastructure",
     "terraform/main.tf": "provider config and the GCS backend",
     "terraform/gke.tf": "the GKE cluster and its node pools, the sandbox pool included",

@@ -25,8 +25,9 @@
 # The label contract (`app: sandbox`, container port 8080/TCP, Service `sandbox` on
 # 8080 -> 8080) is dictated by k8s/network-policies/sandbox-policy.yaml. Every rule there
 # selects `app: sandbox`; a podSelector that matches nothing is not an error, it is silent
-# no-coverage, and this is the ONLY Egress policy in the namespace — change the label or the
-# port here and the sandbox runs with unrestricted egress. scripts/test-network-policies.py
+# no-coverage, and that file is the only one declaring an Egress policy for these pods (the
+# namespace's other one, `url-fetcher-policy.yaml`, selects `app: url-fetcher`) — change the
+# label or the port here and the sandbox runs with unrestricted egress. scripts/test-network-policies.py
 # asserts the contract and deploy.sh aborts the network-policy apply if it fails.
 apiVersion: v1
 kind: ServiceAccount

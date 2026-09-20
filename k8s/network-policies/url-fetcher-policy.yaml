@@ -1,0 +1,137 @@
+# ============================================================================
+# LABEL CONTRACT — read this before writing k8s/deployments/url-fetcher.yaml
+#
+#   pod label:      app: url-fetcher   (Deployment .spec.template.metadata.labels)
+#   container port: 8090/TCP
+#   Service name:   url-fetcher        (ClusterIP, port 8090 -> targetPort 8090)
+#
+# Every rule below selects `app: url-fetcher`. A NetworkPolicy whose podSelector
+# matches no pod is NOT an error — it is silent no-coverage, and this pod would then
+# run with unrestricted egress and unrestricted ingress, which is the configuration
+# the whole "second pod" design exists to avoid. If the Deployment picks a different
+# label or port, this file is decoration.
+# ============================================================================
+#
+# THIS IS THE SECOND EGRESS POLICY IN THE NAMESPACE; sandbox-policy.yaml is the other.
+#
+# The two are opposites and neither generalises to the other. The sandbox may reach two
+# in-cluster services and nothing else, has no DNS and no ipBlock at all. This pod may reach
+# the public internet on 443 and MUST resolve names to do it, so it takes the DNS rule the
+# sandbox refuses. What they share is the reason they exist: each is the only thing standing
+# between a pod that runs untrusted input and everything else in the cluster.
+#
+# `policies.yaml` declares a namespace-wide `default-deny-ingress`; there is still no
+# default-deny-egress, so every pod OTHER than these two has unrestricted egress. Egress
+# becomes deny-by-default for a pod only once a policy selecting it lists `Egress` in
+# policyTypes, which is what `url-fetcher-egress` below does for this one.
+#
+# NetworkPolicies are ADDITIVE (union): any future policy selecting `app: url-fetcher`
+# widens this boundary rather than replacing it.
+#
+# WHAT THIS POLICY IS AND IS NOT. It is the outer of two layers and it does not replace the
+# in-process guard in `url-fetcher/guard.py`. An `except`-block egress policy still permits
+# every PUBLIC address, and a permitted host that redirects to another permitted host which
+# proxies inward is not visible at the network layer at all. Equally the guard does not
+# replace this policy: the guard is code in the pod, and this is what holds if the code is
+# wrong. Design of record: docs/code-execution-security.md, "The URL fetcher".
+---
+# Ingress: chat-backend only.
+#
+# The route carries no authentication by design — the pod holds no credential it could verify
+# a caller against — so THIS RULE IS THE ACCESS CONTROL on /fetch. Anything admitted here can
+# make this pod dial any address its guard permits. Deliberately absent, each load-bearing:
+# mcp-server (the /mcp surface is externally reachable and must not gain a fetch primitive),
+# sandbox (it has no egress and is a leaf; reaching the fetcher would hand it one), auth-gateway
+# and bff (no browser-facing route exists or should), monitor, rag-service, results-api, db-api.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-url-fetcher
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: url-fetcher
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chat-backend
+    ports:
+    - port: 8090
+      protocol: TCP
+  policyTypes:
+  - Ingress
+---
+# Egress: 443 to the public internet, DNS, and nothing else.
+#
+# The `except` blocks are the point of the rule. 0.0.0.0/0 on 443 would otherwise include every
+# pod in this cluster, the node, the kubelet and the GCE metadata server, which is the exact
+# server-side request forgery this pod was split out of chat-backend to contain. Excluded:
+#   10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16  RFC1918 — the pod and node CIDRs live here
+#   169.254.0.0/16                             link-local, i.e. 169.254.169.254 and the kubelet
+#   100.64.0.0/10                              CGNAT, which GKE uses for some managed ranges
+# A destination outside all of them is a public address, which is what this pod is for.
+#
+# `ipBlock` is IPv4-only, and with Egress in policyTypes there is no rule that can match an IPv6
+# destination — so on a dual-stack cluster a v6-only upstream is denied outright. That is the
+# safe direction, but the failure it produces is a fetch timeout with no policy event, not a
+# hole: adding a `::/0` block with the v6 equivalents of the excepts above is what widening it
+# would take. This cluster is IPv4-only today.
+#
+# NOT excluded and not excludable here: a public address that proxies inward. That is the
+# guard's job, and it is why the guard re-runs every check at every redirect hop.
+#
+# Port 443 only: no 80, so the guard's https-only rule has a network-layer twin, and a redirect
+# to http fails at the socket even if the guard were wrong about it.
+#
+# THE DNS RULE IS NECESSARY HERE AND IS NOT A PRECEDENT FOR THE SANDBOX. sandbox-policy.yaml
+# eliminates DNS because a pod with egress to CoreDNS has a ~200 KB/s exfiltration pipe through
+# query names alone. That reasoning is unchanged and this pod does not weaken it: the sandbox
+# still has no DNS rule, and the fetcher — which must resolve `raw.githubusercontent.com` to
+# fetch anything — is a pod whose entire input is a URL from chat-backend and whose entire
+# output is bytes back to chat-backend. It never sees a token, a secret or a user identity, so
+# what a query-name channel out of THIS pod could carry is what its caller already sent it.
+# hostAliases are not an option here: the whole point is naming hosts nobody has pinned.
+#
+# The rule below names the kube-dns PODS. If NodeLocal DNSCache is ever enabled on this cluster,
+# pods resolve through 169.254.20.10 instead — a link-local address that the `except` block above
+# denies and no podSelector can reach — and every fetch then fails to resolve rather than failing
+# to connect. Enabling it means adding that /32 back as its own egress rule on 53. Nothing in
+# terraform/ enables it today.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: url-fetcher-egress
+  namespace: genetics
+spec:
+  podSelector:
+    matchLabels:
+      app: url-fetcher
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+        - 100.64.0.0/10
+    ports:
+    - port: 443
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  policyTypes:
+  - Egress

@@ -7,16 +7,21 @@
 #
 # Every rule below selects `app: sandbox`. A NetworkPolicy whose podSelector matches
 # no pod is NOT an error — it is silent no-coverage, and the sandbox would then run
-# with unrestricted egress because nothing else in this namespace declares an Egress
-# policy at all. If the Deployment picks a different label or port, this file is decoration.
+# with unrestricted egress, because this file is the only one that declares an Egress
+# policy for these pods. If the Deployment picks a different label or port, this file is
+# decoration.
 # scripts/test-network-policies.py asserts the contract against sandbox.yaml once
 # that file exists.
 # ============================================================================
 #
-# THIS IS THE FIRST AND ONLY EGRESS POLICY IN THE NAMESPACE.
+# THIS IS ONE OF TWO EGRESS POLICIES IN THE NAMESPACE, AND THE ONLY ONE SELECTING THIS POD.
+# The other is `url-fetcher-policy.yaml`, which selects `app: url-fetcher` and is the opposite
+# shape — public 443 with the private ranges excepted, and a DNS rule. It permits nothing to or
+# from the sandbox, and nothing about it weakens anything below; the DNS reasoning in
+# particular is unchanged, and the sandbox still has no DNS rule.
 #
 # `policies.yaml` declares a namespace-wide `default-deny-ingress` but there is no
-# corresponding default-deny-egress: every other pod here has unrestricted egress.
+# corresponding default-deny-egress: every pod other than those two has unrestricted egress.
 # Egress becomes deny-by-default for a pod only once at least one policy selecting
 # that pod lists `Egress` in policyTypes. That is what the `sandbox-egress` object
 # below does, and it is the sole reason a script cannot `pip install`, cannot fetch a

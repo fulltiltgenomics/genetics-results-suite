@@ -98,6 +98,69 @@ CLUSTER_NAME=$(terraform output -raw cluster_name)
 export CLUSTER_NAME
 eval "$(terraform output -raw kubectl_command)"
 
+# URL-FETCHER PREFLIGHT — before anything is applied, for the same reason as the sandbox gate
+# below: a precondition that can be judged from the repo belongs before the first apply.
+#
+# The property: k8s/deployments/url-fetcher.yaml's container must declare NO command and NO
+# args. The image's ENTRYPOINT names url-fetcher/main.py, which offers no way to ask for a guard
+# that permits loopback origins — no flag, no env var, no config key. A manifest `command:`
+# overrides ENTRYPOINT outright, and `command: ["/usr/bin/python3", "-c", ...]` in an image that
+# ships guard.py can construct the permissive guard in process. No image can prevent that; this
+# is where it is prevented, so docs/code-execution-security.md's "a manifest cannot produce the
+# permissive one" is a property of the deploy path rather than a sentence about the Dockerfile.
+# `args:` alone is harmless (it replaces CMD, and the image ships none) but is refused too: it
+# is one edit away from the same thing and has no legitimate use here.
+#
+# It parses the file rather than grepping it, so the check reads the one container it is about:
+# a command: on another container or in another document cannot trip it as a false positive, and
+# neither can a probe's nested exec.command. An unparseable file fails the deploy closed.
+FETCHER_ARGV_RC=0
+FETCHER_ARGV_ERR=$(python3 - "${ROOT_DIR}/k8s/deployments/url-fetcher.yaml" 2>&1 >/dev/null <<'FETCHERPY'
+import sys
+try:
+    import yaml
+except ImportError:
+    print("PyYAML is missing", file=sys.stderr)
+    sys.exit(2)
+try:
+    docs = list(yaml.safe_load_all(open(sys.argv[1])))
+except Exception as exc:
+    print(f"unparseable: {exc}", file=sys.stderr)
+    sys.exit(2)
+dep = None
+for doc in docs:
+    if isinstance(doc, dict) and doc.get("kind") == "Deployment" \
+            and (doc.get("metadata") or {}).get("name") == "url-fetcher":
+        dep = doc
+if dep is None:
+    print("no Deployment named 'url-fetcher' in the file", file=sys.stderr)
+    sys.exit(3)
+spec = (((dep.get("spec") or {}).get("template") or {}).get("spec") or {})
+container = None
+for c in spec.get("containers") or []:
+    if isinstance(c, dict) and c.get("name") == "url-fetcher":
+        container = c
+if container is None:
+    print("the url-fetcher Deployment has no container named 'url-fetcher'", file=sys.stderr)
+    sys.exit(3)
+declared = [k for k in ("command", "args") if container.get(k)]
+if declared:
+    print("the url-fetcher container declares %s" % ", ".join(declared), file=sys.stderr)
+    sys.exit(4)
+FETCHERPY
+) || FETCHER_ARGV_RC=$?
+if [ "${FETCHER_ARGV_RC}" != "0" ]; then
+  case "${FETCHER_ARGV_RC}" in
+    3) echo "ERROR: k8s/deployments/url-fetcher.yaml no longer describes the workload this gate checks" ;;
+    4) echo "ERROR: k8s/deployments/url-fetcher.yaml's url-fetcher container declares command/args."
+       echo "       The image's ENTRYPOINT is the production entrypoint and must stay the only one"
+       echo "       a pod can run; see docs/code-execution-security.md, 'The two constructions'." ;;
+    *) echo "ERROR: could not determine what k8s/deployments/url-fetcher.yaml's container runs" ;;
+  esac
+  echo "       cause: ${FETCHER_ARGV_ERR:-(no detail)}"
+  exit 1
+fi
+
 # SANDBOX PREFLIGHT — before anything is applied, deliberately.
 # Both checks below used to live inside the `for f in deployments/*.yaml` loop, where
 # sandbox.yaml sorts second-to-last: `exit 1` there fired only after every other manifest had
@@ -731,7 +794,7 @@ echo "=== Forcing rollout restarts ==="
 # passthrough). A full deploy from a state where the new bff is not yet built therefore takes a
 # transient browser 401 on those routes. When that matters, roll the three out individually with
 # scripts/rollout.sh in that order instead.
-DEPLOYS="frontend bff results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy"
+DEPLOYS="frontend bff results-api db-api chat-backend mcp-server auth-gateway oauth2-proxy url-fetcher"
 if [ "${ENABLE_RAG}" = "true" ]; then
   DEPLOYS="${DEPLOYS} rag-service"
 fi

@@ -34,6 +34,31 @@ APP_NAME="${APP_NAME:-FinnGenie}"
 
 echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
+# url-fetcher: a local build context in this repo, and the simplest of them — no clone, no
+# staged SDK, no generated content. The image is four stdlib modules on a distroless base; what
+# takes the work is the build-time assertions in url-fetcher/build-checks.py, which run inside
+# the builder stage. The one thing that cannot be checked from in there is whether that stage
+# runs at all — see assert_fetcher_dockerfile_gated in lib/env.sh.
+if [ "${SERVICE}" = "url-fetcher" ]; then
+  FETCHER_DIR="${SCRIPT_DIR}/../url-fetcher"
+  TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+  echo "=== Building url-fetcher (tag: ${TAG}) ==="
+  assert_fetcher_dockerfile_gated "${FETCHER_DIR}/Dockerfile"
+  set_build_cache_args url-fetcher
+  docker build "${BUILD_CACHE_ARGS[@]}" \
+    -t "${REGISTRY}/url-fetcher:${TAG}" \
+    -t "${REGISTRY}/url-fetcher:latest" \
+    "${FETCHER_DIR}"
+  docker push "${REGISTRY}/url-fetcher:${TAG}"
+  docker push "${REGISTRY}/url-fetcher:latest"
+
+  echo ""
+  echo "Image pushed: ${REGISTRY}/url-fetcher:${TAG}"
+  echo ""
+  echo "To roll out: REGISTRY=${REGISTRY} ./scripts/rollout.sh url-fetcher ${TAG}"
+  exit 0
+fi
+
 # sandbox: a local build context in this repo (like monitor and keycloak in
 # build-all.sh), but one that still needs a clone — the genetics SDK lives in
 # genetics-mcp-server and is pip-installed at build time rather than vendored here.
@@ -113,7 +138,7 @@ declare -A IMAGE_MAP=(
 IMAGE="${IMAGE_MAP[$SERVICE]:-}"
 if [ -z "${IMAGE}" ]; then
   echo "Unknown service: ${SERVICE}"
-  echo "Available services: ${!IMAGE_MAP[*]} sandbox"
+  echo "Available services: ${!IMAGE_MAP[*]} sandbox url-fetcher"
   exit 1
 fi
 

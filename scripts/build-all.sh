@@ -165,6 +165,16 @@ KEYCLOAK_DIR="${SCRIPT_DIR}/../keycloak"
 TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
 build_and_push keycloak "${KEYCLOAK_DIR}" "${TAG}"
 
+# url-fetcher (local build context: distroless, pure standard library, no clone and nothing
+# staged). It is built unconditionally and before the sandbox, which can skip: the two are
+# independent, and the fetcher has no external input that could make it unshippable.
+FETCHER_DIR="${SCRIPT_DIR}/../url-fetcher"
+TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
+# the image's own build-time assertions cannot see whether the stage they run in is in the
+# build; this can. See assert_fetcher_dockerfile_gated in lib/env.sh.
+assert_fetcher_dockerfile_gated "${FETCHER_DIR}/Dockerfile"
+build_and_push url-fetcher "${FETCHER_DIR}" "${TAG}"
+
 # sandbox (local build context: distroless image that runs model-authored Python).
 # The genetics SDK is not vendored here — it is staged out of the genetics-mcp-server
 # clone above and pip-installed at build time, so the sandbox and mcp-server can never
