@@ -130,6 +130,11 @@ def block_limits():
          f"`Retry-After: {sup.RETRY_AFTER_S}`"),
         ("request body", mib(sup.MAX_BODY_BYTES),
          f"raw bytes on the wire; `code` separately at {kib(sup.MAX_CODE_BYTES)} of UTF-8"),
+        ("delivered inputs",
+         f"{kib(sup.MAX_INPUT_BYTES)} each, {kib(sup.MAX_INPUTS_TOTAL_BYTES)} per request, "
+         f"{sup.MAX_INPUTS} inputs",
+         "decoded bytes, not the base64 on the wire; the body cap above is not raised for "
+         "them"),
         ("request head", f"{kib(sup.MAX_HEADER_BYTES)}",
          "request line and headers as one block"),
         ("read deadlines",

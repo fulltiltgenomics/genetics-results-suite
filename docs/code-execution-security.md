@@ -249,6 +249,7 @@ constant. Nothing here is configurable at runtime.
 | audit stream | 4 KiB/record, 1 MiB/execution, 100 records/s (burst 200) | every one applied on the read end, per execution |
 | queue | depth 2, wait 120s | depth counts requests *waiting*; over either, `429` with `Retry-After: 60` |
 | request body | 1 MiB | raw bytes on the wire; `code` separately at 256 KiB of UTF-8 |
+| delivered inputs | 512 KiB each, 512 KiB per request, 4 inputs | decoded bytes, not the base64 on the wire; the body cap above is not raised for them |
 | request head | 64 KiB | request line and headers as one block |
 | read deadlines | head 10s, body 10s, idle 65s | one deadline for the whole head; the idle bound closes silently |
 | response body | 1 MiB | a backstop; every component is separately capped |
@@ -639,6 +640,70 @@ replica every retry then fails against no endpoint at all.
 | `user` | authenticated end-user email | yes | absent or empty → `400`; must equal the tokens' `sub`. |
 | `session_id` | chat session id | yes | absent or empty → `400`; must equal the tokens' `sid`. |
 | `timeout_s` | integer seconds within the wall-clock bounds | no | absent → the default. Non-integer, ≤ 0, or over the ceiling → **`400`, not clamped**. |
+| `inputs` | array of delivered files, shape below | no | absent or `[]` → an empty `inputs/` directory. Not an array, or any element the shape below does not describe → `400`; over a cap → `413 InputsTooLarge`. |
+
+**Delivered inputs**, the field a file the suite does not host arrives through. chat-backend
+fetches the bytes (the URL fetcher, below) and sends them inline; the supervisor writes them
+into the execution directory before the fork and names that directory to the child. Each
+element is an object with exactly these keys:
+
+| key | type | required | absent or malformed |
+|---|---|---|---|
+| `name` | the file name inside `inputs/`, `\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z` | yes | non-matching → `400`. The first character is alphanumeric, so `""`, `".hidden"` and `".."` cannot match, and neither separator is in the class, so no name leaves the directory. Refused, never sanitised: a sanitised name is a name the caller did not send. |
+| `content_base64` | standard base64 of the file's bytes | yes | not a string, or not strictly valid base64 → `400` |
+| `sha256` | 64 lowercase hex digits over the **decoded** bytes | yes | absent or malformed → `400`; not equal to the digest of the decoded bytes → `400 DigestMismatch` |
+| `content_type` | media type, the caller's own label | no | present and not an RFC 7231 media type → `400`. Parameters are accepted, so `text/csv; charset=utf-8` is valid. Validated and then **unused**: the supervisor writes bytes, not a type, and nothing downstream may trust a caller's label about content it did not read. |
+
+A **duplicate `name`** within one array is `400`: whichever element won would silently decide
+which bytes the script reads. An **unknown key** on an element is `400 UnknownField`, the same
+rule as the top level and for the same reason.
+
+The caps are `413 InputsTooLarge`, and they are measured on the **decoded** bytes — per input,
+per request and in count, all three in the limits table above, generated from the supervisor's
+own constants. The type is **their own, not the body cap's `PayloadTooLarge`**: both refusals
+are `413` and both carry `execution_id: null`, so sharing a type would leave a caller unable to
+tell "drop an input and retry" from "your body is too big" without matching on the message.
+**`MAX_BODY_BYTES` is deliberately not raised for them.**
+Base64 inflates 4/3, so today's 1 MiB body minus the 256 KiB code cap already carries ~576 KiB
+of raw bytes, and the measured size distribution of real external files has nothing between
+~220 KiB and ~720 MB. Raising the body cap would buy an empty band at the price of quadrupling
+the largest body a sandbox token authorises; the large class gets a **stated refusal** instead,
+which is what a caller can act on.
+
+**Which end ships first: the supervisor.** `POST /execute` rejects an unknown top-level field
+with `400 UnknownField`, so a chat-backend that sends `inputs` to a supervisor that does not
+know it fails on the **first call**, loudly, rather than running the script without its data
+and letting the model report on a file it never read. That is the whole reason the strict-field
+rule exists. In the other order — supervisor first, caller later — nothing sends the field and
+nothing changes.
+
+**Where the bytes land.** One more per-execution directory, `inputs/`, created at dequeue with
+the six `ExecutionDirs.create` already made so the `mkdir` on the execution directory stays the
+single duplicate check, and named to the child as **`SANDBOX_INPUTS_DIR`** beside
+`SANDBOX_ARTIFACTS_DIR`. It exists on every execution, empty when none were sent, so "no inputs"
+and "inputs" are one shape to the script. Files are written mode 0400 before the fork; the
+directory itself is an ordinary 0700, like every other per-execution directory.
+
+**That mode is an accident guard, not a boundary**, and the distinction is the one section 2
+makes about the shared uid: supervisor and child are uid 65532, the child owns the files, and
+`chmod` on something you own needs no privilege — measured, a script chmods a delivered file and
+overwrites it. What the mode buys is that a script which meant to write its output over its
+input gets an error instead of quietly losing the data it is analysing. Writing a **new** name
+into the directory is not refused and is not meant to be: a read-only directory would have added
+only a guard against unlink-then-recreate, which the same `chmod` defeats, at the price of an
+execution directory no `rmtree` can empty — and every cleanup route there is, including the
+startup wipe a crash mid-execution depends on, is an `rmtree`. What bounds a **hostile** script
+is elsewhere entirely: it cannot reach outside this directory, nothing downstream re-reads these
+bytes, and nothing trusts them after delivery — a rewritten input can only mislead the script
+that rewrote it.
+
+**Lifetime, and what they are not.** The bytes are deleted on both exits from the fork — the
+failure before it and the reap after it — so they are gone before the response is built, and
+nothing retains, caches or re-serves them; a second execution wanting the same file is sent it
+again. They are charged to the execution's own `/scratch` quota and to the aggregate ceiling,
+because they sit inside the execution directory that `_watchdog` measures. They are **not**
+collected as artifacts (only `artifacts/` is) and are **not** reported as stray writes (only
+`tmp/` is), so delivering a file cannot make a run look like it saved one.
 
 **Reject, do not clamp**, and **refuse, do not pick a winner.** Clamping is a silent behaviour
 change on a path fed from a model-influenceable direction, and it desyncs the client's own
@@ -695,6 +760,7 @@ supervisor refusing or being unable to run it at all.
 | `artifacts` | array, always present | the manifest: `name`, `size`, `content_type`, nothing else |
 | `artifacts_omitted` | integer ≥ 0 | present in the directory, not listed retrievably |
 | `artifacts_retained_in_clear` | boolean | the seal pass could **neither encrypt nor delete** what the script wrote |
+| `inputs` | array, always present | the echo: `name` and `size` per delivered input, nothing else. A dropped or renamed input is therefore impossible to miss. Empty when none were sent. |
 
 The response carries no token, no filesystem path, no environment and no host name.
 
@@ -1289,7 +1355,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
-| `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory whose mode refuses a plain write and which does not outlive the run — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a directory it owns. **RED by design** until external inputs ship — it is that feature's acceptance test, written first | a loopback origin it starts itself, the local sandbox container, a signing key |
+| `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. **RED by design** until external inputs ship — it is that feature's acceptance test, written first | a loopback origin it starts itself, the local sandbox container, a signing key |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
 Two conventions run through those harnesses and are what make them evidence rather than

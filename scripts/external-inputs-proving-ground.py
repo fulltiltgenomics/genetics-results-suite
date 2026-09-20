@@ -35,12 +35,13 @@ PRECONDITIONS, which are about the stack and not about the feature:
 
 PROVISIONAL NAMES. Every interface below is named here before it exists, so that the driver
 goes green when the subtasks land instead of being rewritten. The names are the harness's
-guess at the chosen architecture (one optional field on /execute, a read-only inputs
-directory, one env var, nothing persisted); the subtask that builds each one owns the final
+guess at the chosen architecture (one optional field on /execute, read-only input files,
+one env var, nothing persisted); the subtask that builds each one owns the final
 spelling and must fix it here in the same change:
 
-  `inputs` on POST /execute, a list of {"name", "content_b64"}   -> supervisor subtask
-  SANDBOX_INPUTS_DIR, the child env var naming a 0500 directory  -> supervisor subtask
+  `inputs` on POST /execute, elements {"name", "content_base64",
+      "sha256", optional "content_type"}                         -> SETTLED, supervisor
+  SANDBOX_INPUTS_DIR, naming an ordinary dir of 0400 files       -> SETTLED, supervisor
   POST /fetch {"url"} -> {"name", "size_bytes", "content_b64"}   -> SETTLED, url-fetcher
   a refusal as non-2xx with {"error": {"type", "message"}}       -> SETTLED, url-fetcher
   the fetcher's health path, probed as /healthz then /health     -> SETTLED, /healthz
@@ -108,7 +109,7 @@ DEFAULT_RUN_DIR = os.environ.get("DEV_STACK_RUN_DIR") or os.path.join(
 INPUTS_FIELD = "inputs"
 INPUTS_ENV = "SANDBOX_INPUTS_DIR"
 LOOPBACK_CHECK = "a deployed-configuration fetcher refuses loopback"
-DIR_MODE_CHECK = "the inputs directory refuses a plain write by the child"
+INPUT_MODE_CHECK = "a delivered input refuses a plain overwrite by the child"
 
 FAILURES = []
 SKIPPED = []
@@ -365,19 +366,20 @@ if d:
     print("SHA " + hashlib.sha256(b).hexdigest())
     print("LINES " + str(len(text.splitlines())))
     print("COLS " + str(len(text.splitlines()[0].split("\\t"))))
-    def probe_write():
-        open(os.path.join(d, "probe-" + os.urandom(4).hex()), "w").write("x")
+    p = os.path.join(d, {name!r})
+    def probe_overwrite():
+        open(p, "wb").write(b"clobbered")
     try:
-        probe_write()
-        print("DIR_WRITABLE yes")
+        probe_overwrite()
+        print("INPUT_WRITABLE yes")
     except OSError:
-        print("DIR_WRITABLE no")
+        print("INPUT_WRITABLE no")
     try:
-        os.chmod(d, 0o700)
-        probe_write()
-        print("DIR_WRITABLE_AFTER_CHMOD yes")
+        os.chmod(p, 0o600)
+        probe_overwrite()
+        print("INPUT_WRITABLE_AFTER_CHMOD yes")
     except OSError:
-        print("DIR_WRITABLE_AFTER_CHMOD no")
+        print("INPUT_WRITABLE_AFTER_CHMOD no")
 '''
 
 READ_VIA_SDK = '''
@@ -497,7 +499,10 @@ def group_delivery(args, payload, digest, fetched):
     # stay measurable while the fetcher does not exist, or the two reds mask each other.
     body = fetched if fetched is not None else payload
     name = os.path.basename(FIXTURE_REL)
-    inputs = [{"name": name, "content_b64": base64.b64encode(body).decode()}]
+    inputs = [{"name": name, "content_base64": base64.b64encode(body).decode(),
+               # required, and checked against the decoded bytes: the supervisor refuses the
+               # whole request on a mismatch, so a body mangled in transit cannot reach a script
+               "sha256": hashlib.sha256(body).hexdigest()}]
 
     # The negative control, and it must come first. Every check below posts to /execute, and
     # /execute rejects an unknown field before it looks at code, execution_id or tokens — so
@@ -513,7 +518,7 @@ def group_delivery(args, payload, digest, fetched):
                         f"the child sees {INPUTS_ENV}",
                         "the delivered bytes are the fetched bytes",
                         "the file reads as the premise's table",
-                        DIR_MODE_CHECK,
+                        INPUT_MODE_CHECK,
                         "nothing is persisted after the execution",
                         "genetics.open_input reads the same bytes"):
             skip(pending, "the control execution did not run, so a red here would be about "
@@ -533,14 +538,16 @@ def group_delivery(args, payload, digest, fetched):
           and (reported(result, "COLS") or "0").isdigit()
           and int(reported(result, "COLS") or 0) > 1,
           f"LINES={reported(result, 'LINES')!r} COLS={reported(result, 'COLS')!r}")
-    # Deliberately NOT named read-only: ExecutionDirs.create states the governing fact — the
-    # child shares the supervisor's uid — so a 0500 directory the child owns is chmod-able by
-    # the child, and a mode is not a boundary against a hostile script. The probe measures
-    # both: the plain write is what the mode stops, the chmod-then-write is what it does not.
-    check(DIR_MODE_CHECK, reported(result, "DIR_WRITABLE") == "no",
-          f"DIR_WRITABLE={reported(result, 'DIR_WRITABLE')!r}")
-    print(f"  note  a hostile script chmods the directory first: "
-          f"DIR_WRITABLE_AFTER_CHMOD={reported(result, 'DIR_WRITABLE_AFTER_CHMOD')!r} "
+    # The property is about the FILE, not the directory: inputs/ is an ordinary 0700 like every
+    # other per-execution directory, so a new name goes into it without complaint. What mode
+    # 0400 buys is that the delivered bytes are not overwritten by a script saving its output
+    # over its input. And it is an accident guard only — ExecutionDirs.create states the
+    # governing fact, that the child shares the supervisor's uid, so a file the child owns is
+    # chmod-able by the child. The probe measures both halves.
+    check(INPUT_MODE_CHECK, reported(result, "INPUT_WRITABLE") == "no",
+          f"INPUT_WRITABLE={reported(result, 'INPUT_WRITABLE')!r}")
+    print(f"  note  a hostile script chmods the file first: "
+          f"INPUT_WRITABLE_AFTER_CHMOD={reported(result, 'INPUT_WRITABLE_AFTER_CHMOD')!r} "
           "(a mode is not an isolation boundary here)")
 
     # An absence is only evidence if the thing was there: this runs after an execution that

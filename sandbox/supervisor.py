@@ -65,6 +65,15 @@ LISTEN_PORT = 8080
 
 MAX_BODY_BYTES = 1024 * 1024          # raw bytes on the wire -> 413
 MAX_CODE_BYTES = 256 * 1024           # len(code.encode("utf-8")) -> 413
+# Delivered inputs, measured decoded rather than on the wire. MAX_BODY_BYTES is deliberately
+# NOT raised to make room for them: base64 inflates 4/3, so the existing 1 MiB body minus the
+# code cap already carries ~576 KiB of raw bytes, and the size distribution of real external
+# files has nothing between ~220 KiB and ~720 MB. Raising the body cap would buy an empty band
+# at the price of quadrupling the largest body a sandbox token authorises; the large class gets
+# a stated refusal instead.
+MAX_INPUT_BYTES = 512 * 1024          # decoded bytes of one input -> 413
+MAX_INPUTS_TOTAL_BYTES = 512 * 1024   # decoded bytes across one request -> 413
+MAX_INPUTS = 4                        # elements in `inputs` -> 413
 MAX_HEADER_BYTES = 64 * 1024          # request line + headers, whole block -> 431
 HEADER_PEEK_BYTES = 512               # see _HeaderBoundedReader: the over-read bound
 HEAD_READ_TIMEOUT_S = 10.0            # first byte of the head to the blank line -> 408
@@ -270,8 +279,39 @@ EXECUTION_ID_RE = re.compile(
 TOKEN_AUDIENCES = ("db-api", "results-api")
 
 _EXECUTE_FIELDS = frozenset(
-    {"code", "execution_id", "tokens", "user", "session_id", "timeout_s"}
+    {"code", "execution_id", "tokens", "user", "session_id", "timeout_s", "inputs"}
 )
+
+_INPUT_FIELDS = frozenset({"name", "content_base64", "sha256", "content_type"})
+
+# An input name becomes a file name inside inputs/ and is echoed back, so it is bounded the way
+# execution_id is. Leading character alphanumeric, so "..", ".hidden" and "" cannot match; no
+# separator of either kind in the class, so no name can leave the directory; `\A…\Z` for the
+# reason EXECUTION_ID_RE carries.
+INPUT_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+# Accepted, validated and then unused: the supervisor writes bytes, not a type, and nothing
+# downstream may trust a caller-supplied label about content it did not read. It is bounded
+# rather than free text because it is echoed nowhere and stored nowhere, and an unbounded
+# string on a parsed field is a cost with no reader.
+# RFC 7231 media-type: type "/" subtype *( OWS ";" OWS parameter ), the parameter value a token
+# or a quoted-string. Without the parameter production `text/csv; charset=utf-8` — what a real
+# fetcher reports — was a 400 on a field the contract calls optional. Every repetition is
+# bounded, so there is no input length that makes this expensive to match.
+_MEDIA_TOKEN = r"[A-Za-z0-9!#$&^_.+-]{1,64}"
+_MEDIA_PARAM = (
+    r"[ \t]*;[ \t]*" + _MEDIA_TOKEN + r"=(?:" + _MEDIA_TOKEN + r'|"[^"\\\x00-\x1f\x7f]{0,128}")'
+)
+INPUT_CONTENT_TYPE_RE = re.compile(
+    r"\A" + _MEDIA_TOKEN + r"/" + _MEDIA_TOKEN + r"(?:" + _MEDIA_PARAM + r"){0,4}\Z"
+)
+
+# The inputs caps answer with their own error.type rather than sharing PayloadTooLarge with the
+# body cap. Both are 413 and both carry execution_id null — the id is assigned only after
+# parse_execute_request returns — so with one type a caller cannot tell "drop an input and
+# retry" from "your body is too big" without matching on the message, and error.type is the
+# reserved minimum a client may branch on.
+ERR_INPUTS_TOO_LARGE = "InputsTooLarge"
+SHA256_HEX_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # Reserved error.type names. error.type is an OPEN string — the child's exception class name
 # is the other half of its range — and these are the reserved minimum a client may branch on.
@@ -557,6 +597,22 @@ def _aud_matches(aud, key):
     return False
 
 
+class InputFile:
+    """One validated element of `inputs`: the name it takes inside inputs/ and its bytes.
+
+    The digest the caller sent is not kept. It was checked against these bytes at parse time,
+    which is the only moment it can say anything: the file is written from `data` and nothing
+    downstream re-reads it, so a retained digest would be a value no code compares.
+    """
+
+    __slots__ = ("name", "data", "content_type")
+
+    def __init__(self, name, data, content_type):
+        self.name = name
+        self.data = data
+        self.content_type = content_type
+
+
 class ExecuteRequest:
     __slots__ = (
         "code",
@@ -566,9 +622,11 @@ class ExecuteRequest:
         "session_id",
         "timeout_s",
         "claims",
+        "inputs",
     )
 
-    def __init__(self, code, execution_id, tokens, user, session_id, timeout_s, claims):
+    def __init__(self, code, execution_id, tokens, user, session_id, timeout_s, claims,
+                 inputs=()):
         self.code = code
         self.execution_id = execution_id
         self.tokens = tokens
@@ -576,12 +634,84 @@ class ExecuteRequest:
         self.session_id = session_id
         self.timeout_s = timeout_s
         self.claims = claims
+        self.inputs = tuple(inputs)
 
     @property
     def exp(self):
         """The earliest `exp` across both tokens, or None if neither carries one."""
         exps = [c.get("exp") for c in self.claims.values() if isinstance(c.get("exp"), (int, float))]
         return min(exps) if exps else None
+
+
+def _parse_inputs(value):
+    """The `inputs` element list -> a tuple of InputFile. Raises RequestError for every
+    rejection: 400 for a shape the contract does not describe, 413 for a cap.
+
+    Every rejection is explicit rather than tolerant. A dropped or renamed input is a silent
+    wrong answer — the script reads a file that is not the one the caller sent, or reads
+    nothing and reports on data it never had — so there is no lenient branch here at all.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise _bad("inputs must be an array")
+    if len(value) > MAX_INPUTS:
+        raise RequestError(413, ERR_INPUTS_TOO_LARGE, f"at most {MAX_INPUTS} inputs")
+    inputs = []
+    seen = set()
+    total = 0
+    for index, element in enumerate(value):
+        where = f"inputs[{index}]"
+        if not isinstance(element, dict):
+            raise _bad(f"{where} is not a JSON object")
+        unknown = sorted(set(element) - _INPUT_FIELDS)
+        if unknown:
+            raise _bad(f"{where} has unknown field(s): {', '.join(unknown)}", "UnknownField")
+
+        name = element.get("name")
+        if not isinstance(name, str) or not INPUT_NAME_RE.fullmatch(name):
+            # Strict for the reason execution_id is: this value names a path. A name with a
+            # separator, a leading dot or dot-dot in it is refused rather than sanitised,
+            # because a sanitised name is a name the caller did not send.
+            raise _bad(f"{where}.name must match {INPUT_NAME_RE.pattern}")
+        if name in seen:
+            # Two elements one name is ambiguous, not a merge: whichever won would silently
+            # decide which bytes the script reads.
+            raise _bad(f"{where}.name duplicates an earlier input")
+        seen.add(name)
+
+        encoded = element.get("content_base64")
+        if not isinstance(encoded, str):
+            raise _bad(f"{where}.content_base64 is required and must be a string")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception:
+            raise _bad(f"{where}.content_base64 is not valid base64")
+        if len(data) > MAX_INPUT_BYTES:
+            raise RequestError(413, ERR_INPUTS_TOO_LARGE,
+                               f"{where} exceeds {MAX_INPUT_BYTES // 1024} KiB")
+        total += len(data)
+        if total > MAX_INPUTS_TOTAL_BYTES:
+            raise RequestError(413, ERR_INPUTS_TOO_LARGE,
+                               f"inputs exceed {MAX_INPUTS_TOTAL_BYTES // 1024} KiB in total")
+
+        digest = element.get("sha256")
+        if not isinstance(digest, str) or not SHA256_HEX_RE.fullmatch(digest):
+            raise _bad(f"{where}.sha256 is required and must be 64 lowercase hex digits")
+        if hashlib.sha256(data).hexdigest() != digest:
+            # The one check that is about the bytes rather than the shape: base64 survives a
+            # truncated or spliced body in ways JSON parsing does not, and the caller is the
+            # only party that knows what it meant to send.
+            raise _bad(f"{where}.sha256 does not match the decoded bytes", "DigestMismatch")
+
+        content_type = element.get("content_type")
+        if content_type is not None and (
+            not isinstance(content_type, str)
+            or not INPUT_CONTENT_TYPE_RE.fullmatch(content_type)
+        ):
+            raise _bad(f"{where}.content_type must be a media type")
+        inputs.append(InputFile(name, data, content_type))
+    return tuple(inputs)
 
 
 def parse_execute_request(raw):
@@ -634,6 +764,8 @@ def parse_execute_request(raw):
         # model-influenceable direction, and it desyncs the client's own deadline.
         raise _bad(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
 
+    inputs = _parse_inputs(body.get("inputs"))
+
     claims = {key: _decode_jwt_payload(tokens[key], key) for key in TOKEN_AUDIENCES}
 
     jtis = {claims[key].get("jti") for key in TOKEN_AUDIENCES}
@@ -654,7 +786,8 @@ def parse_execute_request(raw):
         if c.get("sid") != session_id:
             raise _bad(f"tokens.{key} sid does not equal session_id", "TokenMismatch")
 
-    return ExecuteRequest(code, execution_id, tokens, user, session_id, timeout_s, claims)
+    return ExecuteRequest(code, execution_id, tokens, user, session_id, timeout_s, claims,
+                          inputs)
 
 
 # --------------------------------------------------------------------------------------
@@ -678,6 +811,7 @@ class ExecutionDirs:
         self.mplconfig = os.path.join(self.base, "mplconfig")
         self.cache = os.path.join(self.base, "cache")
         self.pycache = os.path.join(self.base, "pycache")
+        self.inputs = os.path.join(self.base, "inputs")
         self.tokens = os.path.join(self.base, TOKEN_FILE_NAME)
 
     def create(self):
@@ -693,6 +827,10 @@ class ExecutionDirs:
             self.mplconfig,
             self.cache,
             self.pycache,
+            # Created here with the rest even when the request carries no inputs, so the
+            # mkdir on self.base stays the single last-moment duplicate check and the child
+            # always finds the directory its environment names.
+            self.inputs,
         ):
             os.mkdir(path, 0o700)
 
@@ -704,6 +842,11 @@ class ExecutionDirs:
             "XDG_CACHE_HOME": self.cache,
             "PYTHONPYCACHEPREFIX": self.pycache,
             "SANDBOX_ARTIFACTS_DIR": self.artifacts,
+            # The files the caller delivered, or an empty directory. The directory itself is
+            # an ordinary 0700 like the others; the files are 0400, an accident guard and not a
+            # boundary (same uid, so the child can chmod them — see _deliver_inputs). Nothing
+            # downstream re-reads these bytes.
+            "SANDBOX_INPUTS_DIR": self.inputs,
             # The path, never the tokens: /proc/<pid>/environ is readable by any process at
             # the same uid and supervisor and child share uid 65532, so a helper the script
             # spawns could read a token out of a sibling's environment. A path is not secret.
@@ -3805,6 +3948,7 @@ class Supervisor:
         dirs = job.dirs
         seed_mplconfig(dirs.mplconfig)
         _deliver_tokens(job)
+        _deliver_inputs(job)
 
         # Every descriptor an execution creates is made inside this try. _payload_fd raises
         # OSError for real reasons (memfd_create ENOMEM, ENOSPC on the fallback against the
@@ -3841,6 +3985,8 @@ class Supervisor:
             # never reaches EOF.
             _fs_close_all([fd for fd in (payload_fd, out_w, st_w, audit_w, out_r, st_r, audit_r)
                            if fd is not None])
+            # No child exists on this path, so the delivered bytes have no reader left.
+            _discard_inputs(dirs)
             raise
         os.close(payload_fd)
         os.close(out_w)
@@ -3887,6 +4033,12 @@ class Supervisor:
             # number no process spent running whenever a descendant escapes.
             duration_ms = int((time.monotonic() - started) * 1000)
         finally:
+            # First in the finally, not last: the inputs go with the child on every exit from
+            # the fork including the one where _reap raised, and putting it ahead of the ten
+            # statements below means none of them raising can skip it. Nothing retains or
+            # collects these bytes, and the response is built from job.req rather than from the
+            # directory.
+            _discard_inputs(dirs)
             # A job that was forked but not reaped has a child nobody will ever kill, and
             # setting job.done first made that permanent: _watchdog returns immediately on
             # job.done without firing a limit or killing the group, and neither _execute nor
@@ -4098,6 +4250,10 @@ class Supervisor:
             # nothing about exposure, while this says the seal pass could neither encrypt nor
             # delete what the script wrote.
             "artifacts_retained_in_clear": artifacts_retained_in_clear,
+            # Name and size only, one row per delivered input, always present. It exists so a
+            # dropped or renamed input is impossible to miss; it carries no path, no host name
+            # and no environment, which is what the rest of this response discloses too.
+            "inputs": [{"name": item.name, "size": len(item.data)} for item in job.req.inputs],
             # Names the script wrote to its working directory, which is NOT collected. Present
             # only when the run collected nothing, so it reads as "you saved to the wrong
             # place" rather than as a list of incidental scratch.
@@ -4737,6 +4893,58 @@ def _deliver_tokens(job):
     # checked against the body at parse time. The supervisor is the only component that both
     # holds the token and sits outside the child's address space, which is why the stamping is
     # here rather than in the SDK.
+
+
+def _deliver_inputs(job):
+    """Write the caller's delivered inputs into inputs/, before the fork.
+
+    Mode 0400 on the files is an ACCIDENT GUARD, not a security property, and the distinction is
+    the same one ExecutionDirs.create states: the child shares the supervisor's uid, so it owns
+    them and can chmod them at will. What it buys is that a script which meant to write its
+    output next to its input gets an error instead of quietly overwriting the bytes it is
+    analysing. What bounds a HOSTILE script is elsewhere entirely — it cannot reach anything
+    outside this directory, and nothing downstream reads these bytes back or trusts them after
+    delivery.
+
+    The directory itself is left an ordinary 0700 like every other per-execution directory. A
+    read-only directory would add only a guard against unlink-then-recreate, which a same-uid
+    child defeats with one chmod, and it would cost an execution directory that no rmtree can
+    empty — which is every deletion route there is, including the startup wipe that a crash
+    mid-execution depends on.
+
+    O_EXCL and O_NOFOLLOW for the reason _deliver_tokens uses them: the directory is on a path
+    another process at this uid can see, and a name that already exists here is a fact about
+    something other than this request.
+
+    The write is looped and the short write is not assumed away: on ENOSPC — a real pressure
+    point on a 512 MiB emptyDir — os.write returns a short count with no exception, and the
+    response's `inputs` echo is built from the request rather than from the filesystem, so a
+    truncated file would be reported at its full size. The echo's whole purpose is that a
+    dropped or altered delivery is impossible to miss.
+
+    The bytes are charged to the execution's own quota because they sit under dirs.base, which
+    is what _watchdog's scan measures — no separate accounting, and none wanted.
+    """
+    for item in job.req.inputs:
+        path = os.path.join(job.dirs.inputs, item.name)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        try:
+            view = memoryview(item.data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+
+
+def _discard_inputs(dirs):
+    """Delete the delivered inputs as soon as the child that needed them is gone.
+
+    Called on both exits from the fork — the failure before it and the reap after it — so the
+    bytes are gone by the time the response is built. It is promptness rather than a guarantee:
+    the directory is ordinary, so `_retain`, `_forget_retained`, the orphan sweep and the
+    startup wipe can all remove it too, and this is what keeps the window short.
+    """
+    shutil.rmtree(dirs.inputs, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------------------

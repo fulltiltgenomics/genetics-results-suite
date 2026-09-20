@@ -1072,14 +1072,18 @@ no third-party imports: the image installs only the genetics SDK's import closur
 supervisor can use nothing the SDK does not already need. Its shape, in the order the file is
 laid out — contract constants, the request parser, the per-execution directory, artifact
 encryption, the manifest, the child, the fork server, the scheduler, the per-execution limits,
-token delivery, the audit forwarder, HTTP, startup.
+token and input delivery, the audit forwarder, HTTP, startup.
 
 What it does per execution: admit or refuse the request against the queue bounds and the
 duplicate-id rule; empty the runtime-supplied `/tmp` and `/dev/shm`, which no volume declares
-and nothing else sweeps; create `/scratch/<execution-id>`; write the token file; ask the **fork
-server** for a child; watch the wall clock, the process group and the `/scratch` quotas; drain
-three pipes; reap; kill whatever the child left behind; trim, seal and list the artifacts; and
-answer. Every bound it enforces is a constant at the top of the file with its reasoning beside
+and nothing else sweeps; create `/scratch/<execution-id>`; write the token file and whatever
+files the request delivered as `inputs`; ask the **fork server** for a child; watch the wall
+clock, the process group and the `/scratch` quotas; drain three pipes; reap; delete the
+delivered inputs, first thing in the cleanup rather than last; kill whatever the child left
+behind and join the drains; trim, seal and list the artifacts; and answer. Delivered inputs are ephemeral to one execution — nothing retains or re-serves them,
+and they are neither collected as artifacts nor reported as stray writes; the wire shape,
+the caps and the read-only-is-an-accident-guard reasoning are in
+`docs/code-execution-security.md`, which is the definition. Every bound it enforces is a constant at the top of the file with its reasoning beside
 it, and the same numbers are tabulated in `docs/code-execution-security.md`, generated from
 that file.
 
@@ -1092,7 +1096,10 @@ Three structural facts are worth knowing before reading it:
   address space. Nothing that has held a token, a request body or user source code may fork an
   execution child.
 - **Supervisor and child share uid 65532**, because the pod drops the capabilities a second uid
-  would need. File modes separate nothing between them; lifetime does.
+  would need. File modes separate nothing between them; lifetime does. That is why the 0400
+  input files are an accident guard rather than a boundary — the child owns them and can
+  `chmod` them — and why `inputs/` itself is an ordinary directory: a mode that stops no
+  attacker is not worth a directory no `rmtree` can empty.
 
 **Verification.** `scripts/test-supervisor.py` is the offline harness — no cluster, no
 credentials, no image — and runs the real supervisor in-process against a temporary scratch
