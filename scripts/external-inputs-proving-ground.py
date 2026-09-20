@@ -12,9 +12,14 @@ motivating case is rehearsable against the real bytes with no internet, no clust
 credentials. This harness starts a throwaway HTTP server on loopback serving exactly that
 file, stops it when it is done, and never opens a socket to anything else.
 
-  scripts/external-inputs-proving-ground.py --fetcher-url http://127.0.0.1:8090
-  scripts/external-inputs-proving-ground.py --fetcher-url ... --fetcher-url-guarded ...
+  python3 url-fetcher/devserver.py                                   # permissive, :8090
+  URL_FETCHER_BIND=127.0.0.1 URL_FETCHER_PORT=8091 python3 url-fetcher/main.py
+  scripts/external-inputs-proving-ground.py --fetcher-url-guarded http://127.0.0.1:8091
   scripts/external-inputs-proving-ground.py --groups ground          # the harness itself
+
+The two fetcher instances are two ENTRYPOINTS, not one process with a flag: devserver.py
+passes the loopback allowance as a constructor argument and main.py has no way to. So
+--fetcher-url-guarded is main.py, unchanged in spelling and now pointing at something real.
 
 Exit 0 every check passed; 1 at least one check failed (the expected state today); 2 the
 harness could not run — a missing precondition, never a verdict about the feature. Same
@@ -36,9 +41,13 @@ spelling and must fix it here in the same change:
 
   `inputs` on POST /execute, a list of {"name", "content_b64"}   -> supervisor subtask
   SANDBOX_INPUTS_DIR, the child env var naming a 0500 directory  -> supervisor subtask
-  POST /fetch {"url"} -> {"name", "size_bytes", "content_b64"}   -> URL fetcher subtask
-  a refusal as non-2xx with {"error": {"type", "message"}}       -> URL fetcher subtask
-  the fetcher's health path, probed as /healthz then /health     -> URL fetcher subtask
+  POST /fetch {"url"} -> {"name", "size_bytes", "content_b64"}   -> SETTLED, url-fetcher
+  a refusal as non-2xx with {"error": {"type", "message"}}       -> SETTLED, url-fetcher
+  the fetcher's health path, probed as /healthz then /health     -> SETTLED, /healthz
+
+The three fetcher names above shipped as guessed; the response and the error envelope each
+carry more fields than are named here (docs/code-execution-security.md has the contract), and
+a superset does not change what this file asserts.
   `genetics.open_input(name)`                                    -> SDK helper subtask
   `inputs=` on SandboxClient.execute                             -> client subtask
 
