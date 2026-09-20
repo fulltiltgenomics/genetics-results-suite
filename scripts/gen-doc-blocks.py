@@ -416,6 +416,10 @@ LAYOUT = {
     "scripts/bq-dev-dataset.sh": "stand up, verify or tear down the BigQuery rehearsal dataset "
                                  "(docs/bigquery-dev-dataset.md)",
     "scripts/chat_usage_stats.sh": "chat usage counts from the BigQuery chat-log sink",
+    "scripts/external-inputs-proving-ground.py": "offline: a loopback origin serving the "
+                                                 "linemodels fixture, the fetcher's "
+                                                 "refusals, and delivery into a sandbox "
+                                                 "execution; RED until external inputs land",
     "scripts/chat-memory-proving-ground.py": "staging recipe and check runner for the "
                                              "per-project chat memory feature; `check all` "
                                              "or one numbered check, each PASS/FAIL with its "
