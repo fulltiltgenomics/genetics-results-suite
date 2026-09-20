@@ -203,3 +203,40 @@ def upset(
     panels — in which case nothing is saved.
     """
     ...
+
+def linemodels(
+    result: Any,
+    *,
+    X: Any = None,
+    SE: Any = None,
+    groups: pl.DataFrame | None = None,
+    threshold: float = 0.95,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+    title: str | None = None,
+    xlim: Any = None,
+    ylim: Any = None,
+    path: str | None = None,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """Line models over two effect variables, with the variants coloured by assignment.
+
+    `result` is what `genetics.linemodels.classify`, `proportions` or `optimize` returned
+    (its `models` and `groups` are used), or just a `models` frame with `model`, `scale`,
+    `slope` and `cor` columns. Each model is drawn as its line through the origin and the
+    dashed boundary of the region holding 95% of its effects — a slope of infinity is the
+    vertical axis and a scale of 0 a point at the origin — so the figure shows what each
+    hypothesis claims before any point is read against it.
+
+    Pass the same `X` (and `SE`, for 95% error bars) the fit was given to draw the variants:
+    a point is filled in its model's colour when that model's probability reaches
+    `threshold`, and left grey when no model does — those sit near the origin, where the
+    models are not separable, by design. `groups` overrides the result's own. Axis labels
+    default to the column names of `X`.
+
+    Returns `path`, `models` in drawing order, `n_points`, `n_assigned` per model,
+    `n_undetermined` and the `threshold` used. `path` may be relative, in which case it is
+    written inside the execution's artifacts directory; pass `ax` to draw into an existing
+    figure instead, in which case nothing is saved.
+    """
+    ...

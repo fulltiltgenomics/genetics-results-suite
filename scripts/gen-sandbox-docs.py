@@ -65,6 +65,11 @@ SCHEMA_DIR = os.path.join(ROOT, "sandbox", "schema")
 STUBS_DIR = os.path.join(ROOT, "sandbox", "stubs")
 STAGED_SDK_SRC = os.path.join(ROOT, "sandbox", ".sdk-src")
 
+# the SDK submodules a script reaches as `genetics.<name>` that are not client wrappers;
+# each gets its own stub, read from the module's `__all__`. sdk/__init__.py resolves the
+# same names lazily and the executor's _SDK_MODULES catalogues them.
+SURFACE_MODULES = ("plots", "linemodels")
+
 
 def prompt_schema_dir_for(sdk_src):
     """Where the SAME rendered view docs go inside a genetics-mcp-server checkout.
@@ -521,7 +526,7 @@ def render_stubs(sdk_dir):
         "from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError",
         # re-exported rather than merged into this file: `genetics.plots.locuszoom(...)` is
         # how a script calls it, and a flat listing would not say that
-        "from genetics_mcp_server.sdk import plots as plots",
+        *[f"from genetics_mcp_server.sdk import {m} as {m}" for m in SURFACE_MODULES],
         "",
     ]
     body = []
@@ -583,35 +588,36 @@ def render_stubs(sdk_dir):
         lines += ["    ...", ""]
     files["errors.pyi"] = "\n".join(lines).rstrip() + "\n"
 
-    # plots.pyi — the standard figures. A second surface rather than more entries in
-    # genetics.pyi: these are not client wrappers, they take an `ax` and return a summary
-    # dict, and a script reaches them as `genetics.plots.<name>`.
-    plots_path = os.path.join(sdk_dir, "plots.py")
-    if not os.path.isfile(plots_path):
-        raise SystemExit(
-            f"{plots_path} is missing: the sandbox ships the standard plots and the stub "
-            "cannot be invented from anything else"
+    # plots.pyi and linemodels.pyi — the analysis surfaces. Separate stubs rather than more
+    # entries in genetics.pyi: these are not client wrappers, they draw or fit rather than
+    # fetch, and a script reaches them as `genetics.<module>.<name>`.
+    for module in SURFACE_MODULES:
+        source_path = os.path.join(sdk_dir, f"{module}.py")
+        if not os.path.isfile(source_path):
+            raise SystemExit(
+                f"{source_path} is missing: the sandbox ships genetics.{module} and the stub "
+                "cannot be invented from anything else"
+            )
+        tree = _module(source_path)
+        defs = _defs(tree)
+        exported = _module_all(tree, f"sdk/{module}.py")
+        missing = [name for name in exported if name not in defs]
+        if missing:
+            raise SystemExit(f"exported by sdk/{module}.py __all__ but not defined there: {missing}")
+        lines = [STUB_BANNER, ""]
+        doc = ast.get_docstring(tree, clean=True)
+        if doc:
+            lines += [f'"""{doc.rstrip()}\n"""', ""]
+        lines += ["import polars as pl", "from typing import Any", ""]
+        constants = _render_constants(
+            _default_names([defs[name] for name in exported]),
+            _module_assignments(tree),
+            package_root,
         )
-    plots_tree = _module(plots_path)
-    plots_defs = _defs(plots_tree)
-    plots_exported = _module_all(plots_tree, "sdk/plots.py")
-    plots_missing = [name for name in plots_exported if name not in plots_defs]
-    if plots_missing:
-        raise SystemExit(f"exported by sdk/plots.py __all__ but not defined there: {plots_missing}")
-    lines = [STUB_BANNER, ""]
-    plots_doc = ast.get_docstring(plots_tree, clean=True)
-    if plots_doc:
-        lines += [f'"""{plots_doc.rstrip()}\n"""', ""]
-    lines += ["import polars as pl", "from typing import Any", ""]
-    constants = _render_constants(
-        _default_names([plots_defs[name] for name in plots_exported]),
-        _module_assignments(plots_tree),
-        package_root,
-    )
-    lines += (constants + [""]) if constants else []
-    for name in plots_exported:
-        lines += [_render_def(plots_defs[name], drop_self=False), ""]
-    files["plots.pyi"] = "\n".join(lines).rstrip() + "\n"
+        lines += (constants + [""]) if constants else []
+        for name in exported:
+            lines += [_render_def(defs[name], drop_self=False), ""]
+        files[f"{module}.pyi"] = "\n".join(lines).rstrip() + "\n"
 
     return files
 

@@ -421,6 +421,7 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/errors.py`
+- `genetics_mcp_server/sdk/linemodels.py`
 - `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/chembl.py`
@@ -523,16 +524,24 @@ the price of the style being opt-in.
 two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
 a style back in fails the build rather than quietly restyling every figure.
 
-`genetics.plots` is a second SDK surface: standard figures — a locuszoom, a phewas and an
-upset today — as functions rather than as instructions a script rederives. It is shipped by
-`prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the SDK's import
-closure, resolved through a module `__getattr__` so chat-backend and mcp-server never import
-matplotlib. That has one
-consequence worth stating: genetics-mcp-server's `tests/test_sdk_import_closure.py` measures
-the shipped set by importing the SDK, so it cannot see this file — `SHIPPED_OUTSIDE_CLOSURE`
-in that test is the second list that keeps it scanned, and it and `SDK_ALLOWLIST` have to agree
-by hand. `sandbox/stubs/plots.pyi` is generated from the module's `__all__` and gated for
-equality against it by `scripts/test-sandbox-docs.py`, the same way the data surface is.
+`genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
+— a locuszoom, a phewas, an upset and the line-models figure today — and Pirinen's line
+models as a numpy port, as functions rather than as instructions a script rederives. Both
+are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
+SDK's import closure, resolved through a module `__getattr__` so chat-backend and mcp-server
+never import matplotlib or numpy. That has one consequence worth stating:
+genetics-mcp-server's `tests/test_sdk_import_closure.py` measures the shipped set by
+importing the SDK, so it cannot see these files — `SHIPPED_OUTSIDE_CLOSURE` in that test is
+the second list that keeps them scanned, and it and `SDK_ALLOWLIST` have to agree by hand.
+Each module's stub (`sandbox/stubs/plots.pyi`, `linemodels.pyi`) is generated from its
+`__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same way
+the data surface is; the generator's `SURFACE_MODULES` is where the pair is named.
+
+The line-models port widens what the image can *do* by nothing: numpy and scipy were already
+pinned, and the module opens no socket and reads no file. It was chosen over installing R in
+the image precisely on that ground — R runs without a shell (`bin/exec/R` with a hand-built
+environment), but it is a second runtime of ~140 MB with its own `system()` and download
+paths to reason about, for a model whose core is a Cholesky and a rotation.
 
 A default written in the SDK as a bare name is resolved to its literal and that name
 defined at the top of the stub, so the file answers *what does this argument default to*

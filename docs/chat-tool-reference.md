@@ -2528,12 +2528,12 @@ Get schema for database tables. **Always call this before query_database** to di
 Description as sent to the model:
 
 ```text
-List the `genetics` SDK surface available to analysis scripts, one module at a time. Returns signatures with their docstrings, and the `usage` line saying exactly how to import it. Call this before writing a script instead of guessing function names. Modules: 'genetics' (the sync functions a script calls), 'client' (the awaitable GeneticsClient form), 'errors' (what a script catches). Omit `module` for a cheap index of module names and the functions each exports.
+List the `genetics` SDK surface available to analysis scripts, one module at a time. Returns signatures with their docstrings, and the `usage` line saying exactly how to import it. Call this before writing a script instead of guessing function names. Modules: 'genetics' (the sync functions a script calls), 'client' (the awaitable GeneticsClient form), 'errors' (what a script catches), 'plots' (the standard figures), 'linemodels' (clustering variants by the relationship between their effects in two GWAS, with the parameter guidance). Omit `module` for a cheap index of module names and the functions each exports.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `module` | `string` | no | — | enum: `genetics`, `client`, `errors`, `plots` | SDK module to describe. Omit for the index. |
+| `module` | `string` | no | — | enum: `genetics`, `client`, `errors`, `plots`, `linemodels` | SDK module to describe. Omit for the index. |
 
 `required`: []
 
@@ -2558,6 +2558,8 @@ DELIVERY LIMITS: an artifact over 512 KB is delivered nowhere — not shown, not
 CONCURRENCY: at most 4 data requests may be in flight at once from one script. Going over answers 429 and, under `asyncio.gather`, loses the results of the requests that did succeed — batch at 4 and pass `return_exceptions=True`.
 
 Standard figures are already written: `genetics.plots` has the conventional ones — a locuszoom and an upset among them — so a request for one is a call, not a plot to compose from scratch. list_capabilities(module="plots") lists what is there. Every figure is styled by the sandbox itself; a script neither needs nor should add a style, and one that sets its own is overriding a deliberate default.
+
+Comparing the same variants' effects between two GWAS — two phenotypes, two cohorts, two sexes — is `genetics.linemodels` (Pirinen's line models): it gives each variant a probability of 'effect only in A', 'shared' and 'only in B', or of lines you specify, derives the scale from the data and reports every parameter it used. list_capabilities(module="linemodels") has the parameter guidance; `genetics.plots.linemodels` draws the result.
 
 Each run is independent: no variables, files or imports survive from one call to the next, so a follow-up script must redo the work it needs.
 ```
