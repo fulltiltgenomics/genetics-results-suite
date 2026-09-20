@@ -62,6 +62,16 @@ from supervisor_tests.forkserver import (
 )
 from supervisor_tests.headreader import test_head_timeout, test_header_reader_units
 from supervisor_tests.image import test_container
+from supervisor_tests.inputs import (
+    test_inputs_caps_on_the_wire,
+    test_inputs_crash_leftover_control,
+    test_inputs_delivery,
+    test_inputs_delivery_units,
+    test_inputs_digest_control,
+    test_inputs_leak_control,
+    test_inputs_parsing,
+    test_inputs_quota,
+)
 from supervisor_tests.isolation import test_isolation
 from supervisor_tests.lifecycle import (
     test_pipe_fd_ownership,
@@ -134,6 +144,21 @@ def run_in_process():
         test_forkserver_death_mid_execution(tmp)
         print("cross-execution memory isolation")
         test_isolation(tmp)
+        print("delivered inputs: validation, caps, delivery and lifecycle")
+        test_inputs_parsing()
+        test_inputs_quota(tmp)
+        test_inputs_delivery_units(tmp)
+        test_inputs_crash_leftover_control(tmp)
+        root = os.path.join(tmp, "inputs")
+        os.makedirs(root)
+        server = harness.Server(root)
+        try:
+            test_inputs_caps_on_the_wire(server)
+            test_inputs_delivery(server)
+        finally:
+            server.close()
+        test_inputs_leak_control(tmp)
+        test_inputs_digest_control(tmp)
         print("end to end over HTTP")
         root = os.path.join(tmp, "scratch")
         os.makedirs(root)
@@ -228,6 +253,9 @@ def run_container(base_url, retention_s=None, container_name=None):
     test_backpressure(server)
     print("image properties, from inside a real execution")
     test_container(server)
+    print("delivered inputs, against the container")
+    test_inputs_caps_on_the_wire(server)
+    test_inputs_delivery(server)
     print("supervisor limits, against the container")
     test_limits(server)
     test_tokens(server)
@@ -284,6 +312,16 @@ def run_container(base_url, retention_s=None, container_name=None):
         "module and a socket whose latency is the harness's own",
         "cross-execution memory isolation (test_isolation) — plants its positive control in "
         "the supervisor module before the fork server is forked, which needs the module",
+        "delivered inputs, the parser, the quota and the write itself (test_inputs_parsing, "
+        "test_inputs_quota, test_inputs_delivery_units) — call parse_execute_request, "
+        "_deliver_inputs and _dir_usage directly, plant a squatted name under /scratch at the "
+        "harness's own uid and read the supervisor's source, none of which is reachable over "
+        "the wire",
+        "delivered inputs, all three controls (test_inputs_crash_leftover_control, "
+        "test_inputs_leak_control, test_inputs_digest_control) — rebuild _deliver_inputs and "
+        "_parse_inputs from the real source with the hazard restored or the guard cut, swap "
+        "them into the module, and read /scratch at the harness's own uid to see what a failed "
+        "cleanup left behind",
     ])
 
 
