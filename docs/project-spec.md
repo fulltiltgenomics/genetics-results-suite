@@ -227,6 +227,34 @@ The cost is deploy latency: chat-backend is `strategy: Recreate`, so `deploy.sh`
 old pod for up to ~5 minutes when someone is mid-conversation. That stays inside the
 deployment's `progressDeadlineSeconds` (600).
 
+### The URL fetcher (`url-fetcher/`)
+
+External files reach an analysis by being fetched outside the sandbox and delivered into an
+execution as bytes. The fetch happens in its own pod rather than in chat-backend, because
+chat-backend holds the secrets and the Workload Identity binding that a server-side request
+forgery would go after; the fetcher holds none of them.
+
+`docs/code-execution-security.md` → "The URL fetcher: a second pod, because the fetch must not
+happen in the first one" is the **definition** — the guard, the address classes, the two
+entrypoints and the wire contract. Do not restate the field list here.
+
+What belongs in this file is the shape around it. The source is `url-fetcher/`, built from this
+checkout the way `sandbox/` is, and like the supervisor it is **one directory of pure standard
+library**: a pod that is distroless, non-root, read-only and holds no secret has every
+dependency as attack surface, and the one thing this service needs that a client library will
+not do — connect to an address that was already validated instead of resolving the name again —
+is a `socket` plus `ssl.SSLContext.wrap_socket(server_hostname=...)`, which is stdlib and
+direct. Plain HTTP pod-to-pod, **no HTTP-layer authentication** (the pod holds no credential it
+could verify a caller against; the ingress allow-list is the control), two routes and no third,
+and no identity in the request or the logs — which is why the per-user fetch cache lives in
+chat-backend.
+
+Its host allow-list is configuration: `URL_FETCHER_ALLOWED_HOSTS` on the deployment, defaulting
+to the hosts named in `url-fetcher/guard.py` when unset. Widening it is a manifest change.
+`url-fetcher/main.py` is the production entrypoint and the only one the image runs;
+`url-fetcher/devserver.py` is the permissive construction the local proving ground needs and is
+not in the image.
+
 ## Project structure
 
 <!-- BEGIN GENERATED: structure -->
@@ -306,6 +334,7 @@ scripts/                             build, deploy and verification scripts
   test-network-policies.py           the namespace's policies as a whole: offline by default, plus an opt-in diff against a live cluster
   test-sandbox-docs.py               offline: the generated schema docs and SDK stubs
   test-supervisor.py                 offline: the sandbox supervisor, in process or against a container
+  test-url-fetcher.py                offline: the url-fetcher's address-class guard and pinned fetch core, each control also driven as the failure
 terraform/                           infrastructure
   .terraform.lock.hcl                provider versions, tracked so every checkout applies the same provider against the shared state
   backups.tf                         disk snapshot schedule and the Keycloak backup bucket
@@ -322,6 +351,7 @@ terraform/                           infrastructure
   registry.tf                        Artifact Registry
   terraform.tfvars.example           per-environment values; **not committed** except the `.example`. A bare `terraform.tfvars` is the legacy single-deployment form and must not coexist with these
   variables.tf                       input variables
+url-fetcher/                         the URL fetcher's source: the address-class guard, the pinned-connection fetch core and the one POST route chat-backend calls
 ```
 
 <!-- END GENERATED: structure -->

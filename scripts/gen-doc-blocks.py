@@ -456,7 +456,12 @@ LAYOUT = {
     "scripts/test-sandbox-docs.py": "offline: the generated schema docs and SDK stubs",
     "scripts/test-supervisor.py": "offline: the sandbox supervisor, in process or against a "
                                   "container",
+    "scripts/test-url-fetcher.py": "offline: the url-fetcher's address-class guard and "
+                                   "pinned fetch core, each control also driven as the "
+                                   "failure",
     "scripts/test-e2e-local.py": "end-to-end run_analysis against the live local stack",
+    "url-fetcher": "the URL fetcher's source: the address-class guard, the pinned-connection "
+                   "fetch core and the one POST route chat-backend calls",
     "terraform": "infrastructure",
     "terraform/main.tf": "provider config and the GCS backend",
     "terraform/gke.tf": "the GKE cluster and its node pools, the sandbox pool included",

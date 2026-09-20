@@ -867,6 +867,136 @@ post-DNAT, against the identity of the pod the connection actually lands on. Tra
 reused ClusterIP resolves to a workload the policy does not permit and is dropped. The
 stale-IP failure mode is a connection error in every case, never a silent misdelivery.
 
+### The URL fetcher: a second pod, because the fetch must not happen in the first one
+
+The sandbox has no egress and keeps none. External files reach an analysis by being fetched
+*outside* it and delivered in as bytes. The question that decides the design is not whether to
+fetch, but **which pod holds the socket that dials an attacker-chosen address.**
+
+chat-backend was the obvious candidate and is the wrong one. It holds `INTERNAL_API_SECRET`,
+`GATEWAY_IDENTITY_SECRET`, `SANDBOX_TOKEN_SIGNING_KEY` and the model API keys, and it runs
+under a service account bound by Workload Identity to a GSA with BigQuery and GCS roles. A
+server-side request forgery there reads the metadata endpoint and walks out with all of it. So
+the fetch happens in a **dedicated pod that holds none of those things**: its own service
+account with no GCP binding, no mounted token, no secret, a read-only rootfs and no shell. The
+route is the only thing in it, and there is nothing behind the route to steal.
+
+**Two layers, and neither substitutes for the other.** The NetworkPolicy is the outer one and
+is stated in the fetcher's own manifest. The in-process guard is the inner one, and it exists
+because an `except`-block egress policy still permits every public address: a permitted host
+that redirects to another permitted host which proxies inward is not visible at the network
+layer at all.
+
+#### What the guard refuses, and where the decision lives
+
+`url-fetcher/guard.py` decides before a socket is opened. In order: the scheme (https, and
+plain http only under the development allowance below); userinfo in the URL, which is a way to
+steer a request at a host that reads it; the metadata endpoint **by name** as well as by
+address; an address written as a literal, classified immediately so that `169.254.169.254` and
+`10.0.0.1` are refused for what they are rather than for being absent from a list; the host
+allow-list; the port; and finally the resolved addresses — **every** answer the resolver gave,
+not only the one that will be dialled, so a mixed answer cannot have its private half picked
+later. Loopback, link-local, multicast, RFC1918, CGNAT, reserved and the IPv4-mapped, 6to4 and
+Teredo forms that carry one of those inside an IPv6 address are all refused.
+
+The host policy is an **allow-list and it is configuration**, read from the deployment's
+environment: widening it is a manifest change, not a code change. A refusal **names the
+policy** in its message, so a host somebody wants arrives as a visible request to widen the
+list rather than as an invisible dead end — that visibility is the demand signal the
+measurement behind this feature could not supply, because it sampled a system that visibly
+could not fetch. The two policies are conjunctive: putting `127.0.0.1` in the allow-list does
+not get it past the address check.
+
+#### Connect to the address you validated
+
+The guard returns an address, and the fetch **connects to that address** rather than handing
+the hostname back to a client library that would resolve it again. A name that answers public
+during the check and private during the connect — DNS rebinding — walks through an otherwise
+correct guard untouched, and every mainstream HTTP client re-resolves inside its own connect
+path. `url-fetcher/fetch.py` opens the socket at the validated address itself and passes the
+hostname to TLS separately as `server_hostname`, so the certificate is still verified against
+the name. **Redirects are followed by hand** and every hop re-runs the entire check, capped, for
+the same reason: each hop is a new URL.
+
+The remaining bounds: a byte cap that **aborts the stream at the cap** rather than truncating,
+because a short file that looks like a whole one is the worse failure; a declared
+`Content-Length` over the cap refused before the body is read at all; a wall-clock deadline
+spanning every hop; and no transform of the bytes — `Accept-Encoding: identity` goes out, so
+anything gzipped in the response is the file being gzipped, and an upstream error page is
+reported as the content type and first bytes it actually was, never sniffed and repaired.
+
+#### The two constructions, and why a manifest cannot produce the permissive one
+
+The local proving ground serves its fixture over loopback, and the deployed fetcher must refuse
+loopback. Both hold because they are **two constructions of one guard, not one guard with a
+switch**. `allow_loopback_origin` is a constructor argument. `url-fetcher/main.py` is the
+production entrypoint: it defines no command-line flags at all and reads three environment
+variables of which none reaches that argument. At startup it raises — it does not `assert`,
+because `PYTHONOPTIMIZE` is an environment variable a manifest can set and would delete the
+check — unless the **address-class policy specifically** is what refuses `127.0.0.1`,
+`169.254.169.254` and `10.0.0.1`. Each probe runs over `https` against a guard whose allow-list
+*contains* the literal, so neither the scheme gate nor the host allow-list can answer first,
+and the refusal is matched against the address policy's name rather than merely being a
+refusal. A tripwire that asks only "was something refused" passes with the address-class check
+deleted, which is the one edit it exists to catch. `url-fetcher/devserver.py` is the test
+entrypoint; it differs by that one argument, binds loopback by default, and is not in the
+image.
+
+The allowance unlocks a loopback origin and **nothing else**. That is what lets
+`scripts/external-inputs-proving-ground.py` measure the four dangerous classes —
+`169.254.169.254`, RFC1918, loopback, and a redirect from a permitted origin into either —
+against the *permissive* instance, where no allowance can be masking them, and measure loopback
+refusal against a second instance running `main.py`, the deployed configuration.
+
+#### The HTTP contract between chat-backend and the fetcher
+
+Stated in prose here for the same reason the supervisor's contract is: the two ends cannot
+import one module, and this is the one enumeration in these docs that is not generated.
+
+**`GET /healthz`** → `200 {"status": "ok"}`.
+
+**`POST /fetch`**, the only other route. The request body is a JSON object carrying `url` and
+**nothing else** — an unknown field is a 400 rather than being ignored, so nothing that could
+steer the request can arrive unnoticed later. A success is `200` with `url` (the final URL
+after redirects), `name` (a sanitised file name derived from that URL), `size_bytes`, `sha256`,
+`content_type`, `content_encoding` (absent or `identity` — see `unrequested_encoding` below),
+`redirects`, and `content_b64`. `size_bytes` is the whole file: a length-delimited body that
+ends before its declared `Content-Length` is a failure, never a short 200, because CPython
+answers a cut-short `read(amt)` with `b""` rather than `IncompleteRead` and a caller has no
+field it could inspect to tell 5 bytes of a 400 KB table from the table.
+
+A failure is a non-2xx carrying `{"error": {"type", "message", "retryable"}}`, with `type` one
+of `refused_by_policy` (403), `invalid_request` (400 or 413), `too_large` (413), `timed_out`
+(504), `truncated` (502, the short-body case above), `unrequested_encoding` (502 — the request
+sends `Accept-Encoding: identity`, and a response that ignores it is refused rather than
+relayed, because a compression ratio the service did not ask for carries past the byte cap;
+a gzipped *file*, which declares no `Content-Encoding`, is unaffected), `unreachable` (502),
+`internal_error` (500, a bug in this service: **not** retryable, and the exception class is the
+whole disclosure) or `upstream_status` (502, and the only type that carries evidence:
+`upstream_status`, `upstream_content_type` and `upstream_body_prefix_b64`). `retryable` is what
+chat-backend sets its own retry decision from; `message` is what the model is told, which is
+why the policy refusals name the policy — and why they do **not** name the address a host
+resolved to, which would make the service a DNS-resolution oracle for every allow-listed host
+and put an internal address into a chat transcript.
+
+The envelope is universal: `HEAD`, `OPTIONS`, `TRACE` and any unknown verb are answered with it
+too, rather than with the HTML error page `BaseHTTPRequestHandler` produces by default, and the
+request line is not echoed back in the message. Any answer sent without the request body having
+been read closes the connection and says `Connection: close`; chat-backend uses a keep-alive
+pool, and a refusal that leaves an undrained body in the stream gets it parsed as the next
+request line, which misaligns responses against requests.
+
+**No authentication, by design**, on the same standing as the supervisor's `/execute`: the pod
+holds no credential it could verify a caller against, and the NetworkPolicy's ingress
+allow-list is the control. Putting a shared secret here would place a credential in the one pod
+in the namespace that talks to the open internet, which is the trade this pod exists to avoid.
+
+**The fetcher never learns who asked.** No identity is in the request, none is logged, the
+default access log line — which begins with the client address — is suppressed, and
+`handle_error` is overridden for the same reason: its default prints the client address and a
+full traceback to stderr, which a caller disconnecting mid-write is enough to trigger. That is not
+incidental: it is why the per-user fetch cache lives in chat-backend and not here.
+
 ---
 
 ## 4. Credentials
