@@ -346,11 +346,11 @@ def execute(sandbox_url, code, inputs=None, timeout_s=60):
 
 
 def reported(payload, prefix):
-    """The value the child printed after `prefix `, or None. stdout is the only channel out
+    """The value the child printed after `prefix `, or None. `output` is the only channel out
     of an execution that carries what the script observed."""
     if not isinstance(payload, dict):
         return None
-    for line in str(payload.get("stdout", "")).splitlines():
+    for line in str(payload.get("output", "")).splitlines():
         if line.startswith(prefix + " "):
             return line[len(prefix) + 1:].strip()
     return None
