@@ -507,8 +507,8 @@ matplotlib's default 100 dpi a default-sized figure arrives too small to read. T
 seeds every `MPLCONFIGDIR` from that directory including its own and imports matplotlib before
 the first fork, so every child resolves the same density with no cooperation from the script.
 
-`scienceplots` is the one deliberate opening of `sandbox/requirements.txt`'s closed set, and
-the test it was admitted under is that file's own: it ships stylesheets and a registration, no
+`scienceplots` is one of the two deliberate openings of `sandbox/requirements.txt`'s closed
+set — `pypdf`, below, is the other — and the test it was admitted under is that file's own: it ships stylesheets and a registration, no
 native code and no import beyond matplotlib, so it does not widen what the image can *do*. It
 is **opt-in**: a script that wants it writes `plt.style.use(["science", "no-latex"])`. Imposed
 as a default it made some figures worse rather than better — a locuszoom reads by its LD ramp
@@ -524,6 +524,15 @@ the price of the style being opt-in.
 `OSError`. `build-checks.py` asserts both directions — that the density is in effect, and that
 two keys `science.mplstyle` would have changed still hold matplotlib's own defaults, so baking
 a style back in fails the build rather than quietly restyling every figure.
+
+`pypdf` is the other opening, and it is admitted on what it lets a script *read* rather than
+what it lets the image do. A delivered input can be a PDF — a paper, a supplement — and nothing
+else in the image parses one, so those bytes were opaque to the script that was handed them. It
+is pure Python with no required dependencies, so no native parser meets untrusted bytes, and the
+rasters it hands back through `page.images` are decoded by Pillow, which matplotlib already
+brings. It does not widen what may be delivered: the caps above still hold at 512 KiB per input
+and 512 KiB per call on the decoded bytes, so a full-text paper PDF over that is refused as
+`InputsTooLarge` before any extractor sees it, and raising them is a separate decision.
 
 `genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
 — a locuszoom, a phewas, an upset and the line-models figure today — and Pirinen's line
