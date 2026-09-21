@@ -96,6 +96,11 @@ FETCHER_EGRESS_EXCEPT = {
 FETCHER_EGRESS_PORT = 443
 DNS_PORT = 53
 
+# the two resolver workloads the fetcher may reach on 53, and the whole DNS surface it gets.
+# kube-dns alone is not enough: with NodeLocal DNSCache on, a query addressed to the kube-dns
+# ClusterIP is redirected to the node-local-dns pod and is judged against THAT pod's identity
+FETCHER_DNS_PODS = {"kube-dns", "node-local-dns"}
+
 # an env var name carrying any of these is treated as a credential wherever a credential is
 # forbidden, alongside the structural forms (secretKeyRef, envFrom.secretRef, a secret volume)
 CREDENTIAL_NAME_MARKERS = ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "_KEY", "APIKEY")
@@ -1314,12 +1319,19 @@ def _():
             assert peers, f"{where} has an egress rule with no 'to:' — that permits every destination"
             ports = rule.get("ports")
             assert ports, f"{where} has a portless egress rule — that permits every port"
+            # HAZARD: `endPort` widens a rule into a range and this set cannot see it, so a
+            # 53-or-443 entry carrying one passes every port assertion below as a single port
             portset = {(pt.get("port"), pt.get("protocol", "TCP")) for pt in ports}
+            assert portset <= {(FETCHER_EGRESS_PORT, "TCP"), (DNS_PORT, "UDP"),
+                               (DNS_PORT, "TCP")}, (
+                f"{where}: egress rule opens {sorted(portset)}. 443 for the fetch and 53 for "
+                "the name it resolves are the only ports this pod has a use for"
+            )
             for peer in peers:
-                if "ipBlock" in peer:
-                    public.append((where, peer["ipBlock"], portset))
-                elif portset <= {(DNS_PORT, "UDP"), (DNS_PORT, "TCP")}:
+                if portset <= {(DNS_PORT, "UDP"), (DNS_PORT, "TCP")}:
                     dns.append((where, peer, portset))
+                elif "ipBlock" in peer:
+                    public.append((where, peer["ipBlock"], portset))
                 else:
                     raise AssertionError(
                         f"{where}: egress peer {peer!r} on {sorted(portset)} is neither the "
@@ -1353,16 +1365,34 @@ def _():
         "nothing. THIS IS NOT A PRECEDENT FOR THE SANDBOX: the sandbox's missing DNS rule is "
         "the design of record and the 'no DNS egress' check above still holds it"
     )
+    seen = set()
     for where, peer, _ports in dns:
+        assert "ipBlock" not in peer, (
+            f"{where}: a 53 rule reaches {peer['ipBlock']!r} by address. The resolver is "
+            "reachable by pod selector, and any CIDR here is wider than that: measured on "
+            "finngenie-staging, even the link-local cache address 169.254.20.10/32 resolved "
+            "nothing, because the GKE addon binds no interface on this dataplane"
+        )
         ns = (peer.get("namespaceSelector") or {}).get("matchLabels") or {}
         assert ns.get("kubernetes.io/metadata.name") == "kube-system", (
             f"{where}: the DNS rule's namespaceSelector is {ns!r}. An unlabelled or empty "
             "namespaceSelector on a 53 rule admits every pod in every namespace on that port"
         )
         pod_sel = (peer.get("podSelector") or {}).get("matchLabels") or {}
-        assert pod_sel.get("k8s-app") == "kube-dns", (
-            f"{where}: the DNS rule selects {pod_sel!r} in kube-system rather than kube-dns"
+        assert pod_sel.get("k8s-app") in FETCHER_DNS_PODS, (
+            f"{where}: the DNS rule selects {pod_sel!r} in kube-system, which is neither of "
+            f"{sorted(FETCHER_DNS_PODS)}"
         )
+        assert set(pod_sel) == {"k8s-app"}, (
+            f"{where}: the DNS rule's podSelector carries {sorted(pod_sel)}; only k8s-app "
+            "decides which resolver this is"
+        )
+        seen.add(pod_sel["k8s-app"])
+    assert seen == FETCHER_DNS_PODS, (
+        f"the url-fetcher's DNS egress reaches {sorted(seen)}, not {sorted(FETCHER_DNS_PODS)}. "
+        "Dropping node-local-dns breaks resolution outright while the addon is enabled; "
+        "dropping kube-dns breaks it the moment the addon is turned off"
+    )
 
 
 @check("workloads with a service account of their own carry no credential")

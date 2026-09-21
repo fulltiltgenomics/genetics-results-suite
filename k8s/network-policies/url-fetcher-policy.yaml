@@ -85,7 +85,7 @@ spec:
 # Port 443 only: no 80, so the guard's https-only rule has a network-layer twin, and a redirect
 # to http fails at the socket even if the guard were wrong about it.
 #
-# THE DNS RULE IS NECESSARY HERE AND IS NOT A PRECEDENT FOR THE SANDBOX. sandbox-policy.yaml
+# THE DNS RULES BELOW ARE NECESSARY HERE AND ARE NOT A PRECEDENT FOR THE SANDBOX. sandbox-policy.yaml
 # eliminates DNS because a pod with egress to CoreDNS has a ~200 KB/s exfiltration pipe through
 # query names alone. That reasoning is unchanged and this pod does not weaken it: the sandbox
 # still has no DNS rule, and the fetcher — which must resolve `raw.githubusercontent.com` to
@@ -94,11 +94,19 @@ spec:
 # what a query-name channel out of THIS pod could carry is what its caller already sent it.
 # hostAliases are not an option here: the whole point is naming hosts nobody has pinned.
 #
-# The rule below names the kube-dns PODS. If NodeLocal DNSCache is ever enabled on this cluster,
-# pods resolve through 169.254.20.10 instead — a link-local address that the `except` block above
-# denies and no podSelector can reach — and every fetch then fails to resolve rather than failing
-# to connect. Enabling it means adding that /32 back as its own egress rule on 53. Nothing in
-# terraform/ enables it today.
+# TWO DNS RULES, because NodeLocal DNSCache is ON. Measured 2026-09-21: both daly clusters have
+# addonsConfig.dnsCacheConfig.enabled=true (terraform never mentions the addon either way) and
+# datapathProvider ADVANCED_DATAPATH, where node-local-dns runs as an ordinary pod with
+# -setupinterface=false -setupiptables=false and Cilium redirects kube-dns ClusterIP traffic to
+# it. The query is still addressed to the kube-dns ClusterIP but is judged against that pod's
+# identity, so the kube-dns rule alone denies it and every fetch fails to RESOLVE rather than
+# failing to connect. Measured on staging in the fetcher's own netns: with only the kube-dns rule,
+# and with an added ipBlock 169.254.20.10/32, nslookup timed out both through resolv.conf and
+# against the link-local address; adding the node-local-dns pod rule resolved on the first try.
+# So the documented link-local cache address answers nothing here — do not substitute a /32 for
+# the pod rule. Turning the addon off makes the node-local-dns rule dead but harmless, and
+# deleting it is not free: scripts/test-network-policies.py pins the resolver set to exactly
+# these two, so dropping either one is a harness change as well as a policy change.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -128,6 +136,18 @@ spec:
       podSelector:
         matchLabels:
           k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: node-local-dns
     ports:
     - port: 53
       protocol: UDP
