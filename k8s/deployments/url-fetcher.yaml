@@ -87,6 +87,10 @@ spec:
         # URL_FETCHER_ALLOWED_HOSTS is deliberately UNSET: unset means the seeded allow-list in
         # url-fetcher/guard.py, and spelling the same hosts here would be a second list to rot.
         # Widening is a manifest change — add it here, as a comma-separated list, and roll.
+        # Roll CHAT-BACKEND too. It reads this list from /healthz once per process and names
+        # the hosts in the system prompt, so until it restarts the model is still told the
+        # old list and a URL on a newly added host costs one refused fetch before it asks
+        # the user to upload the file instead.
         # It cannot relax an address class: the host policy and the address-class policy are
         # conjunctive, so 127.0.0.1 in this list is still refused.
         - name: URL_FETCHER_PORT
