@@ -964,14 +964,20 @@ enabling deploy makes. Confirmed on the `daly-staging` bring-up: with the addres
 
 ### What the sandbox offers a script beyond the data
 
-Two things a `run_analysis` script gets without asking, both detailed in
-`docs/code-execution-security.md` → "The house plot style, and the standard plots":
+Three things a `run_analysis` script gets without asking, all detailed in
+`docs/code-execution-security.md` → "Render density, the opt-in style, and the standard
+plots":
 
 - **Every figure is legible; none is styled.** `sandbox/gen_mplrc.py` writes a matplotlibrc
   carrying render density and nothing else, and the supervisor seeds every `MPLCONFIGDIR` from
   it before the first fork, so 200 dpi is the resolved default in every child. `scienceplots`
   is installed and its style names are registered, but a script asks for it —
   `plt.style.use(["science", "no-latex"])` — rather than having it imposed.
+- **A delivered PDF is readable.** `pypdf` is in the image, so a PDF input yields its text
+  (`pypdf.PdfReader(genetics.open_input(name))`) and its embedded rasters (`page.images`, each
+  `.image` a PIL image, decoded by the Pillow matplotlib already brings). The delivery caps are
+  unchanged — 512 KiB per input and per call — so a full-text paper PDF over that is refused
+  before any extractor sees it.
 - **`genetics.plots` holds the standard figures**, a locuszoom, a phewas and an upset today, as
   functions a script calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one

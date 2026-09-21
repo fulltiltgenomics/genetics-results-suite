@@ -19,8 +19,14 @@ polars==1.40.1
 matplotlib==3.10.9
 httpx==0.28.1
 #
-# scienceplots is the one deliberate opening of that set, and the test it was admitted under is
-# the one the paragraph above applies: does it widen what the boundary image can DO? It ships 47
+# Everything below is a deliberate opening of that set: a library a SCRIPT may use and the SDK
+# never imports, so none of it is in the closure above and none of it belongs in
+# genetics-mcp-server's SANDBOX_PINNED_DISTRIBUTIONS. THE TEST each one was admitted under:
+# does it widen what the boundary image can DO — native code, a socket, a file outside its own
+# package, a second implementation of something already here? Each answers it in its own
+# paragraph, and an entry that cannot does not belong here.
+#
+# scienceplots ships 47
 # .mplstyle files and an __init__ that registers them in plt.style.library. No native code, no
 # imports beyond matplotlib (already pinned), nothing that opens a socket or a file outside its
 # own package. That is a different category from pandas, which would have been a second
@@ -35,6 +41,13 @@ httpx==0.28.1
 # no-latex: plt.style.use(["science", "no-latex"]). That pairing is now the script's to write,
 # which is the cost of making the style opt-in.
 scienceplots==2.2.2
+#
+# pypdf answers the same test on what it lets a script READ rather than draw. A delivered input
+# can be a PDF — a paper, a supplement — and nothing else in the image parses one, so those bytes
+# are opaque to the script that was handed them. Pure Python with no required dependencies, so no
+# native parser meets untrusted bytes; the rasters it hands back are decoded by Pillow, already
+# present through matplotlib. No socket, and no file the script did not open itself.
+pypdf==6.19.0
 #
 # When a genetics-mcp-server import argues for a line here, the answer is to cut the module
 # that does the importing out of the SDK's import closure, not to add the pin: adding it

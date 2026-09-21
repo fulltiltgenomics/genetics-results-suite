@@ -276,11 +276,11 @@ def _no_placeholders():
 
 @check("analysis libraries and the genetics SDK import")
 def _imports():
-    """Section 2 (the image must actually run the analysis stack as shipped) and the
-    A missing genetics_mcp_server.sdk means the SDK install has not
-    landed in the branch being built — the image is not shippable without it."""
-    mods = ["numpy", "scipy.stats", "polars", "matplotlib.pyplot", "httpx",
-            "genetics_mcp_server.sdk"]
+    """Section 2: the image must actually run the analysis stack it ships, as shipped. A
+    missing genetics_mcp_server.sdk means the SDK install has not landed in the branch being
+    built — the image is not shippable without it."""
+    mods = ["numpy", "scipy.stats", "polars", "matplotlib.pyplot", "httpx", "pypdf",
+            "PIL.Image", "genetics_mcp_server.sdk"]
     env = dict(PY_ENV, MPLBACKEND="Agg", MPLCONFIGDIR="/tmp/mplcheck")
     for m in mods:
         r = subprocess.run(
