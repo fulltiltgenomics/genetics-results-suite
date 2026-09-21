@@ -1101,7 +1101,21 @@ refusal against a second instance running `main.py`, the deployed configuration.
 Stated in prose here for the same reason the supervisor's contract is: the two ends cannot
 import one module, and this is the one enumeration in these docs that is not generated.
 
-**`GET /healthz`** → `200 {"status": "ok"}`.
+**`GET /healthz`** → `200 {"status": "ok", "allowed_hosts": [...]}`, where `allowed_hosts` is
+the guard's host allow-list as configured in this deployment. It rides on this route because it
+is the one chat-backend can already reach, and because chat-backend's system prompt names the
+reachable hosts to the model: a list hand-copied into that prompt would rot the next time
+`URL_FETCHER_ALLOWED_HOSTS` changed. The model learns the same policy from a
+`refused_by_policy` message anyway, so nothing is disclosed here that a caller could not
+already obtain — it only saves the wasted fetch.
+
+**A missing field and an empty list are different answers, and the prompt says something
+different for each.** No field at all is a fetcher that predates it, which
+`url_fetch_client.UrlFetchClient.allowed_hosts` reads as *unknown*: the prompt then says
+nothing about hosts, and the model finds out by being refused. An empty list is a fetcher
+configured to reach nowhere, which is knowable, so the prompt tells the model that URL inputs
+are unavailable in this deployment and to ask for an upload instead. Reading the empty list as
+unknown would have thrown that away.
 
 **`POST /fetch`**, the only other route. The request body is a JSON object carrying `url` and
 **nothing else** — an unknown field is a 400 rather than being ignored, so nothing that could
@@ -1451,7 +1465,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. It is the feature's acceptance test, written before the code rather than after it, so it could say what "working" meant while that was still negotiable | a loopback origin it starts itself, the local sandbox container, a signing key |
-| `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |
+| `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps, and that the health route's `allowed_hosts` is the guard's own list rather than a second copy of it. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
 Two conventions run through those harnesses and are what make them evidence rather than

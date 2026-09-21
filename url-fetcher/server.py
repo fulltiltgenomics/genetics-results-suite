@@ -142,7 +142,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.split("?", 1)[0] == HEALTH_PATH:
-            self._send(200, {"status": "ok"})
+            # the allow-list rides on the route chat-backend can already reach, so the prompt can
+            # name the reachable hosts instead of carrying a hand-copied list that rots the
+            # next time URL_FETCHER_ALLOWED_HOSTS changes. It is configuration, not a secret:
+            # a caller learns it from a refusal anyway.
+            self._send(200, {"status": "ok",
+                             "allowed_hosts": list(self.fetcher.guard.allowed_hosts)})
         else:
             self._refuse_unread(404, "invalid_request", f"no such route; {HEALTH_PATH} and "
                                                         f"POST {FETCH_PATH}")

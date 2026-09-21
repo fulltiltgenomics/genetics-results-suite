@@ -400,6 +400,10 @@ SERVER_CUTS = {
         ("    def send_error(self, code, message=None, explain=None):",
          "    def _cut_send_error(self, code, message=None, explain=None):"),
     ],
+    "health-allowed-hosts": [
+        ('"allowed_hosts": list(self.fetcher.guard.allowed_hosts)',
+         '"allowed_hosts": []'),
+    ],
 }
 
 _MUTANTS = {}
@@ -1055,7 +1059,36 @@ def test_surface(origin):
         conn.close()
         return response.status, data, headers
 
+    def health(target_port):
+        conn = http.client.HTTPConnection("127.0.0.1", target_port, timeout=20)
+        conn.request("GET", surface.HEALTH_PATH)
+        response = conn.getresponse()
+        data = json.loads(response.read().decode())
+        conn.close()
+        return response.status, data
+
     try:
+        # the prompt in chat-backend names the reachable hosts from this field; a health
+        # route that stops carrying it leaves the model guessing and costs a refused fetch
+        status, data = health(port)
+        check("GET the health route carries the guard's allow-list",
+              status == 200 and data.get("allowed_hosts") == list(fetcher.guard.allowed_hosts),
+              str(data)[:160])
+        check("the health route still reports status ok", data.get("status") == "ok",
+              str(data)[:160])
+
+        # CONTROL: cut the field's derivation and the answer no longer tracks the guard
+        empty = mutant_surface("health-allowed-hosts").make_server(fetcher, "127.0.0.1", 0)
+        threading.Thread(target=empty.serve_forever, daemon=True).start()
+        try:
+            _, cut_data = health(empty.server_address[1])
+        finally:
+            empty.shutdown()
+            empty.server_close()
+        check("CONTROL health-allowed-hosts cut: the health route stops tracking the guard",
+              cut_data.get("allowed_hosts") != list(fetcher.guard.allowed_hosts),
+              f"the cut answer still matched the guard: {cut_data}")
+
         status, data, headers = post({"url": origin_url})
         check("POST /fetch returns 200 for a permitted origin", status == 200, str(data))
         check("the body arrives byte-for-byte",
