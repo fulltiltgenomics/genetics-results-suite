@@ -23,12 +23,17 @@ Internal only (ClusterIP + NetworkPolicy):
   ├── db-api            (BigQuery proxy, port 8080) — from chat-backend, mcp-server + sandbox
   ├── rag-service       (RAG retrieval, port 8000)  — only from chat-backend + mcp-server
   ├── keycloak-postgres (Keycloak DB, port 5432)    — from keycloak + keycloak-postgres-backup
-  └── sandbox           (code execution, port 8080) — from chat-backend ONLY; egress limited to
-                                                      db-api + results-api; the namespace's only
-                                                      Egress policy. Its NetworkPolicies are
-                                                      applied unconditionally (inert while no
-                                                      pod matches); only the Deployment is
-                                                      gated on ENABLE_SANDBOX=true
+  ├── sandbox           (code execution, port 8080) — from chat-backend ONLY; egress limited to
+                                                      db-api + results-api; one of the
+                                                      namespace's two Egress policies. Its
+                                                      NetworkPolicies are applied
+                                                      unconditionally (inert while no pod
+                                                      matches); only the Deployment is gated on
+                                                      ENABLE_SANDBOX=true
+  └── url-fetcher       (URL fetch, port 8090)      — from chat-backend ONLY; the other one:
+                                                      egress is 443 to public addresses, with
+                                                      RFC1918, link-local and CGNAT excepted
+                                                      (k8s/network-policies/url-fetcher-policy.yaml)
 ```
 
 ## Prerequisites
