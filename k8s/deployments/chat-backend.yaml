@@ -106,6 +106,12 @@ spec:
         # flipping the flag is the only change that deploy has to make.
         - name: SANDBOX_URL
           value: "http://sandbox.genetics.svc.cluster.local:8080"
+        # the url-fetcher's in-cluster Service (k8s/deployments/url-fetcher.yaml: Service
+        # `url-fetcher` in namespace `genetics`, port 8090). Unset, run_analysis refuses a
+        # `{url}` input and tells the model to use an attachment instead; attachment inputs
+        # do not depend on it.
+        - name: URL_FETCHER_URL
+          value: "http://url-fetcher.genetics.svc.cluster.local:8090"
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
