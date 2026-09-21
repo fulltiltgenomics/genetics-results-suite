@@ -71,9 +71,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _refuse_unread(self, status, type, message, retryable=False):
         """Answer WITHOUT having read the request body, and close the connection.
 
-        The undrained body is still in the stream. On a keep-alive pool — which is what
-        chat-backend uses — the next request would be parsed out of those leftover bytes, so
-        one caller's URL comes back as the answer to another's. Closing is the cheap half of
+        The undrained body is still in the stream. This handler speaks HTTP/1.1, so the
+        connection stays open unless told otherwise, and any caller that reuses it — whether
+        one does is not something this service can know or ought to depend on — would have its
+        next request parsed out of those leftover bytes, so one caller's URL comes back as the
+        answer to another's. Closing is the cheap half of
         the fix; the expensive half would be draining a body we have already refused."""
         self.close_connection = True
         self._fail(status, type, message, retryable)
