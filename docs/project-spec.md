@@ -339,7 +339,7 @@ scripts/                             build, deploy and verification scripts
   create-secrets.sh                  create the k8s Secrets from environment variables
   deploy.sh                          full deploy: terraform apply, then every manifest
   dev-stack.sh                       start/stop the local dev servers from one tree (docs/local-dev-vm.md)
-  external-inputs-proving-ground.py  offline: a loopback origin serving the linemodels fixture, the fetcher's refusals, and delivery into a sandbox execution; RED until external inputs land
+  external-inputs-proving-ground.py  offline: a loopback origin serving the linemodels fixture, the fetcher's refusals, and delivery into a sandbox execution; the feature's acceptance test
   gen-doc-blocks.py                  generate the marked blocks in docs/*.md; `--check` is the build gate
   gen-sandbox-docs.py                generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema markdown into genetics-mcp-server's prompt copy
   install-git-hooks.sh               wire core.hooksPath; run once per clone

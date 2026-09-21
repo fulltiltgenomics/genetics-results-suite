@@ -136,6 +136,30 @@ check "$SANDBOX_PATHS" \
     '^docs/project-spec\.md$' \
     'sandbox image/manifests/policy/schema -> docs/project-spec.md (services table, isolation boundary summary, sandbox network policy, what the sandbox exposes)'
 
+# two docs, two checks, same reason as the sandbox pair: code-execution-security.md reasons about
+# what the fetcher REFUSES and what it holds, project-spec.md/README.md about its build context and
+# how it is shipped. No exclusion: .dockerignore and build-checks.py are named by the docs too —
+# they are what keeps the permissive entrypoint out of the image.
+check '^url-fetcher/' \
+    '^docs/code-execution-security\.md$' \
+    'url-fetcher/ -> docs/code-execution-security.md (refusal order and the host allow-list, per-hop re-validation and IP pinning, the /fetch shape and error types, what the pod holds none of)'
+
+check '^url-fetcher/' "$DOCS_SPEC" \
+    'url-fetcher/ -> docs/project-spec.md + README.md (build context, the two entrypoints and the gate that keeps the permissive one out of the image, which scripts build and roll it)'
+
+# the manifests already reach project-spec.md + README.md through the k8s/ rule above; what that
+# rule does not cover is the security doc, which is where the second egress policy is argued.
+check '^k8s/(deployments/url-fetcher\.yaml|network-policies/url-fetcher-policy\.yaml)$' \
+    '^docs/code-execution-security\.md$' \
+    'url-fetcher manifests/policy -> docs/code-execution-security.md (the ingress allow-list as the access control on an unauthenticated route, the except blocks and the DNS rule, the KSA with no GCP binding and no mounted token)'
+
+# the fetcher's adversarial unit test and the cross-repo proving ground: same reason as the
+# test-network-policies.py row above — the doc cites both harnesses control by control, so a
+# change to either can falsify the citation with no other path-based warning.
+check '^scripts/(test-url-fetcher|external-inputs-proving-ground)\.py$' \
+    '^docs/code-execution-security\.md$' \
+    'scripts/test-url-fetcher.py + scripts/external-inputs-proving-ground.py -> docs/code-execution-security.md (the mutation anchors and the exit-2-when-an-anchor-stops-matching rule for test-url-fetcher.py; the 0/1/2 convention, the byte-identical-supervisor precondition, and which check groups run live vs. NOT MEASURED for the proving ground)'
+
 # the generated trees above were mapped to code-execution-security.md while the GENERATOR
 # was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
 # the shipped schema docs with no warning at all. Named
@@ -160,11 +184,11 @@ check '^scripts/(gen-sandbox-docs|test-sandbox-docs)\.py$' \
 # control. Updating one leaves the other's claims unexamined.
 check '^scripts/test-network-policies\.py$' \
     '^docs/code-execution-security\.md$' \
-    'scripts/test-network-policies.py -> docs/code-execution-security.md (the controls it is cited as enforcing: sandbox ingress/egress allow-lists, MCP-exclusion layers, the SANDBOX_ENABLED pairing, which pod-spec fields are still sandbox tells)'
+    'scripts/test-network-policies.py -> docs/code-execution-security.md (the controls it is cited as enforcing: sandbox ingress/egress allow-lists, MCP-exclusion layers, the SANDBOX_ENABLED pairing, which pod-spec fields are still sandbox tells, and the url-fetcher half: who may reach it, its egress shape, the credential-free assertions DEDICATED_SA_WORKLOADS buys)'
 
 check '^scripts/test-network-policies\.py$' \
     '^docs/project-spec\.md$' \
-    'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer)'
+    'scripts/test-network-policies.py -> docs/project-spec.md (the harness spec: checks run, discovery tells and both locks, workload kinds swept, the three-way live-sandbox answer, the fetcher checks and what enrolment in DEDICATED_SA_WORKLOADS trades away)'
 
 # The generated tables in code-execution-security.md (the limits, the pod's security context,
 # the allow-lists, the image environment, the reserved error types) are NOT this script's

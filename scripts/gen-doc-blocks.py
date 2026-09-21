@@ -424,7 +424,7 @@ LAYOUT = {
     "scripts/external-inputs-proving-ground.py": "offline: a loopback origin serving the "
                                                  "linemodels fixture, the fetcher's "
                                                  "refusals, and delivery into a sandbox "
-                                                 "execution; RED until external inputs land",
+                                                 "execution; the feature's acceptance test",
     "scripts/chat-memory-proving-ground.py": "staging recipe and check runner for the "
                                              "per-project chat memory feature; `check all` "
                                              "or one numbered check, each PASS/FAIL with its "

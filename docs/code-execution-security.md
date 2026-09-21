@@ -693,8 +693,10 @@ nothing would notice breaking, so `scripts/test-sandbox-docs.py` compares the cl
 name pattern, media-type pattern and `InputsTooLarge` name against `sandbox/supervisor.py`'s
 and reports which one diverged and in which direction.
 
-`expected_sha256` is the caller's own digest of the bytes — the url-fetcher reports one for
-what it fetched — verified against `content` here and then **discarded**. It is never put on
+`expected_sha256` is the sending side's own digest of the bytes, verified against `content`
+here and then **discarded**. For a `url` source `run_analysis` supplies the *fetcher's* digest
+of what it retrieved, so the chain is origin → fetcher → client verify → supervisor verify and
+each hop re-derives rather than forwards. It is never put on
 the wire: the supervisor must keep computing its own digest from the bytes it decoded, or
 `DigestMismatch` stops covering the hop it exists for, and a mismatch is raised before
 anything leaves the process. The field is omitted entirely
@@ -1088,7 +1090,9 @@ import one module, and this is the one enumeration in these docs that is not gen
 **nothing else** — an unknown field is a 400 rather than being ignored, so nothing that could
 steer the request can arrive unnoticed later. A success is `200` with `url` (the final URL
 after redirects), `name` (a sanitised file name derived from that URL), `size_bytes`, `sha256`,
-`content_type`, `content_encoding` (absent or `identity` — see `unrequested_encoding` below),
+`content_type`, `content_encoding` (absent or `identity` — see `unrequested_encoding` below;
+both are origin-supplied strings reduced to printable ASCII and truncated by `_header` in
+`url-fetcher/fetch.py`, because they are reported as data and nothing downstream trusts them),
 `redirects`, and `content_b64`. `size_bytes` is the whole file: a length-delimited body that
 ends before its declared `Content-Length` is a failure, never a short 200, because CPython
 answers a cut-short `read(amt)` with `b""` rather than `IncompleteRead` and a caller has no
@@ -1273,6 +1277,7 @@ and fails every invocation with a connection error — noisy, visible, and not c
 | Serving another user attacker-controlled bytes | the manifest's digests, re-checked on the way out |
 | Persisting across executions | `/scratch/<id>` is per-execution and wiped; unrecognised entries are wiped at startup; the runtime-supplied `/tmp` and `/dev/shm` — which the pod spec neither declares nor can remove — are wiped before every fork; the fork server sweeps what reparents to it |
 | Executing code via MCP | section 5's three layers |
+| Dialling an internal address from a model-chosen URL | the socket is in a pod that holds nothing (section 3, "The URL fetcher"): no GCP identity, no token, no secret. The egress policy (`k8s/network-policies/url-fetcher-policy.yaml`) excepts RFC1918, link-local and CGNAT, and `url-fetcher/guard.py` re-classifies the resolved addresses at **every** redirect hop, which is the half the network layer cannot see |
 
 ### `read_artifact`: lifecycle, authorization, and what the retention window serves
 
@@ -1404,6 +1409,16 @@ Stated plainly. This design contains code execution; it does not make it safe in
 9. **Timing and cost side channels.** A script can infer the existence of rows it cannot read
    by timing queries or observing `maximum_bytes_billed` failures. Not mitigated; the caller is
    an authorized user of those datasets anyway.
+10. **A fetched file puts a remote party's text into the model's context.** Every control in
+    section 3 bounds *where the bytes come from and what dials for them*; none of them bounds
+    what the bytes say. Whoever controls a file the model was asked to fetch can write
+    instructions into it, and the analysis that reads it may act on them. The tool description
+    tells the model to treat fetched content as untrusted third-party data and never to follow
+    instructions inside it (`tools/definitions.py` in genetics-mcp-server) — that is
+    mitigation, not removal, and it is the only one there is. Everything downstream of the
+    fetch is already built for hostile input: the script runs in the sandbox, its tokens are
+    the user's own, and it can reach nothing the user could not. What is new is that the
+    *prompt* now has a remote author.
 
 ---
 
@@ -1418,7 +1433,8 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
-| `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. **RED by design** until external inputs ship — it is that feature's acceptance test, written first | a loopback origin it starts itself, the local sandbox container, a signing key |
+| `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. It is the feature's acceptance test, written before the code rather than after it, so it could say what "working" meant while that was still negotiable | a loopback origin it starts itself, the local sandbox container, a signing key |
+| `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
 Two conventions run through those harnesses and are what make them evidence rather than
