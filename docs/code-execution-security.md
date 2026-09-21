@@ -988,8 +988,16 @@ route is the only thing in it, and there is nothing behind the route to steal.
 **Two layers, and neither substitutes for the other.** The NetworkPolicy is the outer one and
 is stated in the fetcher's own file, `k8s/network-policies/url-fetcher-policy.yaml`: ingress
 from `app: chat-backend` only, egress 443 to `0.0.0.0/0` with RFC1918, `169.254.0.0/16` and
-`100.64.0.0/10` excepted, plus the DNS rule this pod needs and the sandbox refuses. It is the
-namespace's second egress policy; `sandbox-policy.yaml`'s reasoning is unaffected, because
+`100.64.0.0/10` excepted, plus the DNS this pod needs and the sandbox refuses. DNS is **two**
+rules on 53/UDP+TCP, both pod selectors in `kube-system`: `k8s-app: kube-dns`, and
+`k8s-app: node-local-dns` because NodeLocal DNSCache is enabled on the clusters. Under that
+addon on Dataplane V2 the query is still addressed to the kube-dns ClusterIP but Cilium
+redirects it to the node-local pod and judges it against *that* pod's identity, so the
+kube-dns rule alone denies every lookup and each fetch fails to resolve rather than failing to
+connect; the addon's link-local cache address is not a substitute, since node-local-dns runs
+here with `-setupinterface=false` and answers on no such address.
+`scripts/test-network-policies.py` holds the pair to exactly those two selectors and refuses
+any ipBlock on 53. It is the namespace's second egress policy; `sandbox-policy.yaml`'s reasoning is unaffected, because
 neither policy selects the other's pod. The in-process guard is the inner one, and it exists
 because an `except`-block egress policy still permits every public address: a permitted host
 that redirects to another permitted host which proxies inward is not visible at the network

@@ -29,12 +29,15 @@ SCHEME_POLICY_NAME = "the url-fetcher scheme policy (https only)"
 PORT_POLICY_NAME = "the url-fetcher port policy"
 METADATA_POLICY_NAME = "the url-fetcher metadata-endpoint deny-list"
 
-# every host named by either half of the vxtv.2 measurement; widening this is a config change
+# the hosts the fetcher dials when the deployment sets no allow-list of its own. Widening it
+# is a deliberate change here, and a refusal names this policy so the demand arrives as a
+# request rather than a dead end.
 DEFAULT_ALLOWED_HOSTS = (
     "raw.githubusercontent.com",
     "github.com",
     "zenodo.org",
     "ftp.ebi.ac.uk",
+    "eutils.ncbi.nlm.nih.gov",
 )
 
 DEFAULT_ALLOWED_PORTS = (443,)
