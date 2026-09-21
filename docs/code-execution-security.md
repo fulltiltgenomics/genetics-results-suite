@@ -1161,6 +1161,23 @@ default access log line — which begins with the client address — is suppress
 full traceback to stderr, which a caller disconnecting mid-write is enough to trigger. That is not
 incidental: it is why the per-user fetch cache lives in chat-backend and not here.
 
+**How long chat-backend gives the fetches.** `run_analysis` resolves every URL input before it
+mints anything, so the fetches and the execution share one turn budget
+(`ServerToolExecutor._RUN_ANALYSIS_DEADLINE_S`, 300 s). The split reserves the execution's
+worst case first — connect + body write + the supervisor's queued wait + `timeout_s` + margin,
+210 s at the default `timeout_s` of 60 and 270 s at the maximum 120 — and gives resolution
+`min(url_count × the client's per-fetch worst case, whatever is left)` — at most 90 s at the
+default and at most 30 s at the maximum, whichever term is smaller, so a single url at the
+default gets 45 s. Which term cut a fetch off decides what the model is told: the reservation
+answers `InputBudgetExceeded` and is not retryable, the fetcher's own worst case answers
+`InputUnavailable` and is. Nothing is refused before it is tried. Charging every call the fetcher's
+per-fetch worst case up front refused calls nothing had slowed — a single cached URL with a
+high `timeout_s` was enough — where the reservation fires only against a fetch that actually
+overruns it, as `InputBudgetExceeded` naming the reserve and the `timeout_s` that set it. The
+run's own `timeout_s` is never shortened to pay for a fetch, because what remains after
+resolution covers one worst-case attempt by construction of that bound. An attachment is a
+local read and costs nothing against it.
+
 ---
 
 ## 4. Credentials
