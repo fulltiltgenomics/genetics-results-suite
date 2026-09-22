@@ -41,8 +41,8 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATASETS_YAML = os.path.join(ROOT, "configs", "datasets.yaml")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from paths import DATASETS_YAML
 
 # db-api's SANDBOX_MAX_BYTES_BILLED (genetics-results-db api/main.py). Not importable from
 # here, so the value is repeated and overridable; a drift shows up as this gate passing an

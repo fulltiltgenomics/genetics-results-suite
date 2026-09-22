@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-09-01, against commit 8b5ed9988792 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
-  "measured_date": "2026-09-01",
-  "measured_commit": "8b5ed9988792f2b3884913eedb66c425130337aa",
+  "SNAPSHOT": "Measured on 2026-09-22, against commit 030a0db13383 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
+  "measured_date": "2026-09-22",
+  "measured_commit": "030a0db133838f195e3ba040f2e84b9b64e86b37",
   "measured_tree_dirty": true,
-  "reason": "intra 109 groups / 122 files unchanged; cross 34 / 74 unchanged; declared 6 / 8 -> 7 / 9; generated 33 / 3 -> 32 / 3. All of it is one file's doing, measured rather than inferred: re-running with configs/datasets-schema-example.yaml alone held at its 8b5ed99 content (written into the working tree, measured, restored byte-identical; no checkout touched) reproduces the previous snapshot's four rows exactly - 109/122, 34/74, 6/8, 33/3 - so no sibling commit is in this delta. That file was brought into line with the canonical registry: 'exposed', 'resource_derivation' and a 'dataset_cross_check' entry across four tables, covering all three derivation modes. It moved intra 109 -> 110 and generated 33 -> 32 in ONE step, not two: the seven-key per-table shape {exposed, resource_derivation, description, columns, column_types, examples, categorical_columns} was already a group of genetics-results-suite:configs/datasets.yaml plus its two sync-datasets.sh copies, netted out whole as generated; the example joining it left two hand-maintained files after the strip, so the group survived netting as undeclared intra-repo. The duplication is larger BECAUSE THE EXAMPLE IS NOW CORRECT - it was missing the very keys it exists to demonstrate - which is why the new configs/twins.yaml entry schema-example-table-shape declares that group rather than this snapshot absorbing it as anonymous growth: the entry takes intra 110 -> 109 and spends declared 6 / 8 -> 7 / 9, which is the ratchet working as designed. It is narrowed with 'symbols' to that one group; the same two files carry ten further undeclared enumeration groups - the dataset and resource name lists the example hand-copies out of the canonical registry - and an entry naming the files alone would net nine of them out. One measurement worth recording beside the numbers: writing the canonical side's symbols as exactly the eleven table entries that share the shape raised a NEW cross-repo group on the first run, cross 34 / 74 -> 35 / 76, because those eleven names are name for name the LINTED_VIEWS literal in genetics-results-db's tests/test_derived_view_lists.py. The entry's twelfth name closes that and its reason says why, so the cross row is unchanged here because it was fixed, not because nothing was tried. Two further edits are in this tree and in none of the counts: configs/datasets.yaml's gene_annotations_v gained a line saying 'resource' is a routing tag rather than a provenance claim (synced to the two gitignored sibling copies with scripts/sync-datasets.sh), and genetics-mcp-server replaced five prose copies of a known-wrong '12x' cache-price figure with the relationship - comments and docstrings only, which the AST comparison strips, and no literal set anywhere.",
+  "reason": "ROOT, the path constants, the check recorder and the mcp-server worktree lookup consolidated into scripts/lib (10 intra-suite body groups gone); the two in-image build-checks.py declared as twin in-image-build-checks; the rest of the movement since 2026-09-01 is growth in the sibling repos, chiefly results-api's data_access_* near-copies, accepted here and left to consolidate separately",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -14,27 +14,27 @@
   ],
   "repo_commits": {
     "genetics-mcp-server": {
-      "commit": "c04a7635e0684e7f8d5f8393a7b31608464f75d1",
-      "tree_dirty": true
+      "commit": "3984df0fb8f687435afed56e70477fbb648853e4",
+      "tree_dirty": false
     },
     "genetics-results-api": {
-      "commit": "6ba183c8081f68d70f2be84ed50ee2a475ff9435",
+      "commit": "b9ee175d5489f645fdd3f637eecadd49d615bf84",
       "tree_dirty": false
     },
     "genetics-results-browser": {
-      "commit": "1ad0764847ef960ad69b3ccef70ae5272d69a640",
-      "tree_dirty": true
-    },
-    "genetics-results-db": {
-      "commit": "00603f3c1dd10222f17ef3b4f6a0f22af1a334e3",
-      "tree_dirty": true
-    },
-    "genetics-results-munge": {
-      "commit": "fdff638983218b71f579c431a882589aeb19a06d",
+      "commit": "e7f7d2d3c4f3f21aa199cf3c8d653623873cc956",
       "tree_dirty": false
     },
+    "genetics-results-db": {
+      "commit": "56b96604671d7714d28f4edfc37b6a7c170f89c5",
+      "tree_dirty": false
+    },
+    "genetics-results-munge": {
+      "commit": "b574e28c8e5fe7c0e3c642b531aabb9788aaeb9c",
+      "tree_dirty": true
+    },
     "genetics-results-suite": {
-      "commit": "8b5ed9988792f2b3884913eedb66c425130337aa",
+      "commit": "030a0db133838f195e3ba040f2e84b9b64e86b37",
       "tree_dirty": true
     }
   },
@@ -42,16 +42,16 @@
   "census": {
     "genetics-mcp-server": {
       ".sh": {
-        "read": 1,
-        "parsed": 1,
-        "units": 1,
-        "on_disk": 1
+        "read": 3,
+        "parsed": 3,
+        "units": 3,
+        "on_disk": 3
       },
       ".py": {
-        "read": 105,
-        "parsed": 105,
-        "units": 102,
-        "on_disk": 105
+        "read": 132,
+        "parsed": 132,
+        "units": 128,
+        "on_disk": 132
       },
       ".yaml": {
         "read": 0,
@@ -62,10 +62,10 @@
     },
     "genetics-results-api": {
       ".py": {
-        "read": 173,
-        "parsed": 173,
-        "units": 161,
-        "on_disk": 173
+        "read": 181,
+        "parsed": 181,
+        "units": 169,
+        "on_disk": 181
       },
       ".yaml": {
         "read": 1,
@@ -74,10 +74,10 @@
         "on_disk": 1
       },
       ".sh": {
-        "read": 4,
-        "parsed": 4,
-        "units": 2,
-        "on_disk": 4
+        "read": 6,
+        "parsed": 6,
+        "units": 4,
+        "on_disk": 6
       }
     },
     "genetics-results-browser": {
@@ -88,10 +88,10 @@
         "on_disk": 9
       },
       ".sh": {
-        "read": 3,
-        "parsed": 3,
-        "units": 1,
-        "on_disk": 3
+        "read": 5,
+        "parsed": 5,
+        "units": 2,
+        "on_disk": 5
       },
       ".py": {
         "read": 8,
@@ -102,10 +102,10 @@
     },
     "genetics-results-db": {
       ".py": {
-        "read": 27,
-        "parsed": 27,
-        "units": 27,
-        "on_disk": 27
+        "read": 31,
+        "parsed": 31,
+        "units": 31,
+        "on_disk": 31
       },
       ".yaml": {
         "read": 1,
@@ -114,24 +114,24 @@
         "on_disk": 1
       },
       ".sh": {
-        "read": 18,
-        "parsed": 18,
-        "units": 4,
-        "on_disk": 18
+        "read": 25,
+        "parsed": 25,
+        "units": 6,
+        "on_disk": 25
       }
     },
     "genetics-results-munge": {
       ".sh": {
-        "read": 23,
-        "parsed": 23,
+        "read": 27,
+        "parsed": 27,
         "units": 1,
-        "on_disk": 23
+        "on_disk": 27
       },
       ".py": {
-        "read": 50,
-        "parsed": 50,
-        "units": 48,
-        "on_disk": 50
+        "read": 63,
+        "parsed": 63,
+        "units": 61,
+        "on_disk": 63
       },
       ".yaml": {
         "read": 0,
@@ -141,73 +141,74 @@
       }
     },
     "genetics-results-suite": {
-      ".yaml": {
-        "read": 32,
-        "parsed": 32,
-        "units": 31,
-        "on_disk": 33
-      },
       ".py": {
-        "read": 38,
-        "parsed": 38,
-        "units": 35,
-        "on_disk": 38
+        "read": 53,
+        "parsed": 53,
+        "units": 50,
+        "on_disk": 53
+      },
+      ".yaml": {
+        "read": 34,
+        "parsed": 34,
+        "units": 33,
+        "on_disk": 35
       },
       ".sh": {
-        "read": 19,
-        "parsed": 19,
-        "units": 14,
-        "on_disk": 19
+        "read": 21,
+        "parsed": 21,
+        "units": 15,
+        "on_disk": 21
       }
     }
   },
   "intra": {
-    "groups": 109,
-    "files": 122,
-    "lockstep": 99,
+    "groups": 115,
+    "files": 135,
+    "lockstep": 123,
     "by_kind": {
-      "bodies-exact": 37,
-      "bodies-near": 34,
-      "enumerations": 38
+      "bodies-exact": 36,
+      "bodies-near": 37,
+      "enumerations": 42
     }
   },
   "cross": {
-    "groups": 34,
-    "files": 74,
-    "lockstep": 31,
+    "groups": 43,
+    "files": 90,
+    "lockstep": 28,
     "by_kind": {
-      "bodies-exact": 18,
-      "bodies-near": 5,
-      "enumerations": 11
+      "bodies-exact": 25,
+      "bodies-near": 6,
+      "enumerations": 12
     }
   },
   "declared": {
     "groups": 7,
-    "files": 9,
-    "lockstep": 8,
+    "files": 8,
+    "lockstep": 3,
     "by_kind": {
-      "bodies-exact": 3,
+      "bodies-exact": 5,
       "bodies-near": 0,
-      "enumerations": 4
+      "enumerations": 2
     },
     "by_twin": {
-      "sandbox-wire-contract": 1,
+      "sandbox-wire-contract": 0,
       "browser-normalized-types": 0,
       "auth-allow-list-matcher": 0,
       "exposed-views-pin": 1,
       "derived-view-lists-pin": 0,
       "sandbox-token-and-budget": 4,
-      "schema-example-table-shape": 1
+      "schema-example-table-shape": 0,
+      "in-image-build-checks": 2
     }
   },
   "generated": {
-    "groups": 32,
+    "groups": 48,
     "files": 3,
-    "lockstep": 64,
+    "lockstep": 0,
     "by_kind": {
       "bodies-exact": 0,
       "bodies-near": 0,
-      "enumerations": 32
+      "enumerations": 48
     }
   }
 }

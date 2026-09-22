@@ -348,7 +348,7 @@ scripts/                             build, deploy and verification scripts
   keycloak-register-brainzzz.sh      the brainzzz client specifically
   keycloak-register-client.sh        register or update an MCP OAuth client in the live realm
   keycloak-sync-login-policy.sh      set the live realm's SSO session lifespans from the template and the default IdP redirect
-  lib/                               shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution
+  lib/                               shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder
   lint-staged.sh                     block a commit whose staged Python ruff rejects
   monitor/                           the monitoring CronJob's Python package
   rollout.sh                         single-service image update
@@ -1537,7 +1537,17 @@ answer, but a same-named originless git checkout can. A `SUITE_REPO_<NAME>` over
 the origin test entirely (a fork's origin names something else, and that is what the
 override is for) but must still be a git checkout; when it is not, that is an error naming
 the path and the reason, never the "not checked out on this machine" message.
-The four existing resolvers are deliberately **not** retrofitted onto it yet.
+The four existing resolvers are deliberately **not** retrofitted onto it yet. `resolve_matching()`
+is the worktree-aware form: from a linked worktree it prefers the sibling's worktree of the same
+name, so a harness that re-execs under genetics-mcp-server's venv cannot silently test master.
+
+Two modules sit beside it. `scripts/lib/paths.py` holds the repo's fixed locations — `ROOT`, the
+k8s and sandbox directories, the canonical registry, dev-stack.sh's run directory — so a script
+under `scripts/` carries one `sys.path.insert` line and nothing else about the layout.
+`scripts/lib/checks.py` is the pass/fail/skip recorder every host-side harness reports through,
+the supervisor check groups included (`supervisor_tests/harness.py` re-exports it). The two
+`build-checks.py` keep their own copy of its decorator form because each runs inside its image
+build, whose context is that one directory; `configs/twins.yaml` declares the pair.
 
 The repos it knows about:
 

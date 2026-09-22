@@ -79,65 +79,25 @@ import tarfile
 import time
 import uuid
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# must match dev-stack.sh's own default (RUN_DIR="${DEV_STACK_RUN_DIR:-$HOME/.cache/genetics-dev-stack}")
-# so a developer who sets DEV_STACK_RUN_DIR doesn't also have to remember --run-dir here
-DEFAULT_RUN_DIR = os.environ.get("DEV_STACK_RUN_DIR") or os.path.join(
-    os.path.expanduser("~"), ".cache", "genetics-dev-stack")
-
-FAILURES = []
-SKIPPED = []
-CHECKS = 0
-
-
-def check(name, condition, detail=""):
-    global CHECKS
-    CHECKS += 1
-    if not condition:
-        FAILURES.append(f"{name}: {detail}" if detail else name)
-        print(f"  FAIL  {name} {detail}")
-    else:
-        print(f"  ok    {name}")
-
-
-def skip(name, reason):
-    SKIPPED.append(f"{name}: {reason}")
-    print(f"  skip  {name} ({reason})")
-
-
-def die(message):
-    print(f"HARNESS: {message}", file=sys.stderr)
-    raise SystemExit(2)
-
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import checks
+import siblings
+from checks import check, die, skip
+from paths import DEV_STACK_RUN_DIR, ROOT
 
 # --------------------------------------------------------------------------------------
 # interpreter: chat-backend's own minting and client code, from the sibling checkout
 # --------------------------------------------------------------------------------------
-
-def _mcp_dir():
-    """The genetics-mcp-server checkout that matches this one — the sibling's worktree of the
-    same name first, then its main checkout. Same resolution as run-sandbox-local.sh, and for
-    the same reason: a worktree run must not silently test master."""
-    parts = ROOT.split(os.sep)
-    candidates = []
-    if len(parts) >= 3 and parts[-3:-1] == [".claude", "worktrees"]:
-        main = os.sep.join(parts[:-3])
-        sibling = os.path.join(os.path.dirname(main), "genetics-mcp-server")
-        candidates.append(os.path.join(sibling, ".claude", "worktrees", parts[-1]))
-        candidates.append(sibling)
-    candidates.append(os.path.join(os.path.dirname(ROOT), "genetics-mcp-server"))
-    for path in candidates:
-        if os.path.isdir(os.path.join(path, "src", "genetics_mcp_server")):
-            return path
-    return None
-
 
 def _reexec_under_mcp_venv():
     """chat-backend's client needs httpx and PyJWT. Re-exec under the checkout's own venv
     rather than asking the caller to remember which interpreter has them — and ASSERT the
     module resolves out of THAT tree afterwards, so a globally installed copy cannot silently
     stand in for the branch under test."""
-    mcp = _mcp_dir()
+    try:
+        mcp = siblings.resolve_matching("genetics-mcp-server")
+    except siblings.SiblingError as exc:
+        die(str(exc))
     if mcp is None:
         die("no genetics-mcp-server checkout found beside this one")
     python = os.path.join(mcp, ".venv", "bin", "python")
@@ -556,7 +516,7 @@ def main():
     parser.add_argument("--sandbox", default="http://127.0.0.1:8081")
     parser.add_argument("--container-name", default="genetics-sandbox-local")
     parser.add_argument("--results-api", default="http://127.0.0.1:2000")
-    parser.add_argument("--run-dir", default=DEFAULT_RUN_DIR,
+    parser.add_argument("--run-dir", default=DEV_STACK_RUN_DIR,
                         help="where scripts/dev-stack.sh keeps the service logs and the "
                              "generated signing key")
     parser.add_argument("--retention-s", type=int, default=None,
@@ -611,7 +571,8 @@ def main():
     user = "e2e-verify@example.org"
     session = f"sess-{uuid.uuid4().hex[:8]}"
 
-    run = lambda **kw: asyncio.run(client.execute(user=user, session_id=session, **kw))
+    def run(**kw):
+        return asyncio.run(client.execute(user=user, session_id=session, **kw))
 
     # ----------------------------------------------------------------------------------
     print("identity: one value across chat-backend, /scratch, both tokens and every log")
@@ -1028,25 +989,25 @@ def main():
 
     print()
     print(f"invocation: {' '.join(sys.argv)}")
-    if SKIPPED:
+    if checks.SKIPPED:
         # A SKIP IS NOT A PASS, and a count of passing checks quoted without this list is a
         # claim about a run that did not happen. Named this loudly so a green exit cannot be
         # read as "everything was measured".
-        print(f"NOT MEASURED ({len(SKIPPED)}) — this run did not verify:")
-        for line in SKIPPED:
+        print(f"NOT MEASURED ({len(checks.SKIPPED)}) — this run did not verify:")
+        for line in checks.SKIPPED:
             print(f"  - {line}")
-    if FAILURES:
-        print(f"FAILED {len(FAILURES)}/{CHECKS} checks:")
-        for line in FAILURES:
+    if checks.FAILURES:
+        print(f"FAILED {len(checks.FAILURES)}/{checks.CHECKS} checks:")
+        for line in checks.FAILURES:
             print(f"  - {line}")
-        if SKIPPED:
-            print(f"...and {_properties(SKIPPED)} above NOT MEASURED AT ALL.")
+        if checks.SKIPPED:
+            print(f"...and {_properties(checks.SKIPPED)} above NOT MEASURED AT ALL.")
         return 1
-    if SKIPPED:
-        print(f"PARTIAL: {CHECKS} checks passed, but {_properties(SKIPPED)} above "
+    if checks.SKIPPED:
+        print(f"PARTIAL: {checks.CHECKS} checks passed, but {_properties(checks.SKIPPED)} above "
               "NOT MEASURED (listed by name). This is not a full run.")
     else:
-        print(f"OK: {CHECKS} checks passed, nothing skipped.")
+        print(f"OK: {checks.CHECKS} checks passed, nothing skipped.")
     return 0
 
 

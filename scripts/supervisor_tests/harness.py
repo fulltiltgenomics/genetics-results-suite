@@ -1,5 +1,6 @@
-"""Shared plumbing for the supervisor check groups: the counters, the assertion helpers,
-the request builders, and the two Server flavours (in-process and container)."""
+"""Shared plumbing for the supervisor check groups: the request builders and the two Server
+flavours (in-process and container). The counters and assertion helpers are
+scripts/lib/checks.py's, re-exported here so a group imports one module."""
 
 import base64
 import http.client
@@ -11,8 +12,11 @@ import sys
 import threading
 import uuid
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(ROOT, "sandbox"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+from checks import check, skip  # noqa: F401
+from paths import ROOT, SANDBOX_DIR  # noqa: F401
+
+sys.path.insert(0, SANDBOX_DIR)
 
 try:
     import supervisor as sup
@@ -20,33 +24,7 @@ except Exception as exc:  # pragma: no cover - harness failure
     print(f"HARNESS: cannot import sandbox/supervisor.py: {exc}", file=sys.stderr)
     sys.exit(2)
 
-FAILURES = []
-
-
-SKIPPED = []
-
-
 NOT_RUN = []
-
-
-CHECKS = 0
-
-
-def check(name, condition, detail=""):
-    global CHECKS
-    CHECKS += 1
-    if not condition:
-        FAILURES.append(f"{name}: {detail}" if detail else name)
-        print(f"  FAIL  {name} {detail}")
-    else:
-        print(f"  ok    {name}")
-
-
-def skip(name, reason):
-    """A check that cannot run in this mode. Counted and printed separately: a skipped
-    assertion silently omitted is how a mode ends up proving less than its output claims."""
-    SKIPPED.append(f"{name}: {reason}")
-    print(f"  skip  {name} ({reason})")
 
 
 def expect_request_error(name, fn, status, type_, suffix=""):

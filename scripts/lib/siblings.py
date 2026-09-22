@@ -50,7 +50,7 @@ import os
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from paths import ROOT
 
 # the one place the suite's membership is written down. It is a literal because nothing in
 # any tree enumerates it, and without an expected set a missing checkout cannot be
@@ -156,6 +156,23 @@ def resolve(repo, suite_dir=ROOT):
         if _is_repo(cand, repo):
             return cand
     return None
+
+
+def resolve_matching(repo, suite_dir=ROOT):
+    """`repo`'s checkout on the same line of work as this one: when this checkout is a linked
+    worktree under .claude/worktrees/<name>, the sibling's worktree of the same name if it
+    has one, else the main checkout resolve() gives.
+
+    For a harness that re-execs under the sibling's venv or reads its fixtures, a worktree
+    run must not silently test master — the same resolution run-sandbox-local.sh does.
+    """
+    main = resolve(repo, suite_dir)
+    parts = os.path.abspath(suite_dir).split(os.sep)
+    if main and len(parts) >= 3 and parts[-3:-1] == [".claude", "worktrees"]:
+        twin = os.path.join(main, ".claude", "worktrees", parts[-1])
+        if _is_repo(twin, repo):
+            return twin
+    return main
 
 
 def resolve_all(suite_dir=ROOT):

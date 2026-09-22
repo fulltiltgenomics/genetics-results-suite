@@ -44,38 +44,22 @@ import threading
 import time
 import types
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "url-fetcher")
-sys.path.insert(0, SRC)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import checks
+from checks import check, die
+from paths import URL_FETCHER_DIR
+
+sys.path.insert(0, URL_FETCHER_DIR)
 
 try:
     import fetch
     import guard
     import server as surface
 except Exception as exc:  # pragma: no cover - harness failure
-    print(f"HARNESS: cannot import url-fetcher modules from {SRC}: {exc}", file=sys.stderr)
+    print(f"HARNESS: cannot import url-fetcher modules from {URL_FETCHER_DIR}: {exc}", file=sys.stderr)
     sys.exit(2)
 
 
-# -- counters ---------------------------------------------------------------------------
-
-FAILURES = []
-CHECKS = 0
-
-
-def check(name, condition, detail=""):
-    global CHECKS
-    CHECKS += 1
-    if not condition:
-        FAILURES.append(f"{name}: {detail}" if detail else name)
-        print(f"  FAIL  {name} {detail}")
-    else:
-        print(f"  ok    {name}")
-
-
-def harness_error(message):
-    print(f"HARNESS: {message}", file=sys.stderr)
-    sys.exit(2)
 
 
 # -- the connect recorder ----------------------------------------------------------------
@@ -418,7 +402,7 @@ def _mutate(path, table, names, modname):
     for name in names:
         for anchor, replacement in table[name]:
             if source.count(anchor) != 1:
-                harness_error(
+                die(
                     f"the cut {name!r} no longer matches {os.path.basename(path)} "
                     f"({source.count(anchor)} occurrences of its anchor). The positive "
                     f"control cannot be built, so this run proves nothing — fix the anchor.")
@@ -428,13 +412,13 @@ def _mutate(path, table, names, modname):
     try:
         exec(compile(source, f"{path} [cut: {', '.join(names)}]", "exec"), module.__dict__)
     except Exception as exc:
-        harness_error(f"the mutant {modname} does not compile: {exc}")
+        die(f"the mutant {modname} does not compile: {exc}")
     _MUTANTS[key] = module
     return module
 
 
 def mutant_guard(*names, **kwargs):
-    module = _mutate(os.path.join(SRC, "guard.py"), GUARD_CUTS, names, "guard_cut")
+    module = _mutate(os.path.join(URL_FETCHER_DIR, "guard.py"), GUARD_CUTS, names, "guard_cut")
     # the mutant defines its own Refused; rebinding the name makes its raises use the real
     # class, so `except guard.Refused` in this file catches them
     module.Refused = guard.Refused
@@ -442,22 +426,22 @@ def mutant_guard(*names, **kwargs):
 
 
 def mutant_fetcher(names, guard_obj, **kwargs):
-    module = _mutate(os.path.join(SRC, "fetch.py"), FETCH_CUTS, tuple(names), "fetch_cut")
+    module = _mutate(os.path.join(URL_FETCHER_DIR, "fetch.py"), FETCH_CUTS, tuple(names), "fetch_cut")
     return module.Fetcher(guard_obj, **kwargs)
 
 
 def mutant_surface(*names):
     """The HTTP surface with one of its controls cut, ready to be served on a port."""
-    return _mutate(os.path.join(SRC, "server.py"), SERVER_CUTS, names, "server_cut")
+    return _mutate(os.path.join(URL_FETCHER_DIR, "server.py"), SERVER_CUTS, names, "server_cut")
 
 
 def mutant_main(*guard_cuts):
     """url-fetcher/main.py compiled against a guard whose address-class check has been cut.
     The tripwire in main.py exists to notice exactly that, so this is its positive control."""
-    mg = _mutate(os.path.join(SRC, "guard.py"), GUARD_CUTS, guard_cuts, "guard_cut")
+    mg = _mutate(os.path.join(URL_FETCHER_DIR, "guard.py"), GUARD_CUTS, guard_cuts, "guard_cut")
     mg.Refused = guard.Refused
     module = types.ModuleType("main_cut")
-    path = os.path.join(SRC, "main.py")
+    path = os.path.join(URL_FETCHER_DIR, "main.py")
     with open(path, encoding="utf-8") as handle:
         source = handle.read()
     real = sys.modules.get("guard")
@@ -1027,11 +1011,11 @@ def test_ordering_and_the_allowance(origin):
         caught = True
     check("CONTROL address-class cut: the deployed tripwire refuses to start", caught,
           "the tripwire passed with the address-class check deleted; it proves nothing")
-    main_source = open(os.path.join(SRC, "main.py"), encoding="utf-8").read()
+    main_source = open(os.path.join(URL_FETCHER_DIR, "main.py"), encoding="utf-8").read()
     check("the tripwire does not rely on `assert`, which PYTHONOPTIMIZE strips",
           re.search(r"^\s*assert\s", main_source, re.M) is None,
           "an env var a manifest can set would delete the tripwire")
-    source = open(os.path.join(SRC, "main.py"), encoding="utf-8").read()
+    source = open(os.path.join(URL_FETCHER_DIR, "main.py"), encoding="utf-8").read()
     check("main.py reads no environment variable that could relax the guard",
           "allow_loopback_origin=True" not in source and "argparse" not in source
           and "sys.argv" not in source,
@@ -1429,12 +1413,12 @@ def main():
                            if not ipaddress.ip_address(h.strip("[]")).is_loopback})
     print(f"connect attempts to non-loopback addresses, all refused by the harness: "
           f"{non_loopback or 'none'}")
-    if FAILURES:
-        print(f"FAILED {len(FAILURES)}/{CHECKS} checks:")
-        for line in FAILURES:
+    if checks.FAILURES:
+        print(f"FAILED {len(checks.FAILURES)}/{checks.CHECKS} checks:")
+        for line in checks.FAILURES:
             print(f"  - {line}")
         return 1
-    print(f"OK: {CHECKS} checks passed")
+    print(f"OK: {checks.CHECKS} checks passed")
     return 0
 
 

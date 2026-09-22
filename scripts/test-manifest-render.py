@@ -68,9 +68,10 @@ except ImportError:
     print("harness cannot run: PyYAML is missing (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEPLOY_SH = os.path.join(ROOT, "scripts", "deploy.sh")
-K8S_DIR = os.path.join(ROOT, "k8s")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from paths import K8S_DIR, ROOT, SCRIPTS_DIR
+
+DEPLOY_SH = os.path.join(SCRIPTS_DIR, "deploy.sh")
 
 # deploy.sh renders inside `cd "${ROOT_DIR}/k8s"`, so its globs are relative to k8s/.
 FOR_RE = re.compile(r'^(\s*)for\s+f\s+in\s+([^;]+);\s*do\s*$')

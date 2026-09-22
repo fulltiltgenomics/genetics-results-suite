@@ -38,12 +38,13 @@ import re
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GENERATOR = os.path.join(ROOT, "scripts", "gen-sandbox-docs.py")
-DATASETS_YAML = os.path.join(ROOT, "configs", "datasets.yaml")
-SCHEMA_DIR = os.path.join(ROOT, "sandbox", "schema")
-STUBS_DIR = os.path.join(ROOT, "sandbox", "stubs")
-SUPERVISOR = os.path.join(ROOT, "sandbox", "supervisor.py")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import checks
+from checks import case
+from paths import DATASETS_YAML, SANDBOX_DIR, SCHEMA_DIR, SCRIPTS_DIR, STUBS_DIR
+
+GENERATOR = os.path.join(SCRIPTS_DIR, "gen-sandbox-docs.py")
+SUPERVISOR = os.path.join(SANDBOX_DIR, "supervisor.py")
 
 try:
     import yaml
@@ -259,21 +260,6 @@ def _field_text(table, field):
     return str(node)
 
 
-failures = []
-
-
-def check(name):
-    def wrap(fn):
-        try:
-            fn()
-            print(f"  ok   {name}")
-        except AssertionError as exc:
-            print(f"  FAIL {name}: {exc}")
-            failures.append(name)
-
-    return wrap
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk-src", default=None)
@@ -309,7 +295,7 @@ def main(argv=None):
     if not args.sdk_src:
         print(f"SDK source: {sdk_src}", file=sys.stderr)
 
-    @check("every view in datasets.yaml produces a schema file")
+    @case("every view in datasets.yaml produces a schema file")
     def _coverage():
         """The one failure mode CLAUDE.md calls out by name: a view list that rots. The
         expected set is loaded from the YAML, so a view added there and forgotten here is
@@ -321,7 +307,7 @@ def main(argv=None):
         )
         assert len(expected) >= 15, f"only {len(expected)} views parsed out of datasets.yaml"
 
-    @check("every column, enumerable column and worked example reaches its file")
+    @case("every column, enumerable column and worked example reaches its file")
     def _completeness():
         """categorical_columns is checked here too, and not only that the column name
         appears: `columns` already puts every name in the file, so a render_view that
@@ -343,7 +329,7 @@ def main(argv=None):
                 first = str(example["sql"]).strip().splitlines()[0].strip()
                 assert first in doc, f"{name}: example SQL missing ({first!r})"
 
-    @check("every documented column carries a well-formed BigQuery type")
+    @case("every documented column carries a well-formed BigQuery type")
     def _column_types():
         """A column documented without its type is the
         defect this field exists to close — an agent writing SQL cannot tell an INT64
@@ -385,7 +371,7 @@ def main(argv=None):
                 "verbatim from INFORMATION_SCHEMA.COLUMNS (e.g. INT64, ARRAY<STRING>)"
             )
 
-    @check("the type of every column reaches its schema file")
+    @case("the type of every column reaches its schema file")
     def _types_in_docs():
         """Names alone already appear in the file, so this asserts the whole rendered row
         prefix: a generator that emitted an empty type cell would pass a substring check
@@ -396,7 +382,7 @@ def main(argv=None):
                 row = f"| `{column}` | `{type_name}` |"
                 assert row in doc, f"{name}: {column} is not rendered with its type as {row!r}"
 
-    @check("a type changed in datasets.yaml changes the generated output")
+    @case("a type changed in datasets.yaml changes the generated output")
     def _type_mutation():
         view = sorted(tables)[0]
         column = next(iter(tables[view]["columns"]))
@@ -408,7 +394,7 @@ def main(argv=None):
             "generator is not reading the type from the canonical file"
         )
 
-    @check("a column with no type is REFUSED, not rendered blank")
+    @case("a column with no type is REFUSED, not rendered blank")
     def _missing_type_fails_closed():
         """The direction that matters. A guard that only proves the type shows up when it
         is present fails open: the failure mode is a column whose entry was never added,
@@ -433,7 +419,7 @@ def main(argv=None):
                 + " instead of refusing — the check fails open"
             )
 
-    @check("the index lists every view with its summary")
+    @case("the index lists every view with its summary")
     def _index():
         """Matched on the whole table row, not on a `(<view>.md)` link.
 
@@ -452,7 +438,7 @@ def main(argv=None):
             row = f"| `{name}` | {summary} |"
             assert row in index, f"{name} is not listed in README.md as {row!r}"
 
-    @check("a view with no summary is REFUSED, not rendered blank")
+    @case("a view with no summary is REFUSED, not rendered blank")
     def _missing_summary_fails_closed():
         """Same direction as the column-type check above: the failure mode is a view
         added without a summary, and an index row reading `| `x_v` |  |` would pass a
@@ -469,7 +455,7 @@ def main(argv=None):
             "refusing — the check fails open"
         )
 
-    @check("the correctness rules are present in configs/datasets.yaml")
+    @case("the correctness rules are present in configs/datasets.yaml")
     def _rules_in_yaml():
         """Asserted against the canonical file, not the generated output: the generated
         output cannot be right if the source no longer says it."""
@@ -482,7 +468,7 @@ def main(argv=None):
                     "canonical file, or was reworded (update the marker here after reading it)"
                 )
 
-    @check("the correctness rules reach the right schema files")
+    @case("the correctness rules reach the right schema files")
     def _rules_in_docs():
         for rule in RULES:
             for doc_name in rule["docs"]:
@@ -490,7 +476,7 @@ def main(argv=None):
                 for marker in rule["markers"]:
                     assert marker in doc, f"{rule['name']}: {marker!r} missing from {doc_name}"
 
-    @check("the generator does not contain the rule text (generated, not transcribed)")
+    @case("the generator does not contain the rule text (generated, not transcribed)")
     def _not_hardcoded():
         """If any rule phrase appears in the generator, the rule has been copied and
         datasets.yaml is no longer the source. Also checks the table and column names, so
@@ -507,7 +493,7 @@ def main(argv=None):
                 "the point; every view must be rendered by the same code path"
             )
 
-    @check("a rule changed in datasets.yaml changes the generated output")
+    @case("a rule changed in datasets.yaml changes the generated output")
     def _mutation():
         """The positive half of the check above: absence of the text in the generator does
         not prove the generator reads it. Mutating the YAML must move the output."""
@@ -537,7 +523,7 @@ def main(argv=None):
             )
             assert regenerated[doc_name] != schema_files[doc_name], "output identical after mutation"
 
-    @check("no placeholders survive and neither directory is empty")
+    @case("no placeholders survive and neither directory is empty")
     def _placeholders():
         """The build gate: the build refuses while
         PLACEHOLDER files are staged, and an empty directory would satisfy that check
@@ -550,7 +536,7 @@ def main(argv=None):
             )
             assert [e for e in entries if e.endswith(suffix)], f"{directory} is empty"
 
-    @check("the committed schema files match a fresh generation")
+    @case("the committed schema files match a fresh generation")
     def _schema_fresh():
         for name, content in schema_files.items():
             path = os.path.join(SCHEMA_DIR, name)
@@ -561,7 +547,7 @@ def main(argv=None):
 
     stub_files = gen.render_stubs(sdk_dir)
 
-    @check("stubs cover exactly the SDK's exported surface")
+    @case("stubs cover exactly the SDK's exported surface")
     def _stub_surface():
         """The image is pruned to the SDK's import closure
         and asserts EQUALITY with an allow-list. Documenting a function the package
@@ -612,7 +598,7 @@ def main(argv=None):
         private = {n for n in methods if n.startswith("_") and n != "__init__"}
         assert not private, f"private methods leaked into the stub: {sorted(private)}"
 
-    @check("each analysis-surface stub covers exactly what its sdk module exports")
+    @case("each analysis-surface stub covers exactly what its sdk module exports")
     def _surface_stub_surfaces():
         """Same equality, for the modules that are not client wrappers (plots, linemodels).
         They have no GeneticsClient to be checked against, so `__all__` is what each is
@@ -642,7 +628,7 @@ def main(argv=None):
             private = {n for n in stubbed if n.startswith("_")}
             assert not private, f"{module}: private helpers leaked into the stub: {sorted(private)}"
 
-    @check("every stub is valid Python")
+    @case("every stub is valid Python")
     def _stub_syntax():
         for name, content in stub_files.items():
             try:
@@ -650,7 +636,7 @@ def main(argv=None):
             except SyntaxError as exc:
                 raise AssertionError(f"{name}: {exc}") from None
 
-    @check("every default a stub signature names is defined in that stub")
+    @case("every default a stub signature names is defined in that stub")
     def _stub_defaults_resolve():
         """A stub is not importable and the real package sits in /opt/venv, so a default
         spelled as a bare name is only useful if the same file says what it is. Asserted
@@ -677,7 +663,7 @@ def main(argv=None):
                 f"{name}: signature defaults name {missing}, which the file never defines"
             )
 
-    @check("stub signatures track the SDK source rather than a copy")
+    @case("stub signatures track the SDK source rather than a copy")
     def _stub_derived():
         """Same property as the schema rules: rename an argument in the SDK and the
         stub must follow. Nothing about the surface may be spelled out here."""
@@ -693,7 +679,7 @@ def main(argv=None):
                 f"{token} is in the SDK source but in no stub"
             )
 
-    @check("the committed stubs match a fresh generation")
+    @case("the committed stubs match a fresh generation")
     def _stubs_fresh():
         for name, content in stub_files.items():
             path = os.path.join(STUBS_DIR, name)
@@ -702,7 +688,7 @@ def main(argv=None):
                 f"{name} differs from a fresh generation — run scripts/gen-sandbox-docs.py"
             )
 
-    @check("the sandbox client mirrors the supervisor's input caps and rules")
+    @case("the sandbox client mirrors the supervisor's input caps and rules")
     def _client_mirrors_supervisor():
         """The two ends cannot share a module — different repos, different images — so
         chat-backend's SandboxClient re-declares every input cap as a literal, and
@@ -751,7 +737,7 @@ def main(argv=None):
             )
         assert not drift, "; ".join(drift)
 
-    @check("the SDK source is never resolved to the staged sandbox/.sdk-src")
+    @case("the SDK source is never resolved to the staged sandbox/.sdk-src")
     def _never_the_staged_copy():
         """build.sh stages sandbox/.sdk-src and deletes it on
         an EXIT trap, so a copy found on disk means an interrupted build — the old default
@@ -776,8 +762,8 @@ def main(argv=None):
             if not pre_existing:
                 shutil.rmtree(staged, ignore_errors=True)
 
-    print(f"sandbox docs checks: {len(failures)} failure(s)")
-    return 1 if failures else 0
+    print(f"sandbox docs checks: {len(checks.FAILURES)} failure(s)")
+    return 1 if checks.FAILURES else 0
 
 
 if __name__ == "__main__":

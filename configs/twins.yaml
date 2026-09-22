@@ -260,3 +260,29 @@ twins:
       same footing as the sync-datasets.sh copies that need no entry here at all. Nobody has
       done it, and nothing prevents it.
     merge: open
+
+  - id: in-image-build-checks
+    sites:
+      - genetics-results-suite:sandbox/build-checks.py
+      - genetics-results-suite:url-fetcher/build-checks.py
+    symbols:
+      genetics-results-suite:sandbox/build-checks.py:
+        - check
+        - wrap
+        - _no_shell
+      genetics-results-suite:url-fetcher/build-checks.py:
+        - check
+        - wrap
+        - _no_shell
+    property: >-
+      Both images assert the same thing about their final rootfs - no shell, no package
+      manager, no network client, the same banned-name set - and report each assertion
+      through the same one-line recorder.
+    reason: >-
+      Each runs INSIDE its own docker build, and a build context is one directory:
+      sandbox/Dockerfile and url-fetcher/Dockerfile COPY build-checks.py by itself, so
+      scripts/lib is unreachable there by construction, and widening a security image's
+      build context to reach the host-side tooling is the wrong trade. The host-side copy of
+      the recorder is scripts/lib/checks.py; these two are what remains, and a third in-image
+      check script would join this entry rather than open a new one.
+    merge: never
