@@ -59,11 +59,8 @@ except ImportError:
     print("cannot run: PyYAML is missing (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATASETS_YAML = os.path.join(ROOT, "configs", "datasets.yaml")
-SCHEMA_DIR = os.path.join(ROOT, "sandbox", "schema")
-STUBS_DIR = os.path.join(ROOT, "sandbox", "stubs")
-STAGED_SDK_SRC = os.path.join(ROOT, "sandbox", ".sdk-src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from paths import DATASETS_YAML, ROOT, SCHEMA_DIR, STAGED_SDK_SRC, STUBS_DIR
 
 # the SDK submodules a script reaches as `genetics.<name>` that are not client wrappers;
 # each gets its own stub, read from the module's `__all__`. sdk/__init__.py resolves the

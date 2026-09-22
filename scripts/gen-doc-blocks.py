@@ -27,10 +27,10 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from paths import ROOT, SANDBOX_DIR
 
-sys.path.insert(0, os.path.join(ROOT, "sandbox"))
-sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+sys.path.insert(0, SANDBOX_DIR)
 
 try:
     import yaml
@@ -404,7 +404,7 @@ LAYOUT = {
     "sandbox": "sandbox image build context for model-authored Python; the SDK is "
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
-    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution",
+    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder",
     "scripts/monitor": "the monitoring CronJob's Python package",
     "scripts/supervisor_tests": "the check groups scripts/test-supervisor.py runs",
     "scripts/deploy.sh": "full deploy: terraform apply, then every manifest",

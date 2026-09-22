@@ -100,46 +100,21 @@ import urllib.error
 import urllib.request
 import uuid
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import checks
+import siblings
+from checks import check, die, skip
+from paths import DEV_STACK_RUN_DIR, ROOT
+
 FIXTURE_REL = os.path.join("tests", "fixtures", "linemodels", "covid_hgi_v6_B2_C2_common.tsv")
 # the premise's own numbers, asserted rather than quoted: a fixture that has been regenerated
 # is a different rehearsal and the run must say so instead of proving something about it
 FIXTURE_BYTES = 5759
 FIXTURE_LINES = 25
-# must match dev-stack.sh's own default, so a developer who sets DEV_STACK_RUN_DIR does not
-# also have to remember --run-dir here
-DEFAULT_RUN_DIR = os.environ.get("DEV_STACK_RUN_DIR") or os.path.join(
-    os.path.expanduser("~"), ".cache", "genetics-dev-stack")
-
 INPUTS_FIELD = "inputs"
 INPUTS_ENV = "SANDBOX_INPUTS_DIR"
 LOOPBACK_CHECK = "a deployed-configuration fetcher refuses loopback"
 INPUT_MODE_CHECK = "a delivered input refuses a plain overwrite by the child"
-
-FAILURES = []
-SKIPPED = []
-CHECKS = 0
-
-
-def check(name, condition, detail=""):
-    global CHECKS
-    CHECKS += 1
-    if not condition:
-        FAILURES.append(f"{name}: {detail}" if detail else name)
-        print(f"  FAIL  {name} {detail}")
-    else:
-        print(f"  ok    {name}")
-
-
-def skip(name, reason):
-    SKIPPED.append(f"{name}: {reason}")
-    print(f"  skip  {name} ({reason})")
-
-
-def die(message):
-    print(f"HARNESS: {message}", file=sys.stderr)
-    raise SystemExit(2)
-
 
 # --------------------------------------------------------------------------------------
 # the throwaway origin server
@@ -289,30 +264,15 @@ def verify_container_source(name):
     print(f"precondition: {name} runs sandbox/supervisor.py byte for byte")
 
 
-def mcp_dir():
-    """The genetics-mcp-server checkout matching this one — the sibling's worktree of the
-    same name first, then its main checkout. Same resolution as run-sandbox-local.sh, and for
-    the same reason: a worktree run must not silently rehearse master."""
-    parts = ROOT.split(os.sep)
-    candidates = []
-    if len(parts) >= 3 and parts[-3:-1] == [".claude", "worktrees"]:
-        main = os.sep.join(parts[:-3])
-        sibling = os.path.join(os.path.dirname(main), "genetics-mcp-server")
-        candidates.append(os.path.join(sibling, ".claude", "worktrees", parts[-1]))
-        candidates.append(sibling)
-    candidates.append(os.path.join(os.path.dirname(ROOT), "genetics-mcp-server"))
-    for path in candidates:
-        if os.path.isdir(os.path.join(path, "src", "genetics_mcp_server")):
-            return path
-    return None
-
-
 def reexec_under_mcp_venv():
     """The token minter and the client live in the sibling checkout. Re-exec under its venv
     rather than asking the caller which interpreter has PyJWT — and assert the module
     resolves out of THAT tree, so an editable install of the main checkout cannot stand in
     for the branch under test."""
-    mcp = mcp_dir()
+    try:
+        mcp = siblings.resolve_matching("genetics-mcp-server")
+    except siblings.SiblingError as exc:
+        die(str(exc))
     if mcp is None:
         die("no genetics-mcp-server checkout found beside this one")
     python = os.path.join(mcp, ".venv", "bin", "python")
@@ -621,7 +581,7 @@ def main():
                              "refuse the loopback origin this harness serves")
     parser.add_argument("--chat-api-url", default="http://127.0.0.1:4000",
                         help="chat-api as scripts/dev-stack.sh starts it")
-    parser.add_argument("--run-dir", default=DEFAULT_RUN_DIR,
+    parser.add_argument("--run-dir", default=DEV_STACK_RUN_DIR,
                         help="dev-stack.sh's run directory, for the signing key")
     parser.add_argument("--groups", default="ground,fetcher,delivery,client",
                         help="comma-separated subset of the check groups")
@@ -672,14 +632,14 @@ def main():
     sock.close()
     check("the origin is stopped when the run ends", stopped, f"still listening on :{port}")
 
-    print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
-    if SKIPPED:
+    print(f"\n{checks.CHECKS - len(checks.FAILURES)}/{checks.CHECKS} checks passed")
+    if checks.SKIPPED:
         print("NOT MEASURED:")
-        for item in SKIPPED:
+        for item in checks.SKIPPED:
             print(f"  - {item}")
-    if FAILURES:
+    if checks.FAILURES:
         print("FAILED:")
-        for item in FAILURES:
+        for item in checks.FAILURES:
             print(f"  - {item}")
         return 1
     return 0

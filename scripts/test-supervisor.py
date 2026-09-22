@@ -43,7 +43,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
+import checks
 from supervisor_tests import harness
 from supervisor_tests.artifacts import (
     test_artifact_encryption,
@@ -362,23 +364,23 @@ def main(argv=None):
         run_in_process()
 
     print()
-    if harness.SKIPPED:
-        print(f"{len(harness.SKIPPED)} skipped:")
-        for line in harness.SKIPPED:
+    if checks.SKIPPED:
+        print(f"{len(checks.SKIPPED)} skipped:")
+        for line in checks.SKIPPED:
             print(f"  - {line}")
     if harness.NOT_RUN:
         print(f"{len(harness.NOT_RUN)} check groups NOT RUN in this mode (not skips — never invoked):")
         for line in harness.NOT_RUN:
             print(f"  - {line}")
-    if harness.FAILURES:
-        print(f"FAILED {len(harness.FAILURES)}/{harness.CHECKS} checks:")
-        for line in harness.FAILURES:
+    if checks.FAILURES:
+        print(f"FAILED {len(checks.FAILURES)}/{checks.CHECKS} checks:")
+        for line in checks.FAILURES:
             print(f"  - {line}")
         return 1
-    print(f"OK: {harness.CHECKS} checks passed"
-          + (f", {len(harness.SKIPPED)} skipped" if harness.SKIPPED else ""))
+    print(f"OK: {checks.CHECKS} checks passed"
+          + (f", {len(checks.SKIPPED)} skipped" if checks.SKIPPED else ""))
     if harness.NOT_RUN:
-        print(f"     PARTIAL COVERAGE: {harness.CHECKS} is the container-mode total, not a fraction of"
+        print(f"     PARTIAL COVERAGE: {checks.CHECKS} is the container-mode total, not a fraction of"
               " the in-process run.")
         print(f"     {len(harness.NOT_RUN)} groups above never executed. Run scripts/test-supervisor.py"
               " with no arguments for those.")

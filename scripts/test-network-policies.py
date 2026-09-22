@@ -56,9 +56,8 @@ except ImportError:
     print("harness cannot run: PyYAML is missing (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-POLICY_DIR = os.path.join(ROOT, "k8s", "network-policies")
-DEPLOY_DIR = os.path.join(ROOT, "k8s", "deployments")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from paths import K8S_DEPLOYMENTS_DIR, K8S_POLICIES_DIR, ROOT
 
 # the label contract declared by k8s/network-policies/sandbox-policy.yaml. This is the
 # subset the policies rely on, NOT the sandbox pod's full label set — see sandbox_pod_labels()
@@ -220,8 +219,8 @@ def load_docs(path):
 
 def load_policies():
     docs = []
-    for fname in manifest_names(POLICY_DIR):
-        for doc in load_docs(os.path.join(POLICY_DIR, fname)):
+    for fname in manifest_names(K8S_POLICIES_DIR):
+        for doc in load_docs(os.path.join(K8S_POLICIES_DIR, fname)):
             if doc.get("kind") == "NetworkPolicy":
                 doc["__file__"] = fname
                 docs.append(doc)
@@ -353,8 +352,8 @@ def sandbox_workload_docs():
     global _SANDBOX_DOCS
     if _SANDBOX_DOCS is None:
         found = []
-        for fname in manifest_names(DEPLOY_DIR):
-            for doc in load_docs(os.path.join(DEPLOY_DIR, fname)):
+        for fname in manifest_names(K8S_DEPLOYMENTS_DIR):
+            for doc in load_docs(os.path.join(K8S_DEPLOYMENTS_DIR, fname)):
                 if _is_sandbox_doc(fname, doc):
                     found.append((fname, doc))
         _SANDBOX_DOCS = found
@@ -459,8 +458,8 @@ def sweep_labels(exclude):
     labels = {}
     for app in KNOWN_APPS:
         labels[app] = {"app": app}
-    for fname in manifest_names(DEPLOY_DIR):
-        for doc in load_docs(os.path.join(DEPLOY_DIR, fname)):
+    for fname in manifest_names(K8S_DEPLOYMENTS_DIR):
+        for doc in load_docs(os.path.join(K8S_DEPLOYMENTS_DIR, fname)):
             if doc.get("kind") not in WORKLOAD_KINDS or _is_sandbox_doc(fname, doc):
                 continue
             discovered = pod_template_labels(fname, doc)
@@ -482,8 +481,8 @@ def deploy_docs():
     if _DEPLOY_DOCS is None:
         _DEPLOY_DOCS = [
             (fname, doc)
-            for fname in manifest_names(DEPLOY_DIR)
-            for doc in load_docs(os.path.join(DEPLOY_DIR, fname))
+            for fname in manifest_names(K8S_DEPLOYMENTS_DIR)
+            for doc in load_docs(os.path.join(K8S_DEPLOYMENTS_DIR, fname))
         ]
     return _DEPLOY_DOCS
 
@@ -832,7 +831,7 @@ def sandbox_enabled_values():
     """
     values = {}
     for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
-        path = os.path.join(DEPLOY_DIR, fname)
+        path = os.path.join(K8S_DEPLOYMENTS_DIR, fname)
         found = []
         if os.path.exists(path):
             for d in load_docs(path):
@@ -1161,8 +1160,8 @@ def _():
     either the sandbox or something that needs the same scrutiny.
     """
     unclassified = []
-    for fname in manifest_names(DEPLOY_DIR):
-        for doc in load_docs(os.path.join(DEPLOY_DIR, fname)):
+    for fname in manifest_names(K8S_DEPLOYMENTS_DIR):
+        for doc in load_docs(os.path.join(K8S_DEPLOYMENTS_DIR, fname)):
             if doc.get("kind") not in WORKLOAD_KINDS or _is_sandbox_doc(fname, doc):
                 continue
             tells = sandbox_tells(fname, doc)
@@ -1173,7 +1172,7 @@ def _():
                 )
     assert not unclassified, (
         "workload(s) in "
-        + DEPLOY_DIR
+        + K8S_DEPLOYMENTS_DIR
         + " carry sandbox-only pod-spec properties but were not recognised as the sandbox: "
         + "; ".join(unclassified)
         + ". If this IS the sandbox, teach _is_sandbox_doc() its shape — otherwise every "
@@ -1415,7 +1414,7 @@ def _():
         sa_doc = service_account_doc(ksa)
         assert sa_doc is not None, (
             f"{app} names serviceAccountName: {ksa!r} but no ServiceAccount object of that "
-            f"name is declared in {DEPLOY_DIR}. Kubernetes will not create it, the pod will "
+            f"name is declared in {K8S_DEPLOYMENTS_DIR}. Kubernetes will not create it, the pod will "
             "not schedule, and nothing in this repo states what identity it has"
         )
         sa_file, sa = sa_doc
@@ -1575,7 +1574,7 @@ def _():
         on = sorted(f for f, vs in values.items() if any(_is_on(v) for v in vs))
         assert not on, (
             f"{', '.join(on)} sets SANDBOX_ENABLED on, but no sandbox workload was discovered "
-            f"in {DEPLOY_DIR}. Either the flag was flipped before the workload landed (the "
+            f"in {K8S_DEPLOYMENTS_DIR}. Either the flag was flipped before the workload landed (the "
             "deploy-ordering table, docs/code-execution-security.md section 4), or the "
             "workload IS there under a file name, object name and pod label this harness does "
             "not recognise — in which case every sandbox check above skipped in silence and "
@@ -1588,8 +1587,8 @@ def _():
         )
         return
     for fname in ("db-api.yaml", "results-api.yaml", "chat-backend.yaml"):
-        path = os.path.join(DEPLOY_DIR, fname)
-        assert os.path.exists(path), f"{fname} is missing from {DEPLOY_DIR}"
+        path = os.path.join(K8S_DEPLOYMENTS_DIR, fname)
+        assert os.path.exists(path), f"{fname} is missing from {K8S_DEPLOYMENTS_DIR}"
         found = values[fname]
         assert found, (
             f"{fname} declares no SANDBOX_ENABLED env var, but a sandbox workload exists in "
@@ -1686,4 +1685,4 @@ if live_check_blocked:
         file=sys.stderr,
     )
     sys.exit(2)
-print(f"network-policy checks passed ({len(POLICIES)} policies across {POLICY_DIR})")
+print(f"network-policy checks passed ({len(POLICIES)} policies across {K8S_POLICIES_DIR})")
