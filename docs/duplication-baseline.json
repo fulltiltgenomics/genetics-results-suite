@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-09-22, against commit 030a0db13383 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
+  "SNAPSHOT": "Measured on 2026-09-22, against commit 6933367a0d79 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
   "measured_date": "2026-09-22",
-  "measured_commit": "030a0db133838f195e3ba040f2e84b9b64e86b37",
+  "measured_commit": "6933367a0d7974df6d05d2ab64a7624e13f2e86c",
   "measured_tree_dirty": true,
-  "reason": "ROOT, the path constants, the check recorder and the mcp-server worktree lookup consolidated into scripts/lib (10 intra-suite body groups gone); the two in-image build-checks.py declared as twin in-image-build-checks; the rest of the movement since 2026-09-01 is growth in the sibling repos, chiefly results-api's data_access_* near-copies, accepted here and left to consolidate separately",
+  "reason": "results-api's get_implementation_class and _warm consolidated into base_data_access (two seven-file near groups gone: 115 -> 113 intra-repo); no other movement",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -18,7 +18,7 @@
       "tree_dirty": false
     },
     "genetics-results-api": {
-      "commit": "b9ee175d5489f645fdd3f637eecadd49d615bf84",
+      "commit": "d97ad25e4a52be85091cb9afc6554b8ea01a7da9",
       "tree_dirty": false
     },
     "genetics-results-browser": {
@@ -34,7 +34,7 @@
       "tree_dirty": true
     },
     "genetics-results-suite": {
-      "commit": "030a0db133838f195e3ba040f2e84b9b64e86b37",
+      "commit": "6933367a0d7974df6d05d2ab64a7624e13f2e86c",
       "tree_dirty": true
     }
   },
@@ -162,12 +162,12 @@
     }
   },
   "intra": {
-    "groups": 115,
+    "groups": 113,
     "files": 135,
-    "lockstep": 123,
+    "lockstep": 119,
     "by_kind": {
       "bodies-exact": 36,
-      "bodies-near": 37,
+      "bodies-near": 35,
       "enumerations": 42
     }
   },
