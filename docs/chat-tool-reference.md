@@ -974,9 +974,13 @@ signed in, so the entry admits the read-only analytics tools and withholds the m
 (`update_*`, `reset_node`, `cluster_node`, `create_pipeline_execution`) and the account-context
 ones (`get_current_user`, `get_current_tenant`, `list_tenant_users`, `list_user_tenants`).
 Measured 2026-09-27: C3PO 3.4.7 advertises 26 tools, of which the entry admits 16; the
-access token lives an hour; a refresh rotates the token **and the retired one still
-refreshed successfully immediately afterwards**, so the persistence is insurance against a
-grace window ending rather than a measured necessity.
+access token lives an hour; a refresh rotates the refresh token, and the retired one still
+refreshed seconds later but answered `invalid_grant` some minutes and a few rotations on.
+**So a refresh token is one chain, owned by one process.** Each cluster gets its own login,
+the helper's output is seeded into that cluster's `.env.<env>` and nowhere else, and nobody
+probes C3PO from a laptop with a deployment's token: staging did exactly that on day one — the
+seed had been consumed by a local probe — and registered zero C3PO tools until it was logged
+in again.
 The login is run once by an operator, with the account that should own everything the chat
 does on C3PO:
 
