@@ -389,6 +389,8 @@ LAYOUT = {
     "docs/postmortem-code-execution-epic.md": "why the sandbox epic took as long as it did",
     "docs/duplication-baseline.json": "the duplication ratchet's last-written snapshot, "
                                       "read by check-duplication.py --check",
+    "docs/research": "dated research write-ups behind planned features — reviews of chat "
+                     "transcripts, architecture alternatives — records, not maintained docs",
     "k8s": "manifests, applied by deploy.sh",
     "k8s/namespace.yaml": "the `genetics` namespace",
     "k8s/deployments": "one file per workload, CronJobs included",
