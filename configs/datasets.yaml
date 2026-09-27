@@ -140,8 +140,8 @@ resources:
 
   decode:
     label: "deCODE"
-    description: "deCODE Genetics — allele-specific methylation QTL (ASM-QTL) results"
-    aliases: ["deCODE", "decode genetics"]
+    description: "deCODE Genetics — plasma proteomics pQTL (Ferkingstad et al. 2021, SomaScan) and allele-specific methylation QTL (ASM-QTL) results"
+    aliases: ["deCODE", "decode genetics", "deCODE pQTL", "Ferkingstad"]
 
   # open-chromatin (scATAC / epigenome) + variant-effect prediction resources
   marderstein:
@@ -2603,6 +2603,11 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
     comment: "Open Targets datasets (versioned names)"
 
+  - pattern: "deCODE_pQTL%"
+    resource: "decode"
+    applies_to: ["credible_sets_v"]
+    comment: "deCODE plasma pQTL pseudo credible sets (lowercase fallback would give 'decode_pqtl_2021', not 'decode')"
+
   # asm_qtl_v patterns
   - pattern: "deCODE%"
     resource: "decode"
@@ -3020,6 +3025,29 @@ profiles:
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
+
+      # --- pQTL ---
+      decode_pqtl_2021:
+        resource: decode
+        version: "2021"
+        description: >-
+          deCODE plasma proteomics pQTL (Ferkingstad et al. 2021, doi:10.1038/s41588-021-00978-w).
+          4,907 SomaScan v4 aptamers measured in 35,559 Icelanders. trait is the gene symbol of
+          the aptamer's target protein and trait_original the aptamer id (seq.NNNN.NN), the same
+          mapping as the FinnGen SomaScan credible sets; 4,808 aptamers have at least one
+          genome-wide significant pQTL and appear in the credible sets. Pseudo credible sets
+          (mlog10p>=2, r2>=0.6) LD-clumped against the FinnGen R12 panel from the released
+          p<0.005 summary statistics; not formally fine-mapped. deCODE releases no allele
+          frequency, so aaf is null.
+        author: "deCODE Genetics"
+        publication_date: "2021-12-02"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 35559
+        n_phenotypes: 4808
+        metadata_file: "gs://finngen-commons/results_api_metadata/decode_pqtl_pheno.json"
+        metadata_harmonizer: pheweb
+        pseudo_credible_sets: true
 
       # --- collection ---
       eqtl_catalogue:
@@ -4076,6 +4104,29 @@ profiles:
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
+
+      # --- pQTL ---
+      decode_pqtl_2021:
+        resource: decode
+        version: "2021"
+        description: >-
+          deCODE plasma proteomics pQTL (Ferkingstad et al. 2021, doi:10.1038/s41588-021-00978-w).
+          4,907 SomaScan v4 aptamers measured in 35,559 Icelanders. trait is the gene symbol of
+          the aptamer's target protein and trait_original the aptamer id (seq.NNNN.NN), the same
+          mapping as the FinnGen SomaScan credible sets; 4,808 aptamers have at least one
+          genome-wide significant pQTL and appear in the credible sets. Pseudo credible sets
+          (mlog10p>=2, r2>=0.6) LD-clumped against the FinnGen R12 panel from the released
+          p<0.005 summary statistics; not formally fine-mapped. deCODE releases no allele
+          frequency, so aaf is null.
+        author: "deCODE Genetics"
+        publication_date: "2021-12-02"
+        data_type: pqtl
+        trait_type: quantitative
+        n_samples: 35559
+        n_phenotypes: 4808
+        metadata_file: null  # not staged in the daly bucket; the credible sets are served in the finngen profile only
+        metadata_harmonizer: null
+        pseudo_credible_sets: true
 
       # --- collection ---
       eqtl_catalogue:
