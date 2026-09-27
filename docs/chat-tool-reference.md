@@ -15,6 +15,9 @@ design overview.
 | `genetics-results-db` | `2d09abf` |
 | `genetics-results-browser` | `16ba11e` |
 
+The `search_scientific_literature` entry in section 8 and the literature quotes in section 4a
+were re-derived at `genetics-mcp-server` `550d911`.
+
 Every count and list below was re-derived from `genetics-mcp-server` source in that session:
 the prompt by rendering `default_system_prompt` per profile inside that repo's venv with the
 flag values read off the production and staging chat-backend pods, the catalogue by rendering
@@ -134,7 +137,7 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 | `ENABLE_CREDIBLE_SETS_STATS` | `false` | `get_credible_sets_stats` |
 | `ENABLE_PHENOTYPE_REPORT` | `false` | `get_phenotype_report` |
 | `ENABLE_SUBAGENTS` | `false` | `launch_subagents` |
-| `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~1.9 KB of citation and backend-naming guidance, because the prompt gate keys on the name |
+| `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~2.2 KB of citation, backend-naming and result-reading guidance, because the prompt gate keys on the name; the literature-grading rubric names no tool and stays (section 4a) |
 | `ALPHAGENOME_ENABLED` **and** `ALPHAGENOME_API_KEY` | `false` / unset | `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured` — either one missing withdraws both tools, and the opt-in prompt block with them |
 | `SANDBOX_ENABLED` | `false` | `run_analysis` only; `list_capabilities` and `read_artifact` are inert without a sandbox rather than broken by it |
 
@@ -728,6 +731,36 @@ The prompt also names the database exclusions explicitly:
 **What is and is NOT in the database.** It holds credible sets (`credible_sets_v`), colocalization (`colocalization_v`, `coloc_credsets_v`), exome/burden results (`exome_variant_results_v`, `gene_burden_results_v`), gene annotations (`gene_annotations_v`) and the functional views (`mpra_v` measured reporter activity, `variant_effect_v` in-silico chromatin predictions, `open_chromatin_v` accessible-region atlas, `asm_qtl_v` allele-specific methylation QTL). It does NOT contain per-variant **consequence / allele-frequency / rsID / pathogenicity** annotations — it reads the same underlying data, not extra consequence or frequency columns — and you must NEVER query the database for them. To restrict variants to coding ones, filter by the consequence categories under "Coding Variant" in Terminology below; there is no prebuilt coding-only table.
 ```
 
+The literature guidance is split the same way as the domain science above. The rules for
+reading a `search_scientific_literature` result name the tool and are gated with it — they go
+wherever `ENABLE_LITERATURE_SEARCH` is off. In Tool Usage Guidelines, verbatim:
+
+```text
+- When using search_scientific_literature, name the backend that was actually queried — the result's `backend` field, exactly one of `europepmc` or `perplexity`. You do not choose it: it is the user's setting, and if they want the other one they change that setting. A per-record `metadata_source` of `europepmc` on a `perplexity` result does not change which backend searched. PubMed, Europe PMC, bioRxiv and medRxiv are content indexed by the `europepmc` backend, not backends themselves — never write a slashed hybrid like "PubMed/Europe PMC"
+- Cite every paper as a markdown link built from the result's `url` field, e.g. `[Smith et al. 2021](https://pubmed.ncbi.nlm.nih.gov/12345678/)`
+- `[n]` markers in a `perplexity` `summary` resolve through `summary_citations`; a marker mapped to null has no record, so do not cite it. Each citation row from a `perplexity` result carries its record's `record_kind`: only `europepmc` was matched to an indexed paper, and `perplexity_snippet`, `cited_only` and `database_page` are leads, not evidence — for a snippet, judge from its `url` whether it is a paper before citing it as one; press releases, foundation pages, wikis and patient-information sites are not
+```
+
+In Handling Uncertainty, the GeneCards/NCBI bullet names the tool and is gated with it; the
+grading rubric it points to ("in the citation terms below") names no tool, so every surface
+gets it — without literature search it still governs recalled literature and whatever a
+subagent retrieved:
+
+```text
+- GeneCards and NCBI gene summaries are aggregated, sometimes outdated, and rest on literature of wildly varying quality — a single small study, an unreplicated candidate-gene paper, or a well-powered GWAS. Before presenting a GeneCards/NCBI association, call search_scientific_literature for that gene–phenotype pair, cite the underlying papers as markdown links, and say how strong the evidence is in the citation terms below. Flag weak or unreplicated evidence explicitly
+- **Grade literature as you grade the loaded data** — every paper you cite, not only genetics papers. In Pass 2 each citation row carries design, model system (human cohort, mouse line, cell line, in silico), n, replication (independent, none, not stated), and **retrieved** (a search result in this conversation, linked) or **recalled** (memory). A claim with no retrieved record is labelled recalled, never attached to a citation that does not contain it. A recalled row carries no link, id or number: its n, effect sizes and replication are "not retrieved"
+- Name the tier of every non-GWAS paper — cell line, single mouse line, case report, Mendelian randomisation, narrative review, preprint — and, for a paper a conclusion rests on, what the study did not test
+- A narrative review or consensus statement points at primary studies and is not itself evidence; an AI-generated search summary is not a source. Check each claim against its record, and keep the summary's hedges, not only its assertions
+- Converging evidence is weighed, not counted: a reporter assay, a fly phenotype and a narrative review are three weak readouts, not three confirmations
+- Agreement with the loaded data is reconciled as carefully as disagreement: "consistent with" needs the paper's number beside yours
+- A caveat stated in Pass 2 survives into Pass 3 and the bottom line, beside the claim it qualifies: a preprint stays a preprint, and a verdict resting on weak literature says so where it is stated
+```
+
+`TestLoadBearingTextIsPresent` pins both halves: the rubric survives on a tool set without
+`search_scientific_literature`, and the `record_kind` clause is present exactly where the tool
+is. What the fields those rules read mean is in section 8's `search_scientific_literature`
+entry.
+
 **Both of the gaps this section used to record are closed**.
 The prompt's "Choosing How to Get Data" section now names `run_analysis` and
 `list_capabilities` and states the script-vs-tool arbitration that previously lived only
@@ -1263,6 +1296,8 @@ Search scientific literature for research papers about genes, variants, diseases
 - 'europepmc' backend: queries the Europe PMC API, which indexes PubMed, Europe PMC, bioRxiv, and medRxiv. Returns structured paper records.
 - 'perplexity' backend: queries the Perplexity AI API, which searches a broader configured set of scientific web domains and returns an AI-generated summary with citations.
 When reporting results to the user, name the backend that was actually queried: the 'backend' field in the response, which is authoritative. Do NOT invent hybrid labels like 'PubMed/Europe PMC' or 'Perplexity/PubMed' — PubMed etc. are content indexed by the europepmc backend, not separate backends. Perplexity hits carry bibliographic metadata (authors, journal) looked up in Europe PMC where a PMID/DOI/PMCID was available; that is recorded per record in 'metadata_source' and does not change which backend was searched.
+Every Perplexity record has a 'record_kind': 'europepmc' (matched to an indexed Europe PMC record), 'perplexity_snippet' (a URL and Perplexity's snippet, unmatched), 'database_page' (a database entry such as NCBI Gene, ClinVar, OMIM or UniProt, not a paper), or 'cited_only' (title and url only: a hit the summary cites beyond max_results, not counted in 'returned'). 'summary_citations' maps each [n] in the 'summary' to that hit's {title, url, record_kind}, or null when no hit has that number; the summary is Perplexity's prose, not any paper's claim.
+Records matched in Europe PMC also carry fields that bound what they can be read as; on a Perplexity hit Europe PMC did not match, 'pub_types', 'subjects', 'cited_by', and 'publication_status' are absent, meaning unknown. 'pub_types': the indexer's publication-type labels, not a reading of the study design. 'subjects': the first few MeSH descriptors; MeSH lags publication by months and never exists for preprints, so an empty list is unknown, not evidence of absence (not 'not animal'). 'cited_by': reflects age and attention, not quality. 'publication_status': Europe PMC's status (e.g. epublish, ppublish). 'is_preprint' is always present on every hit: True when the hit's URL is a bioRxiv/medRxiv link or the matched Europe PMC record is a preprint. False is not evidence it isn't one — an arXiv, Research Square, or SSRN link reads False too.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -1273,6 +1308,44 @@ When reporting results to the user, name the backend that was actually queried: 
 | `date_range` | `string` | no | — | — | Optional date filter: 'last_year', 'last_5_years', or 'YYYY-YYYY' range |
 
 `required`: ['query']
+
+What a result carries, beyond what the description tells the model (source:
+`tools/orchestration.py` in genetics-mcp-server, `_search_europepmc_literature` and
+`_search_perplexity_literature`; that repo's `docs/project-spec.md`, "Perplexity result
+metadata", has the hydration rules in full):
+
+- **`europepmc` backend** — every record comes from Europe PMC and always carries the
+  appraisal fields `pub_types`, `subjects`, `cited_by` and `publication_status` (an empty
+  `subjects` list is unknown, not evidence of absence) and `is_preprint` (Europe PMC
+  source `PPR`). No `record_kind`, `summary` or `summary_citations`.
+- **`perplexity` backend** — Perplexity's Sonar response supplies only title, date, snippet
+  and url per hit, plus the prose `summary`; ids are parsed from the url. Europe PMC hydration
+  adds authors, journal, year, title, abstract and the four appraisal fields to each hit it
+  matches (`metadata_source: europepmc`, `record_kind: europepmc`): one batched id query,
+  then single-id follow-ups, then — for a hit with no id, or whose only id is a URL-derived
+  DOI Europe PMC does not know — a title search, accepted only when the matching records
+  collapse to one work within a year of Perplexity's date. Database pages are never
+  title-searched. The follow-ups share one total budget, `_HYDRATION_FOLLOW_UP_BUDGET_S`
+  (8 s), and whatever resolved within it is applied; hydration is best-effort and never fails
+  the search.
+- **`record_kind`** (Perplexity only): `europepmc` is the only kind matched to an indexed
+  paper. `perplexity_snippet` is a url and Perplexity's snippet, which may or may not be a
+  paper; `database_page` is a database entry (NCBI Gene, ClinVar, OMIM, UniProt …), never a
+  paper; `cited_only` is a hit the summary cites past `max_results`, carrying only `title`,
+  `url` and `record_kind`, unhydrated and not counted in `returned`. The prompt (section 4a)
+  tells the model to read all three non-`europepmc` kinds as leads, not evidence.
+- **`summary_citations`** maps every `[n]` in the `summary` to `{title, url, record_kind}`,
+  or null when no hit has that number; **`summary_note`** labels the summary as Perplexity's
+  prose rather than any paper's claim.
+- **Appraisal-field caveats**, as the description states them: `pub_types` is the indexer's
+  label, not a reading of study design; `subjects` is the first `_EPMC_SUBJECTS_CAP` MeSH
+  descriptors, which lag publication and never exist for preprints; `cited_by` tracks age and
+  attention, not quality; on an unmatched Perplexity hit all four are absent, meaning unknown.
+  `is_preprint` is on every ranked hit, but `False` is not evidence of a journal paper — only
+  bioRxiv/medRxiv urls and Europe PMC preprint records set it.
+- **Europe PMC abstracts**, on either backend, are cut at `_EPMC_ABSTRACT_CHARS` (1,200 chars), sized so
+  the largest measured result stays under `mcp_max_result_size`; an unhydrated Perplexity
+  hit's `abstract` is its snippet instead.
 
 #### `web_search`
 `TOOL_DEFINITIONS` — category `general`
