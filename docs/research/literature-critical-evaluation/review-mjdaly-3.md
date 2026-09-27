@@ -209,6 +209,7 @@ Borderline cases skipped (6): Hosseini 2020 meta-analysis details and Chick 2025
   - Claim: "Every published BMP1 OI family makes the same point clinically — heterozygous parents are **phenotypically normal** in [Xu et al. 2019], [Xi et al. 2021] … Genebass burden tests are **heterozygote-dominated additive tests**; for a strictly recessive gene with unaffected carriers, they are testing the wrong genetic model."
   - Source: "The parents were heterozygous carriers for the two mutations respectively, but with normal phenotype."
   - Why good: literature used to explain a null in the loaded data with the correct genetic model, quoting the primary sentence.
+  - VOID 2026-09-27: the praised sentence overgeneralises — in the full record only Xu 2019 says the parents had a normal phenotype; Xi 2021 says only that they were heterozygous carriers, and Pollitt 2016 is silent on the parents.
 
 - **[G6] session=ef50921d msg=a977eeba-95ba-436d-9b97-b7df273997eb time=2026-07-31 21:07 user=mjdaly backend=perplexity**
   - Question: GPR37 report

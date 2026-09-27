@@ -218,6 +218,7 @@ Scope: 4 sessions, 17 assistant messages (all `lit_backend=perplexity`), user `f
 - Claim (verbatim): "So I would not read the brain ranking as a cell-type enrichment test — for that you want stratified LDSC on full summary stats, which is what [Trubetskoy et al. 2022] and [Hook & McCallion 2020] did"
 - Source: as F11.
 - Scrutiny: the assistant's own overlap test is subordinated to the published method rather than the reverse (the mouse-proxy omission in F11 notwithstanding).
+  - VOID 2026-09-27: the praised sentence is the one F11 flags with the same diagnosis, and the full record confirms F11 — Trubetskoy 2022's record describes gene-expression concentration, not stratified LDSC, and only the mouse Hook & McCallion paper has layer V.
 
 - **[G12] session=d2370363 msg=4dd894f5-9b2c-49ce-b55b-62ca9245ccf3 time=2026-09-09 20:22:14 user=finucane backend=perplexity**
 - Question: do you have any pQTL data where you could check whether 15:90883330:G:A is a pQTL for any genes?
