@@ -4124,8 +4124,8 @@ profiles:
         trait_type: quantitative
         n_samples: 35559
         n_phenotypes: 4808
-        metadata_file: null  # not staged in the daly bucket; the credible sets are served in the finngen profile only
-        metadata_harmonizer: null
+        metadata_file: "gs://daly-genetics-results/mapping_files/decode_pqtl_pheno.json"
+        metadata_harmonizer: pheweb
         pseudo_credible_sets: true
 
       # --- collection ---
