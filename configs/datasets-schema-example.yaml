@@ -278,15 +278,15 @@ profiles:
       # --- GWAS ---
       finngen_gwas:
         resource: finngen
-        version: "R13"
+        version: "R14"
         description: >-
-          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
-          quantitative traits in 500,186 Finnish biobank participants.
+          FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 499,755 Finnish biobank participants.
         author: "FinnGen Consortium"
-        publication_date: "2025-09-12"
+        publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
 
       finngen_mvp_ukbb:
@@ -321,16 +321,16 @@ profiles:
       # --- collection dataset ---
       eqtl_catalogue:
         resource: eqtl_catalogue
-        version: "R7"
+        version: "R8_pre"
         description: >-
-          eQTL Catalogue R7. A harmonized collection of eQTL / sQTL / pQTL studies
+          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies
           across many tissues, cell types, and conditions.
         author: "eQTL Catalogue"
-        publication_date: "2024-06-01"
+        publication_date: "2026-01-01"
         data_type: mixed
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL", "pQTL"]
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r7_dataset_metadata.tsv"
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/eqtl_catalogue_r8_dataset_metadata.tsv"
         metadata_harmonizer: eqtl_catalogue
         collection: true
         subdataset_id_field: phenotype_code
@@ -378,14 +378,14 @@ profiles:
     datasets:
       finngen_gwas:
         resource: finngen
-        version: "R13"
+        version: "R14"
         description: >-
-          FinnGen R13 core GWAS. Binary disease endpoints and height/weight/BMI
-          quantitative traits in 500,186 Finnish biobank participants.
+          FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
+          quantitative traits in 499,755 Finnish biobank participants.
         author: "FinnGen Consortium"
-        publication_date: "2025-09-12"
+        publication_date: "2026-05-13"
         data_type: gwas
         trait_type: binary
         # only difference from the finngen profile: GCS bucket path
-        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_pheno_202509.json"
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
