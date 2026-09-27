@@ -2831,6 +2831,11 @@ the next new chat. Starting a new chat (including secret chat) returns the contr
 A conversation that predates a column reads NULL there and falls through to the user's default
 rather than to the built-in one.
 
+**Literature search** picks the backend `search_scientific_literature` queries; the model has no
+parameter for it. What each backend returns — including the Europe PMC hydration of Perplexity
+hits, the per-record `record_kind` and appraisal fields, and the `[n]` citation map — and the
+prompt rules for grading literature are in `docs/chat-tool-reference.md` §§ 4a and 8.
+
 **Chat memory's opt-in** (`chat_memory`, see "Chat memory (per-project digest)" above) rides the
 same `user_settings` mechanism as the row above, read and written through the same generic
 endpoints — but it is not one of the four chat options: it has no `chat_messages` column and no
