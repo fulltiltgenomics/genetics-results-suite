@@ -937,9 +937,67 @@ Two env vars, both read by `mcp_proxy.initialize_external_servers()`, plus the e
 
 | env var | role | in which profiles |
 |---|---|---|
-| `EXTERNAL_MCP_SERVERS` | comma-separated URLs of always-on servers (gnomAD, Open Targets); an entry may carry `|<auth token>` | every profile |
-| `RAG_MCP_SERVER` | the RAG server, registered into its own registry by `_initialize_rag_server` | every profile |
+| `EXTERNAL_MCP_SERVERS` | comma-separated entries for the always-on servers (gnomAD, Open Targets, C3PO); entry syntax below | every profile |
+| `RAG_MCP_SERVER` | the RAG server, registered into its own registry by `_initialize_rag_server`; same entry syntax | every profile |
 | `EXTERNAL_MCP_EXCLUDE_TOOLS` | comma-separated tool names dropped at registration | applies to `EXTERNAL_MCP_SERVERS` and to the RAG server |
+| `EXTERNAL_MCP_STATE_DIR` | where a rotated OAuth refresh token is persisted (`/data/mcp-oauth` on the `chat-data` PVC in the cluster); unset, a rotation dies with the process and the next start is locked out | servers with an `oauth=` option |
+
+**Entry syntax** (`ServerConfig.parse` in `mcp_proxy.py`): `URL[|option]...`. An option is
+`key=value` for one of the known keys, and anything else is a static bearer token — the
+original `URL|TOKEN` form, so a token containing `=` still parses. The keys:
+
+| key | meaning | default |
+|---|---|---|
+| `path` | the JSON-RPC endpoint under the URL; `/` for a server that answers at its root | `/mcp` |
+| `timeout` | per-request httpx timeout in seconds | `60` (`180` for `RAG_MCP_SERVER`) |
+| `token` | an explicit static bearer token | none |
+| `oauth` | the env var holding the JSON a device-code login produced; the entry then authenticates with access tokens minted from that refresh token, and never with a static token | none |
+| `tools` | a `+`-separated allow-list of upstream tool names (`,` already separates entries); `EXTERNAL_MCP_EXCLUDE_TOOLS` still subtracts from it | everything |
+| `prefix` | registers each tool as `<prefix>_<name>` and strips it again at dispatch, keeping the server's names out of the flat space the local tools share | none |
+
+**C3PO** (`https://mcp.c3po.bio`) is the entry that needs all of them. It answers at its root
+and 404s `/mcp`; it recommends 60 s as a floor and 120 s for pipeline and knowledge-base calls;
+and it sits behind OAuth 2.1 (WorkOS AuthKit) whose authorization server advertises the
+authorization-code, device-code and refresh-token grants but **no client-credentials grant**,
+so a service cannot log itself in — and the device-code grant, though advertised, is refused
+for a dynamically registered client ("Activation denied" on the activation page, measured
+2026-09-27), which leaves the authorization-code flow. The deployment's entry is
+
+```
+https://mcp.c3po.bio|path=/|timeout=120|oauth=C3PO_MCP_OAUTH|prefix=c3po|tools=list_clusters+get_cluster+list_datasets+get_dataset+get_dataset_tree+get_dataset_assets+query_kb+get_kb_query_result+get_node+get_node_assets+list_pipeline_executions+get_pipeline_execution+get_pipeline_execution_status+get_pipeline_execution_history+list_programs+get_program
+```
+
+The prefix is load-bearing: C3PO advertises a `list_datasets`, which is also the name of a
+local tool, and the proxy's registry is keyed by name, so without it C3PO's would capture
+that dispatch. The allow-list is deliberate too: every chat user acts as the one account that
+signed in, so the entry admits the read-only analytics tools and withholds the mutating ones
+(`update_*`, `reset_node`, `cluster_node`, `create_pipeline_execution`) and the account-context
+ones (`get_current_user`, `get_current_tenant`, `list_tenant_users`, `list_user_tenants`).
+Measured 2026-09-27: C3PO 3.4.7 advertises 26 tools, of which the entry admits 16; the
+access token lives an hour; a refresh rotates the token **and the retired one still
+refreshed successfully immediately afterwards**, so the persistence is insurance against a
+grace window ending rather than a measured necessity.
+The login is run once by an operator, with the account that should own everything the chat
+does on C3PO:
+
+```
+cd genetics-mcp-server
+uv run python -m genetics_mcp_server.scripts.mcp_oauth_login https://mcp.c3po.bio --path / --out c3po.json
+```
+
+It discovers the authorization server from C3PO's protected-resource metadata, registers a
+public client, prints a sign-in URL for a browser, and asks for the address the browser lands
+on afterwards — a loopback redirect nothing listens on, since the browser is not on the VM —
+exchanges the code in it with PKCE, lists the server's tools (so `tools=` can be chosen) and
+writes `token_endpoint`, `client_id` and `refresh_token` as JSON. That JSON goes into `.env.<env>` as `C3PO_MCP_OAUTH='<json>'`,
+`create-secrets.sh` stores it as the `c3po-mcp-oauth` key of `genetics-secrets`, and
+`k8s/deployments/chat-backend.yaml` mounts it as `C3PO_MCP_OAUTH`. The seed is a refresh token
+that the issuer retires on first use: chat-backend writes each successor to
+`EXTERNAL_MCP_STATE_DIR/C3PO_MCP_OAUTH.json` and reads it back ahead of the seed on the next
+start, unless the seed itself has changed (a fresh login), in which case the seed wins. A dead
+refresh token surfaces as `OAuth token refresh for C3PO_MCP_OAUTH failed: HTTP 400
+{"error":"invalid_grant"...}` in the startup log, with C3PO registering zero tools and the other
+servers unaffected; the fix is to run the login again and re-run `create-secrets.sh`.
 
 Values in this repo:
 
@@ -968,11 +1026,11 @@ Values in this repo:
   `genetics-mcp-server/docs/project-spec.md` is a hand-maintained snapshot, not a derivation.
 
 **Namespacing.** `MCPProxyClient.get_prefixed_name()` returns `f"{prefix}_{name}"` when the
-client has a `prefix` and the bare name otherwise. `_parse_server_config` splits an entry
-only into URL and optional auth token — it sets no prefix, and neither the dev stack nor the
-k8s manifest configures one — so **external tools arrive unnamespaced, in the same flat name
-space as the local tools**, and a collision is resolved by whatever the Anthropic API does
-with a duplicate name. `get_external_anthropic_tools()` passes the upstream `description` and
+client has a `prefix` and the bare name otherwise. `ServerConfig.parse` has no `prefix`
+option, and neither the dev stack nor the k8s manifest configures one — so **external tools
+arrive unnamespaced, in the same flat name space as the local tools**, and a collision is
+resolved by whatever the Anthropic API does with a duplicate name — unless the entry sets
+`prefix=`, which C3PO's does for exactly that reason. `get_external_anthropic_tools()` passes the upstream `description` and
 `inputSchema` through **verbatim**: the descriptions of external tools are written by the
 external server operator and are not reviewed here.
 

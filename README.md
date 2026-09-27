@@ -325,6 +325,8 @@ export COHERE_API_KEY="..."              # optional, for rag-service embeddings 
 export ADMIN_USERS="a@example.com,b@example.com"  # optional, emails allowed on the chat admin page
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."  # optional, for the monitor CronJob
 export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers proxied by chat-backend
+                                         # (entry syntax: docs/chat-tool-reference.md § 6)
+export C3PO_MCP_OAUTH='{"token_endpoint":...}'  # optional, the C3PO device-code login's JSON
 # INTERNAL_API_SECRET for results API is auto-generated if not set
 # GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
 # auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
