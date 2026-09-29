@@ -595,8 +595,9 @@ def datasets(resource: str | None = None, include_stats: bool = True) -> list[di
     """
     ...
 
-def resource_metadata(resource: str) -> pl.DataFrame:
-    """Harmonized per-trait metadata for one resource — one row per trait it serves.
+def resource_metadata(resource: str, phenotypes: list[str] | None = None) -> pl.DataFrame:
+    """Harmonized per-trait metadata for one resource — one row per trait it serves,
+    or only the traits named in `phenotypes`.
 
     `resources()` names the resources and `datasets()` gives the dataset-level
     aggregates; this is the rows behind them: the trait code, its human-readable name,
