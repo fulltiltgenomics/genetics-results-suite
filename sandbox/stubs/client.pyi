@@ -578,8 +578,13 @@ class GeneticsClient:
         """
         ...
 
-    async def resource_metadata(self, resource: str) -> pl.DataFrame:
-        """Harmonized per-trait metadata for one resource — one row per trait it serves.
+    async def resource_metadata(
+        self,
+        resource: str,
+        phenotypes: list[str] | None = None,
+    ) -> pl.DataFrame:
+        """Harmonized per-trait metadata for one resource — one row per trait it serves,
+        or only the traits named in `phenotypes`.
 
         `resources()` names the resources and `datasets()` gives the dataset-level
         aggregates; this is the rows behind them: the trait code, its human-readable name,
