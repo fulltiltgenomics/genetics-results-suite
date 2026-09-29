@@ -2741,6 +2741,13 @@ dataset_to_resource_rules:
 
 # ---------------------------------------------------------------------------
 # Profiles: per-deployment dataset registries
+#
+# `dataset` on an entry is the label the munged data files carry in their `dataset`
+# column, so it is the value the results views hold and the value a `WHERE dataset = ...`
+# filter needs; the entry's key is only the registry id. A list where one entry appears
+# under two labels across views (finngen_pqtl). Absent when the data carries no label:
+# collections (their sub-studies are labels of their own), summary-stats-only products,
+# chromatin peaks and gene-disease sets.
 # ---------------------------------------------------------------------------
 profiles:
   finngen:
@@ -2748,6 +2755,7 @@ profiles:
       # --- GWAS ---
       finngen_gwas:
         resource: finngen
+        dataset: FinnGen_R14
         version: "R14"
         description: >-
           FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
@@ -2761,6 +2769,7 @@ profiles:
 
       finngen_hla:
         resource: finngen
+        dataset: finngen_hla
         version: "R14"
         description: >-
           FinnGen R14 classical HLA allele associations. The 187 HLA alleles imputed from
@@ -2849,6 +2858,7 @@ profiles:
 
       finngen_kanta:
         resource: finngen
+        dataset: FinnGen_kanta
         version: "R14"
         description: >-
           FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
@@ -2873,6 +2883,7 @@ profiles:
 
       finngen_drugs:
         resource: finngen
+        dataset: FinnGen_drugs
         version: "R12"
         description: >-
           FinnGen R12 drug-purchase GWAS. These summary stats have been generated with the average
@@ -2900,6 +2911,7 @@ profiles:
 
       finngen_mvp_ukbb:
         resource: finngen_mvp_ukbb
+        dataset: FinnGen_R13_MVP_UKBB
         version: "R13"
         description: >-
           FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
@@ -2919,6 +2931,7 @@ profiles:
 
       finngen_mvp_ukbb_labs:
         resource: finngen_mvp_ukbb
+        dataset: FinnGen_R13_MVP_UKBB_labs
         version: "R13"
         description: >-
           FinnGen R13 + MVP + UK Biobank meta-analysis (lab measurements).
@@ -2938,6 +2951,7 @@ profiles:
 
       finngen_ukbb:
         resource: finngen_ukbb
+        dataset: FinnGen_R13_UKBB
         version: "R13"
         description: >-
           FinnGen R13 + UK Biobank meta-analysis (disease endpoints).
@@ -2958,6 +2972,7 @@ profiles:
 
       finngen_ukbb_labs:
         resource: finngen_ukbb
+        dataset: FinnGen_R13_UKBB_labs
         version: "R13"
         description: >-
           FinnGen R13 + UK Biobank meta-analysis (lab measurements).
@@ -2978,6 +2993,7 @@ profiles:
       # --- QTL ---
       finngen_pqtl:
         resource: finngen
+        dataset: [FinnGen_Olink, FinnGen_Olink_3K]
         version: "3K"
         description: >-
           FinnGen Olink Explore 3072 (3K) pQTL. Plasma protein levels measured primarily by
@@ -2995,6 +3011,7 @@ profiles:
 
       finngen_pqtl_5k:
         resource: finngen
+        dataset: FinnGen_Olink_5K
         version: "5K"
         description: >-
           FinnGen Olink Explore HT (5K) pQTL. FG3 Cross-Batch Harmonised aggregate: plasma
@@ -3027,6 +3044,7 @@ profiles:
 
       ukbb_pqtl:
         resource: ukbb
+        dataset: UKB_PPP
         version: "PPP"
         description: >-
           UK Biobank Pharma Proteomics Project (UKB-PPP) pQTL. Plasma protein levels measured
@@ -3041,6 +3059,7 @@ profiles:
 
       finngen_eqtl:
         resource: finngen
+        dataset: FinnGen_snRNAseq
         version: "batch1-5"
         description: >-
           FinnGen single-cell RNA-seq eQTL. Cell-type-resolved expression QTLs from snRNAseq
@@ -3063,6 +3082,7 @@ profiles:
 
       finngen_caqtl:
         resource: finngen
+        dataset: FinnGen_ATACseq
         version: "batch1-5"
         description: >-
           FinnGen ATAC-seq caQTL. Cell-type-resolved chromatin accessibility QTLs from snRNAseq
@@ -3086,6 +3106,7 @@ profiles:
       # --- ASM-QTL ---
       decode_asmqtl_cpg:
         resource: decode
+        dataset: deCODE_asmQTL_CpG
         version: "v1"
         description: >-
           deCODE CpG methylation ASM-QTL (Data-S1 from Stefansson et al. 2024,
@@ -3104,6 +3125,7 @@ profiles:
 
       decode_asmqtl_mds:
         resource: decode
+        dataset: deCODE_asmQTL_MDS
         version: "v1"
         description: >-
           deCODE MDS methylation ASM-QTL (Data-S3 from Stefansson et al. 2024,
@@ -3123,6 +3145,7 @@ profiles:
       # --- pQTL ---
       decode_pqtl_2021:
         resource: decode
+        dataset: deCODE_pQTL_2021
         version: "2021"
         description: >-
           deCODE plasma proteomics pQTL (Ferkingstad et al. 2021, doi:10.1038/s41588-021-00978-w).
@@ -3165,6 +3188,7 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
+        dataset: Open_Targets_26.06
         version: "26.06"
         description: >-
           Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
@@ -3180,6 +3204,7 @@ profiles:
       # --- coloc-only datasets ---
       finngen_gwas_r12:
         resource: finngen
+        dataset: FinnGen_R12
         version: "R12"
         description: >-
           FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
@@ -3194,6 +3219,7 @@ profiles:
 
       finngen_kanta_r12:
         resource: finngen
+        dataset: FinnGen_kanta
         version: "R12"
         description: >-
           FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
@@ -3209,6 +3235,7 @@ profiles:
 
       finngen_nmr:
         resource: finngen
+        dataset: FinnGen_NMR
         version: "NA"
         description: >-
           Nightingale nuclear magnetic resonance (NMR) metabolomics QTLs in plasma.
@@ -3223,6 +3250,7 @@ profiles:
 
       finngen_somascan:
         resource: finngen
+        dataset: FinnGen_SomaScan
         version: "batch1-2"
         description: >-
           FinnGen SomaScan proteomics pQTL. Plasma protein levels measured by the SomaScan 7K
@@ -3237,6 +3265,7 @@ profiles:
 
       finnliver:
         resource: finnliver
+        dataset: FinnLiver
         version: "NA"
         description: "FinnLiver liver tissue eQTL/sQTL. 131 Finnish individuals."
         author: "FinnLiver"
@@ -3250,6 +3279,7 @@ profiles:
 
       generisk:
         resource: generisk
+        dataset: GeneRisk
         version: "NA"
         description: >-
           GeneRisk lipid metabolome GWAS. 186 lipid species QTLs, SuSiE fine-mapping
@@ -3265,6 +3295,7 @@ profiles:
 
       interval:
         resource: interval
+        dataset: INTERVAL
         version: "NA"
         description: >-
           INTERVAL study pQTL. 3,622 plasma proteins in 3,301 samples on a SomaScan assay.
@@ -3279,6 +3310,7 @@ profiles:
 
       ukbb_finucane:
         resource: ukbb
+        dataset: UKB_Finucane
         version: "NA"
         description: >-
           UK Biobank GWAS of 119 traits.
@@ -3295,6 +3327,7 @@ profiles:
       # --- exome / gene-based ---
       genebass_exome:
         resource: genebass
+        dataset: genebass
         version: "NA"
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
@@ -3311,6 +3344,7 @@ profiles:
 
       ibd_exome:
         resource: ibd_exome_2026
+        dataset: IBD_exome
         version: "2026"
         description: >-
           2026 IBD exome analysis results. Single-variant exome association results for
@@ -3345,6 +3379,7 @@ profiles:
 
       genebass_gene_based:
         resource: genebass
+        dataset: genebass
         version: "NA"
         description: >-
           GeneBass gene-level burden test results. Aggregated gene-level rare variant
@@ -3361,6 +3396,7 @@ profiles:
 
       brava_gene_based:
         resource: brava
+        dataset: BRaVa
         version: "2026"
         description: >-
           BRaVa consortium gene-level burden test results. Cross-ancestry exome-sequencing
@@ -3379,6 +3415,7 @@ profiles:
 
       schema_gene_based:
         resource: schema2
+        dataset: SCHEMA2
         version: "v2"
         description: >-
           SCHEMA consortium gene-level burden test results. Rare variant association
@@ -3402,6 +3439,7 @@ profiles:
 
       bipex_gene_based:
         resource: bipex2
+        dataset: BipEx2
         version: "v2"
         description: >-
           BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
@@ -3425,6 +3463,7 @@ profiles:
 
       ibd_gene_based:
         resource: ibd_exome_2026
+        dataset: IBD_exome
         version: "2026"
         description: >-
           2026 IBD exome analysis results. Gene-level burden test results. Rare variant
@@ -3458,6 +3497,7 @@ profiles:
       # --- expression ---
       gtex_expression:
         resource: gtex
+        dataset: GTEx_v10
         version: "v10"
         description: "GTEx v10 median TPM gene expression across 54 human tissues from 948 post-mortem donors."
         author: "GTEx Consortium"
@@ -3470,6 +3510,7 @@ profiles:
 
       hpa_expression:
         resource: hpa
+        dataset: HPA_24.1
         version: "v24.1"
         description: >-
           Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
@@ -3503,6 +3544,7 @@ profiles:
       # --- open chromatin ---
       marderstein_open_chromatin:
         resource: marderstein
+        dataset: marderstein_open_chromatin
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) fetal and adult brain and heart
@@ -3520,6 +3562,7 @@ profiles:
 
       li_brain_open_chromatin:
         resource: li_brain_atac
+        dataset: li_brain_open_chromatin
         version: "2023"
         description: >-
           Li et al. 2023 (Science) human brain single-cell ATAC-seq open-chromatin atlas.
@@ -3535,6 +3578,7 @@ profiles:
 
       catlas_open_chromatin:
         resource: catlas
+        dataset: catlas_open_chromatin
         version: "2021"
         description: >-
           Zhang et al. 2021 (Cell) "Catlas" adult body-wide single-cell ATAC-seq
@@ -3549,6 +3593,7 @@ profiles:
 
       epimap_open_chromatin:
         resource: epimap
+        dataset: epimap_open_chromatin
         version: "2021"
         description: >-
           Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
@@ -3566,6 +3611,7 @@ profiles:
 
       calderon_open_chromatin:
         resource: calderon_immune
+        dataset: calderon_open_chromatin
         version: "2019"
         description: >-
           Calderon et al. 2019 (Nature Genetics) stimulation-responsive immune
@@ -3581,6 +3627,7 @@ profiles:
 
       rosmap_open_chromatin:
         resource: rosmap_brain
+        dataset: rosmap_open_chromatin
         version: "2023"
         description: >-
           Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
@@ -3597,6 +3644,7 @@ profiles:
       # --- variant effect prediction ---
       marderstein_chrombpnet:
         resource: marderstein
+        dataset: marderstein_chrombpnet
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) ChromBPNet in-silico variant-effect
@@ -3613,6 +3661,7 @@ profiles:
 
       marderstein_flare:
         resource: marderstein
+        dataset: marderstein_flare
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) FLARE in-silico variant-effect scores.
@@ -3629,6 +3678,7 @@ profiles:
       # --- MPRA (measured cis-regulatory allelic activity) ---
       siraj_mpra:
         resource: siraj_mpra
+        dataset: siraj_mpra
         version: "2026"
         description: >-
           Siraj et al. 2026 massively parallel reporter assay (MPRA). 221K fine-mapped +
@@ -3684,6 +3734,7 @@ profiles:
       # --- rare CNV dosage sensitivity ---
       collins_rcnv_2022:
         resource: rcnv
+        dataset: Collins_rCNV_2022
         version: "v0.2"
         description: >-
           Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
@@ -3705,6 +3756,7 @@ profiles:
       # --- external summary statistics ---
       pgc_scz:
         resource: pgc
+        dataset: PGC
         version: "wave3"
         description: >-
           PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
@@ -3732,6 +3784,7 @@ profiles:
 
       pgc_scz_finemap:
         resource: pgc
+        dataset: PGC_SCZ_2022
         version: "2022"
         description: >-
           Published FINEMAP 95% credible sets for PGC schizophrenia (Trubetskoy et al. 2022,
@@ -3763,6 +3816,7 @@ profiles:
 
       pgc_bip:
         resource: pgc
+        dataset: PGC
         version: "2024"
         description: >-
           PGC bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
@@ -3789,6 +3843,7 @@ profiles:
 
       gp2_pd:
         resource: gp2
+        dataset: GP2
         version: "2025"
         description: >-
           GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
@@ -3815,6 +3870,7 @@ profiles:
 
       ibd_gwas:
         resource: ibd_gwas
+        dataset: IIBDGC
         version: "2026"
         description: >-
           IBD GWAS meta-analysis across European, East Asian, and South Asian
@@ -3847,6 +3903,7 @@ profiles:
 
       covid_hgi:
         resource: covid_hgi
+        dataset: COVID19_HGI
         version: "R7"
         description: >-
           COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
@@ -3865,6 +3922,7 @@ profiles:
 
       nmr_ukbb_est:
         resource: nmr_ukbb_est
+        dataset: nmr_ukbb_est
         version: "2026"
         description: >-
           Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
@@ -3895,6 +3953,7 @@ profiles:
       # --- GWAS ---
       finngen_gwas:
         resource: finngen
+        dataset: FinnGen_R14
         version: "R14"
         description: >-
           FinnGen R14 core GWAS. Binary disease endpoints and height/weight/BMI
@@ -3908,6 +3967,7 @@ profiles:
 
       finngen_hla:
         resource: finngen
+        dataset: finngen_hla
         version: "R14"
         description: >-
           FinnGen R14 classical HLA allele associations. The 187 HLA alleles imputed from
@@ -3928,6 +3988,7 @@ profiles:
 
       finngen_kanta:
         resource: finngen
+        dataset: FinnGen_kanta
         version: "R14"
         description: >-
           FinnGen Kanta lab-value GWAS. These GWASs are based on clinical lab values used in
@@ -3952,6 +4013,7 @@ profiles:
 
       finngen_drugs:
         resource: finngen
+        dataset: FinnGen_drugs
         version: "R12"
         description: >-
           FinnGen R12 drug-purchase GWAS. These summary stats have been generated with the average
@@ -3979,6 +4041,7 @@ profiles:
 
       finngen_mvp_ukbb:
         resource: finngen_mvp_ukbb
+        dataset: FinnGen_R13_MVP_UKBB
         version: "R13"
         description: >-
           FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
@@ -3998,6 +4061,7 @@ profiles:
 
       finngen_mvp_ukbb_labs:
         resource: finngen_mvp_ukbb
+        dataset: FinnGen_R13_MVP_UKBB_labs
         version: "R13"
         description: >-
           FinnGen R13 + MVP + UK Biobank meta-analysis (lab measurements).
@@ -4017,6 +4081,7 @@ profiles:
 
       finngen_ukbb:
         resource: finngen_ukbb
+        dataset: FinnGen_R13_UKBB
         version: "R13"
         description: >-
           FinnGen R13 + UK Biobank meta-analysis (disease endpoints).
@@ -4037,6 +4102,7 @@ profiles:
 
       finngen_ukbb_labs:
         resource: finngen_ukbb
+        dataset: FinnGen_R13_UKBB_labs
         version: "R13"
         description: >-
           FinnGen R13 + UK Biobank meta-analysis (lab measurements).
@@ -4057,6 +4123,7 @@ profiles:
       # --- QTL ---
       finngen_pqtl:
         resource: finngen
+        dataset: [FinnGen_Olink, FinnGen_Olink_3K]
         version: "3K"
         description: >-
           FinnGen Olink Explore 3072 (3K) pQTL. Plasma protein levels measured primarily by
@@ -4074,6 +4141,7 @@ profiles:
 
       finngen_pqtl_5k:
         resource: finngen
+        dataset: FinnGen_Olink_5K
         version: "5K"
         description: >-
           FinnGen Olink Explore HT (5K) pQTL. FG3 Cross-Batch Harmonised aggregate: plasma
@@ -4106,6 +4174,7 @@ profiles:
 
       ukbb_pqtl:
         resource: ukbb
+        dataset: UKB_PPP
         version: "PPP"
         description: >-
           UK Biobank Pharma Proteomics Project (UKB-PPP) pQTL. Plasma protein levels measured
@@ -4120,6 +4189,7 @@ profiles:
 
       finngen_eqtl:
         resource: finngen
+        dataset: FinnGen_snRNAseq
         version: "batch1-5"
         description: >-
           FinnGen single-cell RNA-seq eQTL. Cell-type-resolved expression QTLs from snRNAseq
@@ -4142,6 +4212,7 @@ profiles:
 
       finngen_caqtl:
         resource: finngen
+        dataset: FinnGen_ATACseq
         version: "batch1-5"
         description: >-
           FinnGen ATAC-seq caQTL. Cell-type-resolved chromatin accessibility QTLs from snRNAseq
@@ -4165,6 +4236,7 @@ profiles:
       # --- ASM-QTL ---
       decode_asmqtl_cpg:
         resource: decode
+        dataset: deCODE_asmQTL_CpG
         version: "v1"
         description: >-
           deCODE CpG methylation ASM-QTL (Data-S1 from Stefansson et al. 2024,
@@ -4183,6 +4255,7 @@ profiles:
 
       decode_asmqtl_mds:
         resource: decode
+        dataset: deCODE_asmQTL_MDS
         version: "v1"
         description: >-
           deCODE MDS methylation ASM-QTL (Data-S3 from Stefansson et al. 2024,
@@ -4202,6 +4275,7 @@ profiles:
       # --- pQTL ---
       decode_pqtl_2021:
         resource: decode
+        dataset: deCODE_pQTL_2021
         version: "2021"
         description: >-
           deCODE plasma proteomics pQTL (Ferkingstad et al. 2021, doi:10.1038/s41588-021-00978-w).
@@ -4244,6 +4318,7 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
+        dataset: Open_Targets_26.06
         version: "26.06"
         description: >-
           Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
@@ -4259,6 +4334,7 @@ profiles:
       # --- coloc-only datasets ---
       finngen_gwas_r12:
         resource: finngen
+        dataset: FinnGen_R12
         version: "R12"
         description: >-
           FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
@@ -4273,6 +4349,7 @@ profiles:
 
       finngen_kanta_r12:
         resource: finngen
+        dataset: FinnGen_kanta
         version: "R12"
         description: >-
           FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
@@ -4288,6 +4365,7 @@ profiles:
 
       finngen_nmr:
         resource: finngen
+        dataset: FinnGen_NMR
         version: "NA"
         description: >-
           Nightingale nuclear magnetic resonance (NMR) metabolomics QTLs in plasma.
@@ -4302,6 +4380,7 @@ profiles:
 
       finngen_somascan:
         resource: finngen
+        dataset: FinnGen_SomaScan
         version: "batch1-2"
         description: >-
           FinnGen SomaScan proteomics pQTL. Plasma protein levels measured by the SomaScan 7K
@@ -4316,6 +4395,7 @@ profiles:
 
       finnliver:
         resource: finnliver
+        dataset: FinnLiver
         version: "NA"
         description: "FinnLiver liver tissue eQTL/sQTL. 131 Finnish individuals."
         author: "FinnLiver"
@@ -4329,6 +4409,7 @@ profiles:
 
       generisk:
         resource: generisk
+        dataset: GeneRisk
         version: "NA"
         description: >-
           GeneRisk lipid metabolome GWAS. 186 lipid species QTLs, SuSiE fine-mapping
@@ -4344,6 +4425,7 @@ profiles:
 
       interval:
         resource: interval
+        dataset: INTERVAL
         version: "NA"
         description: >-
           INTERVAL study pQTL. 3,622 plasma proteins in 3,301 samples on a SomaScan assay.
@@ -4358,6 +4440,7 @@ profiles:
 
       ukbb_finucane:
         resource: ukbb
+        dataset: UKB_Finucane
         version: "NA"
         description: >-
           UK Biobank GWAS of 119 traits.
@@ -4374,6 +4457,7 @@ profiles:
       # --- exome / gene-based ---
       genebass_exome:
         resource: genebass
+        dataset: genebass
         version: "NA"
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
@@ -4390,6 +4474,7 @@ profiles:
 
       ibd_exome:
         resource: ibd_exome_2026
+        dataset: IBD_exome
         version: "2026"
         description: >-
           2026 IBD exome analysis results. Single-variant exome association results for
@@ -4424,6 +4509,7 @@ profiles:
 
       genebass_gene_based:
         resource: genebass
+        dataset: genebass
         version: "NA"
         description: >-
           GeneBass gene-level burden test results. Aggregated gene-level rare variant
@@ -4440,6 +4526,7 @@ profiles:
 
       brava_gene_based:
         resource: brava
+        dataset: BRaVa
         version: "2026"
         description: >-
           BRaVa consortium gene-level burden test results. Cross-ancestry exome-sequencing
@@ -4458,6 +4545,7 @@ profiles:
 
       schema_gene_based:
         resource: schema2
+        dataset: SCHEMA2
         version: "v2"
         description: >-
           SCHEMA consortium gene-level burden test results. Rare variant association
@@ -4481,6 +4569,7 @@ profiles:
 
       bipex_gene_based:
         resource: bipex2
+        dataset: BipEx2
         version: "v2"
         description: >-
           BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
@@ -4504,6 +4593,7 @@ profiles:
 
       ibd_gene_based:
         resource: ibd_exome_2026
+        dataset: IBD_exome
         version: "2026"
         description: >-
           2026 IBD exome analysis results. Gene-level burden test results. Rare variant
@@ -4537,6 +4627,7 @@ profiles:
       # --- expression ---
       gtex_expression:
         resource: gtex
+        dataset: GTEx_v10
         version: "v10"
         description: "GTEx v10 median TPM gene expression across 54 human tissues from 948 post-mortem donors."
         author: "GTEx Consortium"
@@ -4549,6 +4640,7 @@ profiles:
 
       hpa_expression:
         resource: hpa
+        dataset: HPA_24.1
         version: "v24.1"
         description: >-
           Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
@@ -4582,6 +4674,7 @@ profiles:
       # --- open chromatin ---
       marderstein_open_chromatin:
         resource: marderstein
+        dataset: marderstein_open_chromatin
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) fetal and adult brain and heart
@@ -4599,6 +4692,7 @@ profiles:
 
       li_brain_open_chromatin:
         resource: li_brain_atac
+        dataset: li_brain_open_chromatin
         version: "2023"
         description: >-
           Li et al. 2023 (Science) human brain single-cell ATAC-seq open-chromatin atlas.
@@ -4614,6 +4708,7 @@ profiles:
 
       catlas_open_chromatin:
         resource: catlas
+        dataset: catlas_open_chromatin
         version: "2021"
         description: >-
           Zhang et al. 2021 (Cell) "Catlas" adult body-wide single-cell ATAC-seq
@@ -4628,6 +4723,7 @@ profiles:
 
       epimap_open_chromatin:
         resource: epimap
+        dataset: epimap_open_chromatin
         version: "2021"
         description: >-
           Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
@@ -4645,6 +4741,7 @@ profiles:
 
       calderon_open_chromatin:
         resource: calderon_immune
+        dataset: calderon_open_chromatin
         version: "2019"
         description: >-
           Calderon et al. 2019 (Nature Genetics) stimulation-responsive immune
@@ -4660,6 +4757,7 @@ profiles:
 
       rosmap_open_chromatin:
         resource: rosmap_brain
+        dataset: rosmap_open_chromatin
         version: "2023"
         description: >-
           Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
@@ -4676,6 +4774,7 @@ profiles:
       # --- variant effect prediction ---
       marderstein_chrombpnet:
         resource: marderstein
+        dataset: marderstein_chrombpnet
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) ChromBPNet in-silico variant-effect
@@ -4692,6 +4791,7 @@ profiles:
 
       marderstein_flare:
         resource: marderstein
+        dataset: marderstein_flare
         version: "2026"
         description: >-
           Marderstein et al. 2026 (Nature Genetics) FLARE in-silico variant-effect scores.
@@ -4708,6 +4808,7 @@ profiles:
       # --- MPRA (measured cis-regulatory allelic activity) ---
       siraj_mpra:
         resource: siraj_mpra
+        dataset: siraj_mpra
         version: "2026"
         description: >-
           Siraj et al. 2026 massively parallel reporter assay (MPRA). 221K fine-mapped +
@@ -4763,6 +4864,7 @@ profiles:
       # --- rare CNV dosage sensitivity ---
       collins_rcnv_2022:
         resource: rcnv
+        dataset: Collins_rCNV_2022
         version: "v0.2"
         description: >-
           Collins et al. 2022 cross-disorder rare-CNV dosage sensitivity map (Cell
@@ -4793,6 +4895,7 @@ profiles:
       # --- external summary statistics ---
       pgc_scz:
         resource: pgc
+        dataset: PGC
         version: "wave3"
         description: >-
           PGC schizophrenia GWAS wave 3 meta-analysis. Genome-wide association study of
@@ -4820,6 +4923,7 @@ profiles:
 
       pgc_scz_finemap:
         resource: pgc
+        dataset: PGC_SCZ_2022
         version: "2022"
         description: >-
           Published FINEMAP 95% credible sets for PGC schizophrenia (Trubetskoy et al. 2022,
@@ -4851,6 +4955,7 @@ profiles:
 
       pgc_bip:
         resource: pgc
+        dataset: PGC
         version: "2024"
         description: >-
           PGC bipolar disorder multi-ancestry GWAS meta-analysis (2024, excluding 23andMe).
@@ -4877,6 +4982,7 @@ profiles:
 
       gp2_pd:
         resource: gp2
+        dataset: GP2
         version: "2025"
         description: >-
           GP2 (Global Parkinson's Genetics Program) European ancestry GWAS for
@@ -4903,6 +5009,7 @@ profiles:
 
       ibd_gwas:
         resource: ibd_gwas
+        dataset: IIBDGC
         version: "2026"
         description: >-
           IBD GWAS meta-analysis across European, East Asian, and South Asian
@@ -4935,6 +5042,7 @@ profiles:
 
       covid_hgi:
         resource: covid_hgi
+        dataset: COVID19_HGI
         version: "R7"
         description: >-
           COVID-19 Host Genetics Initiative R7 GWAS meta-analysis (excluding 23andMe).
@@ -4953,6 +5061,7 @@ profiles:
 
       nmr_ukbb_est:
         resource: nmr_ukbb_est
+        dataset: nmr_ukbb_est
         version: "2026"
         description: >-
           Published SuSiE 95% credible sets for 249 circulating Nightingale NMR metabolic
