@@ -317,6 +317,8 @@ profiles:
         n_controls: integer              # control count (binary traits)
         n_phenotypes: integer            # number of phenotypes
         pseudo_credible_sets: boolean    # true if credible sets are pseudo (not fine-mapped)
+        on_request: boolean              # true: served only when a request names the resource;
+                                         # absent from default search and the /datasets catalogue
         collection: boolean              # true if this is a collection of sub-studies
         subdataset_id_field: string      # field identifying sub-studies (when collection=true)
         qtl_types: [string]              # QTL types in collection (e.g. ["eQTL", "sQTL"])
@@ -327,6 +329,25 @@ profiles:
             n_controls: integer
             n_samples: integer
 ```
+
+### Field details for `on_request`
+
+Set on a dataset that must never reach an answer nobody asked for: users' own sandbox
+custom GWAS runs, which are unreviewed analyses standing next to release results. The
+data endpoints already require the resource in the path, so the flag governs the two
+surfaces that do not: results-api leaves the dataset out of `/datasets` unless the
+request filters on its resource, and keeps its phenotypes out of `/search` unless the
+request's `resources` parameter names the resource. The flag gates a whole resource —
+results-api refuses to start on a resource mixing flagged and unflagged datasets, since a
+half-hidden resource would surface through the other half.
+
+Two more consumers honour the flag. The BigQuery datasets loader
+(genetics-results-db `scripts/build_phenotypes.py`) emits no row for a flagged entry, so
+`datasets_v` — the catalogue every SQL caller reads — never lists it. The chat backend
+learns which flagged resources a deployment serves by asking results-api
+(`GET /datasets/on_request`) and renders its custom-GWAS prompt section and the tool
+description hints that name those resources from that answer alone: a deployment whose
+profile carries no flagged dataset never mentions them.
 
 ### `data_type` enum
 
@@ -406,6 +427,14 @@ phenotype load for the entire profile. A null `metadata_file` with a non-null
 `metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and the
 dataset's trait codes simply stay unresolved in `phenotypes_v` -- a silent no-op that looks
 configured.
+
+The one deliberate both-null case is a dataset whose metadata is not a file at all: the
+sandbox custom GWAS datasets (`finngen_custom_*`) are served by results-api straight from
+the userresults bucket, where every run carries its own `metadata.json`. results-api's
+profile config names the release and its catalog reads those files, so the API shows
+stats, `/resource_metadata` rows and search entries for them with both fields null; db-api
+holds none of that data, so the nulls keep its phenotype load from ever opening a path.
+The rule stays: a null `metadata_file` means db-api resolves nothing for the dataset.
 
 The harmonizer names are not enumerated here: each is implemented twice, in results-api's
 `metadata_harmonizer.py` and in `genetics-results-db`'s `build_phenotypes.py`

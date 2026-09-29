@@ -21,6 +21,32 @@ resources:
     description: "FinnGen + Million Veteran Program + UK Biobank GWAS meta-analysis"
     aliases: ["finngen mvp", "finngen mvp ukbb"]
 
+  finngen_custom_r14:
+    label: "FinnGen R14 custom GWAS"
+    description: >-
+      Custom GWAS run by FinnGen sandbox users on the R14 data freeze with the
+      REGENIE unmodifiable pipeline, served straight from the userresults folder in
+      library-green: summary statistics, SuSiE credible sets where the user ran
+      fine-mapping, and classical HLA allele results. A run is named by its user;
+      names are unique within a release only and may coincide with core endpoint codes
+    aliases: ["custom gwas", "user results", "userresults", "my gwas", "sandbox gwas", "custom gwas r14"]
+
+  finngen_custom_r13:
+    label: "FinnGen R13 custom GWAS"
+    description: >-
+      Custom GWAS run by FinnGen sandbox users on the R13 data freeze, served straight
+      from the userresults folder in library-green: summary statistics and SuSiE
+      credible sets where the user ran fine-mapping (no HLA run in R13)
+    aliases: ["custom gwas r13", "user results r13"]
+
+  finngen_custom_r12:
+    label: "FinnGen R12 custom GWAS"
+    description: >-
+      Custom GWAS run by FinnGen sandbox users on the R12 data freeze, served straight
+      from the userresults folder in library-green: summary statistics and SuSiE
+      credible sets where the user ran fine-mapping (no HLA run in R12)
+    aliases: ["custom gwas r12", "user results r12"]
+
   open_targets:
     label: "Open Targets Genetics"
     description: "Open Targets GWAS summary statistics and fine-mapping"
@@ -2752,6 +2778,74 @@ profiles:
         n_phenotypes: 2712
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
+
+      # sandbox custom GWAS: served by results-api straight from
+      # gs://finngen-production-library-green/finngen_R{14,13,12}/sandbox_custom_gwas/.
+      # metadata_file is null because there is no file: each run's metadata.json is read
+      # from the bucket by results-api's catalog, and db-api holds none of this data. A
+      # phenotype list therefore never reaches phenotypes_v, and that is the intended shape.
+      # on_request: these are users' own, unreviewed analyses, so they are served only when a
+      # request names their resource and never enter the default phenotype search or the
+      # dataset catalogue, where they would otherwise stand next to the release results
+      finngen_custom_r14_gwas:
+        on_request: true
+        resource: finngen_custom_r14
+        version: "R14"
+        description: >-
+          Custom GWAS run by FinnGen sandbox users on the R14 freeze (REGENIE unmodifiable
+          pipeline; binary and continuous phenotypes; additive, recessive or dominant
+          models). Summary statistics for every run; SuSiE 95% credible sets for the
+          runs whose user also ran the fine-mapping pipeline. Visible to every user of
+          this deployment, as in the userresults browser.
+        author: "FinnGen sandbox users"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_custom_r14_hla:
+        on_request: true
+        resource: finngen_custom_r14
+        version: "R14"
+        description: >-
+          Classical HLA allele associations the R14 pipeline computes for each custom GWAS
+          run: the imputed two-field alleles of HLA-A, -B, -C, -DPB1, -DQA1, -DQB1, -DRB1,
+          -DRB3, -DRB4 and -DRB5 tested against the user's phenotype.
+        author: "FinnGen sandbox users"
+        publication_date: "NA"
+        data_type: hla
+        trait_type: mixed
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_custom_r13_gwas:
+        on_request: true
+        resource: finngen_custom_r13
+        version: "R13"
+        description: >-
+          Custom GWAS run by FinnGen sandbox users on the R13 freeze: summary statistics
+          for every run and SuSiE 95% credible sets where the user ran fine-mapping.
+        author: "FinnGen sandbox users"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: null
+        metadata_harmonizer: null
+
+      finngen_custom_r12_gwas:
+        on_request: true
+        resource: finngen_custom_r12
+        version: "R12"
+        description: >-
+          Custom GWAS run by FinnGen sandbox users on the R12 freeze: summary statistics
+          for every run and SuSiE 95% credible sets where the user ran fine-mapping.
+        author: "FinnGen sandbox users"
+        publication_date: "NA"
+        data_type: gwas
+        trait_type: mixed
+        metadata_file: null
+        metadata_harmonizer: null
 
       finngen_kanta:
         resource: finngen

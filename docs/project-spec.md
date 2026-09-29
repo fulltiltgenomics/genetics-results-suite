@@ -483,6 +483,42 @@ PGC schizophrenia additionally has **published** fine-mapping served alongside i
 The EstBB-UKBB NMR metabolic trait fine-mapping is the other published-credible-set dataset, and the first `metaboQTL` rows in `credible_sets_v`: resource, dataset and `dataset` column value all `nmr_ukbb_est`, from Tambets et al. 2026 (`gs://<bucket>/credible_sets/nmr_ukbb_est/2026/nmr_ukbb_est_credible_sets.tsv.gz`, munged by `genetics-results-munge/scripts/munge_nmr_meta.sh`). 249 Nightingale NMR biomarkers, `cell_type` `plasma`, trait codes resolved through `phenotypes_v` from a 249-row metadata JSON whose names are matched against the authors' own GWAS Catalog registrations rather than hand-written. The GWAS is a 619,372-individual meta-analysis but the fine-mapping is the UKBB_EUR subset alone (413,897), which is the sample size the registry records. Two properties a consumer cannot see in a `SELECT *` and which `genetics-results-munge/docs/nmr-metabolic-trait-finemapping.md` derives in full: the source's `z` is signed on the **reference** allele, so `beta` is its negation (established against the companion lead-variant record, whose `Z` is the exact negative on all 48,742 shared rows); and `beta`/`se`/`mlog10p` are the authors' published values on the 49,815 lead-variant rows, derived from `z` elsewhere with a per-trait scale calibrated against those same published standard errors, and NULL on 5,004 rows whose `z` overflowed in the source. Those 5,004 are why `credible_sets.beta` is nullable. An exact-match `nmr_ukbb_est` rule maps the dataset to the resource of the same name; the value deliberately does not start with `UKB`, which the `UKB%` rule would claim for the `ukbb` resource. Registered in both profiles but staged and loaded only in daly — `finngen-commons` is not writable from the machine this landed on, so the finngen profile has the registry entry, no `credible_sets.py` product entry (`startup_checks` would fail its startup on a missing `all_cs_file`) and a `build_phenotypes.ABSENT_FROM_RESULTS` entry scoped to that profile.
 
 
+### Sandbox custom GWAS, served from the userresults bucket
+
+FinnGen sandbox users' own GWAS runs are queryable through results-api and the agent with
+**nothing ingested**. The REGENIE unmodifiable pipeline publishes each run to
+`gs://finngen-production-library-green/finngen_R<N>/sandbox_custom_gwas/<run>/` (summary
+stats, tabix-indexed), the fine-mapping pipeline adds `finemap/susie/<name>.SUSIE.*` and
+the R14 pipeline `hla/<name>.gz`; userresults.finngen.fi reads the same folders. results-api
+lists each release's prefix into a per-release catalog, refreshed in the background, and
+reads the pipeline's own files at request time — translating the SuSiE member and summary
+TSVs into the served credible-set columns and widening the unindexed HLA file into
+`gene`/`allele` on the way out. Served as one resource per release, `finngen_custom_r14`,
+`finngen_custom_r13` and `finngen_custom_r12` (finngen profile only; the daly profile lists
+no releases): a run name is unique within a release only, and dozens of R14 names are also
+core endpoint codes, so they can be neither one resource nor part of `finngen`. Per run:
+summary statistics by variant and region for every run; SuSiE 95% credible sets and leads
+for the runs whose user ran fine-mapping (R14: 292 of 912 at the time of writing); HLA
+allele associations for R14 runs. No cross-run index, so the by-variant/gene/region
+credible-set endpoints, colocalization and PheWAS-style questions do not cover them.
+Visibility is shared, as in the userresults browser — the bucket records no owner, and the
+only provenance served is the day a run was written (`date` in the release's resource
+metadata; the pipeline's submitter fields and sandbox number are deliberately not read) —
+but the datasets are **on request only** (`on_request: true`): a run is a user's unreviewed
+analysis, so it is absent from the default `/datasets` catalogue and from `/search`, and
+reachable solely when a request names its resource; the agent's prompt says to touch one
+only when the user asks about their own or a custom GWAS and to label it as such. That
+prompt section, and the tool-description hints naming the release resources, are rendered
+from results-api's answer to `GET /datasets/on_request`, so a deployment whose profile
+lists no release (daly) never hears of userresults; the BigQuery datasets loader likewise
+emits no row for an on-request entry. The
+registry entries carry `metadata_file: null` because there is no file (each run has its
+own `metadata.json`, which the catalog reads) and nothing of this reaches BigQuery. The
+current release keeps a convention fallback, so a run is queryable by its exact name the
+moment it lands, before the next listing refresh puts it in the search index. Design and
+rationale: `docs/adding-datasets.md` §16; mechanics: genetics-results-api's
+`docs/project-spec.md`, "Sandbox custom GWAS".
+
 ### Open chromatin and variant effect (Products A and B)
 
 Two data products cover chromatin accessibility rather than association statistics. Both carry
