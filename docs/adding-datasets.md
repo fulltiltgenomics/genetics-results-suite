@@ -854,6 +854,76 @@ the FINEMAP outputs, the 99% sets, autoreporting, and any cross-run index (by-va
 by-gene, by-region, coloc, PheWAS) — each would need a combined file, which is the
 ingestion the ask excluded.
 
+## 17. Worked example: ASC 2026 autism exome counts, a release with no p-values
+
+Context: the Autism Sequencing Consortium's 2026 exome release (Satterstrom, Auwerx, Fu et
+al., medRxiv 10.64898/2026.08.24.26360398) ships two files: one row per gene with a TADA
+Bayes factor, a Bayesian FDR, a QC flag and 42 count columns (7 variant classes x de novo
+proband/sibling, transmitted/untransmitted, case/control), and one row per variant with six
+allele counts. **There is no p-value, effect size or allele frequency anywhere in it**, and
+the standing rule for this suite is that a served statistic comes from the source, never
+derived on the way in. That rules out both exome tables: `gene_burden_results` and
+`exome_variant_results` make `mlog10p` and `beta` NOT NULL, and the one precedent for
+count-only input (the SCHEMA2 variant munge) fills them with a Haldane-corrected odds ratio —
+exactly the derivation the rule forbids. Relabelling the FDR as a p-value would mislead the
+browser's `mlog10p > 4` cut, and relaxing NOT NULL is a one-way rebuild of a 343M-row table.
+So this is a **BigQuery-only product in the rCNV shape**, with three tables of its own.
+
+Changes made (new resource `asc2`, datasets `asc_gene_based` + `asc_exome` sharing
+`dataset: ASC2`, three tables and views, no results-api product config):
+
+1. `genetics-results-munge`: `scripts/munge_asc.py`. The gene file is melted the way the
+   burden munges melt their annotation classes — one row per gene x `variant_class` x
+   `inheritance_mode` with `n_affected` / `n_unaffected` as the pair the mode contrasts —
+   and the Bayes factor, FDR and flag go to a second one-row-per-gene table, so both
+   `variant_class` and `inheritance_mode` are enumerable columns and a later de novo release
+   (DDD, Epi25, SCHEMA's unserved de novo counts) fits without a schema. The variant file
+   stays wide: six count columns, source names kept. The statistics are read **as strings**
+   so `1.2272e+73` reaches BigQuery as spelled. Genes join GENCODE **v29**, which the
+   release's VEP 95 ids match completely (v39 loses 57). The shared writer grew
+   `mlog10p_col=None` for a product with no filter column, rather than the script growing
+   its own bgzip pipe.
+2. `datasets.yaml`: the `asc2` resource; both entries in both profiles with the paper's
+   sample sizes (38,680 probands + 23,749 cases against 9,567 siblings + 23,749 controls) as
+   one binary phenotype `ASD`; an exact-match `ASC2` rule scoped to the three views; a
+   `tables.<view>` block per view. `data_type` reuses `gene_based` and `exome` — the
+   table is new, the kind of data is not.
+3. `genetics-results-db`: `schemas/exome_gene_counts{,_v}.sql`,
+   `exome_gene_bayes_results{,_v}.sql`, `exome_variant_counts{,_v}.sql`, all partitioned by
+   `chr` and clustered `dataset, gene, trait` like the burden tables; `scripts/load_asc.sh`
+   deletes `dataset = 'ASC2'` from each and appends, so it is idempotent and independent of
+   the Genebass truncate. `ABSENT_FROM_RESULTS` carries `ASC2` scoped to `daly` until that
+   deployment loads it — the entry is in both profiles' registries.
+4. `genetics-results-suite`: the three views on the monitor's `VIEWS`/`_CONFIG_VIEWS`; the
+   sandbox schema docs regenerate from `datasets.yaml`.
+5. `genetics-mcp-server`: no tool. The "what is in the database" paragraph of both system
+   prompts names the three views; `get_database_schema` lists them because its table
+   enumeration is derived from the schema docs.
+6. `genetics-results-api` and the browser: **nothing**. Whether the gene page should show
+   these counts beside the burden results is a separate decision, deferred.
+
+Three facts that shaped the tables, none of which a `SELECT *` reveals — so each is written
+into the view's `tables:` block:
+
+**The FDR is not a function of the Bayes factor.** The paper's Bayesian FDR is the running
+mean of (1 - posterior probability) down the BF-ranked list, so the 6,860 genes floored at
+BF = 1 carry FDRs from 0.766 to 0.816 and `ORDER BY bayes_factor` does not order by `fdr`.
+Rank and threshold on `fdr`; the paper's 253 and 696 reproduce as `fdr < 0.001` /
+`fdr < 0.05` with `AND NOT qc_flagged`, and that reproduction was the acceptance test.
+
+**The gene counts are not sums of the variant counts.** The gene file holds "independent"
+counts (one variant per person per gene, LOFTEE-filtered inherited and case-control PTVs):
+de novo proband PTVs total 6,279 there and 6,470 in the variant file. The two tables are
+loaded independently and neither is re-aggregated from the other. The CNV classes (DEL, DUP)
+exist only at gene level.
+
+**The gene file is autosomal; the variant file is not.** TADA ran on the autosomes, so
+`exome_gene_bayes_results` has 20,893 genes and no chr 23; `exome_variant_counts` carries
+chrX (23) and chrY (24) rows. `gnomad_af` there is an annotation, not the source's rarity
+filter — it reaches 0.89 — and nothing was filtered on it: all 7,045,130 rows are loaded,
+because with no test statistic there is no analogue of the `mlog10p > 4` cut the other
+variant loads apply.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)

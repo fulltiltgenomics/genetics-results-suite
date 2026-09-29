@@ -405,6 +405,8 @@ MPRA (Siraj et al. 2026) is a new functional-annotation product — measured int
 
 rCNV2 (Collins et al. 2022) is the suite's first **BigQuery-only** product: a cross-disorder rare-CNV dosage-sensitivity map over 54 HPO phenotype groups, served for both profiles as one dataset `collins_rcnv_2022` under a new resource `rcnv` (`dataset_to_resource_rules` map `Collins_rCNV%` -> `rcnv`), `data_type: rcnv`, `trait_type: binary`. There is **no results-api vertical and no product config entry** — nothing here is read by position per phenotype at request time — so all four faces are BigQuery views: `dosage_sensitivity_v` (per-gene pHaplo/pTriplo, a single published score set, so its `resource` is a constant rather than a derived `CASE`), `rcnv_gene_associations_v` (54 phenotypes x DEL/DUP x 17,263 genes), `rcnv_segments_v` (the 163 disease-associated segments, with their HPO groups, credible intervals and gene lists as arrays) and `rcnv_window_associations_v` (the genome-wide sliding-window meta-analysis, the largest table of the product). The phenotype axis is HPO rather than a suite trait code: the column is `phenotype` (an HPO id with the colon removed) and joins `phenotypes_v` on `dataset = 'Collins_rCNV_2022'`. Data is produced by `genetics-results-munge`'s `scripts/munge_rcnv.{py,sh}` (`--product scores|genes|segments|windows`) and loaded by `genetics-results-db`; the agent reaches it through `get_dosage_sensitivity` and `get_rcnv_associations`, through the sandbox SDK's `genetics.dosage_sensitivity()` / `genetics.rcnv()`, and through raw `query_database`.
 
+The ASC 2026 autism exome release (Satterstrom, Auwerx, Fu et al.) is the second BigQuery-only product and the first exome dataset served **without a p-value**: the release carries per-gene "independent" variant counts by variant class and inheritance mode, a TADA Bayes factor and Bayesian FDR per gene, and per-variant allele counts, and nothing else — no effect size, no allele frequency — and the suite derives none of those on the way in. That is why it is not in `gene_burden_results` / `exome_variant_results` (both require `mlog10p` and `beta`) but in three tables of its own, shared by shape with any later count-based release: `exome_gene_counts_v` (one row per gene x `variant_class` x `inheritance_mode`, with `n_affected` / `n_unaffected`), `exome_gene_bayes_results_v` (one row per gene: `bayes_factor`, `fdr`, `qc_flagged` — rank on `fdr`, which is not a function of the Bayes factor) and `exome_variant_counts_v` (every SNV/indel in the release, unfiltered). Both profiles register it as `asc_gene_based` + `asc_exome` under resource `asc2` with `dataset: ASC2` and one binary phenotype `ASD`; `data_type` reuses `gene_based` and `exome`. Produced by `genetics-results-munge`'s `scripts/munge_asc.py` (GENCODE v29 for the gene join) and loaded by `genetics-results-db`'s `scripts/load_asc.sh`; reached through `query_database` and the sandbox SQL surface, with no results-api vertical, no browser surface and no dedicated MCP tool. The worked example in [adding-datasets.md](adding-datasets.md) records the three facts a `SELECT *` does not show.
+
 ### Classical HLA allele associations
 
 FinnGen R14 imputed **classical HLA allele** results are served for both profiles: 187
@@ -581,7 +583,7 @@ the same query.
   `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
   QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
   `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
-  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have none either. `BRaVa` does have rows, one per
+  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome, ASC2) have none either. `BRaVa` does have rows, one per
   `trait_original` — so one per ancestry stratum as well as one for the cross-ancestry meta,
   and a row count for that dataset counts strata rather than phenotypes. Use a `LEFT JOIN`
   when the dataset is not known in advance.
@@ -1230,6 +1232,9 @@ in (`scripts/monitor/bq_summary.py`):
 | `rcnv_gene_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `rcnv_segments_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `rcnv_window_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_gene_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_gene_bayes_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_variant_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 
 <!-- END GENERATED: monitored-views -->
 
