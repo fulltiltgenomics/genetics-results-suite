@@ -90,6 +90,16 @@ resources:
     description: "IBD (inflammatory bowel disease) exome sequencing project gene burden and variant analysis"
     aliases: ["ibd exome", "IBD"]
 
+  asc2:
+    label: "ASC 2026"
+    description: >-
+      Autism Sequencing Consortium 2026 exome release (Satterstrom, Auwerx, Fu et al., medRxiv
+      10.64898/2026.08.24.26360398) — per-gene rare-variant counts by variant class and
+      inheritance mode, a TADA Bayes factor and Bayesian FDR per gene, and per-variant allele
+      counts, from 62,429 individuals with autism and 33,316 without. Counts and Bayesian
+      statistics only; no p-values, effect sizes or allele frequencies exist in the release
+    aliases: ["ASC", "autism sequencing consortium", "autism exome", "ASC2", "TADA"]
+
   finnliver:
     label: "FinnLiver"
     description: "FinnLiver liver eQTL study"
@@ -908,6 +918,261 @@ tables:
       resource: null
       dataset: "resource"
       annotation: "resource"
+
+  exome_gene_counts_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene, trait]
+    resource_derivation:
+      mode: view_case
+    summary: "Per-gene rare-variant counts by class and inheritance mode (count-based exome studies)"
+    description: >-
+      Per-gene rare-variant COUNTS from exome studies whose release carries counts and a
+      Bayesian gene statistic but no p-value or effect size. First source: the Autism
+      Sequencing Consortium 2026 release (dataset ASC2, trait ASD, 20,893 autosomal
+      genes). LONG: one row per gene x variant_class x inheritance_mode, so a gene has
+      7 x 3 = 21 rows. The two counts are the pair the mode contrasts — de_novo: probands
+      vs unaffected siblings; inherited: transmitted vs untransmitted alleles;
+      case_control: cases vs controls. They are the source's "independent" counts (one
+      variant per person per gene, LOFTEE-filtered inherited and case-control PTVs) and
+      do NOT equal sums over exome_variant_counts_v.
+
+      THIS VIEW HAS NO TEST STATISTIC. The gene's Bayes factor and FDR are in
+      exome_gene_bayes_results_v on the same (dataset, trait, gene_id); join there for
+      "is this gene associated". Do not compute rate ratios, odds ratios or p-values from
+      these counts and present them as the study's result — the release reports none.
+
+      Every gene is present with every class and mode, zeros included, so a zero is a
+      real zero. The CNV classes DEL and DUP exist only here (no per-variant CNV rows).
+      A literal `chr = <n>` beside `gene =` keeps a query under the sandbox scan cap.
+
+    columns:
+      dataset: "Study name (ASC2)"
+      trait: "Trait/phenotype name"
+      gene: "Gene symbol (ASC2: GENCODE v29 spelling)"
+      gene_id: "Ensembl gene ID (unversioned); the join key to exome_gene_bayes_results_v"
+      chr: "Chromosome number, chromosome X is 23. The partitioning column"
+      gene_start_pos: "Gene start position (GRCh38)"
+      gene_end_pos: "Gene end position (GRCh38)"
+      variant_class: "PTV, Mis2 (MPC >= 2 and AlphaMissense >= 0.97), Mis1 (one of the two), Mis0 (neither), synonymous, DEL, DUP"
+      inheritance_mode: "de_novo, inherited or case_control; decides what n_affected and n_unaffected count"
+      n_affected: "de_novo: variants in probands; inherited: alleles transmitted to probands; case_control: alleles in cases"
+      n_unaffected: "de_novo: variants in unaffected siblings; inherited: untransmitted alleles; case_control: alleles in controls"
+      trait_original: "Original trait name in the respective dataset (the phenotypes_v join key)"
+      resource: "Data source identifier (lowercase), derived from dataset in the view"
+
+    column_types:
+      dataset: STRING
+      trait: STRING
+      gene: STRING
+      gene_id: STRING
+      chr: INT64
+      gene_start_pos: INT64
+      gene_end_pos: INT64
+      variant_class: STRING
+      inheritance_mode: STRING
+      n_affected: INT64
+      n_unaffected: INT64
+      trait_original: STRING
+      resource: STRING
+
+    examples:
+      - description: "All 21 count rows for one gene — the evidence behind its Bayes factor. chr beside gene keeps the estimate under the cap."
+        sql: |-
+          SELECT variant_class, inheritance_mode, n_affected, n_unaffected
+          FROM exome_gene_counts_v
+          WHERE chr = 14 AND gene = 'CHD8' AND dataset = 'ASC2'
+          ORDER BY variant_class, inheritance_mode
+      - description: "Genes with the most de novo PTVs in probands, with the gene's FDR joined on. Genome-wide, so no chr predicate; the narrow column list keeps it under the cap."
+        sql: |-
+          SELECT c.gene, c.n_affected AS de_novo_ptv_probands, c.n_unaffected AS de_novo_ptv_siblings,
+                 b.fdr, b.qc_flagged
+          FROM exome_gene_counts_v c
+          JOIN exome_gene_bayes_results_v b
+            ON b.dataset = c.dataset AND b.trait = c.trait AND b.gene_id = c.gene_id
+          WHERE c.dataset = 'ASC2' AND c.variant_class = 'PTV' AND c.inheritance_mode = 'de_novo'
+          ORDER BY c.n_affected DESC
+          LIMIT 20
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      variant_class: "resource"
+      inheritance_mode: "resource"
+
+  exome_gene_bayes_results_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene, trait]
+    resource_derivation:
+      mode: view_case
+    summary: "Gene-level Bayes factor and Bayesian FDR (count-based exome studies)"
+    description: >-
+      Gene-level Bayesian association statistics from exome studies that report a Bayes
+      factor and a Bayesian FDR instead of a p-value (TADA). First source: the Autism
+      Sequencing Consortium 2026 release (dataset ASC2, trait ASD): one row per gene for
+      20,893 autosomal genes, with the overall Bayes factor (the product over 7 variant
+      classes x 3 inheritance modes, each floored at 1) and the FDR derived from it. Both
+      are stored as published; nothing is transformed or derived.
+
+      RANK AND THRESHOLD ON fdr, NOT ON bayes_factor. The source's FDR is the running mean
+      of (1 - posterior probability) down the BF-ranked gene list, so it is not a function
+      of the Bayes factor alone: the 6,860 genes floored at bayes_factor = 1 carry FDRs
+      from 0.766 to 0.816, and ORDER BY bayes_factor does not order by fdr. The paper's
+      thresholds are fdr < 0.001 (exome-wide; 253 genes after excluding the flagged ones)
+      and fdr < 0.05 (696 genes). Its gene lists exclude qc_flagged = TRUE (four genes:
+      MIB1, LZTR1, NABP2, AC097634.4), which are kept here, flagged; reproduce a paper
+      count with `AND NOT qc_flagged`.
+
+      The counts each Bayes factor was computed from are in exome_gene_counts_v on the
+      same (dataset, trait, gene_id). This table is small (one row per gene), so a
+      genome-wide ranking needs no chr predicate.
+
+    columns:
+      dataset: "Study name (ASC2)"
+      trait: "Trait/phenotype name"
+      gene: "Gene symbol (ASC2: GENCODE v29 spelling)"
+      gene_id: "Ensembl gene ID (unversioned); the join key to exome_gene_counts_v"
+      chr: "Chromosome number, chromosome X is 23. The partitioning column"
+      gene_start_pos: "Gene start position (GRCh38)"
+      gene_end_pos: "Gene end position (GRCh38)"
+      bayes_factor: "Overall gene-level Bayes factor as published; >= 1 by construction. Evidence, not the ranking statistic — see fdr"
+      fdr: "Bayesian false discovery rate as published. Rank and threshold on this: fdr < 0.001 is the paper's exome-wide threshold, fdr < 0.05 its wider list"
+      qc_flagged: "TRUE for the genes the source flagged and dropped from its reported lists despite their statistics"
+      trait_original: "Original trait name in the respective dataset (the phenotypes_v join key)"
+      resource: "Data source identifier (lowercase), derived from dataset in the view"
+
+    column_types:
+      dataset: STRING
+      trait: STRING
+      gene: STRING
+      gene_id: STRING
+      chr: INT64
+      gene_start_pos: INT64
+      gene_end_pos: INT64
+      bayes_factor: FLOAT64
+      fdr: FLOAT64
+      qc_flagged: BOOL
+      trait_original: STRING
+      resource: STRING
+
+    examples:
+      - description: "The paper's exome-wide autism gene list: fdr < 0.001 excluding flagged genes, ranked by FDR then Bayes factor. Genome-wide over a one-row-per-gene table, so no chr predicate."
+        sql: |-
+          SELECT gene, gene_id, chr, bayes_factor, fdr
+          FROM exome_gene_bayes_results_v
+          WHERE dataset = 'ASC2' AND fdr < 0.001 AND NOT qc_flagged
+          ORDER BY fdr, bayes_factor DESC
+      - description: "One gene's Bayesian result, flagged or not. chr beside gene keeps the estimate under the cap."
+        sql: |-
+          SELECT dataset, trait, gene, bayes_factor, fdr, qc_flagged
+          FROM exome_gene_bayes_results_v
+          WHERE chr = 14 AND gene = 'CHD8'
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+
+  exome_variant_counts_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [dataset, gene, trait]
+    resource_derivation:
+      mode: view_case
+    summary: "Per-variant allele counts by inheritance mode (count-based exome studies)"
+    description: >-
+      Per-variant allele COUNTS from exome studies whose release carries counts but no
+      per-variant test statistic. First source: the Autism Sequencing Consortium 2026
+      release (dataset ASC2, trait ASD): every SNV/indel in the release — 7,045,130 rows,
+      GRCh38, chrX (23) and chrY (24) included — with its VEP consequence, variant class,
+      MPC and AlphaMissense scores, gnomAD AF and six counts: de novo alleles in probands
+      and in unaffected siblings, alleles transmitted and untransmitted to probands, and
+      alleles in cases and controls. Not filtered on significance (there is none) and not
+      filtered on gnomad_af, which is an annotation here rather than the source's rarity
+      filter (it reaches 0.89).
+
+      No CNV rows: the DEL and DUP classes are gene-level only (exome_gene_counts_v).
+      Summing these counts over a gene reproduces neither that table's "independent"
+      counts nor the Bayes factor; do not present such a sum, or an odds ratio computed
+      from these counts, as a result of the study. Large, so a literal `chr = <n>` beside
+      `gene =` or `variant =` is required to stay under the sandbox scan cap.
+
+    columns:
+      dataset: "Study name (ASC2)"
+      chr: "Chromosome number, chromosome X is 23, Y is 24. The partitioning column"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling)"
+      gene_id: "Ensembl gene ID (unversioned)"
+      transcript_id: "Ensembl transcript the consequence was called on"
+      consequence: "VEP consequence as the source spells it (missense, synonymous, frameshift, stop gained, splice donor, ...)"
+      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class"
+      hgvsp: "Protein change (HGVS p.), NULL where none"
+      mpc: "MPC missense deleteriousness score; NULL outside missense"
+      alpha_missense: "AlphaMissense pathogenicity score; NULL outside missense"
+      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules"
+      gnomad_af: "gnomAD allele frequency as annotated by the source; an annotation, not a filter"
+      de_novo_ac_proband: "De novo allele count in probands"
+      de_novo_ac_sibling: "De novo allele count in unaffected siblings"
+      transmitted_ac_proband: "Alleles transmitted to probands"
+      untransmitted_ac_proband: "Alleles not transmitted to probands"
+      ac_case: "Allele count in cases"
+      ac_ctrl: "Allele count in controls"
+      trait: "Trait/phenotype name"
+      trait_original: "Original trait name in the respective dataset (the phenotypes_v join key)"
+      variant: "Variant identifier as chr:pos:ref:alt"
+      resource: "Data source identifier (lowercase), derived from dataset in the view"
+
+    column_types:
+      dataset: STRING
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      gene: STRING
+      gene_id: STRING
+      transcript_id: STRING
+      consequence: STRING
+      variant_class: STRING
+      hgvsp: STRING
+      mpc: FLOAT64
+      alpha_missense: FLOAT64
+      is_other_splice: BOOL
+      gnomad_af: FLOAT64
+      de_novo_ac_proband: INT64
+      de_novo_ac_sibling: INT64
+      transmitted_ac_proband: INT64
+      untransmitted_ac_proband: INT64
+      ac_case: INT64
+      ac_ctrl: INT64
+      trait: STRING
+      trait_original: STRING
+      variant: STRING
+      resource: STRING
+
+    examples:
+      - description: "De novo variants seen in probands in one gene, with their class and protein change. The literal chr is what keeps the query under the cap."
+        sql: |-
+          SELECT variant, consequence, variant_class, hgvsp, mpc, alpha_missense,
+                 de_novo_ac_proband, de_novo_ac_sibling, transmitted_ac_proband,
+                 untransmitted_ac_proband, ac_case, ac_ctrl
+          FROM exome_variant_counts_v
+          WHERE chr = 14 AND gene = 'CHD8' AND dataset = 'ASC2' AND de_novo_ac_proband > 0
+          ORDER BY pos
+      - description: "Counts for one variant. chr beside variant as above."
+        sql: |-
+          SELECT gene, consequence, variant_class, hgvsp, gnomad_af,
+                 de_novo_ac_proband, de_novo_ac_sibling, transmitted_ac_proband,
+                 untransmitted_ac_proband, ac_case, ac_ctrl
+          FROM exome_variant_counts_v
+          WHERE chr = 1 AND variant = '1:939436:C:CT'
+
+    categorical_columns:
+      resource: null
+      dataset: "resource"
+      variant_class: "resource"
+      consequence: "resource"
 
   asm_qtl_v:
     exposed: true
@@ -2659,6 +2924,11 @@ dataset_to_resource_rules:
       explicit rule is invisible to scripts/monitor/bq_summary.py, which derives the
       resources it expects per view from the rules that carry applies_to
 
+  - pattern: "ASC2"
+    resource: "asc2"
+    applies_to: ["exome_gene_counts_v", "exome_gene_bayes_results_v", "exome_variant_counts_v"]
+    comment: "ASC 2026 autism exome counts, Bayes factors and FDR (exact match)"
+
   - pattern: "COVID19_HGI%"
     resource: "covid_hgi"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
@@ -3393,6 +3663,63 @@ profiles:
         n_samples: 394841
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
+
+      asc_gene_based:
+        resource: asc2
+        dataset: ASC2
+        version: "2026"
+        description: >-
+          ASC 2026 gene-level results (exome_gene_counts_v, exome_gene_bayes_results_v):
+          for 20,893 autosomal genes, "independent" counts of de novo (proband vs sibling),
+          rare inherited (transmitted vs untransmitted) and case-control variants in seven
+          classes (PTV, Mis2, Mis1, Mis0, synonymous, DEL, DUP), plus the overall TADA Bayes
+          factor and the Bayesian FDR derived from it. 38,680 probands + 23,749 cases vs
+          9,567 unaffected siblings + 23,749 controls. No p-values: the paper reports genes
+          at FDR < 0.001 (253, exome-wide) and FDR < 0.05 (696), with four flagged genes
+          excluded.
+        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        publication_date: "2026-08-26"
+        data_type: gene_based
+        trait_type: binary
+        n_phenotypes: 1
+        n_samples: 95745
+        n_cases: 62429
+        n_controls: 33316
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "ASD"
+            phenotype_string: "Autism spectrum disorder"
+            n_cases: 62429
+            n_controls: 33316
+            n_samples: 95745
+
+      asc_exome:
+        resource: asc2
+        dataset: ASC2
+        version: "2026"
+        description: >-
+          ASC 2026 variant-level results (exome_variant_counts_v): every SNV/indel in the
+          release (7,045,130, GRCh38, chrX and chrY included) with its consequence, variant
+          class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
+          probands and siblings, transmitted and untransmitted, cases and controls. Counts
+          only; no per-variant test statistic exists in the release. No CNV rows.
+        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        publication_date: "2026-08-26"
+        data_type: exome
+        trait_type: binary
+        n_phenotypes: 1
+        n_samples: 95745
+        n_cases: 62429
+        n_controls: 33316
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "ASD"
+            phenotype_string: "Autism spectrum disorder"
+            n_cases: 62429
+            n_controls: 33316
+            n_samples: 95745
 
       brava_gene_based:
         resource: brava
@@ -4523,6 +4850,63 @@ profiles:
         n_samples: 394841
         metadata_file: "gs://daly-genetics-results/mapping_files/genebass_pheno_results.txt.bgz"
         metadata_harmonizer: genebass
+
+      asc_gene_based:
+        resource: asc2
+        dataset: ASC2
+        version: "2026"
+        description: >-
+          ASC 2026 gene-level results (exome_gene_counts_v, exome_gene_bayes_results_v):
+          for 20,893 autosomal genes, "independent" counts of de novo (proband vs sibling),
+          rare inherited (transmitted vs untransmitted) and case-control variants in seven
+          classes (PTV, Mis2, Mis1, Mis0, synonymous, DEL, DUP), plus the overall TADA Bayes
+          factor and the Bayesian FDR derived from it. 38,680 probands + 23,749 cases vs
+          9,567 unaffected siblings + 23,749 controls. No p-values: the paper reports genes
+          at FDR < 0.001 (253, exome-wide) and FDR < 0.05 (696), with four flagged genes
+          excluded.
+        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        publication_date: "2026-08-26"
+        data_type: gene_based
+        trait_type: binary
+        n_phenotypes: 1
+        n_samples: 95745
+        n_cases: 62429
+        n_controls: 33316
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "ASD"
+            phenotype_string: "Autism spectrum disorder"
+            n_cases: 62429
+            n_controls: 33316
+            n_samples: 95745
+
+      asc_exome:
+        resource: asc2
+        dataset: ASC2
+        version: "2026"
+        description: >-
+          ASC 2026 variant-level results (exome_variant_counts_v): every SNV/indel in the
+          release (7,045,130, GRCh38, chrX and chrY included) with its consequence, variant
+          class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
+          probands and siblings, transmitted and untransmitted, cases and controls. Counts
+          only; no per-variant test statistic exists in the release. No CNV rows.
+        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        publication_date: "2026-08-26"
+        data_type: exome
+        trait_type: binary
+        n_phenotypes: 1
+        n_samples: 95745
+        n_cases: 62429
+        n_controls: 33316
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "ASD"
+            phenotype_string: "Autism spectrum disorder"
+            n_cases: 62429
+            n_controls: 33316
+            n_samples: 95745
 
       brava_gene_based:
         resource: brava
