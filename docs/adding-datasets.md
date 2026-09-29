@@ -778,6 +778,81 @@ cut, while the per-trait call is unfiltered. `gen-doc-blocks.py --check --mcp-sr
 tool-surface change here as staleness, but no gate requires that a resource be *named* in a
 description — a convention the tool descriptions do not state is one the agent will not use.
 
+## 16. Worked example: sandbox custom GWAS served from the userresults bucket
+
+Context: results that **already exist in a bucket, in a pipeline's own layout, and keep
+arriving**. FinnGen sandbox users run custom GWAS with the REGENIE unmodifiable pipeline
+(docs.finngen.fi, "Custom GWAS tools"); the pipeline publishes each run to
+`gs://finngen-production-library-green/finngen_R<N>/sandbox_custom_gwas/<run>/`, the
+fine-mapping and HLA pipelines write into the same folder, and userresults.finngen.fi is
+fed from there. The ask was to let users query their own runs through the API and the
+agent with **no ingestion**: nothing staged, nothing munged, a run visible as soon as it
+lands. Every other dataset in this document is staged into `finngen-commons` first.
+
+Changes made (three new resources `finngen_custom_r14` / `_r13` / `_r12`, finngen profile
+only, new results-api serving path, nothing in BigQuery):
+
+1. `datasets.yaml`: the three `resources:` blocks and four finngen-profile datasets
+   (`finngen_custom_r{14,13,12}_gwas`, `data_type: gwas`, and `finngen_custom_r14_hla`,
+   `data_type: hla`; all `trait_type: mixed`, `publication_date: "NA"`). **`metadata_file`
+   and `metadata_harmonizer` are both null on purpose**: there is no file — each run has
+   its own `metadata.json` — and db-api's `build_phenotypes.py` opens every non-null path.
+   results-api supplies the source itself (below), so these datasets get `/datasets`
+   stats, `/resource_metadata` rows and search-index entries despite the nulls; in
+   BigQuery they simply do not exist, and `phenotypes_v` never lists them. No
+   `dataset_to_resource_rules` entry, for the same reason.
+2. `genetics-results-api`, profile config: `app/config/profiles/finngen/custom_gwas.py`
+   lists the releases (bucket, prefix, the dataset ids, whether the release still receives
+   runs); `summary_stats.py` and `credible_sets.py` entries reference a release by
+   `catalog: <id>` instead of `prefix`/`suffix`; the daly profile's `custom_gwas.py` lists
+   nothing.
+3. `genetics-results-api`, serving path (see its `docs/project-spec.md`, "Sandbox custom
+   GWAS"): a per-release **catalog** built from one listing of the prefix and refreshed in
+   the background; a `custom_gwas_finemap` data source that translates the pipeline's
+   SuSiE member and summary TSVs into the served credible-set columns on read; an
+   `unindexed` summary-stats path that reads a run's small HLA file whole and widens
+   `ref`/`alt` into `gene`/`allele`; a `custom_gwas` metadata harmonizer fed from the
+   catalog through a synthetic `catalog://<release>` source.
+4. `genetics-mcp-server`: no new tools — every existing per-phenotype tool takes a
+   `resource`. The `resource` descriptions of the summary-stats, per-phenotype
+   credible-set and HLA tools name the custom resources in hints appended only where
+   the deployment serves them, `search_phenotypes` gained an optional `resource` (the
+   only way it finds a run), and the system prompt gained a section that says the runs
+   are reached on request only and named as a user's run in the answer — rendered, like
+   the hints, from results-api's `GET /datasets/on_request`, so the daly deployment
+   never mentions them.
+5. **On request only.** The four datasets carry `on_request: true` in the registry. A
+   user's run is an unreviewed analysis, so it must never reach an answer nobody asked
+   for: results-api keeps such datasets out of `/datasets` unless the request filters on
+   their resource, and their phenotypes out of `/search` unless `resources=` names it —
+   the two surfaces that would otherwise put a run next to release results. The data
+   endpoints need no gate; the resource is in their path. genetics-results-db's loader
+   emits no `datasets` row for a flagged entry, and the only provenance served per run
+   is the day it was written — not who ran it.
+
+Five things this example is for. **Some data is served only on request.** A dataset can be fully served and still absent from every default listing and search; `on_request` is the registry flag for that, and it gates a whole resource (see `docs/datasets-yaml-schema.md`). **A release is a resource, not a version.** A run name
+is unique within a release only (79 R14 names also exist under R13) and 49 R14 names are
+core endpoint codes, so neither one resource for all releases nor folding them into
+`finngen` was possible without a release selector no endpoint has; a resource per release
+makes every existing tool release-aware for free. **A listing is not ingestion, but it is
+needed.** In R14 the folder is the phenotype, so a path template would do; in R12 and R13
+the folder is the run *title* and can hold several phenotypes' files, and a few percent of
+names were run more than once under different titles. Only a listing resolves those, and
+the catalog's rule (the run titled after the phenotype wins, else the newest) is written
+down where the listing is parsed. **Visibility is shared.** The bucket records no owner
+(`submitter_email` is empty on nearly every run), so "my GWAS" is whatever run name the
+user gives, exactly as in the userresults browser; the prompt tells the agent to ask when
+a name is ambiguous rather than guess. **Column sets vary within one resource.** R12 files
+have no `info`, R13 files no case/control frequencies, and a continuous trait none in any
+release, so the sumstats path caches headers per object rather than per config entry for
+catalog-backed entries — the shared union-of-columns merge already served NA for a missing
+column, the per-entry header cache would have misaligned rows.
+
+Out of scope, deliberately: the fine-mapping pipeline's full-region `SUSIE.snp.bgz` and
+the FINEMAP outputs, the 99% sets, autoreporting, and any cross-run index (by-variant,
+by-gene, by-region, coloc, PheWAS) — each would need a combined file, which is the
+ingestion the ask excluded.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
@@ -834,6 +909,9 @@ description — a convention the tool descriptions do not state is one the agent
       tool shape covers (see the HLA example above).
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
       `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.
+- [ ] Data that already lives in a bucket in a pipeline's own layout and keeps arriving? It
+      can be served without staging — a catalog-backed results-api entry with
+      `metadata_file: null` in the registry; see section 16 for what that costs and excludes.
 - [ ] Refreshing an existing dataset rather than adding one? Stage the new file under a
       version-bearing name beside the old one, never over it; bump `version`,
       `publication_date` and `description` on the profiles whose bucket you actually
