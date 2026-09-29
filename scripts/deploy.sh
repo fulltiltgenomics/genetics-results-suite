@@ -650,10 +650,15 @@ if [ -x "${SCRIPT_DIR}/sync-datasets.sh" ]; then
   "${SCRIPT_DIR}/sync-datasets.sh" || echo "  WARN: dataset sync reported an issue (continuing)"
 fi
 
-# datasets ConfigMap (single source of truth for dataset definitions)
+# datasets ConfigMap (single source of truth for dataset definitions). Applied SERVER-SIDE:
+# a client-side apply stores the whole object again in the last-applied-configuration
+# annotation, and annotations are capped at 256 KiB, which datasets.yaml passed at ~262 KB
+# (the ConfigMap itself allows 1 MiB). Server-side apply keeps the same field ownership
+# without the annotation; --force-conflicts takes the fields over from the client-side
+# manager the first time.
 kubectl create configmap datasets-config \
   --from-file=datasets.yaml="${ROOT_DIR}/configs/datasets.yaml" \
-  -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+  -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
 
 # ingress resources
 # managed-certs and ingress are generated to support multiple domains;
