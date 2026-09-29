@@ -2747,7 +2747,7 @@ dataset_to_resource_rules:
 # filter needs; the entry's key is only the registry id. A list where one entry appears
 # under two labels across views (finngen_pqtl). Absent when the data carries no label:
 # collections (their sub-studies are labels of their own), summary-stats-only products,
-# chromatin peaks and gene-disease sets.
+# chromatin peaks, gene-disease sets and on-request custom GWAS runs.
 # ---------------------------------------------------------------------------
 profiles:
   finngen:
