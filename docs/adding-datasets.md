@@ -17,7 +17,7 @@ the single most important thing.
 | Layer | Lives in | Holds | Delivered to runtime by |
 |-------|----------|-------|--------------------------|
 | **Canonical `datasets.yaml`** | `genetics-results-suite/configs/datasets.yaml` | Profile-independent `resources`, BQ `tables` metadata, `dataset_to_resource_rules`; and the per-profile **dataset registry** (`profiles.<profile>.datasets`) — descriptions, versions, sample sizes, `pseudo_credible_sets`, etc. | `deploy.sh` creates the `datasets-config` ConfigMap from it and mounts it into the **results-api** and **db-api** pods at `/app/configs/datasets.yaml`. No image rebuild needed. |
-| **results-api product configs** | `genetics-results-api/app/config/profiles/<profile>/*.py` | The **actual GCS file paths** (`credible_sets.py`, `summary_stats.py`, `exome_results.py`, `gene_based_results.py`, `expression.py`, `coloc.py`, …) and the exact-dataset-name → `(resource, version)` map (`common.py`'s `dataset_to_resource`). | Baked into the **results-api Docker image at build time** (`build.sh` clones the repo from GitHub). Changes require **rebuild + rollout** of results-api, and must be committed/pushed first. |
+| **results-api product configs** | `genetics-results-api/app/config/profiles/<profile>/*.py` | The **actual GCS file paths** (`credible_sets.py`, `summary_stats.py`, `exome_results.py`, `gene_based_results.py`, `expression.py`, `coloc.py`, …) ; the exact-dataset-name → `(resource, version)` map (`dataset_to_resource`) is derived from the registry entries' `dataset` field. | Baked into the **results-api Docker image at build time** (`build.sh` clones the repo from GitHub). Changes require **rebuild + rollout** of results-api, and must be committed/pushed first. |
 
 Consequences:
 
@@ -194,12 +194,13 @@ the API-side resource grouping.
 Several datasets can share one combined file (e.g. the external pseudo-CS live in one
 `ext_pseudo/EXT_*_pseudo_credible_sets.*.tsv.gz`). For range/variant queries the results-api
 tabixes each unique `all_cs_file` once and then **filters rows by resource**. The per-row
-resource is computed from the row's `dataset` column via `dataset_to_resource` in
-`app/config/profiles/<profile>/common.py`. **If a shared-file `dataset` value is missing
-from that map it resolves to `unknown` and the rows are silently dropped from gene/region/
-variant queries** (per-phenotype lookups via the individual `prefix` files still work).
-So when adding a dataset whose rows live in a shared combined file, add its `dataset`
-column value to `dataset_to_resource` in **both** profiles, e.g. `"IIBDGC": ("ibd_gwas", "2026")`.
+resource is computed from the row's `dataset` column via `dataset_to_resource`
+(`app/config/datasets.py`), which is built from the `dataset` field of every registry entry
+in the active profile. **If a shared-file `dataset` value has no registry entry carrying it,
+it resolves to `unknown` and the rows are silently dropped from gene/region/variant queries**
+(per-phenotype lookups via the individual `prefix` files still work). So when adding a
+dataset whose rows live in a shared combined file, set `dataset` on its registry entry in
+**both** profiles, e.g. `dataset: IIBDGC` under `ibd_gwas`.
 
 After editing, sanity-check the import for both profiles:
 
@@ -348,16 +349,17 @@ are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh` (whi
 `scripts/build_phenotypes.py`). **Re-run it after any change to a dataset entry, a resource
 entry or a metadata file** — nothing else propagates registry edits into BigQuery.
 
-`build_phenotypes.py` holds one thing that lives nowhere else: `BQ_DATASETS_BY_DATASET_ID`,
-the mapping from a registry key (`finngen_gwas`) to the `dataset` value the results tables
-actually carry (`FinnGen_R14`). That value is baked into the source credible-set TSVs by
-`genetics-results-munge` and this file never records it, so **a new dataset needs an entry
-there too** or it gets a `datasets` row with `dataset = NULL` and no `phenotypes` rows. The
-relation is many-to-many in both directions (`pgc_scz` + `pgc_bip` both ship inside `PGC`;
-`finngen_pqtl` is `FinnGen_Olink` in `credible_sets` but `FinnGen_Olink_3K` in
-`colocalization`), which is why neither `resource` nor the registry key can serve as the join
-key. The loader cross-checks the map against the live views in every direction and **fails the
-build** on any mismatch.
+The link from a registry key (`finngen_gwas`) to the `dataset` value the results tables
+actually carry (`FinnGen_R14`) is the entry's own `dataset` field. That value is baked into
+the source TSVs by `genetics-results-munge`, so the registry records it rather than deriving
+it, and **a new dataset needs the field** or it gets a `datasets` row with `dataset = NULL`
+and no `phenotypes` rows. The relation is many-to-many in both directions (`pgc_scz` +
+`pgc_bip` both ship inside `PGC`; `finngen_pqtl` is `FinnGen_Olink` in `credible_sets` but
+`FinnGen_Olink_3K` in `colocalization`, so its field is a list), which is why neither
+`resource` nor the registry key can serve as the join key. The same field is what
+results-api's `dataset_to_resource` and the `dataset` key of `/v1/datasets` are built from,
+so it is set once. The loader cross-checks it against the live views in every direction and
+**fails the build** on any mismatch.
 
 A dataset that is registered but **not loaded in one deployment** is declared in
 `build_phenotypes.ABSENT_FROM_RESULTS`, which suppresses its rows there. Entries are scoped to
@@ -373,8 +375,8 @@ the check — and a new `dataset` value fails the loader until it is mapped. Vie
 exclusion and its reason beside the view (the reference tables have no `dataset` column; the
 registry-built views are built from the map under test).
 A view that is neither excluded nor has a `dataset` column fails loudly rather than being
-skipped. When you expose a new view, expect the next `load_phenotypes.sh` run to demand a
-`BQ_DATASETS_BY_DATASET_ID` entry for whatever `dataset` values it carries.
+skipped. When you expose a new view, expect the next `load_phenotypes.sh` run to demand a registry
+entry whose `dataset` field names whatever values it carries.
 
 The `phenotypes` join key is **`trait_original`, never `trait`**: in every results view
 `trait_original` is the phenotype code while `trait` is a display form for most rows
@@ -453,8 +455,8 @@ Changes made (reuse the existing `ibd_gwas` resource/dataset — no new resource
 2. `genetics-results-api` (both profiles): in `credible_sets.py` repointed the four existing
    external datasets from `ext/` to `ext_pseudo/` and bumped the combined filename, and
    added a new `ibd_gwas` credible-sets entry (prefix `ext_pseudo/individual/iibdgc/`, the
-   shared combined `all_cs_file`); in `common.py` added `"IIBDGC": ("ibd_gwas", "2026")` to
-   `dataset_to_resource` so shared-combined-file rows attribute correctly in range queries.
+   shared combined `all_cs_file`); the `ibd_gwas` entry's `dataset: IIBDGC` is what
+   attributes the shared-combined-file rows correctly in range queries.
 3. `genetics-results-db`: updated `credible_sets_v.sql`, `colocalization_v.sql`,
    `coloc_credsets_v.sql` so the `resource` CASE includes `WHEN dataset = 'IIBDGC' THEN
    'ibd_gwas'` (verified with `generate_resource_sql.py lint`). Loading the IIBDGC rows into
@@ -575,7 +577,7 @@ no results-api product config):
    fact recorded at the entry, not a schema difference.
 4. `genetics-results-db`: `schemas/{dosage_sensitivity,rcnv_gene_associations,rcnv_segments,
    rcnv_window_associations}{,_v}.sql` and a loader per table. **Load order matters**:
-   `build_phenotypes.BQ_DATASETS_BY_DATASET_ID['collins_rcnv_2022']` names `Collins_rCNV_2022`,
+   the `collins_rcnv_2022` entry's `dataset` field names `Collins_rCNV_2022`,
    so `scripts/load_phenotypes.sh` fails the whole profile's registry cross-check until at
    least one results table carrying that `dataset` value is loaded.
 5. `genetics-results-suite`: the three association views added to the monitor's `VIEWS` and `_CONFIG_VIEWS`
@@ -692,11 +694,11 @@ value is also that string, no new view):
 2. `datasets.yaml`: the `nmr_ukbb_est` resource, the dataset in both profiles, and an exact-match
    `nmr_ukbb_est` rule. The value deliberately does not start with `UKB`: the `UKB%` rule would
    otherwise claim it for the `ukbb` resource, and the GWAS is an EstBB + UK Biobank meta-analysis.
-3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile only, the
-   `dataset_to_resource` entry in both, and a new `quantitative_pheweb` metadata harmonizer.
-4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID`, the same new harmonizer in
-   `build_phenotypes.py`, the file added to `load_credsets_coloc.sh`, an `ABSENT_FROM_RESULTS`
-   entry scoped to `finngen`, and `credible_sets.beta` relaxed to nullable.
+3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile only and a new
+   `quantitative_pheweb` metadata harmonizer; the entry's `dataset` field covers attribution.
+4. `genetics-results-db`: the same new harmonizer in `build_phenotypes.py`, the file added to
+   `load_credsets_coloc.sh`, an `ABSENT_FROM_RESULTS` entry scoped to `finngen`, and
+   `credible_sets.beta` relaxed to nullable.
 
 Five points of interest, all of which generalise.
 
@@ -747,10 +749,9 @@ Changes made (new resource `brava`, dataset `brava_gene_based` in both profiles)
 2. `datasets.yaml`: the `brava` resource, `profiles.<profile>.datasets.brava_gene_based`, an exact
    `BRaVa` rule scoped to `gene_burden_results_v`, and the `gene_burden_results_v` text and
    worked example describing the two conventions below.
-3. `genetics-results-api`: a `gene_based_results.py` entry and a `common.py`
-   `dataset_to_resource` entry in each profile, plus a new `pheweb` metadata harmonizer.
-4. `genetics-results-db`: `BQ_DATASETS_BY_DATASET_ID` and the same new harmonizer in
-   `build_phenotypes.py`.
+3. `genetics-results-api`: a `gene_based_results.py` entry in each profile, plus a new
+   `pheweb` metadata harmonizer; the entry's `dataset: BRaVa` covers attribution.
+4. `genetics-results-db`: the same new harmonizer in `build_phenotypes.py`.
 
 Three points of interest.
 
@@ -861,10 +862,11 @@ ingestion the ask excluded.
       fallback is wrong; set `pseudo_credible_sets: true` for pseudo CS.
 - [ ] `./scripts/sync-datasets.sh`.
 - [ ] genetics-results-api: product config path entry for each profile (matching `id`).
-- [ ] genetics-results-api: `common.py` `dataset_to_resource` entry if the data shares a
-      combined credible-set file (per-row resource attribution), or, as with BRaVa, if
-      exome/gene-based range queries would otherwise drop rows whose `dataset` value is
-      unmapped.
+- [ ] `datasets.yaml`: `dataset` on the entry, in each profile, naming the value the
+      files carry in their `dataset` column (a list if it differs across views). It feeds
+      results-api's per-row resource attribution — shared combined credible-set files, and
+      exome/gene-based range queries that would otherwise drop rows whose value is unmapped —
+      the `dataset` key of `/v1/datasets`, and the registry cross-check below.
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
       apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
       decision with a separate consequence:
@@ -894,10 +896,9 @@ ingestion the ask excluded.
         only for *result* views whose per-resource coverage is meaningful to compare against
         `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Exposing a
         view also brings its `dataset` values under the registry cross-check (next item).
-- [ ] genetics-results-db: `BQ_DATASETS_BY_DATASET_ID` entry in `scripts/build_phenotypes.py`
-      for the new `dataset` value, then re-run `scripts/load_phenotypes.sh`. Exposing the view
+- [ ] genetics-results-db: re-run `scripts/load_phenotypes.sh`. Exposing the view
       automatically brings its `dataset` values under the registry cross-check, so the
-      loader will fail until the map covers them. Skipping this leaves the dataset invisible in
+      loader will fail until an entry's `dataset` field covers them. Skipping this leaves the dataset invisible in
       `datasets_v` and its trait codes unresolvable in `phenotypes_v` — exactly what happened
       to `finngen_hla`.
 - [ ] `datasets.yaml`: if a `tables.<view>` block was added or its `columns:` changed,

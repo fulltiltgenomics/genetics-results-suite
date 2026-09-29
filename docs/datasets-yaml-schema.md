@@ -310,6 +310,11 @@ profiles:
         trait_type: string|null  # required -- see enum below; null for non-association data
 
         # optional fields
+        dataset: string|[string]         # the `dataset` column value of this entry's rows in the
+                                         # results views and results-api files (FinnGen_SomaScan
+                                         # for finngen_somascan); a list where one entry appears
+                                         # under two values across views; absent when the data
+                                         # carries no such label
         metadata_file: string|null       # GCS path to per-phenotype metadata (null if none)
         metadata_harmonizer: string|null # harmonizer type name, or null
         n_samples: integer               # total sample size
@@ -452,8 +457,9 @@ from `quantitative_pheweb`.
 Reads `profiles.<active_profile>.datasets` to build:
 1. The **dataset registry** dict keyed by `dataset_id` -- used for the `/datasets` endpoint
    and by product configs (credible_sets, coloc, summary_stats) that reference datasets
-2. The **dataset-to-resource mapping** -- currently in `common.py` as `dataset_to_resource`,
-   used to group datasets under resources for the API
+2. The **dataset-to-resource mapping** `dataset_to_resource` (`app/config/datasets.py`):
+   each entry's `dataset` value(s) -> `(resource, version)`, used to attribute rows of shared
+   files to a resource; where several entries share a value the first in registry order wins
 
 The active profile is selected via `CONFIG_PROFILE` env var.
 
@@ -463,7 +469,9 @@ Reads profile-independent sections:
 1. `resources` -> builds `_RESOURCE_METADATA` dict
 2. `tables` -> builds `_TABLE_DESCRIPTIONS`, `_COLUMN_DESCRIPTIONS`, `_TABLE_EXAMPLES`, `_CATEGORICAL_COLUMNS`
 
-Does not currently use the per-profile datasets section directly.
+`scripts/build_phenotypes.py` reads `profiles.<profile>.datasets` to build the `datasets` and
+`phenotypes` tables, keyed on each entry's `dataset` value and cross-checked against the values
+the live views carry.
 
 ### SQL view generation (build-time)
 
