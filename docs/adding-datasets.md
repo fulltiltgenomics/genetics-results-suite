@@ -892,8 +892,8 @@ Changes made (new resource `asc2`, datasets `asc_gene_based` + `asc_exome` shari
    `exome_gene_bayes_results{,_v}.sql`, `exome_variant_counts{,_v}.sql`, all partitioned by
    `chr` and clustered `dataset, gene, trait` like the burden tables; `scripts/load_asc.sh`
    deletes `dataset = 'ASC2'` from each and appends, so it is idempotent and independent of
-   the Genebass truncate. `ABSENT_FROM_RESULTS` carries `ASC2` scoped to `daly` until that
-   deployment loads it — the entry is in both profiles' registries.
+   the Genebass truncate. The entry is in both profiles' registries and both deployments
+   are loaded, so `ABSENT_FROM_RESULTS` carries no `ASC2` entry.
 4. `genetics-results-suite`: the three views on the monitor's `VIEWS`/`_CONFIG_VIEWS`; the
    sandbox schema docs regenerate from `datasets.yaml`.
 5. `genetics-mcp-server`: no tool. The "what is in the database" paragraph of both system
