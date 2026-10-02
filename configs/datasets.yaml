@@ -205,9 +205,9 @@ resources:
   epimap:
     label: "EpiMap"
     description: >-
-      Boix et al. 2021 (Nature) EpiMap — 18-state ChromHMM active regulatory states and
-      activity-based enhancer-to-gene links across 833 bulk biosamples (hg38). Not the raw
-      Meuleman DHS layer.
+      Boix et al. 2021 (Nature) EpiMap — 18-state ChromHMM active regulatory states across
+      833 bulk biosamples (hg38). Not the raw Meuleman DHS layer. EpiMap's enhancer-to-gene
+      links are not loaded.
     aliases: ["EpiMap", "Boix 2021", "ChromHMM"]
 
   calderon_immune:
@@ -221,7 +221,8 @@ resources:
     label: "ROSMAP AD brain (Xiong 2023)"
     description: >-
       Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease epigenome — aged prefrontal cortex
-      snATAC (~850k nuclei, 92 donors, AD and control), cell-type peaks and peak-to-gene links.
+      snATAC (~850k nuclei, 92 donors, AD and control), cell-type peaks. The study's
+      peak-to-gene links are not loaded.
     aliases: ["ROSMAP", "Xiong 2023", "AD brain"]
 
   # massively parallel reporter assay (measured cis-regulatory allelic activity)
@@ -1299,8 +1300,11 @@ tables:
       n_cells: "Number of cells supporting the peak (single-cell assays)"
       cell_ontology_id: "Cell Ontology (CL) identifier where available"
       uberon_id: "UBERON anatomy identifier where available"
-      target_gene: "Linked target gene symbol for cCRE->gene links (else NA)"
-      target_gene_id: "Linked target Ensembl gene ID for cCRE->gene links (else NA)"
+      target_gene: >-
+        Linked target gene symbol(s), comma-separated, for cCRE->gene links. Only
+        li_brain_atac rows carry any; NULL on every other resource, whose gene links are
+        not loaded. For peak-to-gene links use peak_to_gene_v.
+      target_gene_id: "Linked target Ensembl gene ID. NULL on every row: no loaded resource supplies ids"
       version: "Data release version"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
 
@@ -2435,7 +2439,7 @@ tables:
     description: >-
       Per-variant functional annotation and FinnGen (R14) allele frequencies —
       one row per variant, covering all imputed variants, not only fine-mapped ones.
-      This is the only view with genotype counts, and the rsID source for the
+      This is the only view with per-genotype allele counts, and the rsID source for the
       credible-set, colocalization and exome views (asm_qtl_v and variant_effect_v
       carry their own rsid): join to it whenever a question needs an rsID, an allele
       frequency, imputation quality, or Finnish enrichment for variants found in
@@ -2450,8 +2454,8 @@ tables:
       alt: "Alternative (effect) allele"
       INFO: "Imputation INFO score (imputation quality, 0-1). Low values indicate poorly imputed variants"
       AF: "Alternative allele frequency in FinnGen. This is the alt allele frequency, not the minor allele frequency — there is no maf column, use LEAST(AF, 1 - AF)"
-      AC_Het: "Number of heterozygous genotypes in FinnGen"
-      AC_Hom: "Number of homozygous (alt/alt) genotypes in FinnGen"
+      AC_Het: "Alt allele count carried in heterozygous genotypes in FinnGen: one per heterozygote, so it equals the number of heterozygous individuals"
+      AC_Hom: "Alt allele count carried in homozygous (alt/alt) genotypes in FinnGen: two per homozygote, so the number of homozygous individuals is AC_Hom / 2"
       most_severe: "Most severe VEP-predicted variant consequence"
       gene_most_severe: "Gene symbol associated with the most severe consequence"
       rsid: "dbSNP rsID when available. The rsID source for the credible-set, colocalization and exome views, which have none of their own; asm_qtl_v and variant_effect_v carry their own rsid"
@@ -3925,10 +3929,10 @@ profiles:
         description: >-
           Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
           18-state ChromHMM active regulatory states (active promoter, enhancer and
-          bivalent states) plus activity-based enhancer-to-gene links across 833 bulk
-          biosamples (hg38). This is EpiMap's regulatory-state layer, not the raw
-          Meuleman DHS index. assay=chromHMM; the exact ChromHMM state is carried in
-          score_type and target_gene carries enhancer-to-gene links.
+          bivalent states) across 833 bulk biosamples (hg38). This is EpiMap's
+          regulatory-state layer, not the raw Meuleman DHS index. assay=chromHMM; the
+          exact ChromHMM state is carried in score_type. EpiMap's enhancer-to-gene links
+          are not loaded: target_gene is NULL on every row.
         author: "Boix et al."
         publication_date: "2021-01-01"
         data_type: open_chromatin
@@ -3958,9 +3962,9 @@ profiles:
         version: "2023"
         description: >-
           Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
-          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors) with
-          peak-to-gene links carried in target_gene; condition in {AD, control, unknown}.
-          tissue=brain, life_stage=adult.
+          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors);
+          condition in {AD, control, unknown}. tissue=brain, life_stage=adult. The study's
+          peak-to-gene links are not loaded: target_gene is NULL on every row.
         author: "Xiong et al."
         publication_date: "2023-01-01"
         data_type: open_chromatin
@@ -5112,10 +5116,10 @@ profiles:
         description: >-
           Boix et al. 2021 (Nature) EpiMap open-chromatin / active-regulatory atlas.
           18-state ChromHMM active regulatory states (active promoter, enhancer and
-          bivalent states) plus activity-based enhancer-to-gene links across 833 bulk
-          biosamples (hg38). This is EpiMap's regulatory-state layer, not the raw
-          Meuleman DHS index. assay=chromHMM; the exact ChromHMM state is carried in
-          score_type and target_gene carries enhancer-to-gene links.
+          bivalent states) across 833 bulk biosamples (hg38). This is EpiMap's
+          regulatory-state layer, not the raw Meuleman DHS index. assay=chromHMM; the
+          exact ChromHMM state is carried in score_type. EpiMap's enhancer-to-gene links
+          are not loaded: target_gene is NULL on every row.
         author: "Boix et al."
         publication_date: "2021-01-01"
         data_type: open_chromatin
@@ -5145,9 +5149,9 @@ profiles:
         version: "2023"
         description: >-
           Xiong et al. 2023 (Cell) ROSMAP Alzheimer's disease brain open-chromatin atlas.
-          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors) with
-          peak-to-gene links carried in target_gene; condition in {AD, control, unknown}.
-          tissue=brain, life_stage=adult.
+          Aged prefrontal cortex snATAC cell-type peaks (~850k nuclei, 92 donors);
+          condition in {AD, control, unknown}. tissue=brain, life_stage=adult. The study's
+          peak-to-gene links are not loaded: target_gene is NULL on every row.
         author: "Xiong et al."
         publication_date: "2023-01-01"
         data_type: open_chromatin

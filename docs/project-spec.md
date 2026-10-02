@@ -395,7 +395,7 @@ The exome and gene-based resources, and the filtering level each carries, are de
 
 Summary statistics are served by results-api from per-phenotype tabix files two ways: `/api/v1/summary_stats/{resource}/{data_type}` (GET/POST) for named variants, and `/api/v1/summary_stats_by_region/{resource}/{data_type}/{region}` for every record in a `chr:start-end` region. Both require `phenotypes=<comma-separated>` — there is no combined file spanning a region across traits, unlike `credible_sets_by_region`. The genetics-mcp-server exposes both as `get_summary_stats` and `get_summary_stats_by_region`.
 
-Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.) The **rCNV2 product has no results-api endpoint at all**, by the same design: `get_dosage_sensitivity` and `get_rcnv_associations` are BigQuery-only, and results-api's part in it is that the `/api/v1/datasets` catalogue iterates the dataset registry rather than the product configs, so `collins_rcnv_2022` is listed there with no products against it.
+Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. Every BigQuery-backed tool returns `total_count` and `truncated` on each result, and the by-gene ones take `limit` to lift their 500-row default; an open-chromatin locus larger than db-api's row cap is tiled with `get_open_chromatin_by_region`, which is not capped. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.) The **rCNV2 product has no results-api endpoint at all**, by the same design: `get_dosage_sensitivity` and `get_rcnv_associations` are BigQuery-only, and results-api's part in it is that the `/api/v1/datasets` catalogue iterates the dataset registry rather than the product configs, so `collins_rcnv_2022` is listed there with no products against it.
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
 
@@ -533,10 +533,12 @@ served the same way as the other tabix verticals: the GCS file paths live in
   tissue and condition, answering "which contexts is this variant/region/gene accessible in?".
   Six datasets: `marderstein_open_chromatin` (Marderstein/Kundaje 2026, brain + heart),
   `li_brain_open_chromatin` (Li 2023), `catlas_open_chromatin` (Zhang 2021),
-  `epimap_open_chromatin` (EpiMap ChromHMM active states + enhancer-gene links),
+  `epimap_open_chromatin` (EpiMap ChromHMM active states),
   `calderon_open_chromatin` (Calderon 2019 immune stimulation, the only dataset with two
   `condition` values) and `rosmap_open_chromatin` (ROSMAP/Xiong 2023 AD brain). The files are
-  **interval-indexed** tabix TSVs.
+  **interval-indexed** tabix TSVs. Only the Li 2023 rows carry `target_gene` (symbols only —
+  `target_gene_id` is NULL throughout); the other atlases were loaded without gene links, and
+  `peak_to_gene_v` is the peak-to-gene link product.
 - **Variant effect (Product B)** — in-silico predicted variant effect on accessibility. Two
   datasets, both under the `marderstein` resource because the resource ships two distinct
   predictors: `marderstein_chrombpnet` (ChromBPNet, per-context, thresholded per the row-scale
@@ -2352,6 +2354,8 @@ the SDK:
   stats, variant annotation, variant effect. The names come from the TSV header, **not**
   from the router's `header_schema`: that schema is a validating superset and would
   over-claim on files that carry fewer columns.
+  The variant annotation routes also send **`X-Dataset-Version`**, the source's release from
+  the profile config, which `get_variant_annotations` relays as `version`.
 
 Three properties are load-bearing and each is pinned by a test:
 
