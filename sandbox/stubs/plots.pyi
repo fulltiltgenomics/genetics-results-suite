@@ -463,7 +463,10 @@ def volcano(
     infinite -log10 p, is an arrowhead at the top edge rather than a value invented for it.
     Estimates far beyond every informative one — what a model that did not converge
     returns — do not set the x axis: they sit at its edge as arrowheads, as does anything
-    outside an explicit `xlim=` (in axis units), counted in `n_clipped`. When one
+    outside an explicit `xlim=` (in axis units), counted in `n_clipped`. On a ratio axis
+    that includes any estimate more than 1000-fold from 1, significant or not; on a linear
+    one a significant estimate always sets the axis, so say `scale="log_ratio"` for log
+    odds ratios or pass `xlim=` when `n_clipped` is 0 and `xlim` is absurd. When one
     association dwarfs the rest, -log10 p turns logarithmic above a marked break so the
     threshold and everything near it stay readable; `y_log_above` says where.
 
