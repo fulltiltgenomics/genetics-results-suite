@@ -38,6 +38,16 @@ DEFAULT_ALLOWED_HOSTS = (
     "zenodo.org",
     "ftp.ebi.ac.uk",
     "eutils.ncbi.nlm.nih.gov",
+    "www.ebi.ac.uk",
+    "www.pgscatalog.org",
+    # the two www hosts are here for the full-text XML an api.biorxiv.org record links to;
+    # their article pages and PDFs answer a bot challenge to this client
+    "api.biorxiv.org",
+    "www.biorxiv.org",
+    "www.medrxiv.org",
+    # leading dot: the apex and every subdomain. A host under it that redirects to a login
+    # is still refused at that hop, since the identity provider is not listed
+    ".finngen.fi",
 )
 
 DEFAULT_ALLOWED_PORTS = (443,)

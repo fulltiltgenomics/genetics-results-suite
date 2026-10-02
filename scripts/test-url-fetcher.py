@@ -342,6 +342,10 @@ GUARD_CUTS = {
     "port-policy": [
         ("        if port not in self.allowed_ports and not loopback_literal:", "        if False:"),
     ],
+    "suffix-label-boundary": [
+        ("                if host == entry[1:] or host.endswith(entry):",
+         "                if host.endswith(entry[1:]):"),
+    ],
 }
 
 FETCH_CUTS = {
@@ -708,6 +712,41 @@ def test_name_resolving_to_rfc1918():
     refusal(lambda: fetch.Fetcher(m, timeout_s=5).fetch("https://github.com/f.tsv"))
     check("CONTROL address-class-resolved cut: 10.11.12.13 is DIALLED",
           dialled_any(mark, "10.11.12.13"), f"dialled {dialled_since(mark)}")
+
+
+def test_suffix_entries():
+    public = "185.199.108.153"
+    names = ("finngen.fi", "www.finngen.fi", "a.b.finngen.fi", "notfinngen.fi",
+             "finngen.fi.evil.example", "www.github.com")
+    resolver = stub_resolver(dict.fromkeys(names, public))
+    g = production_guard(allowed_hosts=(".finngen.fi", "github.com"), resolver=resolver)
+    for host in ("finngen.fi", "www.finngen.fi", "a.b.finngen.fi", "WWW.FinnGen.FI"):
+        exc, target = refusal(lambda host=host: g.check(f"https://{host}/f.tsv"))
+        check(f"a leading-dot entry admits {host}", exc is None and target is not None,
+              f"refused: {exc and exc.message}")
+    # the dot is what makes the match stop at a label boundary: without it the entry would
+    # admit any registrable domain that merely ends in the same letters
+    for host in ("notfinngen.fi", "finngen.fi.evil.example"):
+        expect_refused(f"a leading-dot entry does NOT admit {host}",
+                       lambda host=host: g.check(f"https://{host}/f.tsv"),
+                       contains=guard.HOST_POLICY_NAME)
+    expect_refused("an entry without the dot stays exact: no subdomain",
+                   lambda: g.check("https://www.github.com/f.tsv"),
+                   contains=guard.HOST_POLICY_NAME)
+    private = production_guard(allowed_hosts=(".finngen.fi",),
+                               resolver=stub_resolver({"internal.finngen.fi": "10.11.12.13"}))
+    expect_refused("a subdomain resolving to RFC1918 is refused by the address class",
+                   lambda: private.check("https://internal.finngen.fi/f.tsv"),
+                   contains=guard.ADDRESS_POLICY_NAME)
+    check("the seeded list admits FinnGen subdomains",
+          production_guard().host_allowed("r12.finngen.fi"),
+          f"seed list: {guard.DEFAULT_ALLOWED_HOSTS}")
+
+    # CONTROL: cut the label boundary out of the suffix match
+    m = mutant_guard("suffix-label-boundary", allowed_hosts=(".finngen.fi",), resolver=resolver)
+    exc, target = refusal(lambda: m.check("https://notfinngen.fi/f.tsv"))
+    check("CONTROL suffix-label-boundary cut: notfinngen.fi is accepted",
+          exc is None and target is not None, f"still refused: {exc and exc.message}")
 
 
 def test_rebinding_is_pinned(victim):
@@ -1381,6 +1420,8 @@ def main():
         test_loopback_and_private_literals()
         print("a name that resolves private")
         test_name_resolving_to_rfc1918()
+        print("leading-dot entries: the apex, its subdomains, and nothing else")
+        test_suffix_entries()
         print("DNS rebinding: public on the check, private on the connect")
         test_rebinding_is_pinned(victim)
         print("redirects")
