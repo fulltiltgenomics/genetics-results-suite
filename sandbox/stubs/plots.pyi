@@ -11,6 +11,7 @@
     genetics.plots.phewas(variant="19:44908684:T:C")
     genetics.plots.upset(sets={"Crohn": cd_ids, "UC": uc_ids})
     genetics.plots.forest(frame, label="cohort", scale="log_ratio", pool="fixed")
+    genetics.plots.volcano(frame, label="gene", significance="bonferroni")
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -371,5 +372,111 @@ def forest(
     directory and returned to the user automatically; that is also where the default goes.
     Pass `ax` to draw in its place in an existing figure, in which case nothing is saved;
     give that axis about `size_in`, since the text does not shrink to fit.
+    """
+    ...
+
+def volcano(
+    data: pl.DataFrame,
+    *,
+    significance: Any,
+    estimate: str = 'beta',
+    pvalue: str = 'auto',
+    label: str | None = None,
+    se: str | None = 'auto',
+    scale: str = 'linear',
+    alpha: float = 0.05,
+    n_tests: int | None = None,
+    min_effect: float | None = None,
+    labels: Any = 10,
+    colour: str | None = None,
+    size: str | None = None,
+    effect: str | None = None,
+    xlabel: str | None = None,
+    xlim: Any = None,
+    direction: Any = None,
+    italic: bool = False,
+    path: str | None = None,
+    title: str | None = None,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """Volcano plot: effect size against -log10 p for every test in a frame, hits coloured by direction.
+
+    `data` has one row per test — a gene's burden result, a variant, a phenotype, a protein.
+    `estimate` names the effect column and `pvalue` the p-value one: `mlog10p` where the
+    frame has it, else `pval`, else the one column whose name starts with `mlog10p`
+    (`mlog10p_burden`); a name starting with `mlog` is read as -log10 p, anything else as a
+    p-value. -log10 p is preferred because it does not underflow. The y axis is always the
+    RAW p-value: pass those, not adjusted ones, and let `significance` draw the correction.
+
+    SAY WHAT COUNTS AS SIGNIFICANT, with `significance` — there is no default, because the
+    right threshold depends on how many tests were run and published ones differ by orders
+    of magnitude:
+
+    - a number — a p threshold used as given: `5e-8`, or the exome-wide one of the study.
+    - `"bonferroni"` — `alpha` (0.05) divided by the number of tests.
+    - `"fdr"` — Benjamini–Hochberg at `alpha`. The line is drawn at the p-value the
+      procedure comes to for this data, so it moves with the data.
+
+    The number of tests is the number of rows with a p-value. THAT IS ONLY RIGHT FOR AN
+    UNFILTERED FRAME: one already cut to its hits (`gene_burden(gene=...)` returns Genebass
+    rows at -log10 p > 4 only; credible sets are significant by construction) has lost the
+    tests that failed, and a correction over what is left is far too lenient. Pass
+    `n_tests=` with how many were run — for `"fdr"` this assumes the rows kept are the
+    strongest ones — or pass the study's own threshold as a number.
+    `significance=None` draws no line and calls nothing.
+
+    WHAT IS DRAWN. Points past the threshold are vermillion where the effect is positive
+    and blue where it is negative, with the count of each in the top corners; everything
+    else is pale grey. The x axis is symmetric about the null so that a lopsided figure
+    means lopsided results. `scale` says what the estimates are, as on the forest plot:
+    `"linear"` (a beta, a log2 fold change; null at 0), `"log_ratio"` (log odds ratios,
+    which is what a binary trait's `beta` is — drawn on a log axis labelled in odds-ratio
+    units, null at 1) or `"ratio"` (already ratios). `effect` is the measure's name on the
+    axis ("OR", "HR", "log2 fold change") and `direction=("protective", "risk")` names the
+    two sides beside their counts.
+
+    `min_effect=` adds a pair of vertical lines at that effect size either side of the null
+    (in axis units: 1.5 on a ratio axis means 1.5 and 1/1.5), and a point past the p
+    threshold but inside them is dark grey and counted in `n_small`, not as a hit. It is a
+    filter on the ESTIMATES for display and not a test: the false-discovery statement
+    belongs to the p threshold alone, and selecting on both does not control it for the
+    claim that an effect is larger than the line.
+
+    NAMES. `label` names the column that identifies a point. The strongest hits are named,
+    up to `labels` of them (10) shared between the two sides so the weaker side is not
+    crowded out. A name that recurs — a gene tested under two masks — is given at its
+    strongest point on a side first and at its others only if names are left over; put
+    what tells them apart into the label column to name each. `labels=[...]` names exactly
+    those instead, significant or not, each ringed so it can be found in the cloud, and
+    `labels=0` names nothing. With a standard error in the frame (`se`, or the column
+    `se=` names) each named point carries its 95% interval as a whisker. Read it: the
+    furthest points on a volcano are the least precise ones as often as they are the
+    largest effects. `italic=True` sets the names in italics, for gene symbols.
+
+    `colour=` names a categorical column — a variant class, a tissue, a dataset — and
+    colours the hits by it instead of by direction, with a legend; past seven values the
+    rarest are grouped as `Other`. `size=` names a numeric column — sample size, carrier
+    count — that the hits' marker area is scaled by, with the range in the legend.
+
+    WHAT IS HANDLED RATHER THAN LEFT TO THE CALLER. A row with no estimate or no usable
+    p-value is not drawn and is counted in `n_missing`. A p-value of exactly 0, or an
+    infinite -log10 p, is an arrowhead at the top edge rather than a value invented for it.
+    Estimates far beyond every informative one — what a model that did not converge
+    returns — do not set the x axis: they sit at its edge as arrowheads, as does anything
+    outside an explicit `xlim=` (in axis units), counted in `n_clipped`. When one
+    association dwarfs the rest, -log10 p turns logarithmic above a marked break so the
+    threshold and everything near it stay readable; `y_log_above` says where.
+
+    Returns a dict describing what was drawn: `path`, `n_points`, `n_missing`, `n_tests`,
+    `correction` ("fixed", "bonferroni", "fdr" or None), `threshold_p` and
+    `threshold_mlog10p`, `n_significant` (past the p threshold), `n_up`, `n_down` and
+    `n_small`, `n_clipped`, `n_offscale` (drawn at the top edge), `scale`, `xlim` in axis
+    units, `y_log_above`, `labelled` (the names on the figure), `colours` (the legend's
+    categories) and `top`: the ten strongest hits as dicts of `label`, `estimate` in axis
+    units, `mlog10p` and `direction`.
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw into an existing axis instead, in which case nothing is saved.
     """
     ...
