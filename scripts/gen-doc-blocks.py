@@ -59,6 +59,10 @@ def kib(n):
     return f"{n // 1024} KiB" if n % 1024 == 0 else f"{n} B"
 
 
+def size(n):
+    return mib(n) if n % (1024 * 1024) == 0 else kib(n)
+
+
 def yv(value):
     """A YAML-ish rendering, so `true` in the manifest does not read back as `True`."""
     if isinstance(value, bool):
@@ -131,9 +135,9 @@ def block_limits():
         ("request body", mib(sup.MAX_BODY_BYTES),
          f"raw bytes on the wire; `code` separately at {kib(sup.MAX_CODE_BYTES)} of UTF-8"),
         ("delivered inputs",
-         f"{kib(sup.MAX_INPUT_BYTES)} each, {kib(sup.MAX_INPUTS_TOTAL_BYTES)} per request, "
+         f"{size(sup.MAX_INPUT_BYTES)} each, {size(sup.MAX_INPUTS_TOTAL_BYTES)} per request, "
          f"{sup.MAX_INPUTS} inputs",
-         "decoded bytes, not the base64 on the wire; the body cap above is not raised for "
+         "decoded bytes, not the base64 on the wire; the body cap above is sized to carry "
          "them"),
         ("request head", f"{kib(sup.MAX_HEADER_BYTES)}",
          "request line and headers as one block"),

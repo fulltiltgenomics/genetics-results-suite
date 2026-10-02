@@ -1016,9 +1016,9 @@ plots":
   `plt.style.use(["science", "no-latex"])` — rather than having it imposed.
 - **A delivered PDF is readable.** `pypdf` is in the image, so a PDF input yields its text
   (`pypdf.PdfReader(genetics.open_input(name))`) and its embedded rasters (`page.images`, each
-  `.image` a PIL image, decoded by the Pillow matplotlib already brings). The delivery caps are
-  unchanged — 512 KiB per input and per call — so a full-text paper PDF over that is refused
-  before any extractor sees it.
+  `.image` a PIL image, decoded by the Pillow matplotlib already brings). The delivery caps
+  (limits table in `docs/code-execution-security.md`) apply first, so a PDF over them is
+  refused before any extractor sees it.
 - **`genetics.plots` holds the standard figures**, a locuszoom, a phewas, an upset and a forest
   plot today, as
   functions a script calls rather than conventions it rederives. Discoverable through

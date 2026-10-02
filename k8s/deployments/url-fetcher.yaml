@@ -41,8 +41,8 @@ metadata:
   name: url-fetcher
   namespace: genetics
 spec:
-  # One fetch is a few hundred milliseconds of socket and at most a 512 KiB body, and
-  # chat-backend caches per user, so the load this sees is a small fraction of chat turns.
+  # One fetch is a few seconds of socket at most, and chat-backend caches per user, so the
+  # load this sees is a small fraction of chat turns.
   replicas: 1
   selector:
     matchLabels:
@@ -118,16 +118,17 @@ spec:
           seccompProfile:
             type: RuntimeDefault
         resources:
-          # Sized by the caps the fetch enforces, not by measurement: one 512 KiB body plus its
-          # base64 encoding, a few concurrent requests, and a stdlib HTTP server with no
-          # dependencies to import. The memory limit is a backstop on the threading server
-          # rather than a tuned figure.
+          # The limit is sized by measurement: a fetch in flight holds about seven times its
+          # body (the bytes, their base64, and the JSON response built around that), so a body
+          # at the fetch cap costs ~120 MiB and the limit admits eight of them at once. Nothing
+          # bounds concurrency on the threading server, so this is the backstop: past it the
+          # pod is OOM-killed and every in-flight fetch fails retryably. Idle is ~20 MiB.
           requests:
             cpu: "25m"
             memory: "64Mi"
           limits:
             cpu: "500m"
-            memory: "256Mi"
+            memory: "1Gi"
       # NO VOLUMES. No PVC (chat-data holds every conversation in the deployment), no ConfigMap,
       # no Secret, and no writable scratch: bytes fetched from the open internet are returned in
       # the response and never land on a filesystem in this pod.

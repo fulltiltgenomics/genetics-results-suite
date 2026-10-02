@@ -248,8 +248,8 @@ constant. Nothing here is configurable at runtime.
 | artifact read | 512 KiB | plaintext, not the file: a sealed file is allowed 28 bytes more on disk |
 | audit stream | 4 KiB/record, 1 MiB/execution, 100 records/s (burst 200) | every one applied on the read end, per execution |
 | queue | depth 2, wait 120s | depth counts requests *waiting*; over either, `429` with `Retry-After: 60` |
-| request body | 1 MiB | raw bytes on the wire; `code` separately at 256 KiB of UTF-8 |
-| delivered inputs | 512 KiB each, 512 KiB per request, 4 inputs | decoded bytes, not the base64 on the wire; the body cap above is not raised for them |
+| request body | 24 MiB | raw bytes on the wire; `code` separately at 256 KiB of UTF-8 |
+| delivered inputs | 16 MiB each, 16 MiB per request, 4 inputs | decoded bytes, not the base64 on the wire; the body cap above is sized to carry them |
 | request head | 64 KiB | request line and headers as one block |
 | read deadlines | head 10s, body 10s, idle 65s | one deadline for the whole head; the idle bound closes silently |
 | response body | 1 MiB | a backstop; every component is separately capped |
@@ -530,9 +530,8 @@ what it lets the image do. A delivered input can be a PDF — a paper, a supplem
 else in the image parses one, so those bytes were opaque to the script that was handed them. It
 is pure Python with no required dependencies, so no native parser meets untrusted bytes, and the
 rasters it hands back through `page.images` are decoded by Pillow, which matplotlib already
-brings. It does not widen what may be delivered: the caps above still hold at 512 KiB per input
-and 512 KiB per call on the decoded bytes, so a full-text paper PDF over that is refused as
-`InputsTooLarge` before any extractor sees it, and raising them is a separate decision.
+brings. It does not widen what may be delivered: the caps in the limits table apply to the
+decoded bytes, so a PDF over them is refused as `InputsTooLarge` before any extractor sees it.
 
 `genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
 — a locuszoom, a phewas, an upset, a forest plot and the line-models figure today — and
@@ -675,12 +674,19 @@ per request and in count, all three in the limits table above, generated from th
 own constants. The type is **their own, not the body cap's `PayloadTooLarge`**: both refusals
 are `413` and both carry `execution_id: null`, so sharing a type would leave a caller unable to
 tell "drop an input and retry" from "your body is too big" without matching on the message.
-**`MAX_BODY_BYTES` is deliberately not raised for them.**
-Base64 inflates 4/3, so today's 1 MiB body minus the 256 KiB code cap already carries ~576 KiB
-of raw bytes, and the measured size distribution of real external files has nothing between
-~220 KiB and ~720 MB. Raising the body cap would buy an empty band at the price of quadrupling
-the largest body a sandbox token authorises; the large class gets a **stated refusal** instead,
-which is what a caller can act on.
+**`MAX_BODY_BYTES` is sized to carry them.** Base64 inflates 4/3, so the body cap holds the
+per-request inputs cap encoded, a full-size script at JSON's worst escaping and the envelope:
+no legal combination of code and inputs is refused by the body cap. The price is memory in the
+**supervisor**, which the child's `RLIMIT_AS` does not bound. A body is read and parsed before
+the queue is consulted, so every connection — the ones about to be answered `429` included —
+costs about five times its inputs while it is parsed, and the decoded inputs for as long as it
+waits or runs. Measured on a gVisor pod with at-cap (16 MiB) inputs, the supervisor's resident
+size rose by 45–80 MiB for one request, 210–250 MiB for three at once and 470–520 MiB for
+eight at once, against the 512 MiB the pod leaves it. A burst of at-cap requests that coincides
+with a script near its own memory bound can therefore OOM the pod, and nothing in the
+supervisor prevents it: chat-backend is the only caller the NetworkPolicy admits, and how many
+turns it runs at once is the bound. A file past the cap — full summary statistics run to
+hundreds of MiB — gets a **stated refusal**, which is what a caller can act on.
 
 **Which end ships first: the supervisor.** `POST /execute` rejects an unknown top-level field
 with `400 UnknownField`, so a chat-backend that sends `inputs` to a supervisor that does not
