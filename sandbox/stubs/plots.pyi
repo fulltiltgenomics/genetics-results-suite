@@ -56,6 +56,8 @@ def locuszoom(
     ld_panel: str = 'sisu42',
     genes: bool = True,
     coding: bool = True,
+    highlight: str | list[str] | None = None,
+    label_r2: float | None = None,
     data: pl.DataFrame | None = None,
     path: str | None = None,
     title: str | None = None,
@@ -65,8 +67,21 @@ def locuszoom(
     """Regional association plot: -log10 p against position, coloured by LD with the lead.
 
     Give either `region` ("12:49400000-49800000") or `variant` ("12:49578357:C:T"), which is
-    centred with `flank` either side. `lead` defaults to the strongest association in the
-    window, and LD is taken against it from the FinnGen LD server.
+    centred with `flank` either side. LD is taken against `lead` from the FinnGen LD server.
+
+    `lead` defaults to the strongest association in the window, with one exception: when
+    nothing reaches `significance`, a variant rarer than 1% is passed over for the strongest
+    one that is not, because the top of a flat window is usually a rare variant with an
+    unstable estimate. `strongest` in the returned dict is the plain maximum either way, so
+    the two differ exactly when that happened. A lead below the line is the top of the
+    noise, not a hit, and should be described that way.
+
+    `highlight` rings and names further variants (ids as chr:pos:ref:alt), and `label_r2`
+    names the lead's neighbours at or above that r² — `label_r2=0.8` is "label the top
+    variant and everything in tight LD with it". With `variant=`, the centred variant is
+    ringed and named on its own whenever it is not the lead. Labels use the rsID where the
+    summary statistics carry one. `highlighted` in the returned dict lists what was named,
+    as {variant, mlog10p, r2}.
 
     THE DEFAULT WINDOW IS THE RIGHT ONE UNLESS THE QUESTION IS ABOUT THE WINDOW. `flank` is
     250 kb either side, i.e. a 500 kb plot; pass `variant=` and leave it alone. Widening it as
@@ -90,13 +105,21 @@ def locuszoom(
     when the API served no exon structure, in which case the track is gene bodies only.
 
     Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
-    `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus two worth reading every time.
+    `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus the ones below, worth reading every
+    time.
 
-    `ld_joined` is False when the LD server returned nothing for the lead — a plot with grey
-    points rather than an error, because a locuszoom without LD is still the right picture of
-    the locus. Check it rather than assuming the colours mean something: the LD server is a
-    third party, reached through a proxy, so an outage there costs the colours and nothing
-    else.
+    `ld_joined` is False when there is no r² to colour by — a plot with grey points rather
+    than an error, because a locuszoom without LD is still the right picture of the locus.
+    `ld_status` says why, and the figure carries the same reason. Report the one that
+    applies rather than guessing at an outage:
+    "joined" — coloured as asked;
+    "partial" — the plot is wider than the LD server's 5 Mb window, so points more than
+    2.5 Mb from the lead are grey because they were never asked about;
+    "no_partners" — the panel carries the lead and nothing is correlated with it;
+    "lead_not_in_panel" — the panel does not carry the lead, which retrying will not change
+    (pass a `lead=` the panel has, or another `ld_panel`);
+    "unavailable" — the LD server failed, the one case worth retrying later;
+    "off" — `ld=False`.
 
     `ld_partners_outside_window` lists the variants correlated with the lead that fall
     outside the window, strongest first, as {variant, pos, r2}. It is non-empty when the
@@ -107,7 +130,9 @@ def locuszoom(
     `coding_marked` is False when the consequence lookup did not answer, in which case every
     point is a circle and shape means nothing; set `coding=False` to skip that fetch outright.
     The same lookup fills `lead_consequence` and `lead_gene`, which the lead's label also
-    carries, so the strongest variant names what it does and where before anyone asks.
+    carries, so the lead names what it does and where before anyone asks. `lead_gene` is the
+    annotation's symbol, the one a follow-up query filters on; `lead_gene_label` is what the
+    figure prints, which differs where GENCODE has since renamed the gene.
 
     `path` may be relative, in which case it is written inside the execution's artifacts
     directory and returned to the user automatically; that is also where the default goes.

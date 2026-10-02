@@ -583,7 +583,9 @@ with 3000 entries stopping 19 kb short of the window's right edge, leaving 97 pa
 unanswered and that edge of the plot grey with nothing to say why. Above the floor the same
 locus returns 17 entries across ±500 kb. Grey therefore means "no r² worth colouring", which is
 what it already meant for a variant the panel does not carry. **And LD is asked for over more
-than the plotted span**, so a correlated partner just outside the window is named — in the
+than the plotted span** — up to the LD server's own ceiling on the window, past which the
+figure's legend says how far from the lead its colours reach — so a correlated partner just
+outside the window is named — in the
 returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
 same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
 it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
