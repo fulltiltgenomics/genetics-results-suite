@@ -390,6 +390,9 @@ def volcano(
     labels: Any = 10,
     colour: str | None = None,
     size: str | None = None,
+    ring: str | None = None,
+    ring_min: float = 0.1,
+    hulls: bool = False,
     effect: str | None = None,
     xlabel: str | None = None,
     xlim: Any = None,
@@ -458,6 +461,16 @@ def volcano(
     rarest are grouped as `Other`. `size=` names a numeric column — sample size, carrier
     count — that the hits' marker area is scaled by, with the range in the legend.
 
+    A PHEWAS OF ONE VARIANT is the same figure with a point per phenotype, and two more
+    encodings carry what it is read for. `ring=` names a column and draws a dark ring round
+    the points it marks: where a boolean column is true, or where a numeric one — a
+    credible set's `pip` — is above `ring_min` (0.1), so the associations fine-mapped to
+    this variant stand apart from the ones it only tags. `hulls=True`, with `colour=`,
+    outlines the hits of each category with their convex hull, tinted in the category's
+    colour: a hull that straddles the null is a category the variant raises the risk of
+    for some phenotypes and lowers for others. A category with a single hit has no hull,
+    nor does `Other`. With `ring=`, points named by `labels=[...]` are not ringed as well.
+
     WHAT IS HANDLED RATHER THAN LEFT TO THE CALLER. A row with no estimate or no usable
     p-value is not drawn and is counted in `n_missing`. A p-value of exactly 0, or an
     infinite -log10 p, is an arrowhead at the top edge rather than a value invented for it.
@@ -475,8 +488,9 @@ def volcano(
     `threshold_mlog10p`, `n_significant` (past the p threshold), `n_up`, `n_down` and
     `n_small`, `n_clipped`, `n_offscale` (drawn at the top edge), `scale`, `xlim` in axis
     units, `y_log_above`, `labelled` (the names on the figure), `colours` (the legend's
-    categories) and `top`: the ten strongest hits as dicts of `label`, `estimate` in axis
-    units, `mlog10p` and `direction`.
+    categories), `n_ringed`, `hulls` (one dict per hull drawn: `category`, `n_points` and
+    `crosses_null`) and `top`: the ten strongest hits as dicts of `label`, `estimate` in
+    axis units, `mlog10p` and `direction`.
 
     `path` may be relative, in which case it is written inside the execution's artifacts
     directory and returned to the user automatically; that is also where the default goes.
