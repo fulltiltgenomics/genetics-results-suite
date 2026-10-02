@@ -1026,7 +1026,10 @@ later. Loopback, link-local, multicast, RFC1918, CGNAT, reserved and the IPv4-ma
 Teredo forms that carry one of those inside an IPv6 address are all refused.
 
 The host policy is an **allow-list and it is configuration**, read from the deployment's
-environment: widening it is a manifest change, not a code change. A refusal **names the
+environment: widening it is a manifest change, not a code change. An entry is an exact host
+name unless it is written with a leading dot, which admits that domain and every subdomain of
+it (`Guard.host_allowed`); the address-class check still applies to whatever such a name
+resolves to. A refusal **names the
 policy** in its message, so a host somebody wants arrives as a visible request to widen the
 list rather than as an invisible dead end — that visibility is the demand signal the
 measurement behind this feature could not supply, because it sampled a system that visibly
@@ -1483,7 +1486,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. It is the feature's acceptance test, written before the code rather than after it, so it could say what "working" meant while that was still negotiable | a loopback origin it starts itself, the local sandbox container, a signing key |
-| `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps, and that the health route's `allowed_hosts` is the guard's own list rather than a second copy of it. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |
+| `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, a leading-dot allow-list entry matching only at a label boundary, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps, and that the health route's `allowed_hosts` is the guard's own list rather than a second copy of it. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |
 | `sandbox/build-checks.py` | the final image's properties, from the builder stage | the image build |
 
 Two conventions run through those harnesses and are what make them evidence rather than
