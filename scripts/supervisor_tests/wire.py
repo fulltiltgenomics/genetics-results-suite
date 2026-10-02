@@ -51,7 +51,7 @@ def test_http(server):
                   f"got {status} {body}")
 
         status, _, body = _raw_oversized(server.host, server.port)
-        check("http: body over 1 MiB -> 413 without reading it",
+        check("http: body over MAX_BODY_BYTES -> 413 without reading it",
               status == 413 and body["error"]["type"] == "PayloadTooLarge", f"got {status} {body}")
 
         # a working script: stdout, an artifact, and the per-execution environment
@@ -368,11 +368,13 @@ def test_backpressure(server):
 
 
 def _raw_oversized(host, port):
-    """Announce a 2 MiB body and send none of it. The cap must fire on the header alone."""
+    """Announce a body one byte over the cap and send none of it. The cap must fire on the
+    header alone."""
     s = socket.create_connection((host, port), timeout=10)
     s.sendall(
         b"POST /execute HTTP/1.1\r\nHost: localhost\r\n"
-        b"Content-Type: application/json\r\nContent-Length: 2097152\r\n\r\n"
+        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n"
+        % (sup.MAX_BODY_BYTES + 1)
     )
     raw = b""
     s.settimeout(10)

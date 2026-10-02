@@ -25,10 +25,9 @@ import urllib.parse
 
 from guard import Refused
 
-# the vxtv.2 measurement: 512 KiB raw per input, because an input rides to the sandbox as
-# base64 in a 1 MiB body that already carries up to 256 KiB of code. Nothing observed sits
-# between 220 KB and 720 MB, so a larger cap buys an empty interval.
-MAX_BYTES = 512 * 1024
+# what one delivered input may be: the sandbox supervisor refuses a larger one
+# (MAX_INPUT_BYTES in sandbox/supervisor.py), so a fetch past this could not be used
+MAX_BYTES = 16 * 1024 * 1024
 MAX_REDIRECTS = 5
 TIMEOUT_S = 30
 CONNECT_TIMEOUT_S = 10

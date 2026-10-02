@@ -375,11 +375,11 @@ def _raw_post(host, port, payload):
 def test_inputs_caps_on_the_wire(server):
     """Both refusals over HTTP, and that a caller can tell them apart.
 
-    They are only just distinguishable, and the arithmetic is why: base64 inflates 4/3, so the
-    inputs-total cap at 512 KiB rides in a ~700 KiB body and is reachable, while two elements
-    that are each legal on their own can put the body over 1 MiB and never reach _parse_inputs
-    at all. The sizes below are computed from the module's constants, not chosen, so a cap
-    change moves the probes with it.
+    Which one fires is arithmetic: base64 inflates 4/3, so inputs just over the total cap still
+    ride in a body under the body cap and reach _parse_inputs, while two elements that are each
+    legal on their own can put the body over its cap and never reach _parse_inputs at all. The
+    sizes below are computed from the module's constants, not chosen, so a cap change moves the
+    probes with it.
     """
     third = sup.MAX_INPUTS_TOTAL_BYTES // 3 + 1024
     over_total = make_body(inputs=[_element(f"f{i}.bin", bytes(third)) for i in range(3)])
@@ -398,8 +398,8 @@ def test_inputs_caps_on_the_wire(server):
     big = sup.MAX_INPUT_BYTES - 112 * 1024
     over_body = make_body(inputs=[_element(f"g{i}.bin", bytes(big)) for i in range(2)])
     encoded = json.dumps(over_body).encode()
-    check("inputs caps: two elements each under MAX_INPUT_BYTES can still exceed the 1 MiB "
-          "body cap — the interaction a caller has to be able to see",
+    check("inputs caps: two elements each under MAX_INPUT_BYTES can still exceed the body "
+          "cap — the interaction a caller has to be able to see",
           len(encoded) > sup.MAX_BODY_BYTES and big <= sup.MAX_INPUT_BYTES,
           f"body {len(encoded)} bytes from 2 x {big}")
     status, body = _raw_post(server.host, server.port, encoded)

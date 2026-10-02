@@ -45,6 +45,10 @@ DEFAULT_ALLOWED_HOSTS = (
     "api.biorxiv.org",
     "www.biorxiv.org",
     "www.medrxiv.org",
+    # coordinate liftover: Ensembl's REST map endpoint answers a few positions per request,
+    # and a UCSC chain file is what a script needs to lift a whole table
+    "rest.ensembl.org",
+    "hgdownload.soe.ucsc.edu",
     # leading dot: the apex and every subdomain. A host under it that redirects to a login
     # is still refused at that hop, since the identity provider is not listed
     ".finngen.fi",

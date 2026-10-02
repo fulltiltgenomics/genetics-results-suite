@@ -63,16 +63,19 @@ from collections import deque
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 8080
 
-MAX_BODY_BYTES = 1024 * 1024          # raw bytes on the wire -> 413
+MAX_BODY_BYTES = 24 * 1024 * 1024     # raw bytes on the wire -> 413
 MAX_CODE_BYTES = 256 * 1024           # len(code.encode("utf-8")) -> 413
-# Delivered inputs, measured decoded rather than on the wire. MAX_BODY_BYTES is deliberately
-# NOT raised to make room for them: base64 inflates 4/3, so the existing 1 MiB body minus the
-# code cap already carries ~576 KiB of raw bytes, and the size distribution of real external
-# files has nothing between ~220 KiB and ~720 MB. Raising the body cap would buy an empty band
-# at the price of quadrupling the largest body a sandbox token authorises; the large class gets
-# a stated refusal instead.
-MAX_INPUT_BYTES = 512 * 1024          # decoded bytes of one input -> 413
-MAX_INPUTS_TOTAL_BYTES = 512 * 1024   # decoded bytes across one request -> 413
+# Delivered inputs, measured decoded rather than on the wire. They ride in the body as base64,
+# so MAX_BODY_BYTES is sized to carry them: MAX_INPUTS_TOTAL_BYTES encodes to ~21.4 MiB, and
+# the rest holds a full-size script at JSON's worst escaping (6 bytes per code byte) plus the
+# envelope, so no legal combination of code and inputs is refused by the body cap. The cost is
+# memory in THIS process, which the child's RLIMIT_AS does not bound: a body is read and parsed
+# before the queue is consulted, so every connection — the ones about to be answered 429
+# included — costs about five times its inputs while it is parsed (measured: ~80 MiB at the
+# cap) and the decoded inputs for as long as it waits or runs. Full summary-statistics files
+# sit far above anything this process should buffer; that class gets a stated refusal instead.
+MAX_INPUT_BYTES = 16 * 1024 * 1024         # decoded bytes of one input -> 413
+MAX_INPUTS_TOTAL_BYTES = 16 * 1024 * 1024  # decoded bytes across one request -> 413
 MAX_INPUTS = 4                        # elements in `inputs` -> 413
 MAX_HEADER_BYTES = 64 * 1024          # request line + headers, whole block -> 431
 HEADER_PEEK_BYTES = 512               # see _HeaderBoundedReader: the over-read bound
@@ -689,11 +692,11 @@ def _parse_inputs(value):
             raise _bad(f"{where}.content_base64 is not valid base64")
         if len(data) > MAX_INPUT_BYTES:
             raise RequestError(413, ERR_INPUTS_TOO_LARGE,
-                               f"{where} exceeds {MAX_INPUT_BYTES // 1024} KiB")
+                               f"{where} exceeds {MAX_INPUT_BYTES // (1024 * 1024)} MiB")
         total += len(data)
         if total > MAX_INPUTS_TOTAL_BYTES:
             raise RequestError(413, ERR_INPUTS_TOO_LARGE,
-                               f"inputs exceed {MAX_INPUTS_TOTAL_BYTES // 1024} KiB in total")
+                               f"inputs exceed {MAX_INPUTS_TOTAL_BYTES // (1024 * 1024)} MiB in total")
 
         digest = element.get("sha256")
         if not isinstance(digest, str) or not SHA256_HEX_RE.fullmatch(digest):
@@ -5673,7 +5676,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         encoding = (self.headers.get("Transfer-Encoding") or "").strip().lower()
         if encoding and encoding != "identity":
             # Refusing is the safe reading: a chunked body cannot be size-capped before it is
-            # read, which is the one thing the 1 MiB cap exists to do.
+            # read, which is the one thing the body cap exists to do.
             self.close_connection = True
             raise _bad("chunked request bodies are not accepted")
 
@@ -5692,7 +5695,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if length > MAX_BODY_BYTES:
             # Stop at the cap rather than buffering past it: the bytes are never read.
             self.close_connection = True
-            raise RequestError(413, "PayloadTooLarge", "body exceeds 1 MiB")
+            raise RequestError(413, "PayloadTooLarge",
+                               f"body exceeds {MAX_BODY_BYTES // (1024 * 1024)} MiB")
 
         chunks = []
         remaining = length
@@ -5750,8 +5754,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # read: leaving those bytes in the socket makes them the next request line.
                 self.close_connection = True
                 raise RequestError(503, "NotReady", "supervisor is not accepting executions")
-            raw = self._read_body(started)
-            req = parse_execute_request(raw)
+            # the body is not bound to a name: this frame lasts until the execution has
+            # answered, and a body carrying inputs is tens of MiB that nothing reads again once
+            # it is parsed
+            req = parse_execute_request(self._read_body(started))
             execution_id = req.execution_id
             job = Job(req, self.connection, owner=SUPERVISOR)
             result = SUPERVISOR.run(job)
