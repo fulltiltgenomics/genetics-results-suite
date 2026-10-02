@@ -10,6 +10,7 @@
     genetics.plots.locuszoom(phenotype="H8_HEARINGLOSS", variant="12:49578357:C:T")
     genetics.plots.phewas(variant="19:44908684:T:C")
     genetics.plots.upset(sets={"Crohn": cd_ids, "UC": uc_ids})
+    genetics.plots.forest(frame, label="cohort", scale="log_ratio", pool="fixed")
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -238,5 +239,112 @@ def linemodels(
     `n_undetermined` and the `threshold` used. `path` may be relative, in which case it is
     written inside the execution's artifacts directory; pass `ax` to draw into an existing
     figure instead, in which case nothing is saved.
+    """
+    ...
+
+def forest(
+    data: pl.DataFrame,
+    *,
+    label: str,
+    estimate: str = 'beta',
+    se: str | None = 'se',
+    lower: str | None = None,
+    upper: str | None = None,
+    scale: str = 'linear',
+    ci: float = 0.95,
+    group: str | None = None,
+    series: str | None = None,
+    summary: str | None = None,
+    pool: str | None = None,
+    weight: str | None = None,
+    pvalue: str | None = 'auto',
+    significance: float | None = None,
+    columns: Any = None,
+    table: bool = True,
+    sort_by: str | None = None,
+    effect: str | None = None,
+    xlabel: str | None = None,
+    xlim: Any = None,
+    direction: Any = None,
+    italic: bool = False,
+    max_rows: int = 45,
+    path: str | None = None,
+    title: str | None = None,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """Forest plot: one estimate and its confidence interval per row, with the numbers beside it.
+
+    `data` has one row per estimate. `label` names the column written down the left;
+    `estimate` and `se` name the effect and its standard error, from which the `ci` interval
+    (95%) is drawn. Pass `lower=` and `upper=` instead where the frame carries the bounds —
+    they win over `se`, need not be symmetric, and an infinite one draws a one-sided
+    interval. Rows are drawn top to bottom in frame order, so sort the frame first, or pass
+    `sort_by="estimate"` for largest first.
+
+    SAY WHAT THE NUMBERS ARE, with `scale`:
+
+    - `"linear"` (default) — drawn as given, null at 0. A quantitative trait's beta.
+    - `"log_ratio"` — the estimates are LOG odds/hazard/risk ratios, which is what a
+      binary-trait GWAS `beta` and a burden `beta` are. They are exponentiated: the axis is
+      logarithmic and labelled in ratio units, the null is 1, and the text column reads
+      `1.35 (1.21–1.50)` where a linear one reads `0.12 (0.08 to 0.16)`.
+    - `"ratio"` — the estimates are already ratios; same axis, nothing exponentiated. This
+      one needs `lower=`/`upper=`, since a standard error is on the log scale.
+
+    Log odds ratios and per-s.d. betas do not share an axis: draw binary and quantitative
+    traits as two forests rather than one.
+
+    STRUCTURE. `group=` puts the rows under bold section headings, in order of first
+    appearance. `series=` draws several estimates on one row — one per value, each in its
+    own colour and marker with a legend — for the same rows measured twice: two cohorts,
+    two sexes, discovery and replication. A row is then one `label` (within its group), and
+    a series a row lacks leaves its slot empty. `summary=` names a boolean column flagging
+    rows that are already pooled estimates — a meta-analysis row from the data — which are
+    drawn last in their group, under a hairline, as a diamond spanning the interval.
+
+    `pool="fixed"` or `"random"` computes that diamond instead: the inverse-variance
+    (DerSimonian–Laird for random) estimate over each group's rows, or over all of them
+    without `group=`, and per series with `series=`. I² and the heterogeneity p are in the
+    returned `pooled`, not on the figure — report them in the text. Pool only rows that
+    estimate ONE quantity in INDEPENDENT samples — cohorts, ancestries, sexes. Different
+    phenotypes are not replicates, and a meta-analysis row pooled with its own components
+    counts those samples twice; flag such a row with `summary=`, which also keeps it out
+    of the pool.
+
+    ENCODING. Every estimate is a small filled circle unless one of these is asked for.
+    `significance=` (a p threshold) fills the markers that pass it and leaves the rest
+    hollow, with a legend saying so. `weight=` names a column — sample size, say — and
+    draws squares whose area is scaled by it, the meta-analysis convention.
+
+    TEXT. To the right: the estimate with its interval, the p-value when the frame has one
+    (`mlog10p`, else `pval`; `pvalue=` names another column, read as -log10 p when its name
+    starts with `mlog`, and `pvalue=None` drops it), and then any `columns=` — a list of
+    column names, or a dict of column to heading — such as case counts. `table=False`
+    leaves all of it out. `effect` is the measure's short name in the heading and the axis
+    label ("β", "OR", "HR"); `direction=("lower risk", "higher risk")` writes what each
+    side of the null means under the axis; `italic=True` sets the labels in italics, for
+    a column of gene symbols.
+
+    WHAT IS HANDLED RATHER THAN LEFT TO THE CALLER. A null or non-finite estimate keeps its
+    row and reads `NA`. A missing or non-positive standard error draws the point alone. An
+    interval far wider than the others is cut at the axis edge with an arrowhead instead of
+    setting the scale, and so is anything outside an explicit `xlim=` (given in the units
+    of the axis); the text column still carries the full numbers, and `n_clipped` and
+    `xlim` say how many were cut and where, for the legend. Labels are cut at 48
+    characters, and no more than `max_rows` rows are drawn — the first ones, with the rest
+    counted on the figure and in `n_omitted`; split a longer table into several figures.
+
+    Returns a dict describing what was drawn: `path`, `n_rows`, `n_estimates`, `n_missing`
+    (estimates that were null), `n_clipped` (intervals cut at the axis), `n_omitted`,
+    `scale`, `xlim` in axis units, `groups`, `series`, `rows` (the labels, top to bottom),
+    `size_in` (the width and height in inches the figure needs), and `pooled`: one dict per
+    computed diamond with `group`, `series`, `method`, `k`, `estimate`, `lower`, `upper` in
+    axis units, `se` on the scale the estimates were given, `mlog10p`, `q`, `i2`, `tau2` and
+    `p_het`.
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw in its place in an existing figure, in which case nothing is saved;
+    give that axis about `size_in`, since the text does not shrink to fit.
     """
     ...

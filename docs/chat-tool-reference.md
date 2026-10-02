@@ -2692,7 +2692,7 @@ DELIVERY LIMITS: an artifact over 512 KB is delivered nowhere — not shown, not
 
 CONCURRENCY: at most 4 data requests may be in flight at once from one script. Going over answers 429 and, under `asyncio.gather`, loses the results of the requests that did succeed — batch at 4 and pass `return_exceptions=True`.
 
-Standard figures are already written: `genetics.plots` has the conventional ones — a locuszoom and an upset among them — so a request for one is a call, not a plot to compose from scratch. list_capabilities(module="plots") lists what is there. Every figure is styled by the sandbox itself; a script neither needs nor should add a style, and one that sets its own is overriding a deliberate default.
+Standard figures are already written: `genetics.plots` has the conventional ones — a locuszoom, a forest plot and an upset among them — so a request for one is a call, not a plot to compose from scratch. list_capabilities(module="plots") lists what is there. Every figure is styled by the sandbox itself; a script neither needs nor should add a style, and one that sets its own is overriding a deliberate default.
 
 Comparing the same variants' effects between two GWAS — two phenotypes, two cohorts, two sexes — is `genetics.linemodels` (Pirinen's line models): it gives each variant a probability of 'effect only in A', 'shared' and 'only in B', or of lines you specify, derives the scale from the data and reports every parameter it used. list_capabilities(module="linemodels") has the parameter guidance; `genetics.plots.linemodels` draws the result.
 
