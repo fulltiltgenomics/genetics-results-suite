@@ -1029,7 +1029,10 @@ plots":
   results-api, the browser and the chat prompt each also hold);
   that one lookup also labels the lead with its gene and consequence and returns them as
   `lead_gene`/`lead_consequence`, so the strongest variant names what it does without a second
-  query. It returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
+  query. An unnamed lead is the strongest variant unless that is both below the significance
+  line and rarer than 1%, and `ld_status` says why a figure has no LD colour (the lead is not
+  in the panel, the server failed, nothing is correlated) rather than leaving it to be read
+  as an outage. It returns `ld_partners_outside_window` alongside `ld_joined`, because the window is a
   default nobody chose per locus and a correlated variant just past its edge is the difference
   between a lone signal and a supported one. Its gene track draws a model per gene — a hairline
   over the Ensembl-canonical transcript, a bar per exon, and a thicker bar over each exon's
@@ -1116,9 +1119,13 @@ cost being accepted for the reachability. What bounds it:
   name, so no caller-supplied string reaches the outbound query unshaped. The panel is
   deliberately **not** membership-checked: the set is the upstream's and a list here would go
   stale silently, so an unknown-but-well-formed name is the upstream's 4xx to give;
-- `window` is refused outside `1..LD_MAX_WINDOW` (11 Mb, the largest any current caller
-  computes) rather than clamped — a silently narrowed window returns fewer variants and reads
-  as a sparse locus rather than as a limit;
+- `window` is refused outside `LD_MIN_WINDOW..LD_MAX_WINDOW` rather than clamped — a silently
+  narrowed window returns fewer variants and reads as a sparse locus rather than as a limit.
+  The defaults are the upstream's own bounds, so the refusal is a 422 naming the limit
+  instead of the upstream's 400 arriving as a 502;
+- a query variant the panel does not carry is **404**, not 502: the upstream answered, and a
+  caller told "unavailable" waits on an outage that is not happening. `locuszoom` reports it
+  as `ld_status: "lead_not_in_panel"`;
 - the upstream's response body is never forwarded. It is a third party's text and the caller
   may be a model-authored script;
 - an upstream failure is **502**, never 4xx: nothing the caller sent was wrong, and a script
@@ -1126,7 +1133,7 @@ cost being accepted for the reachability. What bounds it:
 - the sandbox's per-execution counters apply unchanged, because this is an ordinary results-api
   request carrying the ordinary credential.
 
-`LD_UPSTREAM_URL`, `LD_UPSTREAM_TIMEOUT_SECONDS`, `LD_MAX_WINDOW`, `LD_DEFAULT_WINDOW` and
+`LD_UPSTREAM_URL`, `LD_UPSTREAM_TIMEOUT_SECONDS`, `LD_MIN_WINDOW`, `LD_MAX_WINDOW`, `LD_DEFAULT_WINDOW` and
 `LD_DEFAULT_PANEL` are env-overridable, because the upstream is someone else's service and a
 move or an outage must not need a rebuild. There is **no cache**, deliberately and
 provisionally: a re-run locuszoom asks for the same window twice and would benefit, but a cache
