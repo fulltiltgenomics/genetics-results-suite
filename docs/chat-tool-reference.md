@@ -2324,7 +2324,7 @@ Get all genes in a genomic region. Returns genes overlapping the specified coord
 Description as sent to the model:
 
 ```text
-Get linkage disequilibrium (LD) statistics between two specific variants. Returns r2 and D' values from the FinnGen reference panel. Both variants must be on the same chromosome and within 5 Mb of each other.
+Get linkage disequilibrium (LD) statistics between two specific variants. Returns r2 and D' values from the FinnGen reference panel. Both variants must be on the same chromosome and within 2 Mb of each other.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |

@@ -14,8 +14,8 @@
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
-continuous, that the lead variant is a diamond, that genes belong under the association panel
-and not beside it. Written out per request, each of those is a coin flip. Written here once,
+continuous, that the lead is marked out by size and colour rather than by a shape of its own,
+that genes belong under the association panel and not beside it. Written out per request, each of those is a coin flip. Written here once,
 they are the same in every conversation and a defect is fixed in one place.
 
 WHY NOT A TOOL. A tool is a round trip with a fixed argument list; this is a Python function,
