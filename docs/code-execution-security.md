@@ -535,7 +535,8 @@ and 512 KiB per call on the decoded bytes, so a full-text paper PDF over that is
 `InputsTooLarge` before any extractor sees it, and raising them is a separate decision.
 
 `genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
-— a locuszoom, a phewas, an upset and the line-models figure today — and Pirinen's line
+— a locuszoom, a phewas, an upset, a forest plot and the line-models figure today — and
+Pirinen's line
 models as a numpy port, as functions rather than as instructions a script rederives. Both
 are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
 SDK's import closure, resolved through a module `__getattr__` so chat-backend and mcp-server

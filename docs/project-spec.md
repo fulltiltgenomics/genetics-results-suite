@@ -1019,7 +1019,8 @@ plots":
   `.image` a PIL image, decoded by the Pillow matplotlib already brings). The delivery caps are
   unchanged — 512 KiB per input and per call — so a full-text paper PDF over that is refused
   before any extractor sees it.
-- **`genetics.plots` holds the standard figures**, a locuszoom, a phewas and an upset today, as
+- **`genetics.plots` holds the standard figures**, a locuszoom, a phewas, an upset and a forest
+  plot today, as
   functions a script calls rather than conventions it rederives. Discoverable through
   `list_capabilities(module="plots")` and the generated `sandbox/stubs/plots.pyi`; adding one
   is a function plus an `__all__` entry, and both surfaces follow. `locuszoom` encodes LD in
@@ -1069,7 +1070,15 @@ plots":
   since the scripts this replaced put the set names under the bars and the intersection
   names under the dots, where both were overprinted. Nothing on it is coloured: a bar carries
   a count and a dot a membership, and a hue per bar reads as a categorical the figure never
-  explains. There is no chat tool for any of these figures: a figure is a `run_analysis`
+  explains. `forest` is general the same way — any frame with an estimate per row and a
+  standard error or interval bounds — and draws the table a journal prints: labels, an
+  interval panel, and the estimate, interval and p-value as text beside it. The scale is
+  stated by the caller (`linear`, `log_ratio`, `ratio`), not inferred, because a log odds
+  ratio and a per-s.d. beta are indistinguishable in a frame and the wrong guess draws the
+  null in the wrong place. An interval far wider than the others — the estimate a model that
+  did not converge returns — is cut at the axis edge with an arrowhead rather than allowed to
+  set the scale, and the returned `n_clipped` counts them. genetics-mcp-server's
+  `docs/project-spec.md` and the function's docstring carry the rest. There is no chat tool for any of these figures: a figure is a `run_analysis`
   artifact, and the servers do not import matplotlib.
 - **`genetics.linemodels` clusters variants by the relationship between their effects in
   two or more GWAS** — Pirinen's line models (Bioinformatics 2023), ported to numpy in
