@@ -534,7 +534,7 @@ brings. It does not widen what may be delivered: the caps in the limits table ap
 decoded bytes, so a PDF over them is refused as `InputsTooLarge` before any extractor sees it.
 
 `genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
-— a locuszoom, a phewas, an upset, a forest plot and the line-models figure today — and
+— a locuszoom, a phewas, an upset, a forest plot, a volcano and the line-models figure today — and
 Pirinen's line
 models as a numpy port, as functions rather than as instructions a script rederives. Both
 are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
