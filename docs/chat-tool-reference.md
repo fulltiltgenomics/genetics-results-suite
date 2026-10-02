@@ -1891,7 +1891,7 @@ Get allele-specific methylation QTL (ASM-QTL) data for a variant. Returns associ
 Description as sent to the model:
 
 ```text
-Get allele-specific methylation QTL (ASM-QTL) data for variants near a gene. Returns associations between sequence variants and CpG/MDS methylation rates for variants within the gene body ± window, selected by genomic coordinates (not by most-severe-consequence attribution, which misses nearby regulatory variants).
+Get allele-specific methylation QTL (ASM-QTL) data for variants near a gene. Returns associations between sequence variants and CpG/MDS methylation rates for variants within the gene body ± window, selected by genomic coordinates (not by most-severe-consequence attribution, which misses nearby regulatory variants). Rows are capped at `limit` (default 500): `total_count` is every matching row and `truncated` says whether the cap cut them.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -1899,6 +1899,7 @@ Get allele-specific methylation QTL (ASM-QTL) data for variants near a gene. Ret
 | `gene` | `string` | yes | — | — | Gene symbol or comma-separated list of gene symbols (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'decode_cpg' (CpG methylation), 'decode_mds' (MDS methylation). Omit to search all. |
 | `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
+| `limit` | `integer` | no | `500` | `minimum` 1, `maximum` 100000 | Maximum rows to return (default 500). When `truncated` is true, raise this or narrow `window` or `resources` to get the rest. |
 
 `required`: ['gene']
 
@@ -1992,7 +1993,7 @@ Get the Open4Gene chromatin PEAKS linked to a gene, per cell type — the invers
 Description as sent to the model:
 
 ```text
-Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory/enhancer peaks). Answers 'in which cell types/tissues/conditions is the chromatin around this gene open/accessible?'. Returns accessible regions labeled by cell_type, tissue, life_stage and condition. This is a peak ATLAS of measured accessibility — distinct from caqtl (accessibility QTL) and chromatin_peaks (peak-to-gene links).
+Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory/enhancer peaks). Answers 'in which cell types/tissues/conditions is the chromatin around this gene open/accessible?'. Returns accessible regions labeled by cell_type, tissue, life_stage and condition. This is a peak ATLAS of measured accessibility — distinct from caqtl (accessibility QTL) and chromatin_peaks (peak-to-gene links). Rows are capped at `limit` (default 500): `total_count` is every matching row and `truncated` says whether the cap cut them. A locus too dense for one call can be tiled with get_open_chromatin_by_region, which is not capped.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2000,6 +2001,7 @@ Get open-chromatin (scATAC/snATAC/bulk-ATAC/chromHMM) atlas peaks near a gene, s
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein', 'li_brain_atac', 'catlas', 'epimap', 'calderon_immune', 'rosmap_brain'. Omit to search all. |
 | `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
+| `limit` | `integer` | no | `500` | `minimum` 1, `maximum` 100000 | Maximum rows to return (default 500). When `truncated` is true, raise this or narrow `window` or `resources` to get the rest. |
 
 `required`: ['gene']
 
@@ -2025,7 +2027,7 @@ Get in-silico PREDICTED variant effect on chromatin accessibility for a variant.
 Description as sent to the model:
 
 ```text
-Get in-silico PREDICTED variant effects on chromatin accessibility for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'how strongly and in which cell types are this gene's variants predicted to affect chromatin accessibility?'. Returns per-model, per-cell-type predicted-effect rows: ChromBPNet (model=chrombpnet) predicted accessibility effect in specific cell_type/tissue contexts; FLARE (model=flare) pan-context regulatory score (cell_type/tissue may be null). These are MODEL PREDICTIONS — distinct from measured caqtl (accessibility QTL) and open_chromatin (measured accessibility atlas).
+Get in-silico PREDICTED variant effects on chromatin accessibility for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'how strongly and in which cell types are this gene's variants predicted to affect chromatin accessibility?'. Returns per-model, per-cell-type predicted-effect rows: ChromBPNet (model=chrombpnet) predicted accessibility effect in specific cell_type/tissue contexts; FLARE (model=flare) pan-context regulatory score (cell_type/tissue may be null). These are MODEL PREDICTIONS — distinct from measured caqtl (accessibility QTL) and open_chromatin (measured accessibility atlas). Rows are capped at `limit` (default 500): `total_count` is every matching row and `truncated` says whether the cap cut them.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2033,6 +2035,7 @@ Get in-silico PREDICTED variant effects on chromatin accessibility for variants 
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'marderstein' (Marderstein/Kundaje 2026 ChromBPNet + FLARE predictions). Omit to search all. |
 | `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
+| `limit` | `integer` | no | `500` | `minimum` 1, `maximum` 100000 | Maximum rows to return (default 500). When `truncated` is true, raise this or narrow `window` or `resources` to get the rest. |
 
 `required`: ['gene']
 
@@ -2076,7 +2079,7 @@ Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for varian
 Description as sent to the model:
 
 ```text
-Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'which of this gene's variants actually modulate reporter/enhancer activity (emVar), how strongly, and in which cell lines?'. Returns LONG rows (one per variant per cell_line): cell_line is 'meta' (cross-cell-line summary) or one of K562/HEPG2/SKNSH/HCT116/A549; emVar (allelic skew significant — the key call), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2FC (element activity), *_mlog10p significance, mean_RNA_ref/alt. MPRA MEASURES intrinsic cis-regulatory allelic activity — distinct from in-silico variant_effect (ChromBPNet/FLARE) PREDICTIONS and from endogenous eQTL/caQTL; emVar rate/effect concordance scale with FinnGen fine-mapping PIP, so this corroborates functionally active fine-mapped variants. Coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants; absence != no effect).
+Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for variants near a gene, selected by genomic coordinates (gene body ± window, not most-severe-consequence attribution which misses nearby regulatory variants). Answers 'which of this gene's variants actually modulate reporter/enhancer activity (emVar), how strongly, and in which cell lines?'. Returns LONG rows (one per variant per cell_line): cell_line is 'meta' (cross-cell-line summary) or one of K562/HEPG2/SKNSH/HCT116/A549; emVar (allelic skew significant — the key call), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2FC (element activity), *_mlog10p significance, mean_RNA_ref/alt. MPRA MEASURES intrinsic cis-regulatory allelic activity — distinct from in-silico variant_effect (ChromBPNet/FLARE) PREDICTIONS and from endogenous eQTL/caQTL; emVar rate/effect concordance scale with FinnGen fine-mapping PIP, so this corroborates functionally active fine-mapped variants. Coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants; absence != no effect). Rows are capped at `limit` (default 500): `total_count` is every matching row and `truncated` says whether the cap cut them.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2084,6 +2087,7 @@ Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for varian
 | `gene` | `string` | yes | — | — | Gene symbol (e.g., 'PCSK9') |
 | `resources` | `string` | no | — | — | Comma-separated resources: 'siraj_mpra'. Omit to search all. |
 | `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
+| `limit` | `integer` | no | `500` | `minimum` 1, `maximum` 100000 | Maximum rows to return (default 500). When `truncated` is true, raise this or narrow `window` or `resources` to get the rest. |
 
 `required`: ['gene']
 
@@ -2093,7 +2097,7 @@ Get MEASURED cis-regulatory allelic MPRA activity (Siraj et al. 2026) for varian
 Description as sent to the model:
 
 ```text
-Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar calls for variants near a gene — the core regulatory-buffering check (Kanai et al.): do high-PIP (credibly causal) fine-mapped variants actually show measured cis-regulatory allelic activity (emVar) in MPRA? Joins credible_sets_v (FinnGen fine-mapped, filtered to resource + pip>=min_pip) to the MPRA cross-cell-line meta row (mpra_v.cell_line='meta') on the shared chr:pos:ref:alt variant key. Per matched variant returns: FinnGen PIP, cs_id, trait, data_type, GWAS mlog10p/beta, and the meta MPRA call — emVar (allele modulates reporter expression), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2Skew_mlog10p (skew significance), log2FC (element activity), cohort. Ordered emVar then PIP. This corroborates whether fine-mapped variants are FUNCTIONALLY active in a reporter assay — MPRA measures intrinsic cis-regulatory allelic activity, distinct from in-silico variant_effect predictions and endogenous eQTL/caQTL. Distinct from get_mpra_by_gene, which returns MPRA rows WITHOUT the PIP cross-reference. FinnGen-credible-set-based and meta-row-based by default; MPRA coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants).
+Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar calls for variants near a gene — the core regulatory-buffering check (Kanai et al.): do high-PIP (credibly causal) fine-mapped variants actually show measured cis-regulatory allelic activity (emVar) in MPRA? Joins credible_sets_v (FinnGen fine-mapped, filtered to resource + pip>=min_pip) to the MPRA cross-cell-line meta row (mpra_v.cell_line='meta') on the shared chr:pos:ref:alt variant key. Per matched variant returns: FinnGen PIP, cs_id, trait, data_type, GWAS mlog10p/beta, and the meta MPRA call — emVar (allele modulates reporter expression), active (element drives reporter above background), log2Skew (signed allelic effect log2(alt/ref)), log2Skew_mlog10p (skew significance), log2FC (element activity), cohort. Ordered emVar then PIP. This corroborates whether fine-mapped variants are FUNCTIONALLY active in a reporter assay — MPRA measures intrinsic cis-regulatory allelic activity, distinct from in-silico variant_effect predictions and endogenous eQTL/caQTL. Distinct from get_mpra_by_gene, which returns MPRA rows WITHOUT the PIP cross-reference. FinnGen-credible-set-based and meta-row-based by default; MPRA coverage is partial (fine-mapped GTEx/UKBB/BBJ + control common variants). Rows are capped at `limit` (default 500): `total_count` is every matching row and `truncated` says whether the cap cut them.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2102,6 +2106,7 @@ Cross-reference FinnGen fine-mapped credible-set PIP against MEASURED MPRA emVar
 | `window` | `integer` | no | `500000` | `minimum` 0, `maximum` 10000000 | Flank in bp added on each side of the gene body (default 500000). |
 | `resource` | `string` | no | `"finngen"` | — | Fine-mapping resource in credible_sets_v to cross-reference (default 'finngen'). |
 | `min_pip` | `number` | no | `0.1` | `minimum` 0.0, `maximum` 1.0 | Minimum posterior inclusion probability (PIP) to include, so results focus on credibly causal variants (default 0.1). |
+| `limit` | `integer` | no | `500` | `minimum` 1, `maximum` 100000 | Maximum rows to return (default 500). When `truncated` is true, raise this, narrow `window` or raise `min_pip` to get the rest. |
 
 `required`: ['gene']
 
@@ -2560,7 +2565,7 @@ Use this tool when:
 Query by exactly ONE of: a single variant, a genomic region, or a gene name.
 For batch lookups of multiple specific variants, use the 'variants' parameter instead.
 
-Returns (source=finngen): variant ID, chromosome, position, ref/alt alleles, allele frequency (AF), heterozygous/homozygous counts, most severe consequence, gene for most severe consequence, rsID, and exome/genome enrichment values. source=gnomad returns a different row: per-population AF_* columns, AN, filters, rsids and consequences, with no counts or enrichment. Every value arrives as a string on both sources.
+Returns (source=finngen): variant ID, chromosome, position, ref/alt alleles, allele frequency (AF), alt allele counts carried in heterozygotes and in homozygotes (AC_Het, AC_Hom: a homozygote contributes 2, so homozygous individuals = AC_Hom / 2), most severe consequence, gene for most severe consequence, rsID, and exome/genome enrichment values. source=gnomad returns a different row: per-population AF_* columns, AN, filters, rsids and consequences, with no counts or enrichment. Every value arrives as a string on both sources. `version` in the result is the release of the source the rows come from.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
