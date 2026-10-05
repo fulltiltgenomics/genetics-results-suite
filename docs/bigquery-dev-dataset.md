@@ -49,14 +49,12 @@ Three consequences for this document:
 1. "`phewas-development` IS production" is still true, and it is **no longer the only**
    production project. The daly `finngenie` cluster is production too, with real Broad
    users — it is not a rehearsal ground and must not be mutated as one.
-2. **`daly-staging` selects its own dataset, but only from its next deploy.** Which dataset
+2. **`daly-staging` can select its own dataset, and by default does not.** Which dataset
    a deployment serves is the `bq_dataset` tfvars key, rendered into db-api's `DATASET_ID`
-   and the monitor CronJob's `BQ_DATASET`; `terraform.tfvars.daly-staging` names
-   `genetics_results_dev`. Until a staging deploy applies that render both clusters run
-   `PROJECT_ID=daly-finngenie`, `DATASET_ID=genetics_results` (measured 2026-08-30), and a
-   DDL rehearsal from the staging cluster lands in the daly production dataset. Read the
-   pod's environment before assuming either way. `finngen` sets no `bq_dataset` and is
-   unchanged.
+   and the monitor CronJob's `BQ_DATASET`. Neither daly tfvars file sets it, so both
+   clusters run `PROJECT_ID=daly-finngenie`, `DATASET_ID=genetics_results`, and a DDL
+   rehearsal from the staging cluster lands in the daly production dataset. Read the
+   pod's environment before assuming either way. `finngen` sets no `bq_dataset` either.
 3. Nothing about `phewas-development` was re-measured. It has **no kubeconfig context on
    the admin instance and `gcloud container clusters list --project phewas-development`
    returns 403**, so its cluster state, node count and dataset contents are **not
@@ -401,8 +399,8 @@ because `daly-staging` needed a cluster that serves the clone:
 `deploy.sh` derives `BQ_DATASET` from `bq_dataset` in the resolved tfvars (absent →
 `genetics_results`; present but empty → refused, because db-api's own fallback is
 `genetics_results` and an empty render would serve production data silently).
-`terraform.tfvars.daly-staging` sets `genetics_results_dev`, so the staging cluster is a
-service-level rehearsal ground and not only a manifest one.
+Setting it in `terraform.tfvars.daly-staging` is what turns the staging cluster into a
+service-level rehearsal ground rather than only a manifest one.
 
 Two further notes:
 
