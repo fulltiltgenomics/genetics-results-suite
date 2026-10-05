@@ -229,6 +229,21 @@ The cost is deploy latency: chat-backend is `strategy: Recreate`, so `deploy.sh`
 old pod for up to ~5 minutes when someone is mid-conversation. That stays inside the
 deployment's `progressDeadlineSeconds` (600).
 
+### Uploaded data files: a reference in the conversation, the bytes only in the sandbox
+
+A data file (TSV, CSV, Excel) attached in chat is uploaded to chat-backend's attachment store
+and never enters the conversation whole: the user turn carries a `[File: <name>]
+attachment_id=<id> …` block with a short preview, built by genetics-results-browser's
+`fileReference.ts`, and the model reads the file by passing that id in `run_analysis` `inputs`.
+A file in the conversation is replayed on every turn, so it runs past the request cap or the
+model's context within a few turns; a reference costs the same on every turn whatever the file's
+size. chat-backend refuses an oversized `[File:` block in any turn with 413, so a client that
+inlines files fails loudly. Excel reaches the sandbox as the TSV sidecar written at upload, and
+a data file the sandbox could not receive is refused at upload. Secret chats and the
+phenotype-page chat never upload, so they get the preview only. The ownership check on the id,
+the caps and where each value lives are in `docs/code-execution-security.md` → "An uploaded
+file: the model holds a reference, only the sandbox gets the bytes".
+
 ### The URL fetcher (`url-fetcher/`)
 
 External files reach an analysis by being fetched outside the sandbox and delivered into an
