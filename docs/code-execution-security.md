@@ -32,8 +32,8 @@ read. It is **not** an access control and must not be cited as one.
 
 **Threat actors, in the order they matter:**
 
-1. **A prompt-injected model.** Tool results and user-supplied attachments enter the model's
-   context. A hostile string in a phenotype description, a Europe PMC abstract or an uploaded
+1. **A prompt-injected model.** Tool results, attached images, an uploaded file's preview and whatever a script
+   prints from the file enter the model's context. A hostile string in a phenotype description, a Europe PMC abstract or an uploaded
    TSV can cause the model to author a malicious script. This is the primary actor: it needs
    no attacker access to the cluster and no compromised account.
 2. **An authorized user acting maliciously.** Access is gated by the oauth2-proxy allow-list,
@@ -654,7 +654,8 @@ replica every retry then fails against no endpoint at all.
 | `inputs` | array of delivered files, shape below | no | absent or `[]` → an empty `inputs/` directory. Not an array, or any element the shape below does not describe → `400`; over a cap → `413 InputsTooLarge`. |
 
 **Delivered inputs**, the field a file the suite does not host arrives through. chat-backend
-fetches the bytes (the URL fetcher, below) and sends them inline; the supervisor writes them
+fetches the bytes (the URL fetcher, below) or reads an upload from its own store (below) and
+sends them in the request body; the supervisor writes them
 into the execution directory before the fork and names that directory to the child. Each
 element is an object with exactly these keys:
 
@@ -722,6 +723,42 @@ when there are no inputs, so the strict-field rule above fails the first call th
 carries data instead of every call. Inputs are re-sent on **every** submit attempt: a retry
 re-mints the execution id, so nothing about an input may be keyed to one — which is why the
 staged-upload design, where the bytes are uploaded against an id first, was rejected.
+
+**An uploaded file: the model holds a reference, only the sandbox gets the bytes.** A file the
+user attaches in chat is uploaded to chat-backend's attachment store, and the conversation
+carries one `[File: <name>] attachment_id=<id> …` text block with a short preview of its head
+— the grammar is stated beside `_FILE_BLOCK_PREFIX` in genetics-mcp-server's `chat_api.py`, the
+preview bounds in genetics-results-browser's `fileReference.ts`. The model never holds the
+file: a table carried in the conversation is replayed on every turn, which runs past the
+request cap or the model's context within a few turns. To read it, the model passes `{"attachment_id": ...}` in
+`run_analysis` `inputs`, and that id is the only handle there is. It resolves through
+`resolve_owned_attachment` (`routers/chat_history.py`), which requires both the session's
+ownership row for the calling user and the attachment's membership of that session, where the
+session id is the one the turn runs under rather than one the model supplied; a foreign id and
+an unknown one get the same `InputNotFound`, so the answer is no oracle for which ids exist.
+Three choices keep this from regressing:
+
+- **Every `[File:` block over `settings.max_file_block_bytes` is refused with 413**, in the
+  newest message and in replayed history (`_reject_inlined_file_blocks`). It is the tripwire
+  that stops inlining coming back quietly, and it is refused rather than truncated because a
+  block that size is a client bug to surface, not data to repair. The browser mirrors the value
+  (`MAX_FILE_BLOCK_BYTES` in `fileReference.ts`); the mirror is by hand, and a server-side
+  change without it makes conversations with a long preview unsendable.
+- **A data file over `sandbox_client.MAX_INPUT_BYTES` is refused at upload** (`upload_attachment`,
+  mirrored in the picker as `MAX_DATA_FILE_BYTES` in `chatHistoryApi.ts`), so the upload cap is
+  the delivered-input cap: a file cannot be accepted and then be unreadable by every analysis.
+  Images are not delivered to the sandbox and keep `max_attachment_size`.
+- **Excel is delivered as the TSV sidecar** the upload route wrote, because the image ships no
+  spreadsheet parser; the size check at upload and the caps at delivery are both measured on
+  that TSV, which is what the script receives. Its delivered name is the one the script
+  asked for, or `<file_name>.tsv` when it gave none, passed through `_sanitised_input_name` in
+  `tools/orchestration.py`, so the model reads it by the name `inputs_delivered` reports, not
+  the upload's own.
+
+A chat that never uploads — a secret chat, which is defined by not persisting, and the
+phenotype-page chat, which keeps no session — sends the preview under a header saying the file
+was not uploaded, so full-file analysis is not available there; it is a product decision, not a
+gap the backend could close.
 
 **How a script reads them.** `genetics.open_input(name)` opens one for reading (binary by
 default; `input_path(name)` returns the path), resolving under `SANDBOX_INPUTS_DIR` and
