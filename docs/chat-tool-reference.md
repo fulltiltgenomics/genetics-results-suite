@@ -2280,7 +2280,7 @@ Get summary statistics of credible sets (fine-mapped associations) for a dataset
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource_or_dataset` | `string` | yes | — | — | Resource name or dataset_id. Call list_datasets to see available dataset_ids and their resources. |
-| `trait` | `string` | no | — | — | Optional: filter to specific trait/phenotype code |
+| `trait` | `string` | no | — | — | Optional: filter to one trait. Matches a row's `trait` or its `trait_original` exactly, so a phenotype code or study accession (e.g. 'T2D', 'GCST004602') works as well as the `trait` value a result shows |
 
 `required`: ['resource_or_dataset']
 
