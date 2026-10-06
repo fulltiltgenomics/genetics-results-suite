@@ -572,19 +572,19 @@ rasters it hands back through `page.images` are decoded by Pillow, which matplot
 brings. It does not widen what may be delivered: the caps in the limits table apply to the
 decoded bytes, so a PDF over them is refused as `InputsTooLarge` before any extractor sees it.
 
-`genetics.plots`, `genetics.linemodels` and `genetics.mr` are the SDK's analysis surfaces:
-standard figures, Pirinen's line models as a numpy port, and Mendelian randomization, as
-functions rather than as instructions a script rederives. All three
-are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
-SDK's import closure, resolved through a module `__getattr__` so chat-backend and mcp-server
+The modules listed in `SURFACE_MODULES` (`scripts/gen-sandbox-docs.py`) are the SDK's analysis
+surfaces: figures, models and statistical tests offered as functions rather than as
+instructions a script rederives. Each is shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while
+deliberately staying *outside* the SDK's import closure, resolved through a module
+`__getattr__` so chat-backend and mcp-server
 never import matplotlib or numpy. That has one consequence worth stating:
 genetics-mcp-server's `tests/test_sdk_import_closure.py` measures the shipped set by
 importing the SDK, so it cannot see these files — `SHIPPED_OUTSIDE_CLOSURE` in that test is
 the second list that keeps them scanned, and it and `SDK_ALLOWLIST` have to agree by hand.
 `sdk/mr.py` imports `sdk/_mr_estimators.py`, so both files are on both lists.
-Each module's stub (`sandbox/stubs/plots.pyi`, `linemodels.pyi`, `mr.pyi`) is generated from
-its `__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same
-way the data surface is; the generator's `SURFACE_MODULES` is where they are named. An
+Each module's stub (`sandbox/stubs/<module>.pyi`) is generated from its
+`__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same way
+the data surface is; the generator's `SURFACE_MODULES` is where they are named. An
 exported name may be a class (rendered with its docstring, annotated fields and public
 methods) or a function re-exported from a sibling SDK module, read from that module's
 source; `mr.pyi` has both. It discloses nothing secret: the MR docstrings, the result
@@ -592,7 +592,8 @@ classes' fields and the module constants used as signature defaults (a bootstrap
 count, the frequency tolerance and the in-flight limit) — no endpoint, credential or service name.
 
 The line-models port widens what the image can *do* by nothing: numpy and scipy were already
-pinned, and the module opens no socket and reads no file. It was chosen over installing R in
+pinned, and the module opens no socket and reads no file. The enrichment module is the same
+apart from one read: the root-owned bundle under `GENETICS_GENESETS_DIR`. It was chosen over installing R in
 the image precisely on that ground — R runs without a shell (`bin/exec/R` with a hand-built
 environment), but it is a second runtime of ~140 MB with its own `system()` and download
 paths to reason about, for a model whose core is a Cholesky and a rotation.
@@ -1568,7 +1569,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | harness | proves | needs |
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
-| `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
+| `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache, the absence of credentials in the child's environment, and the gene-set bundle as an execution sees it (present, root-owned and unwritable, loaded by `genetics.enrichment` within the address-space cap) | a container from `scripts/run-sandbox-local.sh` |
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union. It covers **both** pods whose NetworkPolicy is the reason they are safe: for the URL fetcher, that only chat-backend may reach it and the **sandbox may not** (a sandbox that can call the fetcher has internet egress through a proxy), that its egress is 443 with every one of the five `except` blocks present, that its KSA carries no Workload Identity annotation and mounts no token, that no credential reaches its environment in any form, and that it is distroless, non-root and read-only | the manifests and `url-fetcher/Dockerfile`; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
