@@ -3131,6 +3131,18 @@ dataset_to_resource_rules:
     comment: "default — dataset name lowercased becomes resource"
 
 # ---------------------------------------------------------------------------
+# Gene sets: the bundle baked into the sandbox image
+#
+# `release` is the bundle's release id, a build date (YYYYMMDD); staging refuses an image
+# whose bundle is not exactly this one, so a rebuilt bundle never reaches a deployment
+# unreviewed. null means no bundle has been built: there is no date to pin yet, and staging
+# refuses null rather than picking whatever bundle it finds. Each profile's
+# `gene_set_licences` (below) names the SPDX ids its bundle may contain.
+# ---------------------------------------------------------------------------
+gene_sets:
+  release: null
+
+# ---------------------------------------------------------------------------
 # Profiles: per-deployment dataset registries
 #
 # `dataset` on an entry is the label the munged data files carry in their `dataset`
@@ -3142,6 +3154,7 @@ dataset_to_resource_rules:
 # ---------------------------------------------------------------------------
 profiles:
   finngen:
+    gene_set_licences: [CC0-1.0, CC-BY-4.0]
     datasets:
       # --- GWAS ---
       finngen_gwas:
@@ -4453,6 +4466,7 @@ profiles:
         metadata_harmonizer: quantitative_pheweb
 
   daly:
+    gene_set_licences: [CC0-1.0, CC-BY-4.0]
     datasets:
       # --- GWAS ---
       finngen_gwas:
