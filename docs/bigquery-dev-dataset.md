@@ -20,12 +20,9 @@ been one that is still standing.** A read-only survey on 2026-08-13 established,
   `genetics_results`. No dev copy of any of them. (**Since 2026-08-14 there is a fourth**,
   `genetics_dev` — a persistent **full-size** copy the local dev stack points db-api at,
   `genetics-results-suite-g08`, widened from its original chr22-only subset to all
-  755,813,602 rows / 136.69 GB on 2026-08-18. It is a different object from the `genetics_results_dev`
-  clone this document builds. The daly clone is a per-rehearsal object again: `daly-staging`
-  served it via `bq_dataset` for one batch of changes and was pointed back at
-  `genetics_results` when the batch was promoted, so **check what a cluster serves before
-  running `teardown`** — `kubectl get deploy db-api -n genetics -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DATASET_ID")].value}'`.
-  See [local-dev-vm.md](local-dev-vm.md), "The dev dataset".)
+  755,813,602 rows / 136.69 GB on 2026-08-18. It is a different object from the
+  rehearsal clone this document builds. See [local-dev-vm.md](local-dev-vm.md), "The dev
+  dataset".)
 - the `daly` profile is a **second production brand** (its own project, region, domain,
   Keycloak realm and real Broad users), not a staging copy. It is not a canary.
 
@@ -62,9 +59,37 @@ Three consequences for this document:
    2026-08-13 survey and should be treated as unverified rather than replaced with a guess.
 
 Meanwhile five open beads are BigQuery DDL against a live `genetics_results` that a live
-db-api reads — there is one such dataset per production brand and neither has a dev copy —
-and one of them is three irreversible ~27 GB `DROP TABLE`s. This document plus
-`scripts/bq-dev-dataset.sh` is the rehearsal ground.
+db-api reads — one such dataset per production brand — and one of them is three
+irreversible ~27 GB `DROP TABLE`s. This document plus `scripts/bq-dev-dataset.sh` is the
+rehearsal ground.
+
+### Which rehearsal datasets exist, per project
+
+Re-derive with `bq ls --project_id=<project>` and `bq show --format=prettyjson
+<project>:<dataset>` (`location`, `creationTime`, and the `description` that `create`
+stamps on every dataset it makes: "REHEARSAL COPY of genetics_results…").
+
+| project | location of `genetics_results` | rehearsal / dev datasets beside it |
+|---|---|---|
+| `phewas-development` (finngen) | `europe-west1` (2026-08-13 survey) | `genetics_dev`, the persistent local-dev copy above — not a clone and not built by this script. Whether a rehearsal clone stands is **not observable from the daly admin instance**: `bq ls` there returns nothing and `bq show` is denied |
+| `daly-finngenie` (daly, daly-staging) | `us-central1` | `genetics_results_brava_dev`, created 2026-09-19 by this script for the BRAVA load and reused on 2026-10-05 as the gnomAD 4.1.1 proving ground. No `genetics_results_dev`: the one `daly-staging` served via `bq_dataset` for one batch was torn down on 2026-09-13 once that batch was promoted |
+
+`genetics_results_brava_dev` is **narrow, not a wholesale clone**: it holds only the tables
+those two rehearsals touched, and some of them are standalone tables written by the
+rehearsal rather than clones, so they bill their full size until dropped (as of 2026-10-06,
+`gnomad_variant_annotation` alone is ~277 GB). `bq ls` lists what is in it; `bq show` on a
+table carries a `cloneDefinition` only if it is a clone. Because it is narrow, `verify`
+fails on it by construction — it requires every source view to exist in dev. Its views
+were checked to name only `genetics_results_brava_dev`.
+
+**The script's defaults do not know about it.** `--dataset` defaults to
+`genetics_results_dev` and `--project` to the gcloud default project, which on the daly
+admin instance is `daly-finngenie` — so the *First run* block below, run unmodified there,
+creates a **second** rehearsal dataset beside `genetics_results_brava_dev` rather than
+reusing it. Pass `--project` and `--dataset` explicitly. And **check what a cluster serves
+before running `teardown`** —
+`kubectl get deploy db-api -n genetics -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DATASET_ID")].value}'`
+(both daly clusters serve `genetics_results`, measured 2026-10-06).
 
 ## What the script does
 
@@ -81,10 +106,15 @@ the same project and region:
 ### The views are the thing that can silently ruin a rehearsal
 
 Every view in `genetics_results` embeds a **fully-qualified**
-`` `phewas-development.genetics_results.<table>` `` reference. Checked with `bq show
---format=prettyjson` on all 15 views on 2026-08-13: all are standard SQL
-(`useLegacySql: false`), each has exactly one backticked three-part reference to its own
-base table, and none has a bare/unqualified or cross-dataset `FROM`/`JOIN`.
+`` `<project>.genetics_results.<table>` `` reference — `phewas-development` for finngen,
+`daly-finngenie` for daly. Checked with `bq show --format=prettyjson` on every view: all
+are standard SQL (`useLegacySql: false`) and none has a bare/unqualified or cross-dataset
+`FROM`/`JOIN`. In `phewas-development` (2026-08-13) each view had exactly one three-part
+reference, to its own base table. In `daly-finngenie` (2026-10-06) that holds for all but
+one: `rcnv_gene_associations_v` also reads `dosage_sensitivity`. `verify`'s base-table
+check pairs each `<t>_v` with `<t>` only, so it would not notice that second table missing
+from a narrow (`--tables`) clone. The view set differs between the projects and changes
+with every new data type; `bq ls <project>:genetics_results` is the inventory.
 
 So a view copied verbatim into `genetics_results_dev` **keeps reading the production
 table** while the tables around it are dev clones. Every query through the view would
@@ -111,15 +141,17 @@ ones that matter.
 
 **Comments and string literals are left alone**, by both the rewrite and the check. The
 match is otherwise purely textual, so without that a comment or a `WHERE source =
-'genetics_results'` would be silently rewritten; none of the 15 live views has either, but
-the ones written by hand during a rehearsal might. The consequence to know: a *comment*
-naming the source dataset survives into the dev view and `verify` will not flag it (it
+'genetics_results'` would be silently rewritten; no live view in either project names the
+source dataset anywhere but in its table references (phewas-development 2026-08-13,
+daly-finngenie 2026-10-06), but the ones written by hand during a rehearsal might. The
+consequence to know: a *comment* naming the source dataset survives into the dev view and `verify` will not flag it (it
 prints a note on stderr instead). A dataset reference cannot hide in a string literal
 unless a view uses dynamic SQL, and none does.
 
 What was actually run, through the script and not against the regex offline
 (2026-08-13, after the `python3 -c` fix — before it the rewrite path emitted zero bytes and
-so had never been exercised): all 15 live view definitions were pulled with `bq show
+so had never been exercised): all 15 live `phewas-development` view definitions of that
+date were pulled with `bq show
 --format=prettyjson` and piped through `bq-dev-dataset.sh rewrite`. Every one produced
 non-empty output exactly 4 bytes longer than its input (`_dev`), with exactly one
 `genetics_results_dev` reference, zero residue, and byte-identical output when fed back
@@ -133,13 +165,40 @@ each rewritten correctly and each caught by `verify` (all three passed the old c
 
 ### Which tables
 
-**Wholesale, all 18 base tables, by default.** Clones are zero-copy, so cloning
-everything costs the same as cloning three tables, and a partial clone leaves views over
-missing tables — exactly the "looks fine until someone queries it" failure this dataset
-exists to avoid. `--tables` and `--exclude` are there for the case where you deliberately
-want a narrow dataset; `verify` will still tell you which views lost their base table.
+**Wholesale, every base table in the source dataset, by default** — whatever `bq ls`
+lists as a `TABLE`, so the count is whatever the project holds that day. Clones are
+zero-copy, so cloning everything costs the same as cloning three tables, and a partial
+clone leaves views over missing tables — exactly the "looks fine until someone queries it"
+failure this dataset exists to avoid. `--tables` and `--exclude` are there for the case
+where you deliberately want a narrow dataset; `verify` will still tell you which views lost
+their base table.
 
-Sizes as of 2026-08-13 (`bq show --format=prettyjson`, `numBytes`), 224.42 GB total:
+**"Every base table" includes production's rollback copies.** `daly-finngenie:genetics_results`
+keeps the pre-change tables of each promotion beside the live ones, named
+`<table>_pre_<change>_<yyyymmdd>` — `bq ls --max_results=10000
+daly-finngenie:genetics_results | grep _pre_` lists them (the default page of 50 no longer
+covers the dataset) (on 2026-10-06: three `_pre_brava_20260919` and two `_pre_gnomad411_20261006`,
+the largest ~74 GB and ~28 GB). The wholesale default clones them too. That is free on the
+day, but rollback copies exist to be dropped once a soak ends, and a clone keeps the
+dropped table's data alive and billable (see *Cost*). Exclude them —
+`--exclude "$(bq ls --max_results=10000 daly-finngenie:genetics_results | awk '$1 ~ /_pre_/ {print $1}' | paste -sd,)"`
+— unless the rehearsal is of the rollback itself.
+
+**`--tables`/`--exclude` narrow the base tables only; views are always handled
+wholesale.** `create` issues a `CREATE OR REPLACE VIEW` for every view in the source
+dataset regardless of which tables were cloned. Without `--refresh` it skips views already
+in dev but still attempts every source view missing from it, including views over tables
+that were not cloned; with `--refresh --yes` it replaces **every** dev view, including any
+a rehearsal edited by hand. So `create --tables x --refresh --yes` against an existing
+rehearsal dataset is not a way to re-sync one table: it rewrites all of its views. Add a
+single table to an existing dataset by hand instead (`CREATE TABLE … CLONE …`, then that
+table's view through `bq-dev-dataset.sh rewrite`), which is how `credible_sets` was added
+to `genetics_results_brava_dev`.
+
+Sizes below are **`phewas-development` only**, as of 2026-08-13 (`bq show
+--format=prettyjson`, `numBytes`), 224.42 GB total. `daly-finngenie` holds a different
+table set with different sizes and no `credible_sets_exp_*` tables; re-derive its sizes the
+same way rather than reading them off this table:
 
 | table | logical | rows |
 |---|---|---|
@@ -169,11 +228,13 @@ writing to the clone does. Concretely, in this batch:
 - `4ci` drops three production tables of 26.96 GB each. The same applies: the dev clones
   keep the dropped data alive and billable.
 
+(These are `phewas-development` tables and sizes, priced at that project's `europe-west1`
+rate; `daly-finngenie` is in `us-central1`, so scale its figures from that region's price.)
 That is ~105 GB, roughly USD 2/month of europe-west1 active logical storage, starting at
 promotion and running until teardown — and the cycle below says to tear down only when the
 whole batch is done. So: **drop a table's dev clone as soon as its production counterpart
 has been replaced or dropped** (`bq rm -f -t
-phewas-development:genetics_results_dev.<table>`), unless that clone is still needed as a
+<project>:<dev dataset>.<table>`), unless that clone is still needed as a
 verification reference. It is not part of the batch teardown; it is a step in the
 promotion. The `eyg` rehearsal itself also materialises a ~27 GB table in dev, which is
 another ~USD 0.55/month until teardown. Query: this is real BigQuery, so
@@ -205,12 +266,14 @@ inferring it from scan numbers.
 
 For every one of the five beads:
 
-1. **Rehearse in dev.** Point the change at `genetics_results_dev`. For anything driven by
+1. **Rehearse in dev.** Point the change at the rehearsal dataset. For anything driven by
    `genetics-results-db/scripts/setup_bigquery.sh`, that is just
-   `PROJECT_ID=phewas-development DATASET_ID=genetics_results_dev LOCATION=europe-west1
-   ./scripts/setup_bigquery.sh` — the script already sed-substitutes
-   `genetics_results` → `${PROJECT_ID}.${DATASET_ID}` into every `schemas/*.sql`, so no
-   file needs editing to target dev. **Never pass `--recreate`:** it `bq rm`s *every*
+   `PROJECT_ID=<project> DATASET_ID=<dev dataset> LOCATION=<location>
+   ./scripts/setup_bigquery.sh`, with the values from *Which rehearsal datasets exist* —
+   `phewas-development` / `europe-west1` for finngen, `daly-finngenie` / `us-central1` for
+   daly, whose standing rehearsal dataset is `genetics_results_brava_dev`. The script
+   already sed-substitutes `genetics_results` → `${PROJECT_ID}.${DATASET_ID}` into every
+   `schemas/*.sql`, so no file needs editing to target dev. **Never pass `--recreate`:** it `bq rm`s *every*
    table in the dataset, not the one whose schema changed.
 2. **`scripts/bq-dev-dataset.sh verify`.** Non-negotiable after any step that created or
    replaced a view.
@@ -438,7 +501,12 @@ than letting it "repair" the dataset.
 
 ## First run
 
+Name the project and dataset explicitly — the defaults are the gcloud default project and
+`genetics_results_dev`, which on the daly admin instance would create a second rehearsal
+dataset beside `genetics_results_brava_dev` (see *Which rehearsal datasets exist*):
+
 ```bash
+export PROJECT_ID=<project> DEV_DATASET=<dev dataset>
 scripts/bq-dev-dataset.sh check                 # read-only; touches nothing
 scripts/bq-dev-dataset.sh create                # prints the plan, executes nothing
 scripts/bq-dev-dataset.sh create --apply
