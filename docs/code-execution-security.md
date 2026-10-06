@@ -257,6 +257,14 @@ constant. Nothing here is configurable at runtime.
 
 <!-- END GENERATED: limits -->
 
+The image's `POLARS_MAX_THREADS=2` belongs with the memory bound. Each polars thread's glibc
+malloc arena reserves address space that `RLIMIT_AS` counts, and the pin bounds that
+reservation whatever CPU count the runtime exposes to polars: under runc polars follows the
+cgroup quota, but under gVisor it sees the node's CPUs, not the quota. Measured in the
+daly-staging sandbox: polars reported cpu_count 2 and thread_pool_size 2 at the 1500m limit,
+and loading the gene-set bundle and running ORA over every collection peaked at 1.41 GB
+VmSize.
+
 Two of these are worth reading together, because they are the ones that interact badly.
 Exceeding an `emptyDir` `sizeLimit` does not fail the write — **the kubelet evicts the pod**,
 killing the in-flight script *and* destroying every retained artifact from every earlier
@@ -379,6 +387,25 @@ and if polars stops honouring it — and `GCE_METADATA_HOST` pinned to a literal
 last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
+**Gene sets are public, licensed data baked into the image** at `/genetics/genesets`
+(`GENETICS_GENESETS_DIR`, root-owned, world-readable; the release is the
+`com.fulltiltgenomics.gene-sets-release` label). Nothing in them is secret — the risk they carry
+is a licence one: shipping a collection a deployment may not redistribute (KEGG, BioCarta, or
+HPO where `profiles.<profile>.gene_set_licences` omits it). The host fetches and verifies the
+pinned bundle (`scripts/stage-gene-sets.py fetch`); the builder drops every collection whose
+SPDX licence the build's own `configs/datasets.yaml` does not allow for the build-arg profile —
+not fetch's `policy.json`, which no checksum covers. `build-checks.py` then asserts the
+filtered result rather than trusting the filter: the profile it was filtered for and its
+release match the build; every collection in the data is in the manifest exactly once with an
+allowed licence; no member row outlives its set; no set id, name or collection matches
+KEGG/BioCarta after case and punctuation are dropped; the directory holds exactly the files
+the manifest lists, with matching bytes and sha256; it is non-empty and world-readable; and it
+is not a test fixture (a manifest with `"fixture": true` is refused unless the build passes
+`GENESETS_ALLOW_FIXTURE=1`, which only a local build does — the `PLACEHOLDER` gate's
+counterpart). One gap is accepted: the bundle's manifest certifies itself, so a manifest
+rewritten together with a file passes every checksum; closing it needs the manifest's sha256
+pinned beside `gene_sets.release`.
+
 One of those checks reads source rather than running it, and the reason is the same one that
 makes the prune worth doing at all. `import genetics_mcp_server.sdk` executes module bodies and
 nothing else, so an import deferred into a method — the house style for adding capability to
@@ -397,6 +424,7 @@ side of Python 3.11 a conditional requirement falls on.
 The final stage's environment, all of it:
 
 - `GCE_METADATA_HOST=169.254.169.254`
+- `GENETICS_GENESETS_DIR=/genetics/genesets`
 - `GENETICS_MPLCACHE=/genetics/mplcache`
 - `GENETICS_PREWARM=/genetics/prewarm.py`
 - `GENETICS_SCHEMA_DIR=/genetics/schema`
@@ -405,6 +433,7 @@ The final stage's environment, all of it:
 - `POLARS_FMT_MAX_COLS=-1`
 - `POLARS_FMT_MAX_ROWS=50`
 - `POLARS_FMT_STR_LEN=100`
+- `POLARS_MAX_THREADS=2`
 - `POLARS_TABLE_WIDTH=-1`
 - `PYTHONFAULTHANDLER=1`
 - `PYTHONPATH=/opt/venv/lib/python3.11/site-packages`
@@ -422,6 +451,7 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/_mr_estimators.py`
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
+- `genetics_mcp_server/sdk/enrichment.py`
 - `genetics_mcp_server/sdk/errors.py`
 - `genetics_mcp_server/sdk/linemodels.py`
 - `genetics_mcp_server/sdk/mr.py`

@@ -273,6 +273,22 @@ def main():
         check("filter: empty allowlist refused with 1", rc == 1 and "allows no licence" in err, err)
         rc, err = filt(src, out, "--profile", "strict", "--allowed", "CC0-1.0")
         check("filter: partial explicit policy is 2", rc == 2 and "together" in err, err)
+        rc, err = filt(src, out, "--datasets-yaml", ds, "--profile", "strict",
+                       "--allowed", "CC0-1.0")
+        check("filter: --datasets-yaml with an explicit allowlist is 2",
+              rc == 2 and "--profile only" in err, err)
+        rc, err = filt(src, out, "--datasets-yaml", make_yaml(root, release="other"),
+                       "--profile", "strict")
+        check("filter: --datasets-yaml pin other than the bundle's refused with 1",
+              rc == 1 and "pinned" in err, err)
+        ds = make_yaml(root)
+        yaml_out = os.path.join(root, "o-yaml")
+        rc, err = filt(src, yaml_out, "--datasets-yaml", ds, "--profile", "strict")
+        with open(os.path.join(yaml_out, "manifest.json")) as fh:
+            staged = json.load(fh)
+        check("filter: --datasets-yaml takes the profile's allowlist from the file",
+              rc == 0 and [c["collection"] for c in staged["collections"]] == ["go"]
+              and staged["staging"]["profile"] == "strict", f"{rc} {err}")
         rc, err = filt(src, out, "--profile", "strict", "--release", "other",
                        "--allowed", "CC0-1.0")
         check("filter: release other than the policy's refused with 1",

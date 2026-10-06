@@ -38,7 +38,8 @@ scripts/lib/env.sh resolves for the build scripts.
 Usage:
     scripts/stage-gene-sets.py fetch [--profile P] [--bucket B | --source-dir DIR] [--out-dir DIR]
     scripts/stage-gene-sets.py filter [--bundle-dir DIR] [--out-dir DIR]
-                                      [--policy FILE | --profile P --release R --allowed L1,L2]
+                                      [--policy FILE | --profile P --release R --allowed L1,L2
+                                       | --profile P --datasets-yaml FILE]
 
 Exit 0 = staged, 1 = the bundle or the pin was refused, 2 = staging could not run.
 """
@@ -277,7 +278,16 @@ def cmd_fetch(args):
 
 def load_policy(args):
     explicit = (args.profile, args.release, args.allowed)
-    if any(v is not None for v in explicit):
+    if args.datasets_yaml is not None:
+        # the image builder's form: the allowlist and the pin come from the build's own
+        # datasets.yaml, because policy.json is written by fetch and no checksum covers it
+        if args.profile is None or args.release is not None or args.allowed is not None:
+            raise CannotRun("--datasets-yaml takes --profile only: it supplies the release "
+                            "and the allowlist")
+        release, allowed = read_pin(args.datasets_yaml, args.profile)
+        policy = {"profile": args.profile, "release": release, "allowed_licences": allowed,
+                  "source": os.path.abspath(args.bundle_dir)}
+    elif any(v is not None for v in explicit):
         if any(v is None for v in explicit):
             raise CannotRun("--profile, --release and --allowed go together")
         policy = {"profile": args.profile, "release": args.release,
@@ -409,6 +419,8 @@ def main(argv=None):
     g.add_argument("--profile")
     g.add_argument("--release")
     g.add_argument("--allowed", help="comma-separated SPDX ids")
+    g.add_argument("--datasets-yaml", help="with --profile: read the release pin and the "
+                   "profile's gene_set_licences from this file instead of a policy")
     g.set_defaults(run=cmd_filter)
     args = parser.parse_args(argv)
 
