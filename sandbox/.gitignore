@@ -1,1 +1,3 @@
 .sdk-src/
+# fetched and filtered gene-set bundles, and the temp/old directories staging renames through
+.genesets*/
