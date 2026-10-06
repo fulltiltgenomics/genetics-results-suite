@@ -3133,14 +3133,16 @@ dataset_to_resource_rules:
 # ---------------------------------------------------------------------------
 # Gene sets: the bundle baked into the sandbox image
 #
-# `release` is the bundle's release id, a build date (YYYYMMDD); staging refuses an image
-# whose bundle is not exactly this one, so a rebuilt bundle never reaches a deployment
-# unreviewed. null means no bundle has been built: there is no date to pin yet, and staging
-# refuses null rather than picking whatever bundle it finds. Each profile's
-# `gene_set_licences` (below) names the SPDX ids its bundle may contain.
+# `release` is the bundle's release id, <raw YYYYMMDD>.hgnc<YYYYMMDD>.gencode<N>; staging
+# (scripts/stage-gene-sets.py) refuses a bundle whose manifest is not exactly this one, so a
+# rebuilt bundle never reaches a deployment unreviewed. null means no bundle has been built,
+# and staging refuses null rather than picking whatever bundle it finds. Each profile's
+# `gene_set_licences` (below) names the SPDX ids its bundle may contain; staging drops every
+# other collection and records the drop in the staged manifest. Fetching and verification run
+# on the build host; the licence filtering runs in the sandbox image's builder stage.
 # ---------------------------------------------------------------------------
 gene_sets:
-  release: null
+  release: 20261006.hgnc20260602.gencode49
 
 # ---------------------------------------------------------------------------
 # Profiles: per-deployment dataset registries

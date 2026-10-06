@@ -324,14 +324,19 @@ Profile-independent pin for the gene-set bundle baked into the sandbox image.
 
 ```yaml
 gene_sets:
-  release: string|null   # the bundle's release id, a build date (YYYYMMDD); null = no bundle built
+  release: string|null   # the bundle's release id, <raw YYYYMMDD>.hgnc<YYYYMMDD>.gencode<N>;
+                         # null = no bundle built
 ```
 
-`release` is what build-time staging compares the bundle's manifest against; null is refused,
-not treated as "any". `profiles.<p>.gene_set_licences` is the allowlist the same staging step
-checks each collection's SPDX licence against, so a deployment that cannot carry a collection
-(share-alike, or a licence needing a commercial agreement) fails the build rather than
-shipping it. The enforcement lives in the staging script, not in this config.
+`release` is what build-time staging (`scripts/stage-gene-sets.py`) compares the bundle
+manifest's `bundle.release_id` against; null is refused, not treated as "any".
+`profiles.<p>.gene_set_licences` is the allowlist the same staging step checks each
+collection's SPDX licence against: a collection the deployment cannot carry (share-alike, a
+licence needing a commercial agreement, or `LicenseRef-HPO` outside daly) is dropped from the
+staged bundle, and the drop is recorded in the staged manifest. It does not fail the build,
+because every bundle carries such a collection for some deployment. The enforcement lives in
+the staging script, not in this config: its `fetch` step verifies the pin and checksums on the
+build host, and its `filter` step drops collections in the sandbox image's builder stage.
 
 ## Section: `profiles`
 

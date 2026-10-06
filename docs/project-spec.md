@@ -383,12 +383,14 @@ scripts/                             build, deploy and verification scripts
   mr-proving-ground.py               the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
   rollout.sh                         single-service image update
   run-sandbox-local.sh               build and run the sandbox image in plain Docker
+  stage-gene-sets.py                 gene-set bundle staging: `fetch` (build host, no polars) verifies the pinned bundle into sandbox/.genesets-src/; `filter` (sandbox builder stage) drops collections the profile's licence allowlist excludes
   supervisor_tests/                  the check groups scripts/test-supervisor.py runs
   sync-datasets.sh                   copy datasets.yaml to the sibling repos for local dev
   test-e2e-local.py                  end-to-end run_analysis against the live local stack
   test-manifest-render.py            offline: render every manifest deploy.sh renders, and hold each envsubst whitelist to the files it governs
   test-network-policies.py           the namespace's policies as a whole: offline by default, plus an opt-in diff against a live cluster
   test-sandbox-docs.py               offline: the generated schema docs and SDK stubs
+  test-stage-gene-sets.py            offline: stage-gene-sets.py's refusals, licence drops, polars-free fetch and atomic output, against a fake bundle
   test-supervisor.py                 offline: the sandbox supervisor, in process or against a container
   test-url-fetcher.py                offline: the url-fetcher's address-class guard and pinned fetch core, each control also driven as the failure
 terraform/                           infrastructure
