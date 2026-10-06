@@ -507,11 +507,13 @@ data-file configs all spell a resource the same way (`bipex2`, `schema2`,
 ## Dev environment
 
 **"Dev environment" here means running the service processes on a workstation, and
-nothing more.** There is no dev namespace and no dev BigQuery dataset for either
-production brand: `phewas-development` *is* production, and so is the daly `finngenie`
-cluster. The suite runs three clusters in two projects (`docs/environments.md`); the
-`daly-staging` cluster serves whatever its `bq_dataset` tfvar names — `genetics_results_dev`,
-the rehearsal clone — while both `daly` and `finngen` production serve `genetics_results`.
+nothing more.** There is no dev namespace, and no deployed service reads a dev BigQuery
+dataset: `phewas-development` *is* production, and so is the daly `finngenie` cluster. The
+suite runs three clusters in two projects (`docs/environments.md`); the `daly-staging`
+cluster serves whatever its `bq_dataset` tfvar names, and with the key absent that is
+`genetics_results` — the same dataset both `daly` and `finngen` production serve. The
+rehearsal and local-dev datasets that do exist in each project are listed in
+`docs/bigquery-dev-dataset.md`, "Which rehearsal datasets exist, per project".
 A locally-run service reads a **live** `genetics_results` unless it is pointed elsewhere. To rehearse a BigQuery schema or view
 change against a throwaway dataset instead, see `docs/bigquery-dev-dataset.md` and
 `scripts/bq-dev-dataset.sh`.
