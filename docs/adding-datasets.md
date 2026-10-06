@@ -211,6 +211,20 @@ from app.services import config_util
 print('$p', config_util.dataset_products('<dataset_id>'))"; done
 ```
 
+### Consequence stamping for credible sets that are not FinnGen data
+
+The munge of a non-FinnGen credible-set resource (eQTL Catalogue, Open Targets, NMR,
+PGC SCZ fine-mapping, UKB-PPP) writes `most_severe` and `gene_most_severe` as `NA`. The
+consequence is stamped afterwards, from the gnomAD consequence file that
+`genetics-results-munge/scripts/build_gnomad_annotation.py` cuts out of the served gnomAD
+sites file, by `genetics-results-munge/scripts/annotate_resource.sh`: one run per resource,
+every object under the served prefix (combined file, gene-indexed QTL copy, per-trait
+files), stats regenerated from the stamped rows, written under a **new** prefix because the
+results-api treats a served path as immutable. Point the profile at the new prefix in both
+profiles and reload `credible_sets` from it. FinnGen-cohort resources and the pseudo credible
+sets keep the FinnGen annotation their munge joins; `credible_sets_v`'s `most_severe`
+description in `configs/datasets.yaml` says which resources carry which.
+
 ## 6. BigQuery views (`genetics-results-db`)
 
 Only relevant if the data is loaded into BigQuery (for the agent's raw `query_bigquery`
@@ -276,7 +290,7 @@ is computed by a `CASE` in the *view SQL itself* is exactly `resource_derivation
 the view — so `mode != none` overcounts this subset by one). The views outside the
 `view_case` subset that still carry a `resource` column as a hardcoded single-source
 constant — `gene_annotations_v`, `dosage_sensitivity_v`, `variant_annotation_v`,
-`phenotypes_v`, `datasets_v` — are exactly `resource_derivation.mode == 'none'` with
+`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are exactly `resource_derivation.mode == 'none'` with
 `resource` in `columns:`; re-derive the list from the yaml rather than trusting a
 hand-written one, since it has already gone stale once.
 
