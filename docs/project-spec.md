@@ -1164,7 +1164,10 @@ plots":
   `sandbox/stubs/mr.pyi` is generated like the other surface stubs, including the result
   classes and the re-exported estimators; `genetics.plots.mr` draws a result.
 - **`genetics.enrichment` runs gene set enrichment** — over-representation, preranked GSEA
-  and a competitive gene-level test, held to R reference outputs; genetics-mcp-server's
+  and a competitive gene-level test, held to R reference outputs, plus a locus test for GWAS
+  leads matched on gene density (its null is computed from the bundle's gene coordinates,
+  so it needs no summary statistics) and a collapse of redundant significant sets;
+  genetics-mcp-server's
   `docs/project-spec.md` → "Gene set enrichment" is the spec of record, and the surface has
   the same shape as line models'. What is new is data in the image: the collections are a
   bundle at `/genetics/genesets`. genetics-results-munge's `build_gene_sets` downloads the
