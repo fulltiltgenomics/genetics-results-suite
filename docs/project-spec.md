@@ -2106,6 +2106,12 @@ Operational specifics:
   a defect; a local one is survivable.
 - **It never touches a cluster and pushes nothing.** The tag is `genetics-sandbox:local` so a
   local build cannot be mistaken for the image the cluster pulls.
+- **Its gene-set bundle is a fixture, not the release.** It stages genetics-mcp-server's
+  `tests/fixtures/genesets` (manifest rewritten to the pinned release, so `fetch --source-dir`
+  and the build checks accept it, and still marked `"fixture": true`) and passes
+  `GENESETS_ALLOW_FIXTURE=1`, which no pushing build does; the container-mode
+  `supervisor_tests/genesets.py` group asserts that fixture is present, read-only and usable by
+  `genetics.enrichment` within the child's caps.
 - **The fidelity gap is printed on every start**, not buried: gVisor, the NetworkPolicy, the
   kubelet pid limit, the seccomp profile, `emptyDir` `sizeLimit` eviction,
   `ephemeral-storage` requests/limits (`1Gi`/`2Gi`, with **no** local analogue at all), the

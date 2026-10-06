@@ -62,6 +62,7 @@ from supervisor_tests.forkserver import (
     test_forkserver_lost_fork_reply,
     test_forkserver_units,
 )
+from supervisor_tests.genesets import test_genesets
 from supervisor_tests.headreader import test_head_timeout, test_header_reader_units
 from supervisor_tests.image import test_container
 from supervisor_tests.inputs import (
@@ -255,6 +256,8 @@ def run_container(base_url, retention_s=None, container_name=None):
     test_backpressure(server)
     print("image properties, from inside a real execution")
     test_container(server)
+    print("gene-set bundle, from inside a real execution")
+    test_genesets(server)
     print("delivered inputs, against the container")
     test_inputs_caps_on_the_wire(server)
     test_inputs_delivery(server)
