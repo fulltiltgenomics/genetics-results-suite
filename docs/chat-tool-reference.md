@@ -10,7 +10,7 @@ design overview.
 | repo | commit |
 |---|---|
 | `genetics-results-suite` | `d101b24` (+ this working tree) |
-| `genetics-mcp-server` | `edac3ba` |
+| `genetics-mcp-server` | `9a97b62` |
 | `genetics-results-api` | `9cbb66a` |
 | `genetics-results-db` | `3f55b58` |
 | `genetics-results-browser` | `9f52955` |
@@ -497,13 +497,13 @@ and last the generated `# BigQuery view reference` — one H2 per view, built fr
 What each surface actually gets, under the deployed flags (subagents off, sandbox on,
 AlphaGenome on — section 2a) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. The
-unfiltered text is 179,474 chars. Measured 2026-10-06, with the fetcher hosts and on-request
+unfiltered text is 180,310 chars. Measured 2026-10-06, with the fetcher hosts and on-request
 datasets pinned as the header describes:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
 | `None` (default), `api`, `bigquery`, `rag`, `nocode` | 68 | 29,558 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance and the view reference go with it |
-| `code` | 22 | 171,279 | the above except the script guidance, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "prefer the dedicated API tools" wording, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (138,699 chars of it, measured as `len(schema_docs.schema_reference())`) |
+| `code` | 22 | 171,690 | the above except the script guidance, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "prefer the dedicated API tools" wording, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (138,699 chars of it, measured as `len(schema_docs.schema_reference())`) |
 | `code` with `SANDBOX_ENABLED=false` | 21 | 19,464 | also Choosing How to Get Data, The Database, Credible Set Membership, HLA / the MHC region and Dosage sensitivity — `genetics.sql` inside a script was this surface's only route to the database, so the database-routing blocks go with it |
 
 Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
@@ -772,10 +772,11 @@ Those per-variant annotations come from `get_variant_annotations` (FinnGen by de
 ```
 
 and on `code`, which has `get_myvariant_annotations` and `get_variant_protein_effect` but not
-`get_variant_annotations`:
+`get_variant_annotations` — the SDK leads and myvariant is the last resort
+(genetics-mcp-server-1ly):
 
 ```text
-Those per-variant annotations are not in the database. `get_myvariant_annotations` returns a variant's consequence, clinical significance, pathogenicity scores and population frequencies; for a coding SNV `get_variant_protein_effect` adds the amino-acid change. Beyond those, say what is missing rather than approximating it from the columns above.
+Those per-variant annotations are not in the database. Fetch consequence, allele frequency and gene with a script: `genetics.variant_annotation(variant=..., variants=[...], gene=..., region=...)` takes a single variant, a batch, a gene or a region, from FinnGen's annotation by default or gnomAD's with `source="gnomad"`. For a coding SNV, `get_variant_protein_effect` adds the amino-acid change with its curated ClinVar significance, population frequency and rsID. Use `get_myvariant_annotations` only for what those two do not cover — pathogenicity scores, functional predictions, a non-coding variant's clinical significance — never for consequence or allele frequency. Beyond those, say what is missing rather than approximating it from the columns above.
 ```
 
 The literature guidance is split the same way as the domain science above. The rules for
