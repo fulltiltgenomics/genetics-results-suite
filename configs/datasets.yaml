@@ -3137,7 +3137,8 @@ dataset_to_resource_rules:
 # (scripts/stage-gene-sets.py) refuses a bundle whose manifest is not exactly this one, so a
 # rebuilt bundle never reaches a deployment unreviewed. null means no bundle has been built,
 # and staging refuses null rather than picking whatever bundle it finds. Each profile's
-# `gene_set_licences` (below) names the SPDX ids its bundle may contain; staging drops every
+# `gene_set_licences` (below) names the licence ids (SPDX, or LicenseRef-* where SPDX has
+# none) its bundle may contain; staging drops every
 # other collection and records the drop in the staged manifest. Fetching and verification run
 # on the build host; the licence filtering runs in the sandbox image's builder stage.
 # ---------------------------------------------------------------------------
@@ -4468,7 +4469,9 @@ profiles:
         metadata_harmonizer: quantitative_pheweb
 
   daly:
-    # LicenseRef-HPO: HPO-derived sets on academic deployments only (user ruling)
+    # LicenseRef-HPO (c5.hpo) on academic deployments only: the HPO's own terms (cite, show
+    # the version, do not alter), and its OMIM/Orphanet-derived annotations are unverified
+    # for the commercial-partner deployment
     gene_set_licences: [CC0-1.0, CC-BY-4.0, LicenseRef-HPO]
     datasets:
       # --- GWAS ---

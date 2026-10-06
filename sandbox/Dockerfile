@@ -2,7 +2,8 @@
 #
 # The build needs a staged genetics-mcp-server checkout at ./.sdk-src — the genetics SDK is
 # pip-installed from that repo and is not vendored here — and the staged gene-set bundle at
-# ./.genesets-src and ./.genesets-tools. scripts/build-all.sh and scripts/build.sh stage both;
+# ./.genesets-src and ./.genesets-tools. scripts/build-all.sh, scripts/build.sh and
+# scripts/run-sandbox-local.sh (with a fixture bundle) stage both;
 # a bare `docker build sandbox/` fails without them, by design.
 
 FROM gcr.io/distroless/python3-debian12:nonroot AS distroless

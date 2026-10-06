@@ -331,12 +331,19 @@ gene_sets:
 `release` is what build-time staging (`scripts/stage-gene-sets.py`) compares the bundle
 manifest's `bundle.release_id` against; null is refused, not treated as "any".
 `profiles.<p>.gene_set_licences` is the allowlist the same staging step checks each
-collection's SPDX licence against: a collection the deployment cannot carry (share-alike, a
-licence needing a commercial agreement, or `LicenseRef-HPO` outside daly) is dropped from the
+collection's licence id against — an SPDX id, or `LicenseRef-*` for terms SPDX has no id for.
+A collection the deployment cannot carry (share-alike, a licence needing a commercial
+agreement, or `LicenseRef-HPO` outside daly) is dropped from the
 staged bundle, and the drop is recorded in the staged manifest. It does not fail the build,
 because every bundle carries such a collection for some deployment. The enforcement lives in
 the staging script, not in this config: its `fetch` step verifies the pin and checksums on the
-build host, and its `filter` step drops collections in the sandbox image's builder stage.
+build host, and its `filter` step drops collections in the sandbox image's builder stage,
+reading the pin and allowlist from the build's own copy of this file rather than from the
+unchecksummed `policy.json` that `fetch` writes.
+
+Only daly lists `LicenseRef-HPO`, MSigDB's `c5.hpo`: the HPO's own terms (cite the
+consortium, show the version, do not alter the content) suit an academic deployment, and its
+OMIM/Orphanet-derived annotations have not been cleared for the commercial-partner one.
 
 ## Section: `profiles`
 
@@ -347,8 +354,8 @@ GCS bucket paths. The two current profiles are `finngen` (internal FinnGen acces
 ```yaml
 profiles:
   <profile_name>:
-    gene_set_licences: [string]  # SPDX ids the sandbox gene-set bundle may contain in this
-                                 # deployment; see `gene_sets` below
+    gene_set_licences: [string]  # licence ids the sandbox gene-set bundle may contain in
+                                 # this deployment; see `gene_sets` above
     datasets:
       <dataset_id>:              # stable identifier referenced by product configs
         resource: string         # required -- resource_id (must exist in `resources`)

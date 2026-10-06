@@ -16,7 +16,7 @@ the single most important thing.
 
 | Layer | Lives in | Holds | Delivered to runtime by |
 |-------|----------|-------|--------------------------|
-| **Canonical `datasets.yaml`** | `genetics-results-suite/configs/datasets.yaml` | Profile-independent `resources`, BQ `tables` metadata, `dataset_to_resource_rules`; and the per-profile **dataset registry** (`profiles.<profile>.datasets`) — descriptions, versions, sample sizes, `pseudo_credible_sets`, etc. | `deploy.sh` creates the `datasets-config` ConfigMap from it and mounts it into the **results-api** and **db-api** pods at `/app/configs/datasets.yaml`. No image rebuild needed. |
+| **Canonical `datasets.yaml`** | `genetics-results-suite/configs/datasets.yaml` | Profile-independent `resources`, BQ `tables` metadata, `dataset_to_resource_rules`, the sandbox's `gene_sets.release` pin; the per-profile `gene_set_licences` allowlist; and the per-profile **dataset registry** (`profiles.<profile>.datasets`) — descriptions, versions, sample sizes, `pseudo_credible_sets`, etc. | `deploy.sh` creates the `datasets-config` ConfigMap from it and mounts it into the **results-api** and **db-api** pods at `/app/configs/datasets.yaml`. No image rebuild needed. |
 | **results-api product configs** | `genetics-results-api/app/config/profiles/<profile>/*.py` | The **actual GCS file paths** (`credible_sets.py`, `summary_stats.py`, `exome_results.py`, `gene_based_results.py`, `expression.py`, `coloc.py`, …) ; the exact-dataset-name → `(resource, version)` map (`dataset_to_resource`) is derived from the registry entries' `dataset` field. | Baked into the **results-api Docker image at build time** (`build.sh` clones the repo from GitHub). Changes require **rebuild + rollout** of results-api, and must be committed/pushed first. |
 
 Consequences:
@@ -959,6 +959,27 @@ chrX (23) and chrY (24) rows. `gnomad_af` there is an annotation, not the source
 filter — it reaches 0.89 — and nothing was filtered on it: all 7,045,130 rows are loaded,
 because with no test statistic there is no analogue of the `mlog10p > 4` cut the other
 variant loads apply.
+
+## 18. Gene-set collections for the sandbox
+
+Gene sets are not served by results-api or BigQuery: they are a bundle baked into the sandbox
+image for `genetics.enrichment` (`docs/project-spec.md`, "What the sandbox offers a script beyond the data"). To
+refresh them or add a collection:
+
+1. **genetics-results-munge** — a new MSigDB subcollection goes into `MSIGDB_COLLECTIONS` in
+   `scripts/build_gene_sets.py` (a source other than MSigDB, like Reactome, needs its own
+   download, `LICENCES` entry and licence guard in that script instead); a new upstream MSigDB or Reactome release needs its entry in
+   that script's `LICENCES` table first, since a release with none refuses to build. Run
+   `scripts/build_gene_sets.sh --stage` (munge `docs/gene-sets.md`); it uploads the bundle to
+   daly's bucket under its release id. Another profile's bucket gets a copy by hand and is
+   named by `GENE_SETS_BUCKET` (`docs/environments.md`).
+2. **`configs/datasets.yaml`** — set `gene_sets.release` to the new bundle's release id;
+   staging refuses any other. If a collection carries a licence id not yet listed, add it to
+   `profiles.<profile>.gene_set_licences` for each deployment that may carry it — anything
+   unlisted is dropped from that profile's image, and the drop is recorded in the staged
+   manifest rather than failing the build (`docs/datasets-yaml-schema.md`, `gene_sets`).
+3. **Rebuild and roll out the sandbox image** (`build.sh sandbox` or `build-all.sh`). Check
+   the release with `genetics.enrichment.collections()` in a `run_analysis` script.
 
 ## Checklist
 

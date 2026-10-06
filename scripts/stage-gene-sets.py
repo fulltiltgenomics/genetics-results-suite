@@ -9,11 +9,15 @@
   - refuses a bundle whose manifest names another release than the pinned one;
   - verifies every file the manifest lists, bytes and sha256, on the copy it publishes;
   - writes the verified, UNFILTERED bundle to --out-dir together with policy.json: the
-    release, the profile and its profiles.<p>.gene_set_licences.
+    release, the profile and its profiles.<p>.gene_set_licences. No checksum covers
+    policy.json, and `filter` trusts whichever policy it is given — so the image builder
+    passes --datasets-yaml and takes the pin and the allowlist from its own config instead.
 
 `filter` runs where polars is (the sandbox image's builder stage). It re-verifies the bundle
-against the policy's release before reading any of it, then DROPS each collection whose SPDX
-licence is not in the allowlist: sets.parquet keeps only rows of allowed collections, and
+against the policy's release before reading any of it — every data file against the
+manifest, and the manifest's release against the pin; a manifest rewritten to match altered
+files passes, so the checksums catch corruption, not a tampered build host — then DROPS each collection whose licence id
+(SPDX or LicenseRef-*) is not in the allowlist: sets.parquet keeps only rows of allowed collections, and
 members.parquet only rows whose set_id survived. What was dropped, and why, is recorded in
 the rewritten manifest. Dropping rather than failing is deliberate: every bundle carries
 c5.hpo, which some deployments may not, so failing would refuse every bundle there. The image

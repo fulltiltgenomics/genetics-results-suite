@@ -93,17 +93,18 @@ with `grep -n` from that repo's root. The resolved sets are frozen in
 
 `get_anthropic_tools()` converts each `parameters` dict into an Anthropic `input_schema`:
 `type` is copied verbatim, `description` / `default` / `items` / `enum` / `minimum` /
-`maximum` / `pattern` / `maxItems` are copied when present, and a parameter lands in
-`required` when its definition sets `"required": True`. The four constraint keywords appear
-on a parameter only where the SERVER already enforces the bound, derived from the enforcing
-code rather than the description (the block comment above `TOOL_DEFINITIONS` says which are
-rejected and which clamped) — 23 parameters carry one today (section 8 lists them per tool;
-`run_analysis.timeout_s`, `run_analysis.inputs`' `maxItems` 4, the by-gene tools' `limit`
-and `query_database.max_rows` among them — the last mirrors db-api, which rejects a value
-above 100 000 with HTTP 422 and caps one at or below it per credential). Where prose and
-enforcement disagree the parameter stays bare: `search_scientific_literature.max_results`
-says "max 25" but that clamp exists only on the europepmc path and the default backend is
-perplexity. No parameter declares a `pattern`
+`maximum` / `pattern` / `maxItems` are copied when present, and a parameter lands in `required` when its
+definition sets `"required": True`. The constraint keywords are forwarded,
+but they appear on a parameter only where the SERVER
+already enforces the bound, derived from the enforcing code rather than the description (the block comment above
+`TOOL_DEFINITIONS` says which are rejected and which clamped) —
+section 8 lists per tool the parameters that carry one (`run_analysis.timeout_s`,
+`run_analysis.inputs`' `maxItems`, the by-gene tools' `limit` and `query_database.max_rows`
+among them — the last mirrors db-api, which rejects a value above
+100 000 with HTTP 422 and caps one at or below it per credential). Where prose and enforcement
+disagree the parameter stays bare: `search_scientific_literature.max_results` says "max 25"
+but that clamp exists only on the europepmc path and the default backend is perplexity. No
+parameter declares a `pattern`
 — the candidates are validated after a normalising step that widens what is accepted, so a
 regex matching the validator would reject inputs the server handles.
 

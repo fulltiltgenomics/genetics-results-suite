@@ -265,7 +265,7 @@ def main():
         with open(os.path.join(tampered, "members.parquet"), "ab") as fh:
             fh.write(b"x")
         rc, err = filt(tampered, out)
-        check("filter re-verifies: a bundle changed after fetch is refused with 1",
+        check("filter re-verifies: a data file changed after fetch, manifest untouched, is refused with 1",
               rc == 1 and "members.parquet" in err, err)
         check("refusal leaves the previous staging intact", unchanged())
 
