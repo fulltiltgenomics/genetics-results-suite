@@ -226,6 +226,8 @@ def harmonise(
     outcome_dataset: dict[str, Any] | None = None,
     annotation: AnnotationFn | None = None,
     af_tolerance: float = AF_TOLERANCE,
+    exposure_meta: dict[str, Any] | None = None,
+    outcome_meta: dict[str, Any] | None = None,
 ) -> Harmonised:
     """Join exposure instruments to one outcome's rows and check each instrument's alleles.
 
@@ -235,6 +237,8 @@ def harmonise(
     `outcome` is one phenotype's summary-statistic rows (`beta`, `se`, `af`, `n_cases`,
     `n_controls`, ...). `*_dataset` are rows of `genetics.datasets()`; they give the units,
     the exposure's Finnish-ness for the AF reference, and the overlap statement in `checks`.
+    `*_meta` are each side's `genetics.phenotypes()` row; a null `n_cases` there marks a
+    quantitative phenotype of a dataset whose trait_type says binary.
     `annotation(variants=, source=)` defaults to `genetics.variant_annotation` and is called
     only for instruments whose outcome row has no frequency.
 

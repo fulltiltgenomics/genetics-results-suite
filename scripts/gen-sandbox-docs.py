@@ -65,7 +65,7 @@ from paths import DATASETS_YAML, ROOT, SCHEMA_DIR, STAGED_SDK_SRC, STUBS_DIR
 # the SDK submodules a script reaches as `genetics.<name>` that are not client wrappers;
 # each gets its own stub, read from the module's `__all__`. sdk/__init__.py resolves the
 # same names lazily and the executor's _SDK_MODULES catalogues them.
-SURFACE_MODULES = ("plots", "linemodels", "mr")
+SURFACE_MODULES = ("plots", "linemodels", "mr", "enrichment")
 
 
 def prompt_schema_dir_for(sdk_src):
