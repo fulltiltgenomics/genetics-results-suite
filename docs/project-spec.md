@@ -1765,8 +1765,10 @@ answers to it now.)
 
 The `daly-staging` deployment added later does **not** change this for `phewas-development`.
 It is a second GKE cluster inside the **daly** project (`docs/environments.md`), so it is a
-rehearsal ground for the daly brand's manifests and images — not for this project, and not
-for BigQuery, whose datasets it does not duplicate.
+rehearsal ground for the daly brand's manifests and images — not for this project. Of the
+BigQuery datasets it duplicates only the two log sinks (`genetics_api_logs_staging`,
+`genetics_chat_logs_staging`, `docs/environments.md`); it serves the daly production
+`genetics_results` unless its `bq_dataset` names a rehearsal dataset.
 
 **It does change the suite-wide framing, and this section used to state it globally**
 (corrected 2026-08-30). There are **three clusters in two
@@ -1802,14 +1804,17 @@ later work recorded in `docs/bigquery-dev-dataset.md` and `docs/local-dev-vm.md`
 (created 2026-08-14, measured after the 2026-08-18 widening).
 
 Consequently every BigQuery DDL change is a change to live data by default. The
-rehearsal ground is `scripts/bq-dev-dataset.sh`, which builds `genetics_results_dev` next
-to `genetics_results` in the **same project and the same location** (`europe-west1`, per
-`bq show --format=prettyjson phewas-development:genetics_results`) out of zero-copy
-`CREATE TABLE … CLONE` statements, then creates the views with their table references
-**rewritten** to the dev dataset.
+rehearsal ground is `scripts/bq-dev-dataset.sh`, which builds a rehearsal dataset
+(`--dataset`, default `genetics_results_dev`) next to `genetics_results` in the **same
+project and the same location** — `europe-west1` in `phewas-development`, `us-central1`
+in `daly-finngenie` (`bq show --format=prettyjson <project>:genetics_results`) — out of
+zero-copy `CREATE TABLE … CLONE` statements, then creates the views with their table
+references **rewritten** to the dev dataset. Which rehearsal dataset stands in which
+project — in `daly-finngenie` it is `genetics_results_brava_dev`, not the default name —
+is in `docs/bigquery-dev-dataset.md`, "Which rehearsal datasets exist, per project".
 
-The rewrite is the correctness crux, not a detail: all 15 views in `genetics_results`
-embed a fully-qualified `` `phewas-development.genetics_results.<table>` `` reference, so a
+The rewrite is the correctness crux, not a detail: every view in `genetics_results`
+embeds a fully-qualified `` `<project>.genetics_results.<table>` `` reference, so a
 view copied verbatim into a dev dataset silently reads **production** tables while the
 tables beside it are dev clones — a rehearsal that looks right and proves nothing.
 `bq-dev-dataset.sh verify` therefore reads every dev view back out of BigQuery and fails
@@ -1822,8 +1827,10 @@ likely to use) got handled by neither.
 Clone storage is not free forever: a clone bills for every block it stops sharing with its
 base table, which happens when **production** replaces or drops that table just as much as
 when the rehearsal writes to the clone. Drop a table's dev clone once its production
-counterpart has been promoted away — for the current batch that is ~105 GB across two
-tables — rather than waiting for the batch teardown.
+counterpart has been promoted away — for the `phewas-development` batch that is ~105 GB
+across the four tables `eyg` and `4ci` replace or drop — rather than waiting for the batch
+teardown. A rehearsal can also write standalone, non-clone tables that bill their full size
+from the start; `genetics_results_brava_dev` holds one of ~277 GB.
 
 Dry run is the default (`--apply` executes), `teardown` additionally needs `--yes` and the
 dataset name typed at a tty, and the target dataset name is refused outright if it is one
