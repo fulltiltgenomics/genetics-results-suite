@@ -4466,7 +4466,8 @@ profiles:
         metadata_harmonizer: quantitative_pheweb
 
   daly:
-    gene_set_licences: [CC0-1.0, CC-BY-4.0]
+    # LicenseRef-HPO: HPO-derived sets on academic deployments only (user ruling)
+    gene_set_licences: [CC0-1.0, CC-BY-4.0, LicenseRef-HPO]
     datasets:
       # --- GWAS ---
       finngen_gwas:
