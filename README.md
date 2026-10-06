@@ -723,6 +723,15 @@ the gitignored `sandbox/.sdk-src`, which only exists after an *interrupted* buil
 silently regenerate the shipped stubs from an old SDK.
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
 
+Both scripts also stage the gene-set bundle the image serves at `/genetics/genesets`
+(`stage_gene_sets` in `scripts/lib/env.sh`): `./scripts/stage-gene-sets.py fetch` with the
+profile from the deployment tfvars' `config_profile` fetches and verifies the release pinned in
+`configs/datasets.yaml` into `sandbox/.genesets-src/`, and the image's builder stage
+licence-filters it and asserts the result (`sandbox/build-checks.py`). Only daly's bucket is
+known; any other profile needs `GENE_SETS_BUCKET` (e.g. in `.env.<DEPLOY_ENV>`), and
+`GENE_SETS_SOURCE_DIR` reads a local copy of the release instead of GCS. `build.sh sandbox`
+fails on a non-zero exit; `build-all.sh` skips the sandbox the same way as above.
+
 `./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
 container** on the developer machine — no cluster, no credentials, nothing pushed — with the
 supervisor passed as the container's command, `--read-only`, `--cap-drop ALL`, uid 65532 and a

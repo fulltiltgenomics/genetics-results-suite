@@ -66,7 +66,7 @@ fi
 if [ "${SERVICE}" = "sandbox" ]; then
   SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
   WORK_DIR=$(mktemp -d)
-  trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src"' EXIT
+  trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"' EXIT
 
   MCP_BRANCH="${MCP_SERVER_BRANCH:-master}"
   MCP_DIR="${WORK_DIR}/genetics-mcp-server"
@@ -106,10 +106,15 @@ if [ "${SERVICE}" = "sandbox" ]; then
   echo "--- Checking sandbox schema docs and SDK stubs"
   python3 "${SCRIPT_DIR}/test-sandbox-docs.py" --sdk-src "${SANDBOX_DIR}/.sdk-src"
 
+  # /genetics/genesets: fetched and verified here, licence-filtered and asserted in the
+  # image's builder stage. Non-zero (1 = the bundle or the pin was refused, 2 = staging could
+  # not run) aborts under `set -e`.
+  stage_gene_sets "${SANDBOX_DIR}"
+
   TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
   echo "=== Building sandbox (tag: ${TAG}) ==="
   set_build_cache_args sandbox
-  docker build "${BUILD_CACHE_ARGS[@]}" \
+  docker build "${BUILD_CACHE_ARGS[@]}" "${GENESETS_BUILD_ARGS[@]}" \
     --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)" \
     -t "${REGISTRY}/sandbox:${TAG}" \
     -t "${REGISTRY}/sandbox:latest" \

@@ -467,6 +467,11 @@ LAYOUT = {
                                        "hold each envsubst whitelist to the files it governs",
     "scripts/test-network-policies.py": "the namespace's policies as a whole: offline by "
                                         "default, plus an opt-in diff against a live cluster",
+    "scripts/stage-gene-sets.py": "gene-set bundle staging: fetch and verify the pinned "
+                                  "release, then drop collections the profile's licence "
+                                  "allowlist excludes",
+    "scripts/test-stage-gene-sets.py": "offline: stage-gene-sets.py's refusals, licence "
+                                       "drops and atomic output, against a fake bundle",
     "scripts/test-sandbox-docs.py": "offline: the generated schema docs and SDK stubs",
     "scripts/test-supervisor.py": "offline: the sandbox supervisor, in process or against a "
                                   "container",

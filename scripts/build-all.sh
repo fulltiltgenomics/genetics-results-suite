@@ -70,11 +70,11 @@ SHOW_TOOLS_BUTTON="${SHOW_TOOLS_BUTTON:-true}"
 echo "Building for ${DEPLOY_ENV:-default} -> ${REGISTRY}"
 
 SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
-# set to the reason by either sandbox skip branch below; read by the final summary
+# set to the reason by a sandbox skip branch below; read by the final summary
 SANDBOX_SKIPPED=""
 
 WORK_DIR=$(mktemp -d)
-trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src"' EXIT
+trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"' EXIT
 
 clone_repo() {
   local name=$1 branch=$2
@@ -210,7 +210,19 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
   # a placeholder surviving generation means the generator did not own that file; the
   # image build would refuse anyway (build-checks.py), so stop here with a readable reason
   SANDBOX_PLACEHOLDERS=$(find "${SANDBOX_DIR}/schema" "${SANDBOX_DIR}/stubs" -name 'PLACEHOLDER*' 2>/dev/null | tr '\n' ' ')
-  if [ "${SANDBOX_DOCS_OK}" -ne 0 ] || [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
+  # the gene-set bundle, skipped the same way: a sandbox build that cannot stage the pinned,
+  # verified bundle has nothing licence-checked to put in /genetics/genesets
+  SANDBOX_GENESETS_OK=0
+  if [ "${SANDBOX_DOCS_OK}" -eq 0 ] && [ -z "${SANDBOX_PLACEHOLDERS}" ]; then
+    stage_gene_sets "${SANDBOX_DIR}" || SANDBOX_GENESETS_OK=$?
+  fi
+  if [ "${SANDBOX_GENESETS_OK}" -ne 0 ]; then
+    SANDBOX_SKIPPED="the gene-set bundle could not be staged (stage_gene_sets exit ${SANDBOX_GENESETS_OK}; the failing step is named in its output above)"
+    echo ""
+    echo "!!! SKIPPING sandbox: ${SANDBOX_SKIPPED}."
+    echo "!!! Every other image was built."
+    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
+  elif [ "${SANDBOX_DOCS_OK}" -ne 0 ] || [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
     SANDBOX_SKIPPED="the schema docs / SDK stubs could not be generated or verified"
     echo ""
     echo "!!! SKIPPING sandbox: could not generate or verify the schema docs and SDK stubs"
@@ -221,9 +233,9 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     rm -rf "${SANDBOX_DIR}/.sdk-src"
   else
     TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
-    build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" \
+    build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" "${GENESETS_BUILD_ARGS[@]}" \
       --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)"
-    rm -rf "${SANDBOX_DIR}/.sdk-src"
+    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
   fi
 else
   SANDBOX_SKIPPED="${MCP_SERVER_BRANCH} of genetics-mcp-server has no src/genetics_mcp_server/sdk"
@@ -239,8 +251,8 @@ if [ -z "${SANDBOX_SKIPPED}" ]; then
   exit 0
 fi
 
-# THE SUMMARY LINE MUST NOT LIE. Both sandbox skips above are deliberate guards (an image with
-# no SDK or with placeholder schema docs is not shippable)
+# THE SUMMARY LINE MUST NOT LIE. The sandbox skips above are deliberate guards (an image with
+# no SDK, placeholder schema docs or no verified gene-set bundle is not shippable)
 # and they stay non-fatal for a suite build that does not deploy the sandbox. What was wrong is
 # that the skip was a warning in the middle of a long build log and the script still signed off
 # with "All images built and pushed." That was survivable only while deploy.sh refused to apply

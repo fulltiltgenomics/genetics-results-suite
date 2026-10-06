@@ -448,5 +448,148 @@ def _style_names_registered():
     )
 
 
+# The gene-set bundle as the final stage copies it: stage-gene-sets.py filter's output. The
+# filter drops what the allowlist excludes; these assert the RESULT, against the build's own
+# datasets.yaml and build args, so a filter bug or a leftover bundle from another profile fails
+# here rather than shipping. Every check re-reads, so a bundle that fails to load fails each.
+GENESETS = os.path.join(OUT, "genesets")
+GENESETS_YAML = "/build/genesets-tools/datasets.yaml"
+GENESETS_PYYAML = "/build/pyyaml"
+GENESETS_BANNED = ("KEGG", "BIOCARTA")
+
+
+def _genesets():
+    try:
+        import polars as pl
+        if GENESETS_PYYAML not in sys.path:
+            sys.path.insert(0, GENESETS_PYYAML)
+        import yaml
+        with open(os.path.join(GENESETS, "manifest.json")) as fh:
+            manifest = json.load(fh)
+        with open(GENESETS_YAML) as fh:
+            config = yaml.safe_load(fh)
+        sets = pl.read_parquet(os.path.join(GENESETS, "sets.parquet"))
+        members = pl.read_parquet(os.path.join(GENESETS, "members.parquet"))
+    except Exception as exc:
+        raise AssertionError(f"the staged gene-set bundle does not load: {type(exc).__name__}: {exc}")
+    return manifest, config, sets, members
+
+
+@check("the gene-set bundle was staged for this build's profile and release")
+def _genesets_profile():
+    """The profile the filter recorded has to be the one this build was invoked for, and the
+    release the one this build's datasets.yaml pins and the image's LABEL names. Both sides
+    come from the same build arg in the same stage, so this only catches a filter bug or a
+    stale build context; the real guard against shipping unlicensed sets is the in-builder
+    filter plus _genesets_licences."""
+    manifest, config, _sets, _members = _genesets()
+    profile = os.environ.get("GENESETS_PROFILE", "")
+    assert profile, "build arg GENESETS_PROFILE is empty"
+    staged = (manifest.get("staging") or {}).get("profile")
+    assert staged == profile, f"bundle was filtered for profile {staged!r}, the build is {profile!r}"
+    pin = (config.get("gene_sets") or {}).get("release")
+    got = (manifest.get("bundle") or {}).get("release_id")
+    label = os.environ.get("GENESETS_RELEASE", "")
+    assert got == pin == label, (
+        f"bundle release {got!r}, datasets.yaml pins {pin!r}, LABEL build arg {label!r}"
+    )
+
+
+@check("every gene-set collection is licensed for this profile, once")
+def _genesets_licences():
+    """The licence gate itself: each collection the image serves carries an SPDX id in
+    profiles.<profile>.gene_set_licences of this build's datasets.yaml. A collection in the
+    data without a manifest entry has no licence on record at all, and one listed twice has
+    two, of which only one would have been checked."""
+    manifest, config, sets, _members = _genesets()
+    profile = os.environ.get("GENESETS_PROFILE", "")
+    allowed = ((config.get("profiles") or {}).get(profile) or {}).get("gene_set_licences") or []
+    assert allowed, f"profiles.{profile}.gene_set_licences is empty or absent"
+    names = [c.get("collection") for c in manifest.get("collections") or []]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    assert not dupes, f"listed more than once in the manifest: {dupes}"
+    bad = [(c.get("collection"), c.get("spdx_license")) for c in manifest["collections"]
+           if c.get("spdx_license") not in allowed]
+    assert not bad, f"licence not in profiles.{profile}.gene_set_licences {allowed}: {bad}"
+    unlisted = sorted(set(sets["collection"].to_list()) - set(names))
+    assert not unlisted, f"collections in sets.parquet with no manifest entry: {unlisted}"
+
+
+@check("every gene-set member belongs to a kept set")
+def _genesets_members():
+    """members.parquet has no collection column, so a member row of a dropped set is
+    unlicensed content that no collection-level check can see."""
+    _manifest, _config, sets, members = _genesets()
+    orphans = set(members["set_id"].to_list()) - set(sets["set_id"].to_list())
+    assert not orphans, f"{len(orphans)} member set_id(s) not in sets.parquet: {sorted(orphans)[:5]}"
+
+
+@check("no KEGG or BioCarta gene set")
+def _genesets_no_kegg():
+    """KEGG needs a commercial licence for non-academic use and BioCarta's permission is
+    qualified, so neither may ship whatever licence a manifest claims for its collection.
+    Matched after dropping case and punctuation, on set_id, name and collection alike."""
+    _manifest, _config, sets, _members = _genesets()
+    hits = []
+    for col in ("set_id", "name", "collection"):
+        for value in sets[col].unique().to_list():
+            norm = re.sub(r"[^A-Z0-9]", "", str(value).upper())
+            if any(b in norm for b in GENESETS_BANNED):
+                hits.append(f"{col}={value!r}")
+    assert not hits, f"{len(hits)} match(es): {hits[:5]}"
+
+
+@check("the staged gene-set files are exactly those the manifest lists, unmodified")
+def _genesets_checksums():
+    """The filter rewrites the manifest for what it rewrote; anything else in the directory,
+    or any file that differs from its entry, is content no check above has vouched for."""
+    import hashlib
+    manifest, _config, _sets, _members = _genesets()
+    files = (manifest.get("bundle") or {}).get("files") or {}
+    present = set(os.listdir(GENESETS)) - {"manifest.json"}
+    assert present == set(files), f"on disk {sorted(present)}, in the manifest {sorted(files)}"
+    for name, meta in sorted(files.items()):
+        path = os.path.join(GENESETS, name)
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        assert os.path.getsize(path) == meta.get("bytes"), f"{name}: size differs from the manifest"
+        assert h.hexdigest() == meta.get("sha256"), f"{name}: sha256 differs from the manifest"
+
+
+@check("the gene-set bundle is non-empty and readable by the sandbox uid")
+def _genesets_nonempty():
+    """A licence filter that dropped everything exits 0 with an empty bundle, and the image
+    would ship enrichment with nothing to enrich against. The final stage copies the tree
+    root-owned, so the sandbox uid reads it through the world bits alone."""
+    manifest, _config, sets, members = _genesets()
+    assert manifest.get("collections"), "no collection survived the licence filter"
+    assert sets.height and members.height, f"{sets.height} sets, {members.height} member rows"
+    unreadable = []
+    for root, dirs, files in os.walk(GENESETS):
+        for d in dirs + [""]:
+            if os.stat(os.path.join(root, d)).st_mode & 0o005 != 0o005:
+                unreadable.append(os.path.join(root, d))
+        for f in files:
+            if not os.stat(os.path.join(root, f)).st_mode & 0o004:
+                unreadable.append(os.path.join(root, f))
+    assert not unreadable, f"not world-readable: {unreadable}"
+
+
+@check("no test-fixture gene-set bundle")
+def _genesets_not_fixture():
+    """The placeholder gate's counterpart. The local fixture bundle carries `"fixture": true`
+    at the top of its manifest; an image built from it works, deploys healthy and answers every
+    enrichment against toy sets. Only a local build opts in, with GENESETS_ALLOW_FIXTURE=1."""
+    manifest, _config, _sets, _members = _genesets()
+    if manifest.get("fixture") in (None, False):
+        return
+    assert os.environ.get("GENESETS_ALLOW_FIXTURE") == "1", (
+        f"the manifest says fixture={manifest['fixture']!r}; a test-fixture bundle is not "
+        "shippable (GENESETS_ALLOW_FIXTURE=1 is for local builds only)"
+    )
+
+
 print(f"sandbox build checks: {len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
