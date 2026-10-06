@@ -744,7 +744,11 @@ local `/scratch` tmpfs is charged to the container's memory cgroup while the pod
 `emptyDir` is charged to `ephemeral-storage` instead. `--test` then runs
 `python3 scripts/test-supervisor.py --container http://127.0.0.1:8081 --container-name NAME`
 against it (the name is what lets the audit-stream group read the container's stdout);
-`--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
+`--stop` removes it. Its gene-set bundle is genetics-mcp-server's `tests/fixtures/genesets`
+fixture, never GCS: the script rewrites the fixture's manifest to the release
+`configs/datasets.yaml` pins, fetches it with `stage-gene-sets.py fetch --source-dir`, and builds
+with `GENESETS_PROFILE` (default `daly`) and `GENESETS_ALLOW_FIXTURE=1` — the only build that
+passes it. See "Running the sandbox locally" in `docs/project-spec.md`.
 
 The Deployment is `k8s/deployments/sandbox.yaml`. The image ships no `CMD` and its ENTRYPOINT is
 the bare interpreter, so the manifest supplies the supervisor itself —
