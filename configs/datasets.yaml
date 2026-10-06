@@ -324,8 +324,8 @@ tables:
       cs_size: "Number of variants in this credible set"
       cs_min_r2: "Minimum pairwise LD r² within the credible set"
       aaf: "Alternative allele frequency. Prefer maf column for minor allele frequency"
-      most_severe: "Most severe VEP-predicted variant consequence"
-      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      most_severe: "Most severe VEP-predicted variant consequence. FinnGen-cohort and FinnGen meta-analysis rows and the pseudo credible sets carry the FinnGen variant annotation; eQTL Catalogue, Open Targets, NMR (UKBB+EstBB), PGC SCZ fine-mapping and UKB-PPP rows are stamped from gnomAD 4.1.1 (VEP 115, GENCODE 49), the same annotation gnomad_variant_annotation_v holds, and are NULL for a variant gnomAD does not hold"
+      gene_most_severe: "Gene symbol associated with the most severe consequence; NULL when no named gene carries it, which gnomAD's GENCODE 49 annotation leaves more often than FinnGen's"
       variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23"
       maf: "Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
@@ -2520,6 +2520,123 @@ tables:
     categorical_columns:
       resource: null
 
+  gnomad_variant_annotation_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [pos]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table: the view appends the constant 'gnomad' AS resource,
+        and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        gnomAD annotation reference, has no `dataset` column
+    summary: "gnomAD per-variant frequencies by ancestry group and VEP annotation"
+    description: >-
+      gnomAD 4.1.1 genomes+exomes sites annotated with VEP 115 / GENCODE 49, one row per
+      variant: allele frequency overall and per genetic ancestry group, site filters,
+      rsIDs and per-gene VEP consequences. A variant present in both sources keeps the
+      row with the larger AN (genome_or_exome says which: 'g' or 'e'). ALWAYS filter on
+      chr, and on pos whenever a position or region is known: the table is partitioned
+      by chr and clustered by pos, and it is large enough that an unfiltered query
+      exceeds the per-query scan cap. `variant` is a join key and an output column, not
+      a cheap filter — look a variant up by chr AND pos, then match ref/alt or variant.
+      `consequences` is a typed ARRAY of STRUCTs, one element per distinct (gene, consequence terms, canonical, biotype) annotation, so a gene can appear more than once: read it with
+      UNNEST(consequences) AS c and c.gene_symbol, c.consequences etc. Each struct field
+      is billed separately, so select only the fields the question needs. A variant with
+      no annotation has an EMPTY array (never NULL): a comma UNNEST drops it, LEFT JOIN
+      UNNEST keeps it. most_severe / gene_most_severe answer most questions without
+      touching the array. The results-api variant annotation for source gnomad serves
+      the same data from a file, where `consequences` is a JSON string with the same
+      keys rather than a typed array.
+
+    columns:
+      chr: "Chromosome number, X is 23 and Y is 24"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      variant: "Variant identifier as chr:pos:ref:alt. Same format as the variant column in the association views, so it joins directly"
+      rsids: "dbSNP rsIDs, comma-separated when there are several"
+      filters: "gnomAD site filters that failed, comma-separated; an empty string when the site passed"
+      AN: "Total allele number in the source the row was taken from"
+      AF: "Alternative allele frequency across all genetic ancestry groups. This is the alt allele frequency, not the minor allele frequency"
+      AF_afr: "Alternative allele frequency, African/African American"
+      AF_amr: "Alternative allele frequency, Admixed American"
+      AF_asj: "Alternative allele frequency, Ashkenazi Jewish"
+      AF_eas: "Alternative allele frequency, East Asian"
+      AF_fin: "Alternative allele frequency, Finnish"
+      AF_mid: "Alternative allele frequency, Middle Eastern"
+      AF_nfe: "Alternative allele frequency, non-Finnish European"
+      AF_remaining: "Alternative allele frequency, remaining individuals"
+      AF_sas: "Alternative allele frequency, South Asian"
+      most_severe: "Most severe VEP-predicted variant consequence"
+      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      consequences: "VEP annotations in the source's order, one element per distinct gene-level annotation (a gene repeats when its transcripts differ), as ARRAY<STRUCT>: gene_symbol (NULL when the gene has none), gene_id (Ensembl), consequences (ARRAY<STRING> of VEP terms for that gene), gene_symbol_source (e.g. HGNC), canonical (1 when on the gene's canonical transcript, else NULL), biotype. Empty array when the variant has no annotation. Read with UNNEST(consequences) AS c"
+      genome_or_exome: "Source of the row's statistics: g (genomes) or e (exomes)"
+      resource: "Data source identifier, constant 'gnomad'"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      variant: STRING
+      rsids: STRING
+      filters: STRING
+      AN: INT64
+      AF: FLOAT64
+      AF_afr: FLOAT64
+      AF_amr: FLOAT64
+      AF_asj: FLOAT64
+      AF_eas: FLOAT64
+      AF_fin: FLOAT64
+      AF_mid: FLOAT64
+      AF_nfe: FLOAT64
+      AF_remaining: FLOAT64
+      AF_sas: FLOAT64
+      most_severe: STRING
+      gene_most_severe: STRING
+      consequences: ARRAY<STRUCT<gene_symbol STRING, gene_id STRING, consequences ARRAY<STRING>, gene_symbol_source STRING, canonical INT64, biotype STRING>>
+      genome_or_exome: STRING
+      resource: STRING
+
+    examples:
+      - description: "Look one variant up. Filter on chr and pos (partition and clustering key), then on the alleles."
+        sql: |-
+          SELECT variant, rsids, filters, AN, AF, AF_fin, AF_nfe, most_severe, gene_most_severe
+          FROM gnomad_variant_annotation_v
+          WHERE chr = 1 AND pos = 55039974 AND ref = 'G' AND alt = 'T'
+
+      - description: "Attach gnomAD frequencies to fine-mapped variants on one chromosome. Give both sides a literal chr so both prune partitions."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, pos, variant, trait_original, pip
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS'
+              AND trait_original = 'K11_IBD_STRICT' AND pip > 0.1 AND chr = 1
+          )
+          SELECT cs.trait_original, cs.variant, cs.pip, g.AF, g.AF_fin, g.AF_nfe,
+                 g.most_severe, g.gene_most_severe
+          FROM cs
+          JOIN gnomad_variant_annotation_v g
+            ON g.chr = cs.chr AND g.pos = cs.pos AND g.variant = cs.variant
+          WHERE g.chr = 1
+          ORDER BY cs.pip DESC
+
+      - description: "Per-gene consequences in a region: UNNEST the consequences array and filter on its fields. Keep the chr and pos filters — without them the array is read for the whole table."
+        sql: |-
+          SELECT g.variant, g.rsids, g.AF, g.AF_fin, c.gene_symbol, c.biotype,
+                 ARRAY_TO_STRING(c.consequences, ',') AS gene_consequences
+          FROM gnomad_variant_annotation_v g, UNNEST(g.consequences) AS c
+          WHERE g.chr = 1 AND g.pos BETWEEN 55039447 AND 55064852
+            AND c.gene_symbol = 'PCSK9' AND c.canonical = 1
+            AND 'missense_variant' IN UNNEST(c.consequences)
+          ORDER BY g.pos
+
+    categorical_columns:
+      resource: null
+
   peak_to_gene_v:
     exposed: true
     clustering_columns: [symbol, cell_type, peak_id]
@@ -3462,17 +3579,17 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
-        dataset: Open_Targets_26.06
-        version: "26.06"
+        dataset: Open_Targets_26.09
+        version: "26.09"
         description: >-
-          Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
+          Open Targets Genetics Portal (release 26.09). GWAS studies from the GWAS Catalog,
           Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
           SuSiE fine-mapped results from Open Targets.
         author: "Open Targets"
-        publication_date: "2026-06-25"
+        publication_date: "2026-09-24"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202606/ot_2606_data_studies.json"
+        metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202609/ot_2609_data_studies.json"
         metadata_harmonizer: open_targets
 
       # --- coloc-only datasets ---
@@ -4649,17 +4766,17 @@ profiles:
       # --- Open Targets ---
       open_targets:
         resource: open_targets
-        dataset: Open_Targets_26.06
-        version: "26.06"
+        dataset: Open_Targets_26.09
+        version: "26.09"
         description: >-
-          Open Targets Genetics Portal (release 26.06). GWAS studies from the GWAS Catalog,
+          Open Targets Genetics Portal (release 26.09). GWAS studies from the GWAS Catalog,
           Million Veterans Program and more with uniform fine-mapping. We include only non-FinnGen
           SuSiE fine-mapped results from Open Targets.
         author: "Open Targets"
-        publication_date: "2026-06-25"
+        publication_date: "2026-09-24"
         data_type: gwas
         trait_type: mixed
-        metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202606/ot_2606_data_studies.json"
+        metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202609/ot_2609_data_studies.json"
         metadata_harmonizer: open_targets
 
       # --- coloc-only datasets ---
