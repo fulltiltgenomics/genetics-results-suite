@@ -10,6 +10,7 @@ and resource definitions consumed by all services in the genetics results platfo
 resources: { ... }
 tables: { ... }
 dataset_to_resource_rules: [ ... ]
+gene_sets: { ... }
 
 # per-profile
 profiles:
@@ -317,6 +318,21 @@ rules. This keeps the rules focused on SQL view generation and resource lookup.
 
 **Consumer**: db SQL view generation script, results-api dataset-to-resource mapper
 
+## Section: `gene_sets`
+
+Profile-independent pin for the gene-set bundle baked into the sandbox image.
+
+```yaml
+gene_sets:
+  release: string|null   # the bundle's release id, a build date (YYYYMMDD); null = no bundle built
+```
+
+`release` is what build-time staging compares the bundle's manifest against; null is refused,
+not treated as "any". `profiles.<p>.gene_set_licences` is the allowlist the same staging step
+checks each collection's SPDX licence against, so a deployment that cannot carry a collection
+(share-alike, or a licence needing a commercial agreement) fails the build rather than
+shipping it. The enforcement lives in the staging script, not in this config.
+
 ## Section: `profiles`
 
 Per-deployment-profile configuration. Each profile has its own dataset registry and
@@ -326,6 +342,8 @@ GCS bucket paths. The two current profiles are `finngen` (internal FinnGen acces
 ```yaml
 profiles:
   <profile_name>:
+    gene_set_licences: [string]  # SPDX ids the sandbox gene-set bundle may contain in this
+                                 # deployment; see `gene_sets` below
     datasets:
       <dataset_id>:              # stable identifier referenced by product configs
         resource: string         # required -- resource_id (must exist in `resources`)
