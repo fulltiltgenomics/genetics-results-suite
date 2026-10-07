@@ -89,10 +89,10 @@ artefact 4h6.25 was filed to prevent.
   script can reach that data. The tool is on both arms. Whether to reinstate these questions
   is a decision for whoever runs the benchmark, not a fact about availability any more.
 - **Phenotype reports and gene-prioritisation scores** (the `Score` column, TIER1/TIER2/
-  TIER3/CASCADE flags). results-api *is* on the sandbox egress allow-list and does serve
-  the document, so the data is reachable — but neither the SDK nor the shipped stubs name
-  the route, so a model would have to invent the HTTP call. This is a *discoverability*
-  gap, not an availability one. Book it under that reason if it is ever reinstated.
+  TIER3/CASCADE flags). Neither arm can answer these any more: the report tool and the
+  results-api route that served the document have been removed, and the scores and tier
+  flags are in no view a script can query. Reinstating these questions would need a new
+  data source first, not a booking decision.
 
 If either is added back, record it as a known, explained loss reported **separately** from
 the arm's score.
