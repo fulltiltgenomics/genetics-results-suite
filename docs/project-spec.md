@@ -1142,7 +1142,10 @@ cost being accepted for the reachability. What bounds it:
 - the query variant is shape-checked (`chr:pos:ref:alt`) and the panel is shape-checked as a
   name, so no caller-supplied string reaches the outbound query unshaped. The panel is
   deliberately **not** membership-checked: the set is the upstream's and a list here would go
-  stale silently, so an unknown-but-well-formed name is the upstream's 4xx to give;
+  stale silently, so an unknown-but-well-formed name is the upstream's 4xx to give. That 4xx
+  names the upstream's own panels, and the proxy relays that list (name-shaped tokens only) as
+  a **422**, so a script that guessed learns the real names on the first refusal rather than
+  the thirtieth;
 - `window` is refused outside `LD_MIN_WINDOW..LD_MAX_WINDOW` rather than clamped — a silently
   narrowed window returns fewer variants and reads as a sparse locus rather than as a limit.
   The defaults are the upstream's own bounds, so the refusal is a 422 naming the limit

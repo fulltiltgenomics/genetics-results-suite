@@ -859,9 +859,11 @@ down where the listing is parsed. **Visibility is shared.** The bucket records n
 user gives, exactly as in the userresults browser; the prompt tells the agent to ask when
 a name is ambiguous rather than guess. **Column sets vary within one resource.** R12 files
 have no `info`, R13 files no case/control frequencies, and a continuous trait none in any
-release, so the sumstats path caches headers per object rather than per config entry for
-catalog-backed entries — the shared union-of-columns merge already served NA for a missing
-column, the per-entry header cache would have misaligned rows.
+release, so the sumstats path caches headers per object rather than per config entry — for
+every entry, not only catalog-backed ones, since a `prefix` is no guarantee of one shape
+either (the R13 MVP meta-analysis prefixes mix 43-, 54- and 65-column files). The shared
+union-of-columns merge already served NA for a missing column; a per-entry header cache
+misaligned rows.
 
 Out of scope, deliberately: the fine-mapping pipeline's full-region `SUSIE.snp.bgz` and
 the FINEMAP outputs, the 99% sets, autoreporting, and any cross-run index (by-variant,
