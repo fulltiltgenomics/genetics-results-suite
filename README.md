@@ -935,7 +935,8 @@ and migrate existing callers to a per-user API key. Reasons: the token expires a
 deployment does not issue it and therefore cannot revoke it for one person; and authorization on it
 rests entirely on the email allow-list (`ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS` from the
 `bearer-auth-allowed` ConfigMap — see [Managing access](#managing-access) below). `GOOGLE_TOKEN_AUDIENCE`
-does **not** narrow that: it defaults to the gcloud CLI's *public* OAuth client id, which anyone's
+does **not** narrow that: its default includes the gcloud CLI's *public* OAuth client id (alongside
+brainzzz's own clients — see [docs/mcp-oauth-onboarding.md](docs/mcp-oauth-onboarding.md)), which anyone's
 `gcloud auth print-identity-token` mints, so it buys cross-*OAuth-client* replay protection and
 nothing more — it rejects a token minted for a different client id (ADC's `764086051850-…`, a
 project-owned client), but not one the same user handed to another service that documents this same
