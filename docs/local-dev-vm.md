@@ -37,7 +37,7 @@ Steps 1-6 are the from-scratch build-out. On a machine where the repos, venvs an
 ./scripts/dev-stack.sh status             # port, health code, and WHICH TREE each pid runs from
 ./scripts/dev-stack.sh down               # stop everything it started
 ./scripts/dev-stack.sh logs chat-api      # tail -f
-ENABLE_PHENOTYPE_REPORT=true ./scripts/dev-stack.sh up mcp-server   # a different /mcp surface
+ENABLE_CREDIBLE_SETS_STATS=true ./scripts/dev-stack.sh up mcp-server   # a different /mcp surface
 ```
 
 Switching back to the main checkouts on `master` is `down` then `up --tree main`, and
@@ -170,7 +170,7 @@ genetics_mcp_server.mcp_server --transport streamable-http` — with the values 
 sets mirrored as `${VAR:-<manifest value>}`; for the tool-surface flags (the `ENABLE_*` flags
 and `SANDBOX_ENABLED`), one the manifest leaves unset is left unset here too, so the code
 default governs cluster and local alike rather than a copy of it drifting in this script. Either way any of it can be overridden for one run, as in the
-`ENABLE_PHENOTYPE_REPORT=true ./scripts/dev-stack.sh up mcp-server` above.
+`ENABLE_CREDIBLE_SETS_STATS=true ./scripts/dev-stack.sh up mcp-server` above.
 Two deliberate differences from the manifest: the port is 8082, and the host is
 `127.0.0.1` rather than `0.0.0.0`, because in the cluster only the gateway can route to the
 pod while on a dev VM `0.0.0.0` would publish the surface to anything that can reach the box.
@@ -184,10 +184,10 @@ present it.
 **There is no single mode variable.** `/mcp` registers every tool the repo defines except a
 hardcoded exclusion list in `mcp_server.py` (the externals, plus `run_analysis` and
 `read_artifact` as the layer-1 control of `docs/code-execution-security.md` §5) and
-`settings.disabled_tools`, which is computed from `ENABLE_PHENOTYPE_REPORT`,
-`ENABLE_CREDIBLE_SETS_STATS`, `ENABLE_LITERATURE_SEARCH`, `ENABLE_SUBAGENTS` and
-`SANDBOX_ENABLED`. Those flags are therefore what selects the surface per run; of them, only
-the first two reach a tool that is not already excluded on this transport.
+`settings.disabled_tools`, which is computed from `ENABLE_CREDIBLE_SETS_STATS`,
+`ENABLE_LITERATURE_SEARCH`, `ENABLE_SUBAGENTS` and `SANDBOX_ENABLED`. Those flags are
+therefore what selects the surface per run; of them, only the first reaches a tool that is not
+already excluded on this transport.
 
 Reading the list needs the MCP `initialize` handshake first — a bare `tools/list` is refused
 — and the response is an SSE frame, not JSON:

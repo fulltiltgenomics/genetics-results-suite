@@ -7,7 +7,7 @@
 #   scripts/dev-stack.sh up --tree main        main checkouts + genetics_results (production)
 #   scripts/dev-stack.sh up --dataset genetics_results
 #   scripts/dev-stack.sh up db-api chat-api    only those services
-#   ENABLE_PHENOTYPE_REPORT=true scripts/dev-stack.sh up mcp-server
+#   ENABLE_CREDIBLE_SETS_STATS=true scripts/dev-stack.sh up mcp-server
 #                                              ... serving a different /mcp tool surface
 #   scripts/dev-stack.sh down [svc...]         stop this suite's servers on those ports
 #   scripts/dev-stack.sh down --force          ... even if the port holder is NOT this suite's
@@ -63,8 +63,8 @@
 #                        START on a remote transport without one, so this script generates
 #                        one into DEV_STACK_RUN_DIR the way it generates the sandbox
 #                        secrets; that file is what a curl to /mcp must present.
-#   ENABLE_PHENOTYPE_REPORT, ENABLE_CREDIBLE_SETS_STATS, ENABLE_LITERATURE_SEARCH,
-#   ENABLE_SUBAGENTS, SANDBOX_ENABLED
+#   ENABLE_CREDIBLE_SETS_STATS, ENABLE_LITERATURE_SEARCH, ENABLE_SUBAGENTS,
+#   SANDBOX_ENABLED
 #                        what the /mcp tool surface is made of. There is no single mode
 #                        variable today: mcp-server registers every tool it has except a
 #                        hardcoded exclusion list and settings.disabled_tools, which these
