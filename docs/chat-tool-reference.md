@@ -69,12 +69,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 68 | the data tools — `api` 46, `general` 22 |
+| `TOOL_DEFINITIONS` | 67 | the data tools — `api` 45, `general` 22 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**74 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 22, `orchestration` 4.
+**73 tool definitions in total** across the four lists: `api` 45, `bigquery` 2, `general` 22, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -145,12 +145,11 @@ existing `disabled_tools` refusal — is refused as a `ToolNotAvailable` `tool_r
 model reads, and the check reads the resolved set rather than re-deriving anything from
 `tool_profile`.
 
-`settings.disabled_tools` (`config/settings.py`) is a *property* derived from six inputs:
+`settings.disabled_tools` (`config/settings.py`) is a *property* derived from five inputs:
 
 | flag / env var | default | removes, when it is off (or, for the key, unset) |
 |---|---|---|
 | `ENABLE_CREDIBLE_SETS_STATS` | `false` | `get_credible_sets_stats` |
-| `ENABLE_PHENOTYPE_REPORT` | `false` | `get_phenotype_report` |
 | `ENABLE_SUBAGENTS` | `false` | `launch_subagents` |
 | `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~2.2 KB of citation, backend-naming and result-reading guidance, because the prompt gate keys on the name; the literature-grading rubric names no tool and stays (section 4a) |
 | `ALPHAGENOME_ENABLED` **and** `ALPHAGENOME_API_KEY` | `false` / unset | `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured` — either one missing withdraws both tools, and the opt-in prompt block with them |
@@ -159,11 +158,11 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 `k8s/deployments/chat-backend.yaml` sets `ENABLE_SUBAGENTS: "false"` and
 `SANDBOX_ENABLED: "true"` explicitly, takes `ALPHAGENOME_ENABLED` from `${ALPHAGENOME_ENABLED}`
 (resolved by `deploy.sh` from the environment or the deployment's tfvars) with the key from the
-`alphagenome-api-key` secret entry (`optional: true`), and sets none of the other three. Read
+`alphagenome-api-key` secret entry (`optional: true`), and sets neither of the other two. Read
 off both daly clusters' chat-backend pods on 2026-10-06
 (`kubectl -n genetics exec deploy/chat-backend -- env`): subagents off, sandbox on, AlphaGenome
 on with a key present, the rest at their defaults — so **in the deployed configuration
-`disabled_tools` is exactly `get_credible_sets_stats`, `get_phenotype_report`,
+`disabled_tools` is exactly `get_credible_sets_stats` and
 `launch_subagents`**, which is also what `genetics-mcp-server/tests/golden/tool_surface.json`
 records under `chat_backend.disabled_tools`. The resolved sets are frozen there too
 (`chat_backend.profiles.<value>.local`): 68 local tools on the no-code surface,
@@ -173,7 +172,7 @@ here.
 ### 2b. The MCP surface (`_mcp_disabled` in `mcp_server.py`; `register_mcp_tools` in `tools/definitions.py`)
 
 `register_mcp_tools()` — in `tools/definitions.py` beside the definitions it
-registers, and imported by `mcp_server.py` — contains **72** handlers, every one decorated
+registers, and imported by `mcp_server.py` — contains **71** handlers, every one decorated
 `@_tool()`. That decorator is `_gate(mcp, disabled_tools, code_execution)`: it decides on the
 handler's own `__name__`, returns a withheld handler undecorated so FastMCP never learns of
 it, and takes a `code_execution` argument that subtracts a
@@ -227,10 +226,10 @@ non-controls would stop the next reader telling which entries are load-bearing.
 
 **Effective `/mcp` tool count with the deployed flags: 55.** `k8s/deployments/mcp-server.yaml`
 sets only `ENABLE_SUBAGENTS`, so on that pod `settings.disabled_tools` already holds
-`run_analysis` and the two AlphaGenome tools alongside `get_credible_sets_stats`,
-`get_phenotype_report` and `launch_subagents`. 72 handlers − 15 of the hardcoded names that
-have handlers (`run_analysis` has none) − `get_credible_sets_stats` − `get_phenotype_report`
-= 55. With both optional flags on it would be 57. The count is now pinned:
+`run_analysis` and the two AlphaGenome tools alongside `get_credible_sets_stats` and
+`launch_subagents`. 71 handlers − 15 of the hardcoded names that have handlers
+(`run_analysis` has none) − `get_credible_sets_stats` = 55. With `ENABLE_CREDIBLE_SETS_STATS`
+on it would be 56. The count is now pinned:
 `tests/golden/tool_surface.json` records the registered set under
 `mcp_server.registered_tools` and `tests/test_tool_surface_golden.py` fails when it moves;
 `tests/test_mcp_server.py` additionally pins the control itself
@@ -264,7 +263,7 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 70 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `False` — the no-code surface | 69 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
 | `True` — the code surface | 22 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 19 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
@@ -394,7 +393,7 @@ Two behaviours worth stating plainly:
   unknown name gets both exactly like every other value.
 - **`disabled` is applied to the resolved surface**, so the feature flags and the env-driven
   disable list subtract from either surface. Under the deployed flags the no-code surface
-  loses `get_credible_sets_stats`, `get_phenotype_report` and (already absent) `launch_subagents`;
+  loses `get_credible_sets_stats` and (already absent) `launch_subagents`;
   the code surface loses `run_analysis` when `SANDBOX_ENABLED=false` (§4a below).
 
 ## 4. System prompt, verbosity, instruction sets and memory
@@ -489,7 +488,7 @@ results-api names on-request releases, so never on daly; HLA / the MHC region; D
 sensitivity / rare CNVs; Protein Annotation (UniProt); Drug and Target Evidence (ChEMBL); Mouse
 Model Evidence (search_mgi)); Subagent
 Orchestration; Response Style; Handling Uncertainty; Out of Scope and Limitations;
-Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology; Phenotype Reports;
+Contextualizing Findings Against Prior Knowledge; Prohibited; Terminology;
 and last the generated `# BigQuery view reference` — one H2 per view, built from
 `schema_docs.schema_reference()` at import time (the same text the sandbox carries at
 `$GENETICS_SCHEMA_DIR`) and never pasted, gated to `run_analysis` without `query_database`.
@@ -497,12 +496,12 @@ and last the generated `# BigQuery view reference` — one H2 per view, built fr
 What each surface actually gets, under the deployed flags (subagents off, sandbox on,
 AlphaGenome on — section 2a) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. The
-unfiltered text is 180,310 chars. Measured 2026-10-06, with the fetcher hosts and on-request
+unfiltered text is 179,603 chars. Measured 2026-10-06, with the fetcher hosts and on-request
 datasets pinned as the header describes:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 68 | 29,558 | Subagent Orchestration and Phenotype Reports, whose tools the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance and the view reference go with it |
+| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 68 | 29,558 | Subagent Orchestration, whose tool the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance and the view reference go with it |
 | `code` | 22 | 171,690 | the above except the script guidance, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "prefer the dedicated API tools" wording, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (138,699 chars of it, measured as `len(schema_docs.schema_reference())`) |
 | `code` with `SANDBOX_ENABLED=false` | 21 | 19,464 | also Choosing How to Get Data, The Database, Credible Set Membership, HLA / the MHC region and Dosage sensitivity — `genetics.sql` inside a script was this surface's only route to the database, so the database-routing blocks go with it |
 
@@ -961,7 +960,6 @@ is verbatim; the full descriptions are in section 8.
 
 - `search_phenotypes`: *"Do NOT use this to find disease associations - use get_credible_sets_by_gene instead."*
 - `search_genes`: *"Use ONLY when you need to verify a gene symbol or find its genomic coordinates. Do NOT use this to find gene associations."*
-- `get_phenotype_report`: *"This is the first line of phenotype-based inquiry and should be called first before calling other tools."* (disabled by default — `ENABLE_PHENOTYPE_REPORT`)
 
 **Batching**
 
@@ -1211,8 +1209,7 @@ are as recorded at the earlier derivation and were not re-read.
    The prompt's "Subagent Orchestration" section and its "the variant_list_analysis skill"
    reference are now emitted only when `launch_subagents` is in the resolved tool list, so
    `ENABLE_SUBAGENTS: "false"` (`k8s/deployments/chat-backend.yaml`) removes both the
-   tool and its guidance. Same mechanism covers "Phenotype Reports" behind
-   `ENABLE_PHENOTYPE_REPORT`. See section 4a.
+   tool and its guidance. See section 4a.
 7. ~~**`read_artifact` is advertised even though its description says it cannot do the thing
    the adjacent tool produces.**~~ FIXED: `read_artifact` (`tools/orchestration.py`) now reads
    an artifact of this user's chat session's recent runs over HTTP from the sandbox. The name is
@@ -2327,22 +2324,6 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 | `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use, and which for BRaVa address an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
 
 `required`: ['resource', 'phenotype']
-
-#### `get_phenotype_report`
-`TOOL_DEFINITIONS` — category `api`
-
-Description as sent to the model:
-
-```text
-Get a detailed markdown report for a phenotype. Returns a markdown report with credible sets and gene evidence summaries in those credible sets. This is the first line of phenotype-based inquiry and should be called first before calling other tools.
-```
-
-| parameter | type | req | default | enum / items / bounds | description |
-|---|---|---|---|---|---|
-| `resource` | `string` | no | `"finngen"` | — | Data resource: 'finngen', 'ukbb', 'open_targets' (default 'finngen') |
-| `phenotype_code` | `string` | yes | — | — | Phenotype code (e.g., 'I9_CHD', 'T2D') |
-
-`required`: ['phenotype_code']
 
 #### `get_credible_sets_stats`
 `TOOL_DEFINITIONS` — category `api`

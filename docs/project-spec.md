@@ -2967,7 +2967,7 @@ execution — and `launch_subagents` reaches neither surface. Generated from tho
 
 | surface | local tools |
 |---|---|
-| no-code (`code_execution=False`) | 70 — every data tool |
+| no-code (`code_execution=False`) | 69 — every data tool |
 | code (`code_execution=True`) | 22 — the 3 code-execution tools, plus the 19 data tools the SDK cannot stand in for |
 
 The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured`, `get_myvariant_annotations`.
