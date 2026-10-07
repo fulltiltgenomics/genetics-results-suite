@@ -423,7 +423,14 @@ export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}
 # user handed to another service documenting this same `gcloud auth print-identity-token` flow, since
 # that token carries the identical aud. The email allow-list is the access control. Override to add
 # service-account clients.
-export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-32555940559.apps.googleusercontent.com}"
+# The brainzzz entries are that app's own Google OAuth clients (local dev, brainzzz-dev): brainzzz
+# forwards its signed-in users' Google id_tokens to /mcp so they never log in to our Keycloak. Unlike
+# the gcloud id, these bind the token to one application. The shared ConfigMap means results-api
+# accepts them too — a deliberate choice, since the same users and allow-list apply.
+GOOGLE_TOKEN_AUDIENCE_DEFAULT="32555940559.apps.googleusercontent.com"
+GOOGLE_TOKEN_AUDIENCE_DEFAULT+=",503680530401-alkldp9h6idk1196kd2hqu82ukpa8cq9.apps.googleusercontent.com"
+GOOGLE_TOKEN_AUDIENCE_DEFAULT+=",503680530401-0q2o9e4tth0208e4l9c7u7v066eku2t6.apps.googleusercontent.com"
+export GOOGLE_TOKEN_AUDIENCE="${GOOGLE_TOKEN_AUDIENCE:-${GOOGLE_TOKEN_AUDIENCE_DEFAULT}}"
 TF_KEYCLOAK_BACKUP_BUCKET=$(terraform output -raw keycloak_backup_bucket 2>/dev/null || true)
 export KEYCLOAK_BACKUP_BUCKET="${KEYCLOAK_BACKUP_BUCKET:-${TF_KEYCLOAK_BACKUP_BUCKET}}"
 TF_APP_NAME=$(terraform output -raw app_name)

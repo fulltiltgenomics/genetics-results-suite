@@ -307,6 +307,27 @@ When you are done, remove the test address from `oauth_allowed_emails` (re-run `
 `keycloak-bind-allowlist.sh`) and `--delete` any throwaway client. A permanently allow-listed
 test identity is a standing hole in the only access control on this path.
 
+## brainzzz users without a Keycloak login
+
+A customer whose users already sign in to *their* app with Google can skip Keycloak entirely: the
+app forwards each user's Google **id_token** as `Authorization: Bearer <id_token>` to `/mcp`. The
+mcp-server's Google id_token path verifies the signature, `email_verified`, that `aud` is listed in
+`GOOGLE_TOKEN_AUDIENCE`, and the email allow-list (step 2 still applies). Onboarding is adding the
+customer's Google OAuth client id(s) to the `GOOGLE_TOKEN_AUDIENCE` default in `scripts/deploy.sh`
+and re-running `deploy.sh`, which re-renders `bearer-auth-allowed` and restarts mcp-server.
+
+brainzzz is set up this way: its local-dev and brainzzz-dev client ids are in that default. What
+the customer must do:
+
+- send the **id_token**, not the Google access token — only the former is a JWT with `aud`/`email`
+- request the `email` scope at their Google sign-in, or the id_token carries no `email` and is refused
+- refresh it before its one-hour expiry; there is no refresh path on our side
+- add their production client id to us before they go live with it
+
+Trade-offs against the Keycloak flow: Google identities only; the token is not one this deployment
+issues, so one person cannot be revoked except via the allow-list; and because `bearer-auth-allowed`
+is shared, results-api accepts the same tokens on its own id_token path.
+
 ## Caveats
 
 - **Realm reimport wipes live-only objects.** Clients created by
