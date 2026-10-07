@@ -203,6 +203,19 @@ request goes out and no longer writes the assistant message at all; secret chats
 no session write nothing. The marker grammar is therefore stated on both ends — the browser's
 `*Marker.ts` files and `render_transcript` — because the two cannot import one module.
 
+Replaying everything is what makes a resumed conversation faithful, and it is also what made
+the long ones expensive: measured over four months of production, tool results were 81% of the
+replayed characters in every session that passed a quarter of the model's window, 4% of sessions
+passed half of it, and the 1.4% that passed 90% took a fifth of all spend. Three things now bound
+that, each at the layer that can see it. chat-backend clears the oldest replayed tool results from
+the model's view once the serialised history passes a budget (`HISTORY_PRUNE_*` in
+genetics-mcp-server's `docs/project-spec.md`), leaving a one-line note that names the tool and
+tells the model to call it again; the stored transcript is untouched. The browser acts on the
+`usage` reading: past 50% of the window it advises a new chat and says why — a bigger context makes
+every answer slower, dearer and less accurate — and past 90% it refuses to send until one is
+started, which is the only hard stop. And every prompt-cache breakpoint asks for the 1-hour TTL,
+since cache writes were half of all model spend under the 5-minute one.
+
 The browser reattaches on its own when a stream ends without `done`, `error` or `cancelled`:
 from the last sequence number seen, with waits of 0, 2, 5, 10, 20 and then 30 seconds three
 times. A 404 hands over to ChatPage, which reloads the session from history.
@@ -2802,9 +2815,10 @@ are unfiled, and the read path answers "no project, no memory" before it ever lo
 the stored bytes back verbatim rather than re-rendering. That matters because block 1 is genuinely
 cold at the start of most sessions: measured 2026-09-09 against production `chat_history.db`
 (`scripts/memory_premise_stats.py` in `../genetics-mcp-server`, excluding `anonymous`/`mcp-tool`),
-inter-session gaps run past the ~5-minute ephemeral cache TTL for about 93% of returns (median gap
+inter-session gaps ran past the then 5-minute ephemeral cache TTL for about 93% of returns (median gap
 47.9h all-time, 61.5h over the last 90 days) — a cache design bought once per session, not once
-per turn, is what fits that distribution. The digest's own steady-state cost came out to roughly
+per turn, is what fits that distribution. Every breakpoint has since moved to the 1-hour TTL,
+which changes nothing about that conclusion: a 48-hour median gap is cold under either. The digest's own steady-state cost came out to roughly
 $0.005/turn, well under the 10%-of-median-turn-cost bar set for reverting the feature on cost
 alone; that baseline came from the BigQuery log sink (`genetics_chat_logs.stdout`,
 `cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`) rather than from
