@@ -136,7 +136,7 @@ Assembled per request when `enable_tools` (request field, default `true`) and
 3. `resolve_proxied_tools()` → the external tools, then the RAG tools, appended
    unconditionally on the surface — whatever `EXTERNAL_MCP_SERVERS` registered, less
    `EXTERNAL_MCP_EXCLUDE_TOOLS`, and whatever `RAG_MCP_SERVER` registered.
-4. The last entry gets `cache_control: {"type": "ephemeral"}`.
+4. The last entry gets `cache_control: {"type": "ephemeral", "ttl": "1h"}` — the 1-hour cache, like every other breakpoint the chat path sends (`_CACHE_CONTROL` in `llm_service.py`; the measurement behind the hour is in genetics-mcp-server's `docs/project-spec.md`, "Two cached system blocks").
 
 The resolved set from this assembly (local + external/RAG names actually put on the
 request) becomes the `advertised_tools` argument `llm_service._execute_tool` requires.
