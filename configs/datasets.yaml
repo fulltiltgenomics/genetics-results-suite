@@ -49,7 +49,7 @@ resources:
 
   open_targets:
     label: "Open Targets Genetics"
-    description: "Open Targets GWAS summary statistics and fine-mapping"
+    description: "Open Targets GWAS summary statistics and fine-mapping, and QTL fine-mapping (GTEx v10, IBDverse)"
     aliases: ["open targets", "OT", "OTG"]
 
   ukbb:
@@ -2775,8 +2775,8 @@ tables:
       zero rows silently.
       COVERAGE IS PARTIAL BY DESIGN. Only datasets that ship a phenotype metadata file
       have rows: FinnGen R14/R12/Kanta/drugs, the FinnGen+UKBB and FinnGen+MVP+UKBB
-      meta-analyses, Open Targets, Genebass, BRaVa, COVID-19 HGI and IIBDGC. QTL datasets
-      (FinnGen_snRNAseq, FinnGen_ATACseq, FinnGen_Olink*, UKB_PPP, every QTD*) have
+      meta-analyses, Open Targets GWAS, Genebass, BRaVa, COVID-19 HGI and IIBDGC. QTL datasets
+      (FinnGen_snRNAseq, FinnGen_ATACseq, FinnGen_Olink*, UKB_PPP, Open_Targets_QTL_*, every QTD*) have
       NO rows — their traits are genes, proteins and peaks, resolved through
       gene_annotations_v and peak_to_gene_v instead. Datasets whose codes are already
       readable (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have no rows either. Use a LEFT
@@ -3591,6 +3591,24 @@ profiles:
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/credible_sets/open_targets/202609/ot_2609_data_studies.json"
         metadata_harmonizer: open_targets
+
+      open_targets_qtl:
+        resource: open_targets
+        dataset: Open_Targets_QTL_26.09
+        version: "26.09"
+        description: >-
+          Open Targets Platform (release 26.09) QTL credible sets from the GTEx v10 (bulk tissue
+          eQTL and sQTL, 48 tissues) and IBDverse (single-cell eQTL in 68 immune and intestinal
+          cell types) projects, SuSiE fine-mapped by Open Targets. Gene expression, exon, transcript and txrevise
+          quantifications are eQTL, leafcutter and majiq splicing sQTL. The release's other QTL
+          projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
+        author: "Open Targets"
+        publication_date: "2026-09-24"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL"]
+        metadata_file: null
+        metadata_harmonizer: null
 
       # --- coloc-only datasets ---
       finngen_gwas_r12:
@@ -4778,6 +4796,24 @@ profiles:
         trait_type: mixed
         metadata_file: "gs://daly-genetics-results/credible_sets/open_targets/202609/ot_2609_data_studies.json"
         metadata_harmonizer: open_targets
+
+      open_targets_qtl:
+        resource: open_targets
+        dataset: Open_Targets_QTL_26.09
+        version: "26.09"
+        description: >-
+          Open Targets Platform (release 26.09) QTL credible sets from the GTEx v10 (bulk tissue
+          eQTL and sQTL, 48 tissues) and IBDverse (single-cell eQTL in 68 immune and intestinal
+          cell types) projects, SuSiE fine-mapped by Open Targets. Gene expression, exon, transcript and txrevise
+          quantifications are eQTL, leafcutter and majiq splicing sQTL. The release's other QTL
+          projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
+        author: "Open Targets"
+        publication_date: "2026-09-24"
+        data_type: mixed
+        trait_type: quantitative
+        qtl_types: ["eQTL", "sQTL"]
+        metadata_file: null
+        metadata_harmonizer: null
 
       # --- coloc-only datasets ---
       finngen_gwas_r12:
