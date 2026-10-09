@@ -3609,10 +3609,8 @@ profiles:
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
         substudy_metadata: true
-        # null until the sub-study file is staged in finngen-commons (genetics-results-suite-a5ns):
-        # build_phenotypes.py opens every non-null metadata_file
-        metadata_file: null
-        metadata_harmonizer: null
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/open_targets_qtl_26.09_substudies.tsv"
+        metadata_harmonizer: open_targets_qtl
 
       # --- coloc-only datasets ---
       finngen_gwas_r12:
