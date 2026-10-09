@@ -380,6 +380,7 @@ scripts/                             build, deploy and verification scripts
   lib/                               shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder
   lint-staged.sh                     block a commit whose staged Python ruff rejects
   monitor/                           the monitoring CronJob's Python package
+  mr-proving-ground.py               the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
   rollout.sh                         single-service image update
   run-sandbox-local.sh               build and run the sandbox image in plain Docker
   supervisor_tests/                  the check groups scripts/test-supervisor.py runs
