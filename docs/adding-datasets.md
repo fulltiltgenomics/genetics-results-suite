@@ -225,6 +225,22 @@ profiles and reload `credible_sets` from it. FinnGen-cohort resources and the ps
 sets keep the FinnGen annotation their munge joins; `credible_sets_v`'s `most_severe`
 description in `configs/datasets.yaml` says which resources carry which.
 
+### LD panels are not datasets
+
+An LD panel served by `GET /ld/{variant}` has no entry in `datasets.yaml`, no BigQuery view and
+no `resource`: it is a per-profile list in genetics-results-api
+`app/config/profiles/<profile>/ld.py`. One entry names the panel, a `file_template` with a
+`{chrom}` placeholder, the chromosome labels the files exist for, the statistics the files
+carry after `chr pos variant1 variant2` (`fields`, a subset of `r`, `r2`, `d_prime` that must
+include `r2`), and the `r2_floor` and `max_distance` the matrices were computed with. The files
+are long-format pair lists, both orderings present, bgzipped and tabix-indexed on the first
+variant's position (`tabix -s1 -b2 -e2`); `gs://daly-genetics-results/ld/finngen/r12/README`
+records how the first one was made. Startup verifies every file an entry names and holds it to
+the exact header the entry declares, so stage the files (and their `.tbi`) before adding the
+entry, and add it to one profile at a time as its bucket gets them. `GET /ld/panels` shows what
+a deployment serves. The suite's `docs/project-spec.md` ("LD: own panels and the upstream
+proxy") describes the route family.
+
 ## 6. BigQuery views (`genetics-results-db`)
 
 Only relevant if the data is loaded into BigQuery (for the agent's raw `query_bigquery`

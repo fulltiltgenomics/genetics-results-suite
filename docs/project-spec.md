@@ -1133,32 +1133,73 @@ plots":
   correlation two overlapping GWAS carry — are defaulted from the data where they can be
   and reported back in every result, and the guidance for the rest is the docstrings the
   stub and the catalogue both carry. `genetics.plots.linemodels` draws a result.
-- **LD is reachable, through a proxy rather than directly.** `GET /api/v1/ld/{variant}` on
-  results-api fronts the FinnGen LD server. The sandbox has no DNS and no internet egress, so
-  `genetics.ld(...)` resolved nothing there and every locuszoom came out uncoloured; the tool
-  layer's two LD methods now take this path instead of calling the LD server themselves, which
-  also puts LD under the same credential and the same per-execution accounting as every other
-  results-api call. See "The LD proxy" below.
+- **LD is reachable, from the suite's own matrices or through a proxy.** `GET /api/v1/ld/{variant}`
+  on results-api serves a panel the profile configures from tabix-indexed pair matrices on
+  the suite's bucket (signed r included), and fronts the FinnGen LD server for any other panel
+  name. The sandbox has no DNS and no internet egress, so `genetics.ld(...)` resolved nothing
+  there and every locuszoom came out uncoloured; the tool layer's two LD methods take this
+  path instead of calling the LD server themselves, which also puts LD under the same
+  credential and the same per-execution accounting as every other results-api call. See
+  "LD: own panels and the upstream proxy" below.
 
-### The LD proxy (`GET /api/v1/ld/{variant}`)
+### LD: own panels and the upstream proxy (`GET /api/v1/ld/...`)
 
-`app/routers/ld.py` and `app/services/ld_service.py` in genetics-results-api. It exists for
-reachability and nothing else: the LD is the upstream's, not ours, and results-api adds no
-interpretation — the upstream's `ld` entries come back under their own field names, trimmed to
-the four this service documents (`variation1`, `variation2`, `r2`, `d_prime`), so the semantics
-stay in the one caller that already knew them (`tools/executor.py`, which keeps its "other
-variant" extraction and its r² sort).
+`app/routers/ld.py`, `app/services/ld_panel_service.py` and `app/services/ld_service.py` in
+genetics-results-api; the panels a profile serves itself are in
+`app/config/profiles/<profile>/ld.py`. One route family, and the `panel` name decides the
+source: a name the profile configures is read from the suite's own matrices, anything else is
+relayed to the FinnGen LD server. `LD_DEFAULT_PANEL` still names the upstream's `sisu42`, so a
+request that names no panel behaves as it always did.
 
-**It is results-api's first live third-party dependency on the request path**, and that is the
+**Own panels.** Long-format pair matrices on the suite's bucket: one tabix-indexed file per
+chromosome, one row per *ordered* pair within the panel's distance cap at r² at or above its
+floor, both orderings present, indexed on the first variant's position. A variant's partners
+are therefore one point query at its position and a pair is that query filtered to one row,
+read by the same in-process range engine as every other data product. The first panel is
+`finngen_r12` on the daly profile: FinnGen R12 **in-sample** LD (plink2 `--r-unphased` over the
+520,210 release samples, 3 Mb, r² ≥ 0.01, signed `r` and `r2`) — not a reference panel, and
+named so it cannot be mistaken for `sisu42`. Measured: ~0.2 s per variant or pair, a median of
+~700 and at most ~5,300 rows per variant; a *region* is ~10 million rows per Mb, which is why
+no region route exists. The finngen profile configures no panel until the files are staged in
+finngen-commons, because startup verifies every configured file and would refuse to start.
+
+What the route family promises, in `app/routers/ld.py`:
+
+- `GET /ld/panels` lists the own panels with their `fields`, `r2_floor` and `max_distance`;
+  every LD response repeats those three (null for the upstream, which does not state its own),
+  so a caller can tell "independent" from "not computed";
+- `fields=` picks any subset of `r`, `r2`, `d_prime`; asking a panel for a statistic it lacks
+  is a 422 naming what it carries (the upstream carries `r2` and `d_prime`; a panel's set is
+  its config, and startup holds every one of its files to the exact header that config
+  declares, since statistics are read by column offset);
+- `GET /ld/{variant}/{other}` answers one pair. On an own panel an empty `ld` means *below the
+  floor*: both variants were found (the other's block is read for exactly that), so the pair
+  is independent rather than unknown. A pair on two chromosomes, or further apart than the
+  cap, is 422 before any read. A variant against itself is 1 by definition. On the upstream a
+  pair is a window query that just reaches the other variant, filtered to it, so an empty
+  answer there means below the threshold *or* absent;
+- an id is matched as the caller oriented it, as the upstream does: a swapped ref/alt is
+  **404 naming the ids the panel has at that position**, never a silently negated r, because
+  the sign of r is the one thing a correlated-instrument estimator cannot recover afterwards;
+- the window keeps the upstream's meaning (a total span centred on the query) and bounds, so
+  the same call works against either source.
+
+**The upstream proxy** exists for reachability and nothing else: the LD is the upstream's, not
+ours, and results-api adds no interpretation — the upstream's `ld` entries come back under
+their own field names, trimmed to the four this service documents (`variation1`,
+`variation2`, `r2`, `d_prime`), so the semantics stay in the one caller that already knew them
+(`tools/executor.py`, which keeps its "other variant" extraction and its r² sort).
+
+**It is results-api's one live third-party dependency on the request path**, and that is the
 cost being accepted for the reachability. What bounds it:
 
 - the query variant is shape-checked (`chr:pos:ref:alt`) and the panel is shape-checked as a
   name, so no caller-supplied string reaches the outbound query unshaped. The panel is
-  deliberately **not** membership-checked: the set is the upstream's and a list here would go
-  stale silently, so an unknown-but-well-formed name is the upstream's 4xx to give. That 4xx
-  names the upstream's own panels, and the proxy relays that list (name-shaped tokens only) as
-  a **422**, so a script that guessed learns the real names on the first refusal rather than
-  the thirtieth;
+  deliberately **not** membership-checked against the upstream: the set is the upstream's and
+  a list here would go stale silently, so an unknown-but-well-formed name is the upstream's
+  4xx to give. That 4xx names the upstream's own panels, and the proxy relays that list
+  (name-shaped tokens only) as a **422**, so a script that guessed learns the real names on
+  the first refusal rather than the thirtieth;
 - `window` is refused outside `LD_MIN_WINDOW..LD_MAX_WINDOW` rather than clamped — a silently
   narrowed window returns fewer variants and reads as a sparse locus rather than as a limit.
   The defaults are the upstream's own bounds, so the refusal is a 422 naming the limit
