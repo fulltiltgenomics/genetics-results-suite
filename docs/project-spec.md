@@ -1188,7 +1188,19 @@ What the route family promises, in `app/routers/ld.py`:
 ours, and results-api adds no interpretation — the upstream's `ld` entries come back under
 their own field names, trimmed to the four this service documents (`variation1`,
 `variation2`, `r2`, `d_prime`), so the semantics stay in the one caller that already knew them
-(`tools/executor.py`, which keeps its "other variant" extraction and its r² sort).
+(`tools/executor.py`, which keeps its "other variant" extraction and its r² sort). The
+upstream pair is asked as a window of twice the distance plus a 1 Mb margin, because the
+upstream's right-hand reach was measured to fall short of half its window; that margin is
+what makes 2 Mb the furthest an upstream pair can be apart.
+
+**What the SDK and the tool layer expose** (genetics-mcp-server `sdk/client.py`,
+`tools/executor.py`): `genetics.ld(variant[, other], panel=, fields=)` passes the panel and
+the field subset through and frames whatever statistics come back, so signed `r` reaches a
+script by naming `panel="finngen_r12"`; `genetics.ld_panels()` is `GET /ld/panels`; the pair
+form uses the pair route, so a below-floor pair on an own panel comes back `in_ld` False with
+a message saying independent rather than unknown. The executor no longer caps a pair's
+distance itself: the cap is the panel's and results-api's refusal is relayed. A k-variant r
+matrix is k calls; there is no matrix route.
 
 **It is results-api's one live third-party dependency on the request path**, and that is the
 cost being accepted for the reachability. What bounds it:
