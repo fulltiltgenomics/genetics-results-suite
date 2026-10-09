@@ -479,6 +479,13 @@ widening of the sandbox's egress — the NetworkPolicy is untouched, no DNS rule
 `sandbox-policy.yaml`'s "no ipBlock of any kind" still holds. The sandbox talks to
 results-api, as it already did for summary statistics.
 
+The delegation is only for panels results-api does not hold itself. A panel the profile
+configures (`finngen_r12` on daly: tabix-indexed pair matrices on the suite's own bucket, see
+"LD: own panels and the upstream proxy" in `docs/project-spec.md`) is read like any other data
+product — a GCS range read under the workload identity, no outbound call, no third party — so
+`panel=finngen_r12` has none of the exposure listed below, and the exfiltration channel is only
+reachable by naming a panel results-api does not have.
+
 What bounds the delegation, all in `app/routers/ld.py` and `app/services/ld_service.py`:
 
 - the caller controls **three** values and each is shape-checked before the outbound request:
