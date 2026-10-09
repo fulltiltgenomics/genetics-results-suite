@@ -431,6 +431,9 @@ LAYOUT = {
                                                  "linemodels fixture, the fetcher's "
                                                  "refusals, and delivery into a sandbox "
                                                  "execution; the feature's acceptance test",
+    "scripts/mr-proving-ground.py": "the genetics.mr stack preconditions, replication "
+                                    "fixtures and kill-criterion measurements against the "
+                                    "local stack (docs/local-dev-vm.md)",
     "scripts/chat-memory-proving-ground.py": "staging recipe and check runner for the "
                                              "per-project chat memory feature; `check all` "
                                              "or one numbered check, each PASS/FAIL with its "
