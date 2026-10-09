@@ -96,6 +96,8 @@ In `genetics-results-suite/configs/datasets.yaml`:
    `data_type`, `trait_type`. Optional: `n_samples`/`n_cases`/`n_controls`/`n_phenotypes`,
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
    `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped),
+   `cohorts: [token, ...]` (the sample collections that contributed, for the MR sample-overlap
+   statement; leave it out when the entry does not state its provenance),
    `collection: true` + `subdataset_id_field` (for large sub-study collections),
    `substudy_metadata: true` (a metadata file of sub-studies that feeds only the dataset's
    sample-size stats).
