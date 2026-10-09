@@ -326,6 +326,8 @@ profiles:
                                          # absent from default search and the /datasets catalogue
         collection: boolean              # true if this is a collection of sub-studies
         subdataset_id_field: string      # field identifying sub-studies (when collection=true)
+        substudy_metadata: boolean       # true: metadata_file lists the dataset's sub-studies
+                                         # (one row per results file), not phenotypes; see below
         qtl_types: [string]              # QTL types in collection (e.g. ["eQTL", "sQTL"])
         phenotypes:                      # inline phenotype list (small fixed-phenotype datasets)
           - phenotype_code: string
@@ -334,6 +336,18 @@ profiles:
             n_controls: integer
             n_samples: integer
 ```
+
+### Field details for `substudy_metadata`
+
+For a dataset that is one results-view `dataset` value but many results-api files, whose
+`metadata_file` describes those files rather than its traits (`open_targets_qtl`: one row
+per project x tissue/cell type x quantification, with its sample size). results-api reads
+the file only for the dataset's own `/v1/datasets` stats (`n_subdatasets`,
+`n_samples_median`, `n_samples_range`), and leaves it out of the resource's phenotype
+metadata: the search index, `/resource_metadata` and `/trait_name_mapping`, which would
+otherwise offer each file as a phenotype of the resource. `build_phenotypes.py` has no
+harmonizer for it, so it adds no `phenotypes_v` rows either. Unlike `collection`, it gives
+the sub-studies no `datasets_v` rows: they are not `dataset` values of any results view.
 
 ### Field details for `on_request`
 

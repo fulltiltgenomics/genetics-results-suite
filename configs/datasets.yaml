@@ -3600,13 +3600,17 @@ profiles:
           Open Targets Platform (release 26.09) QTL credible sets from the GTEx v10 (bulk tissue
           eQTL and sQTL, 48 tissues) and IBDverse (single-cell eQTL in 68 immune and intestinal
           cell types) projects, SuSiE fine-mapped by Open Targets. Gene expression, exon, transcript and txrevise
-          quantifications are eQTL, leafcutter and majiq splicing sQTL. The release's other QTL
-          projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
+          quantifications are eQTL, leafcutter and majiq splicing sQTL. Sample sizes are per
+          tissue or cell type: 106-871 samples in GTEx v10, 79-359 in IBDverse. The release's other
+          QTL projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
         author: "Open Targets"
         publication_date: "2026-09-24"
         data_type: mixed
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
+        substudy_metadata: true
+        # null until the sub-study file is staged in finngen-commons (genetics-results-suite-a5ns):
+        # build_phenotypes.py opens every non-null metadata_file
         metadata_file: null
         metadata_harmonizer: null
 
@@ -4805,15 +4809,17 @@ profiles:
           Open Targets Platform (release 26.09) QTL credible sets from the GTEx v10 (bulk tissue
           eQTL and sQTL, 48 tissues) and IBDverse (single-cell eQTL in 68 immune and intestinal
           cell types) projects, SuSiE fine-mapped by Open Targets. Gene expression, exon, transcript and txrevise
-          quantifications are eQTL, leafcutter and majiq splicing sQTL. The release's other QTL
-          projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
+          quantifications are eQTL, leafcutter and majiq splicing sQTL. Sample sizes are per
+          tissue or cell type: 106-871 samples in GTEx v10, 79-359 in IBDverse. The release's other
+          QTL projects are eQTL Catalogue studies and come from the eqtl_catalogue dataset.
         author: "Open Targets"
         publication_date: "2026-09-24"
         data_type: mixed
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
-        metadata_file: null
-        metadata_harmonizer: null
+        substudy_metadata: true
+        metadata_file: "gs://daly-genetics-results/mapping_files/open_targets_qtl_26.09_substudies.tsv"
+        metadata_harmonizer: open_targets_qtl
 
       # --- coloc-only datasets ---
       finngen_gwas_r12:

@@ -96,7 +96,9 @@ In `genetics-results-suite/configs/datasets.yaml`:
    `data_type`, `trait_type`. Optional: `n_samples`/`n_cases`/`n_controls`/`n_phenotypes`,
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
    `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped),
-   `collection: true` + `subdataset_id_field` (for large sub-study collections).
+   `collection: true` + `subdataset_id_field` (for large sub-study collections),
+   `substudy_metadata: true` (a metadata file of sub-studies that feeds only the dataset's
+   sample-size stats).
    See `docs/datasets-yaml-schema.md` for the full field reference and enums.
 3. **(If the data goes into BigQuery)** add a `dataset_to_resource_rules` entry mapping the
    BQ `dataset` column value to the resource, unless the default `* → LOWER(dataset)`
