@@ -37,7 +37,7 @@ be installed into a sandbox image on its own.
 
 AN EMPTY RESULT MAY HAVE NO COLUMNS (genetics-results-suite-6uk). The functions backed by
 results-api rather than BigQuery — exome, gene_burden, hla(phenotype=...), summary_stats,
-ld, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
+ld, ld_panels, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
 `[]` with no schema when nothing matches, so the DataFrame comes back 0x0 and `df.filter(pl.col("beta")
 > 0)` raises ColumnNotFoundError instead of yielding an empty frame. Check `df.is_empty()`
 (or `df.height == 0`) before naming a column, rather than assuming the shape of an empty
@@ -437,16 +437,40 @@ def ld(
     window: int | None = None,
     r2_threshold: float | None = None,
     panel: str = 'sisu42',
+    fields: str | list[str] | None = None,
 ) -> pl.DataFrame:
-    """LD from the FinnGen LD server, proxied rather than called directly.
+    """LD through results-api: the suite's own panels, or the FinnGen LD server proxied.
 
-    With `other`, one row for that pair; without it, every variant in LD above the
-    threshold. Defaults differ per shape and match the tool layer (0.1 for a named
-    pair, 0.6 for a neighbourhood scan).
+    With `other`, one row for that pair (`variant1`, `variant2`, `in_ld`, the statistics,
+    `panel`); without it, one row per variant in LD above the threshold (`variant` and
+    the statistics), strongest first. Defaults differ per shape and match the tool layer
+    (0.1 for a named pair, 0.6 for a neighbourhood scan); pass `r2_threshold=0` to get a
+    pair whenever the panel holds it.
+
+    WHICH STATISTICS COME BACK depends on the panel, and `ld_panels()` says which panels
+    this deployment serves. The LD server's panels (`sisu42`, the default) carry `r2` and
+    `d_prime`. `finngen_r12` — FinnGen R12 in-sample LD from the suite's own matrices, where
+    configured — carries SIGNED `r` and `r2`, for the alt alleles as spelled in the ids, for
+    every pair within 3 Mb at r2 >= 0.01. It is the only source of r, which a correlated-
+    instrument estimator needs and r2 cannot give; a swapped ref/alt is an error naming the
+    panel's spelling, never a silently negated r. `fields` picks a subset ("r", or
+    ["r", "r2"]); asking a panel for a statistic it lacks raises, naming what it carries.
+
+    On `finngen_r12` an empty pair answer (`in_ld` False) means both variants are in the
+    panel and the pair is below the floor — independent, not unknown — because a variant
+    the panel lacks raises instead. On the LD server the two cannot be told apart.
 
     The proxy is what makes this callable from a sandbox script at all: the LD server is
     on the public internet and the sandbox has no DNS and no internet egress, so a direct
     call resolves nothing. A script does not have to know or do anything about that.
+    """
+    ...
+
+def ld_panels() -> pl.DataFrame:
+    """The LD panels this deployment serves from its own matrices, one row each:
+    `panel`, `fields` (the statistics it carries), `r2_floor`, `max_distance`,
+    `n_samples`, `description`. Any other panel name goes to the FinnGen LD server,
+    which carries r2 and D' only. Empty where no own panel is configured.
     """
     ...
 

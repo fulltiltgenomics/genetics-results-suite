@@ -2386,15 +2386,16 @@ Get all genes in a genomic region. Returns genes overlapping the specified coord
 Description as sent to the model:
 
 ```text
-Get linkage disequilibrium (LD) statistics between two specific variants. Returns r2 and D' values from the FinnGen reference panel. Both variants must be on the same chromosome and within 2 Mb of each other.
+Get linkage disequilibrium (LD) statistics between two specific variants. The FinnGen LD server panels (sisu42, sisu4, sisu3) give r2 and D'; the 'finngen_r12' panel, FinnGen R12 in-sample LD served from the suite's own matrices where configured, gives signed r and r2 for the alt alleles as spelled in the two ids, down to r2 0.01 within 3 Mb. Both variants must be on the same chromosome and within the panel's reach (2 Mb on the LD server, 3 Mb on finngen_r12); a pair further apart is refused naming the reach. On finngen_r12 an empty answer means both variants are in the panel and the pair is below the floor, i.e. independent rather than unknown.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant1` | `string` | yes | — | — | First variant ID in format chr:pos:ref:alt (e.g., '6:44693011:A:G') |
 | `variant2` | `string` | yes | — | — | Second variant ID in format chr:pos:ref:alt (e.g., '6:44682355:C:G') |
-| `r2_threshold` | `number` | no | `0.1` | — | Minimum r2 threshold to consider variants in LD (default 0.1) |
-| `panel` | `string` | no | `"sisu42"` | enum: `sisu3`, `sisu4`, `sisu42` | LD reference panel: 'sisu42' (latest, freeze 10+), 'sisu4', or 'sisu3' |
+| `r2_threshold` | `number` | no | `0.1` | — | Minimum r2 threshold to consider variants in LD (default 0.1); 0 returns the pair whenever the panel holds it |
+| `panel` | `string` | no | `"sisu42"` | enum: `sisu42`, `sisu4`, `sisu3`, `finngen_r12` | LD panel: 'sisu42' (FinnGen LD server, latest reference panel, r2 and D'), 'sisu4', 'sisu3', or 'finngen_r12' (FinnGen R12 in-sample LD with signed r and r2; the only panel with r, available where the deployment serves it) |
+| `fields` | `array` | no | — | items: `r`, `r2`, `d_prime` | Statistics to return on each entry, any of r, r2, d_prime; default every statistic the panel carries. Asking for one the panel lacks is refused naming what it has — r needs panel 'finngen_r12'. |
 
 `required`: ['variant1', 'variant2']
 
@@ -2404,7 +2405,7 @@ Get linkage disequilibrium (LD) statistics between two specific variants. Return
 Description as sent to the model:
 
 ```text
-Get all variants in linkage disequilibrium (LD) with a given variant. Returns variants within the specified window that exceed the r2 threshold, useful for finding proxy variants or understanding LD structure.
+Get all variants in linkage disequilibrium (LD) with a given variant. Returns variants within the specified window that exceed the r2 threshold, useful for finding proxy variants or understanding LD structure. The FinnGen LD server panels give r2 and D'; the 'finngen_r12' panel (FinnGen R12 in-sample LD, where configured) gives signed r and r2 down to r2 0.01 within 3 Mb.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2412,7 +2413,8 @@ Get all variants in linkage disequilibrium (LD) with a given variant. Returns va
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '6:44693011:A:G') |
 | `window` | `integer` | no | `1500000` | — | Window size in base pairs around the variant (default 1500000) |
 | `r2_threshold` | `number` | no | `0.6` | — | Minimum r2 threshold to return variants (default 0.6) |
-| `panel` | `string` | no | `"sisu42"` | enum: `sisu3`, `sisu4`, `sisu42` | LD reference panel: 'sisu42' (latest, freeze 10+), 'sisu4', or 'sisu3' |
+| `panel` | `string` | no | `"sisu42"` | enum: `sisu42`, `sisu4`, `sisu3`, `finngen_r12` | LD panel: 'sisu42' (FinnGen LD server, latest reference panel, r2 and D'), 'sisu4', 'sisu3', or 'finngen_r12' (FinnGen R12 in-sample LD with signed r and r2; the only panel with r, available where the deployment serves it) |
+| `fields` | `array` | no | — | items: `r`, `r2`, `d_prime` | Statistics to return on each entry, any of r, r2, d_prime; default every statistic the panel carries. Asking for one the panel lacks is refused naming what it has — r needs panel 'finngen_r12'. |
 
 `required`: ['variant']
 
