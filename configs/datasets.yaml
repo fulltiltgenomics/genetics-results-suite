@@ -3154,6 +3154,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-13"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: binary
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
@@ -3200,6 +3201,7 @@ profiles:
         author: "FinnGen sandbox users"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: null
         metadata_harmonizer: null
@@ -3229,6 +3231,7 @@ profiles:
         author: "FinnGen sandbox users"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: null
         metadata_harmonizer: null
@@ -3243,6 +3246,7 @@ profiles:
         author: "FinnGen sandbox users"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: null
         metadata_harmonizer: null
@@ -3268,6 +3272,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-29"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_kanta_pheno_202605.json"
         metadata_harmonizer: finngen_kanta
@@ -3295,6 +3300,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2024-10-01"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 459553
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_drugs_pheno.json"
@@ -3315,6 +3321,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, mvp, ukb]
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
         metadata_harmonizer: finngen_r13
@@ -3335,6 +3342,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, mvp, ukb]
         trait_type: quantitative
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_labs.json"
         metadata_harmonizer: finngen_r13
@@ -3356,6 +3364,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, ukb]
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_nonlabs.json"
         metadata_harmonizer: finngen_r13
@@ -3376,6 +3385,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, ukb]
         trait_type: quantitative
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_labs.json"
         metadata_harmonizer: finngen_r13
@@ -3395,6 +3405,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-03-20"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 3561
         metadata_file: null
@@ -3411,6 +3422,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-04"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 4118
         metadata_file: null
@@ -3428,6 +3440,7 @@ profiles:
         author: "FinnGen Consortium / UKB-PPP"
         publication_date: "2026-06"
         data_type: pqtl
+        cohorts: [finngen, ukb]
         trait_type: quantitative
         n_samples: 48703
         metadata_file: null
@@ -3443,6 +3456,7 @@ profiles:
         author: "UKB-PPP (FinnGen analysis)"
         publication_date: "2024-04-12"
         data_type: pqtl
+        cohorts: [ukb]
         trait_type: quantitative
         n_samples: 42853
         metadata_file: null
@@ -3466,6 +3480,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-15"
         data_type: eqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1108
         metadata_file: null
@@ -3489,6 +3504,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-15"
         data_type: caqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1108
         metadata_file: null
@@ -3510,6 +3526,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
+        cohorts: [decode]
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
@@ -3529,6 +3546,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
+        cohorts: [decode]
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
@@ -3550,6 +3568,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2021-12-02"
         data_type: pqtl
+        cohorts: [decode]
         trait_type: quantitative
         n_samples: 35559
         n_phenotypes: 4808
@@ -3606,6 +3625,7 @@ profiles:
         author: "Open Targets"
         publication_date: "2026-09-24"
         data_type: mixed
+        cohorts: [gtex, ibdverse]
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
         substudy_metadata: true
@@ -3624,6 +3644,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: binary
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
@@ -3640,6 +3661,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-03-10"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_kanta_pheno_202503.json"
         metadata_harmonizer: finngen_kanta
@@ -3669,6 +3691,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2023-10-11"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1000
         metadata_file: null
@@ -3682,6 +3705,7 @@ profiles:
         author: "FinnLiver"
         publication_date: "2022-07-01"
         data_type: mixed
+        cohorts: [finnliver]
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
         n_samples: 131
@@ -3698,6 +3722,7 @@ profiles:
         author: "GeneRisk"
         publication_date: "2022-02-07"
         data_type: gwas
+        cohorts: [generisk]
         trait_type: mixed
         n_samples: 7632
         n_phenotypes: 186
@@ -3714,6 +3739,7 @@ profiles:
         author: "INTERVAL"
         publication_date: "2018-06-06"
         data_type: pqtl
+        cohorts: [interval]
         trait_type: quantitative
         n_samples: 3301
         metadata_file: null
@@ -3729,6 +3755,7 @@ profiles:
         author: "Masahiro Kanai"
         publication_date: "2021-09-05"
         data_type: gwas
+        cohorts: [ukb]
         trait_type: mixed
         n_samples: 361194
         n_phenotypes: 119
@@ -4235,6 +4262,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 161405
         n_cases: 67390
@@ -4268,6 +4296,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "2022-04-08"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 161405
         n_cases: 67390
@@ -4294,6 +4323,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 935658
         n_cases: 67948
@@ -4321,6 +4351,7 @@ profiles:
         author: "GP2"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [gp2]
         trait_type: binary
         n_samples: 1809941
         n_cases: 63555
@@ -4347,6 +4378,7 @@ profiles:
         author: "IIBDGC"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [iibdgc]
         trait_type: binary
         n_phenotypes: 3
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/ibd_gwas_pheno.json"
@@ -4382,6 +4414,7 @@ profiles:
         author: "COVID-19 Host Genetics Initiative"
         publication_date: "2026-05-26"
         data_type: gwas
+        cohorts: [covid_hgi]
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/covid_hgi_pheno.json"
@@ -4410,6 +4443,9 @@ profiles:
         author: "Tambets et al. (Estonian Biobank, UK Biobank)"
         publication_date: "2026-05-20"
         data_type: metaboqtl
+        # the meta-analysis is EstBB+UKB but the fine-mapping sample is UKB EUR only; the token covers the
+        # published association rows (genome-wide significant leads), which come from the meta-analysis
+        cohorts: [estbb, ukb]
         trait_type: quantitative
         n_samples: 413897
         n_phenotypes: 249
@@ -4429,6 +4465,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-13"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: binary
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
@@ -4475,6 +4512,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-29"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_kanta_pheno_202605.json"
         metadata_harmonizer: finngen_kanta
@@ -4502,6 +4540,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2024-10-01"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 459553
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r12_drugs_pheno.json"
@@ -4522,6 +4561,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, mvp, ukb]
         trait_type: mixed
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
         metadata_harmonizer: finngen_r13
@@ -4542,6 +4582,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, mvp, ukb]
         trait_type: quantitative
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_mvp_ukbb_labs.json"
         metadata_harmonizer: finngen_r13
@@ -4563,6 +4604,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, ukb]
         trait_type: mixed
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_ukbb_nonlabs.json"
         metadata_harmonizer: finngen_r13
@@ -4583,6 +4625,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-19"
         data_type: gwas
+        cohorts: [finngen, ukb]
         trait_type: quantitative
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r13_ukbb_labs.json"
         metadata_harmonizer: finngen_r13
@@ -4602,6 +4645,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-03-20"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 3561
         metadata_file: null
@@ -4618,6 +4662,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2026-05-04"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 4118
         metadata_file: null
@@ -4635,6 +4680,7 @@ profiles:
         author: "FinnGen Consortium / UKB-PPP"
         publication_date: "2026-06"
         data_type: pqtl
+        cohorts: [finngen, ukb]
         trait_type: quantitative
         n_samples: 48703
         metadata_file: null
@@ -4650,6 +4696,7 @@ profiles:
         author: "UKB-PPP (FinnGen analysis)"
         publication_date: "2024-04-12"
         data_type: pqtl
+        cohorts: [ukb]
         trait_type: quantitative
         n_samples: 42853
         metadata_file: null
@@ -4673,6 +4720,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-15"
         data_type: eqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1108
         metadata_file: null
@@ -4696,6 +4744,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-12-15"
         data_type: caqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1108
         metadata_file: null
@@ -4717,6 +4766,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
+        cohorts: [decode]
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
@@ -4736,6 +4786,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2024-07-24"
         data_type: asmqtl
+        cohorts: [decode]
         trait_type: quantitative
         metadata_file: null
         metadata_harmonizer: null
@@ -4757,6 +4808,7 @@ profiles:
         author: "deCODE Genetics"
         publication_date: "2021-12-02"
         data_type: pqtl
+        cohorts: [decode]
         trait_type: quantitative
         n_samples: 35559
         n_phenotypes: 4808
@@ -4813,6 +4865,7 @@ profiles:
         author: "Open Targets"
         publication_date: "2026-09-24"
         data_type: mixed
+        cohorts: [gtex, ibdverse]
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
         substudy_metadata: true
@@ -4831,6 +4884,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: binary
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
@@ -4847,6 +4901,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2025-03-10"
         data_type: gwas
+        cohorts: [finngen]
         trait_type: mixed
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_kanta_pheno_202503.json"
         metadata_harmonizer: finngen_kanta
@@ -4876,6 +4931,7 @@ profiles:
         author: "FinnGen Consortium"
         publication_date: "2023-10-11"
         data_type: pqtl
+        cohorts: [finngen]
         trait_type: quantitative
         n_samples: 1000
         metadata_file: null
@@ -4889,6 +4945,7 @@ profiles:
         author: "FinnLiver"
         publication_date: "2022-07-01"
         data_type: mixed
+        cohorts: [finnliver]
         trait_type: quantitative
         qtl_types: ["eQTL", "sQTL"]
         n_samples: 131
@@ -4905,6 +4962,7 @@ profiles:
         author: "GeneRisk"
         publication_date: "2022-02-07"
         data_type: gwas
+        cohorts: [generisk]
         trait_type: mixed
         n_samples: 7632
         n_phenotypes: 186
@@ -4921,6 +4979,7 @@ profiles:
         author: "INTERVAL"
         publication_date: "2018-06-06"
         data_type: pqtl
+        cohorts: [interval]
         trait_type: quantitative
         n_samples: 3301
         metadata_file: null
@@ -4936,6 +4995,7 @@ profiles:
         author: "Masahiro Kanai"
         publication_date: "2021-09-05"
         data_type: gwas
+        cohorts: [ukb]
         trait_type: mixed
         n_samples: 361194
         n_phenotypes: 119
@@ -5451,6 +5511,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 161405
         n_cases: 67390
@@ -5484,6 +5545,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "2022-04-08"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 161405
         n_cases: 67390
@@ -5510,6 +5572,7 @@ profiles:
         author: "Psychiatric Genomics Consortium"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [pgc]
         trait_type: binary
         n_samples: 935658
         n_cases: 67948
@@ -5537,6 +5600,7 @@ profiles:
         author: "GP2"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [gp2]
         trait_type: binary
         n_samples: 1809941
         n_cases: 63555
@@ -5563,6 +5627,7 @@ profiles:
         author: "IIBDGC"
         publication_date: "NA"
         data_type: gwas
+        cohorts: [iibdgc]
         trait_type: binary
         n_phenotypes: 3
         metadata_file: "gs://daly-genetics-results/mapping_files/ibd_gwas_pheno.json"
@@ -5598,6 +5663,7 @@ profiles:
         author: "COVID-19 Host Genetics Initiative"
         publication_date: "2026-05-26"
         data_type: gwas
+        cohorts: [covid_hgi]
         trait_type: binary
         n_phenotypes: 4
         metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
@@ -5626,6 +5692,9 @@ profiles:
         author: "Tambets et al. (Estonian Biobank, UK Biobank)"
         publication_date: "2026-05-20"
         data_type: metaboqtl
+        # the meta-analysis is EstBB+UKB but the fine-mapping sample is UKB EUR only; the token covers the
+        # published association rows (genome-wide significant leads), which come from the meta-analysis
+        cohorts: [estbb, ukb]
         trait_type: quantitative
         n_samples: 413897
         n_phenotypes: 249

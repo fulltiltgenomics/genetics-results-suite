@@ -222,6 +222,33 @@ Rules:
 **Consumer**: `scripts/gen-sandbox-docs.py` (the sandbox schema markdown). db-api takes its
 `/schema` types from the live BigQuery job schema and ignores this block.
 
+### Field details for `cohorts`
+
+An optional list of short lowercase tokens, one per sample collection whose individuals
+contributed to the dataset (`[finngen]`, `[ukb]`, `[decode]`, `[estbb, ukb]`). A meta-analysis
+lists every collection it pools. It surfaces unchanged in `GET /v1/datasets` and in
+`genetics.datasets()` (emitted only when set, so read it with `.get`).
+
+- **Semantics for readers.** A token names a sample *collection*, not a sample set, so the
+  registry can establish only that two datasets draw on the same collection(s); the overlap
+  fraction is not recorded. The MR module intersects the two lists: a non-empty intersection
+  means overlapping samples from the named collection(s), fraction unknown; equal lists mean
+  the same collection(s), still with unknown fraction (never one-sample MR: `ukbb_pqtl` and
+  `ukbb_finucane` are both `[ukb]` with different sample sets). A list absent on either side
+  means *unknown*, not "no overlap". Disjoint lists do not establish independent samples (see
+  below). The statement is reported alongside the result and is never used to refuse an
+  analysis.
+- **Absence of a token is not evidence of absence.** A list records what the entry itself
+  documents. Consortium datasets (`pgc`, `gp2`, `covid_hgi`, `iibdgc`) carry one token naming
+  the consortium because their entries do not say whether FinnGen or UK Biobank individuals
+  are among the cohorts, so they can overlap with a dataset whose list shares no token.
+- Entries whose provenance the entry does not state (the eQTL Catalogue collection, the
+  Open Targets GWAS collection, `finngen_nmr`) leave the field out. The field is set on the
+  association-result data types the MR module consumes (`gwas`, `pqtl`, `eqtl`, `caqtl`,
+  `metaboqtl`, `asmqtl`, `mixed`) whose entry states its provenance, and left out elsewhere
+  (`hla`, exome, gene-based and annotation entries).
+- Tokens are free-form; keep one spelling per collection across entries.
+
 ### Field details for `tables.<table>.categorical_columns`
 
 The value for each categorical column entry controls how distinct values are fetched:
@@ -322,6 +349,9 @@ profiles:
         n_controls: integer              # control count (binary traits)
         n_phenotypes: integer            # number of phenotypes
         pseudo_credible_sets: boolean    # true if credible sets are pseudo (not fine-mapped)
+        cohorts: [string]                # lowercase tokens naming the sample collections whose
+                                         # individuals contributed (finngen, ukb, decode, ...);
+                                         # see "Field details for `cohorts`" below
         on_request: boolean              # true: served only when a request names the resource;
                                          # absent from default search and the /datasets catalogue
         collection: boolean              # true if this is a collection of sub-studies
