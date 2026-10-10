@@ -24,10 +24,18 @@ did not measure rather than looking greener than it is.
   d13       Zhang's deCODE replication (Supplementary Data 13): deCODE pseudo credible sets,
             whose maf is NULL, so the floor reads the annotation AF (FinnGen, else gnomAD
             AF_nfe), through IIBDGC IBD, ruled like b.
-  c         LDL-C -> I9_CHD (OR 1.3-1.7 per SD) and the PCSK9 and IL6R cis anchors
-            (protective per SD on CHD).
+  c         published anchors through genetics.mr.run(): LDL-C -> CHD (OR 1.3-1.7 per SD,
+            genome-wide), the cis anchors PCSK9, IL6R and OAS1's A2 and B2 ruled on direction
+            with |z| >= 1.96, BMI -> T2D on direction; IL12B -> psoriasis, IL23R -> Crohn's,
+            OAS1 -> C2 and CRP -> CHD reported, not ruled. A refusal of a ruled anchor fails
+            its check. A published magnitude is ruled only within one cohort family, so
+            OAS1's against Zhou (HGI R4; ours R7) is reported beside ours, not ruled.
+  b2        b1's comparison through mr.run() in cis mode (ivw_correlated where K > 1) on a
+            deterministic subset of Data 9 (tier-1 plus every 10th protein), reported beside
+            b1's lead-only Wald on the same subset, which is what the check rules on (like b);
+            Steiger stands in for the reverse run.
   a         estimator identity against the R MendelianRandomization/TwoSampleMR reference
-            fixtures, deterministic methods to ~1e-12.
+            fixtures: the checkout's tests/test_sdk_mr_estimators.py passes.
   envelope  one exposure to many outcomes, timed: decides whether a precomputed instrument
             table is in scope.
 
@@ -93,10 +101,8 @@ from paths import DEV_STACK_RUN_DIR
 PANEL = "finngen_r12"
 DATASET = "genetics_results"
 FIXTURE_DIR_REL = os.path.join("tests", "fixtures", "mr")
-GROUPS = ("ground", "b0", "b1", "zhou", "d13", "c", "a", "envelope")
+GROUPS = ("ground", "b0", "b1", "zhou", "d13", "c", "b2", "a", "envelope")
 NOT_YET = {
-    "c": "LDL-C -> I9_CHD and the PCSK9/IL6R cis anchors",
-    "a": "estimator identity vs the R reference fixtures",
     "envelope": "one-exposure-to-many-outcomes timing",
 }
 
@@ -589,8 +595,10 @@ def compare(label, ours, theirs, verbose, rhos, ruled=True, tier1=TIER1, ref="Da
           f"underpowered |z| < 1.96 {underpowered}; absent {absent}")
     if not ruled:
         for name, _, ceiling, _ in ceilings:
-            print(f"     not ruled on [{name}]: r {r:.3f} is {(r - ceiling) / ser:+.2f} SE(r) "
-                  f"from the ceiling {ceiling:.3f}")
+            print(f"     reported, not ruled [{name}]: r {r:.3f} "
+                  f"{'>=' if r >= ceiling - ser else '<'} ceiling - SE(r) {ceiling - ser:.3f} "
+                  f"(ceiling {ceiling:.3f}, SE(r) {ser:.3f}, r {(r - ceiling) / ser:+.2f} SE "
+                  "from it)")
         return None, summary
     passes = bool(ceilings)
     passes = passes and any(row[3] for row in ceilings)
@@ -611,7 +619,8 @@ def compare(label, ours, theirs, verbose, rhos, ruled=True, tier1=TIER1, ref="Da
 
 def report_comparisons(label, estimates, theirs, rhos, confounders=CONFOUNDERS, tier1=TIER1,
                        ref="Data 9"):
-    print("  known confounders:")
+    if confounders:
+        print("  known confounders:")
     for item in confounders:
         print(f"    - {item}")
     passes, _ = compare(f"{label} vs {ref} IIBDGC IBD", estimates["ibd"], theirs["ibd"], True,
@@ -750,7 +759,8 @@ def protein_table(theirs, estimates, ivws=None):
     return rows
 
 
-def group_b1(args, mcp):
+def b1_measure(args, mcp, inside_b2=False):
+    """b1's measurement and report; returns what group_b1 rules on and b2 compares beside."""
     codes, phenotypes_counts = outcome_codes(args, mcp)
     theirs = published(mcp)
     floor = args.maf_floor
@@ -843,9 +853,19 @@ def group_b1(args, mcp):
     print_drops(drops)
     for line in tier1_drops:
         print(f"    tier-1 dropped  {line}")
-    passes = report_comparisons("b1 own UKB_PPP cis leads, Wald", estimates, theirs, rhos)
+    if inside_b2:
+        # b2 prints the known confounders once, beside its own comparison
+        print("  b1 full set (group b1's ruling, not b2's):")
+    passes = report_comparisons("b1 own UKB_PPP cis leads, Wald", estimates, theirs, rhos,
+                                confounders=() if inside_b2 else CONFOUNDERS)
     write_tsv(args, "b1_instruments.tsv", per_protein)
     write_tsv(args, "b1_proteins.tsv", protein_table(theirs, estimates))
+    return {"passes": passes, "estimates": estimates, "theirs": theirs, "rhos": rhos,
+            "codes": codes}
+
+
+def group_b1(args, mcp):
+    passes = b1_measure(args, mcp)["passes"]
     check("b1: own UKB_PPP cis leads, Wald vs Data 9 IIBDGC IBD meets the ruling",
           passes, "see the RULING line above")
 
@@ -1195,6 +1215,442 @@ def group_d13(args, mcp):
           "see the RULING line above")
 
 
+def group_a(args, mcp):
+    tests = os.path.join(mcp, "tests", "test_sdk_mr_estimators.py")
+    if not os.path.exists(tests):
+        die(f"{tests} is missing")
+    cmd = ["uv", "run", "pytest", "-q", "-p", "no:randomly", "tests/test_sdk_mr_estimators.py"]
+    try:
+        proc = subprocess.run(cmd, cwd=mcp, capture_output=True, text=True, timeout=900)
+    except FileNotFoundError:
+        die("uv is not on PATH; it runs the checkout's test suite")
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    tally = lines[-1] if lines else proc.stderr.strip()[-300:]
+    print(f"  {' '.join(cmd)} (in {mcp}): exit {proc.returncode}: {tally}")
+    if proc.returncode not in (0, 1):
+        die(f"pytest could not run the estimator tests (exit {proc.returncode}): "
+            f"{proc.stderr.strip()[-500:] or tally}")
+    check("a: the estimator tests against the R reference fixtures pass", proc.returncode == 0,
+          tally)
+
+
+# mr.run() per job in the checkout's venv, one child for all of a group's jobs. A
+# GeneticsUsageError is the module refusing (D6, pseudo sets, no outcome rows) and is a
+# result; another GeneticsError is the data route failing (exit 2: nothing was measured), any
+# other exception the module crashing, which is a failed check (exit 1)
+MR_RUNS = """
+import json, sys, time
+from genetics_mcp_server.sdk import mr
+from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError
+
+def scalars(d):
+    return {k: v for k, v in (d or {}).items()
+            if v is None or isinstance(v, (bool, int, float, str))}
+
+def result(r):
+    frame = r.instruments.frame
+    cols = [c for c in ("variant", "beta", "se", "maf", "proxy_for") if c in frame.columns]
+    return {"exposure": r.exposure, "outcome": r.outcome, "headline": r.headline,
+            "estimates": {m: scalars(e) for m, e in r.estimates.items()},
+            "checks": [] if r.checks is None else r.checks.to_dicts(),
+            "overlap": list(r.overlap), "units": dict(r.harmonised.units),
+            "steiger": scalars(r.sensitivity.get("steiger")),
+            "instruments": frame.select(cols).to_dicts(), "notes": list(r.notes)}
+
+out = []
+for job in json.load(sys.stdin):
+    started = time.monotonic()
+    rec = {"label": job["label"]}
+    try:
+        res = mr.run(job["exposure"], outcomes=[tuple(o) for o in job["outcomes"]],
+                     **job.get("kwargs", {}))
+        rec.update(status="ok", results=[result(r) for r in res.results],
+                   failed=res.failed.to_dicts(), requests=dict(res.requests))
+    except GeneticsUsageError as exc:
+        rec.update(status="refused", error=str(exc))
+    except GeneticsError as exc:
+        rec.update(status="failed", failure="data route", error=f"{type(exc).__name__}: {exc}")
+    except Exception as exc:
+        rec.update(status="failed", failure="module exception",
+                   error=f"{type(exc).__name__}: {exc}")
+    rec["seconds"] = round(time.monotonic() - started, 2)
+    out.append(rec)
+print(json.dumps({"results": out}, default=str))
+"""
+
+
+def mr_runs(args, mcp, jobs):
+    """Each job is {label, exposure, outcomes, kwargs}; outcomes always go as a list, so every
+    answer is an MRBatch and a per-outcome refusal lands in `failed` instead of raising."""
+    python = os.path.join(mcp, ".venv", "bin", "python")
+    env = sdk_env(args, mcp, internal_secret(args.run_dir))
+    proc = subprocess.run([python, "-c", MR_RUNS], env=env, cwd=mcp, input=json.dumps(jobs),
+                          capture_output=True, text=True, timeout=3600)
+    try:
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        die(f"mr.run child exited {proc.returncode} without an answer; "
+            f"stderr: {proc.stderr.strip()[-500:]}")
+    runs = payload["results"]
+    total = sum((r.get("requests") or {}).get("total", 0) for r in runs)
+    print(f"  mr.run: {len(runs)} runs, {sum(r['status'] == 'ok' for r in runs)} ran, "
+          f"{sum(r['status'] == 'refused' for r in runs)} refused, "
+          f"{sum(r['status'] == 'failed' for r in runs)} failed; {total} requests, "
+          f"{sum(r['seconds'] for r in runs):.1f} s")
+    return runs
+
+
+def refusal_kind(message):
+    if "pseudo credible sets" in message:
+        return "pseudo-credible-set exposure"
+    if re.search(r"no credible set fine-mapped within the window|trans sets only", message):
+        return "D6: no cis credible set in the window"
+    if "no credible-set rows" in message:
+        return "no credible-set rows for the trait"
+    if "no credible set with a lead at MAF" in message:
+        return "no lead passes the MAF floor / p threshold / MHC"
+    if re.search(r"is in LD panel \S+, so none can be pruned", message):
+        return "no lead passing floor / threshold is in the LD panel"
+    if re.search(r"gene_annotations_v row carries no", message):
+        return "gene_annotations_v row has no position"
+    if "gene_annotations_v has" in message:
+        return "trait is not one HGNC symbol in gene_annotations_v"
+    if re.search(r"no instrument .*(outcome|proxy)|no outcome row", message, re.I):
+        return "no outcome rows for any instrument"
+    return "other: " + re.sub(r"[0-9]+", "#", message)[:100]
+
+
+def run_failures(runs):
+    """(refusals Counter, failure lines) over whole-run refusals and per-outcome ones."""
+    refusals, failures = Counter(), []
+    for run in runs:
+        if run["status"] == "refused":
+            refusals[refusal_kind(run["error"])] += 1
+        elif run["status"] == "failed":
+            failures.append(f"{run['label']} [{run['failure']}]: {run['error'][:400]}")
+        for f in run.get("failed", []):
+            refusals[f"per outcome: {refusal_kind(f['reason'])}"] += 1
+    return refusals, failures
+
+
+def headline(result):
+    e = result["estimates"][result["headline"]]
+    return e["estimate"], e["se"], e["p"], e.get("n_instruments")
+
+
+def failing_checks(result):
+    return [f"{c['check']}: {c['detail']}" for c in result["checks"] if c.get("status") == "fail"]
+
+
+def by_phenotype(run, phenotype):
+    # MRResult.outcome is "<resource> <phenotype>"
+    return next((r for r in run.get("results", []) if r["outcome"].endswith(" " + phenotype)),
+                None)
+
+
+FINNGEN = "finngen"
+UKB_PPP = "UKB_PPP"
+LDL_OR_RANGE = (1.3, 1.7)
+# the primary papers' numbers, copied from their abstracts (Lyall's SD from Table 2's footnote).
+# Not a fixture TSV: tests/fixtures/mr/ is generated by convert_fixtures.py from pinned
+# workbooks, and these come from no workbook. The last field is why the magnitude is not ruled
+TRAIT_ANCHORS = {
+    "BMI -> T2D": ("Lyall 2017 JAMA Cardiol, doi 10.1001/jamacardio.2016.5804, UK Biobank",
+                   2.53, 2.04, 3.13, "per 1 SD BMI (4.83 kg/m2)",
+                   "another cohort family (FinnGen vs UK Biobank)"),
+    "CRP -> CHD": ("CCGC 2011 BMJ 342:d548, doi 10.1136/bmj.d548, 47 studies, CRP-gene SNPs",
+                   1.00, 0.90, 1.13, "per 1 SD ln CRP",
+                   "another cohort family, and the exposure unit is not known to be SD of "
+                   "ln CRP"),
+}
+# exposure, outcomes as (resource, phenotype, expected sign or 0 for null, ruled, expectation),
+# instrument mode. A ruled anchor passes when the sign matches with |z| >= 1.96
+C_ANCHORS = (
+    ("LDL-C -> CHD", {"dataset": "nmr_ukbb_est", "trait": "LDL_C"}, "genome_wide", 0.01,
+     [(FINNGEN, "I9_CHD", +1, True, "OR per SD in 1.3-1.7 (the epic's trait-level range)")]),
+    ("PCSK9", {"dataset": UKB_PPP, "trait": "PCSK9"}, "cis", None,
+     [(FINNGEN, "I9_CHD", +1, True, "higher PCSK9 level raises LDL-C and CHD risk (R46L "
+       "lowers both)"),
+      (FINNGEN, "E4_HYPERCHOL", +1, True, "higher PCSK9 level raises LDL-C")]),
+    ("IL6R", {"dataset": UKB_PPP, "trait": "IL6R"}, "cis", None,
+     [(FINNGEN, "M13_RHEUMA", -1, True, "Asp358Ala raises soluble IL6R and lowers membrane "
+       "signalling: protective"),
+      (FINNGEN, "I9_CHD", -1, True, "Asp358Ala raises soluble IL6R and is protective for CHD")]),
+    ("IL23R", {"dataset": UKB_PPP, "trait": "IL23R"}, "cis", None,
+     [(FINNGEN, "K11_CD_STRICT2", +1, False, "R381Q (rs11209026) loses IL23R function and "
+       "protects from Crohn's, so more functional IL23R raises risk; whether the measured "
+       "soluble level tracks function is not established")]),
+    ("IL12B", {"dataset": UKB_PPP, "trait": "IL12B"}, "cis", None,
+     [(FINNGEN, "L12_PSORIASIS", +1, False, "ustekinumab (anti-p40) treats psoriasis, so more "
+       "functional p40 raises risk; the measured plasma level may not track function at this "
+       "cis-pQTL (an epitope or measured-level effect), so reported, not ruled")]),
+    # by resource: the registry's eqtl_catalogue row has no `dataset`, so run() refuses the
+    # dataset name the views hold, QTD000584
+    ("OAS1", {"resource": ZHOU_SOMASCAN[0], "trait": "OAS1"}, "cis", None,
+     [(COVID_RESOURCE, "COVID_A2", -1, True, "Zhou 2021 ST2 A2 OR 0.544: protective"),
+      (COVID_RESOURCE, "COVID_B2", -1, True, "protective (Zhou 2021)"),
+      (COVID_RESOURCE, "COVID_C2", -1, False, "protective, weaker (susceptibility)")]),
+    ("BMI -> T2D", {"dataset": "FinnGen_R14", "trait": "Body_mass_index,_inverse-rank_normalized"},
+     "genome_wide", 0.01,
+     [(FINNGEN, "T2D", +1, True, "higher BMI raises T2D risk (Lyall 2017)")]),
+    ("CRP -> CHD", {"dataset": "FinnGen_kanta", "trait":
+                    "C_reactive_protein_[Mass/volume]_in_Serum_or_Plasma_[mg/l],_sample-wise_median"},
+     "genome_wide", 0.01,
+     [(FINNGEN, "I9_CHD", 0, False, "null (CCGC 2011); genome-wide CRP instruments include "
+       "non-CRP loci, unlike CCGC's CRP-gene SNPs")]),
+)
+# ruled anchors whose refusal by run() is the expected answer and stays NOT MEASURED; any
+# other ruled anchor's refusal fails its check. Empty: IL23R, the one anchor refused so far,
+# is reported rather than ruled
+EXPECTED_REFUSALS_C = frozenset()
+NOT_MEASURED_C = (
+    ("SBP -> stroke", "no fine-mapped SBP exposure: FinnGen has no core blood-pressure "
+     "endpoint with credible sets, and Open Targets' SBP studies are pseudo credible sets, "
+     "which run() refuses as exposures"),
+    ("HDL-C -> CHD pattern", "nmr_ukbb_est HDL_C genome-wide is ~450 requests and ~160 s "
+     "(879 credible sets), over this group's time budget; no primary-paper number is pinned "
+     "for it"),
+)
+PUBLISHED_ZHOU = "zhou2021_st2_somamer_a2.tsv"
+
+
+def zhou_anchor_ci(mcp):
+    rows = read_tsv(os.path.join(mcp, FIXTURE_DIR_REL, PUBLISHED_ZHOU))
+    row = next((r for r in rows if r["somamer"] == ZHOU_ANCHOR and r["method"] == "Wald ratio"),
+               None)
+    if row is None:
+        die(f"{PUBLISHED_ZHOU} has no Wald-ratio row for {ZHOU_ANCHOR}")
+    return float(row["or"]), float(row["ci_low"]), float(row["ci_high"])
+
+
+def group_c(args, mcp):
+    zhou_or = zhou_anchor_ci(mcp)
+    jobs = [{"label": label, "exposure": exposure,
+             "outcomes": [[res, pheno] for res, pheno, *_ in outcomes],
+             "kwargs": {"instruments": mode, **({"r2_prune": r2} if r2 is not None else {})}}
+            for label, exposure, mode, r2, outcomes in C_ANCHORS]
+    runs = {r["label"]: r for r in mr_runs(args, mcp, jobs)}
+    table, failed_routes, ruled_fail = [], [], []
+    for label, exposure, mode, r2, outcomes in C_ANCHORS:
+        run = runs[label]
+        print(f"  -- {label}: {exposure.get('dataset') or exposure.get('resource')} "
+              f"{exposure['trait']}, {mode}"
+              f"{f', r2_prune {r2}' if r2 is not None else ', default r2_prune'}: {run['status']}"
+              f", {(run.get('requests') or {}).get('total', '?')} requests, {run['seconds']} s")
+        if run["status"] == "failed":
+            failed_routes.append(f"{label} [{run['failure']}]: {run['error'][:400]}")
+            print(f"     FAILED ({run['failure']}): {run['error'][:600]}")
+            continue
+        if run["status"] == "refused":
+            print(f"     REFUSED ({refusal_kind(run['error'])}): {run['error'][:600]}")
+        for resource, pheno, sign, ruled, expectation in outcomes:
+            name = f"{label} -> {pheno}" if "->" not in label else label
+            row = {"anchor": name, "outcome": f"{resource}:{pheno}", "expected_sign":
+                   {1: "+", -1: "-", 0: "null"}[sign], "ruled": ruled, "expectation": expectation}
+            result = by_phenotype(run, pheno) if run["status"] == "ok" else None
+            if result is None:
+                reason = (run.get("error") if run["status"] == "refused" else next(
+                    (f["reason"] for f in run.get("failed", []) if f["phenotype"] == pheno),
+                    "no result and no refusal reason"))
+                if ruled and name not in EXPECTED_REFUSALS_C:
+                    row.update(verdict="REFUSED, ruled: FAIL", detail=reason[:300])
+                    check(f"c: {name} refused by run()", False, reason[:300])
+                    ruled_fail.append(name)
+                else:
+                    row.update(verdict="REFUSED, not measured", detail=reason[:300])
+                    if ruled:
+                        skip(f"c: {name}", f"refused by run() (expected): {reason[:200]}")
+                table.append(row)
+                continue
+            est, se, p, k = headline(result)
+            z = est / se
+            e = result["estimates"][result["headline"]]
+            odds = (math.exp(est), math.exp(e["ci_low"]), math.exp(e["ci_high"]))
+            fails = failing_checks(result)
+            row.update(K=k, method=result["headline"], estimate=est, se=se, p=p, z=z,
+                       OR=odds[0], OR_low=odds[1], OR_high=odds[2],
+                       exposure_unit=result["units"].get("exposure"),
+                       outcome_unit=result["units"].get("outcome"),
+                       overlap=f"{result['overlap'][0]}: {result['overlap'][1]}",
+                       failing_checks="; ".join(fails),
+                       methods="; ".join(f"{m} {e['estimate']:+.3f} ({e['se']:.3f})"
+                                         for m, e in result["estimates"].items()
+                                         if e.get("estimate") is not None and e.get("se")))
+            sig = abs(z) >= Z95
+            if sign == 0:
+                verdict = ("null agrees (|z| < 1.96)" if not sig
+                           else f"NOT null ({'+' if est > 0 else '-'}, |z| >= 1.96)")
+            else:
+                same = (est > 0) == (sign > 0)
+                verdict = (("direction ok" if same else "DIRECTION WRONG") if sig else
+                           f"underpowered (|z| < 1.96, {'same' if same else 'opposite'} sign)")
+            ok = sign != 0 and sig and (est > 0) == (sign > 0)
+            if label == "LDL-C -> CHD":
+                in_range = LDL_OR_RANGE[0] <= odds[0] <= LDL_OR_RANGE[1]
+                ok &= in_range
+                verdict += (f"; OR {odds[0]:.3f} {'inside' if in_range else 'OUTSIDE'} "
+                            f"{LDL_OR_RANGE[0]}-{LDL_OR_RANGE[1]}")
+            if pheno == "COVID_A2":
+                # the magnitude rule holds only within one cohort family: Zhou's anchor is HGI
+                # release 4, ours R7 (a later, larger release without 23andMe)
+                inside = zhou_or[1] <= odds[0] <= zhou_or[2]
+                verdict += (f"; ours OR {odds[0]:.3f} ({odds[1]:.3f}-{odds[2]:.3f}) beside Zhou "
+                            f"ST2 (HGI R4) {zhou_or[0]:.3f} ({zhou_or[1]:.3f}-{zhou_or[2]:.3f}), "
+                            f"{'inside' if inside else 'outside'} its CI; release differs "
+                            "(HGI R7 here): magnitude reported")
+            if label in TRAIT_ANCHORS:
+                paper, p_or, lo, hi, unit, why = TRAIT_ANCHORS[label]
+                verdict += (f"; published {p_or:.2f} ({lo:.2f}-{hi:.2f}) {unit}, ours "
+                            f"{'inside' if lo <= odds[0] <= hi else 'outside'} it (not ruled: "
+                            f"{why})")
+            row["verdict"] = verdict
+            if ruled:
+                check(f"c: {name} {verdict}", ok, f"{est:+.3f} (se {se:.3f}, z {z:+.2f})")
+                if not ok:
+                    ruled_fail.append(name)
+            table.append(row)
+    for label, reason in NOT_MEASURED_C:
+        skip(f"c: {label}", reason)
+        table.append({"anchor": label, "verdict": "NOT MEASURED", "detail": reason})
+
+    print("  anchor                    K   method          estimate    se      p         "
+          "OR (95% CI)            exp  verdict")
+    for row in table:
+        if "estimate" not in row:
+            print(f"  {row['anchor']:<25} {row['verdict']}: {row.get('detail', '')[:160]}")
+            continue
+        print(f"  {row['anchor']:<25} {row['K']!s:<3} {row['method']:<15} {row['estimate']:+.4f}"
+              f"   {row['se']:.4f}  {row['p']:<9.2e} {row['OR']:.3f} ({row['OR_low']:.3f}-"
+              f"{row['OR_high']:.3f})  {row['expected_sign']:<4} "
+              f"{'RULED ' if row['ruled'] else 'report'} {row['verdict']}")
+        print(f"  {'':<25} units {row['exposure_unit']} -> {row['outcome_unit']}; overlap "
+              f"{row['overlap'][:150]}")
+        print(f"  {'':<25} failing checks: {row['failing_checks'] or 'none'}")
+        print(f"  {'':<25} all methods: {row['methods']}")
+        print(f"  {'':<25} expectation: {row['expectation']}")
+    write_tsv(args, "c_anchors.tsv", table)
+    crashes = [f for f in failed_routes if "[module exception]" in f]
+    check("c: no mr.run call crashed (a module exception is a defect, not a refusal)",
+          not crashes, "; ".join(crashes))
+    routes = [f for f in failed_routes if f not in crashes]
+    if routes:
+        die("c: mr.run's data route failed for " + "; ".join(routes))
+
+
+B2_STRIDE = 10
+
+
+def group_b2(args, mcp):
+    """mr.run()'s cis headline is reported beside b1's lead-only Wald on the same subset, and
+    the check rules on the latter. The shared-sample ceiling assumes both sides' errors come
+    from the same variant; a pruned multi-instrument IVW instruments variants Zhang did not,
+    so it overstates the ceiling further than b1 already does, and the epic's ruled
+    measurement is the lead-only form."""
+    b1 = b1_measure(args, mcp, inside_b2=True)
+    theirs, rhos, codes = b1["theirs"], b1["rhos"], b1["codes"]
+    proteins = sorted(theirs["ibd"])
+    subset = sorted(set(TIER1) | set(proteins[::B2_STRIDE]))
+    print(f"  [b2] subset: the tier-1 seven plus every {B2_STRIDE}th of the {len(proteins)} "
+          f"Data 9 IIBDGC IBD proteins in symbol order: {len(subset)} runs (a full pass is "
+          f"~{len(proteins) * 6 // 60} min at ~6 s per run)")
+    jobs = [{"label": p, "exposure": {"dataset": UKB_PPP, "trait": p},
+             "outcomes": [[OUTCOME_RESOURCE, codes[k]] for k in OUTCOMES],
+             "kwargs": {"instruments": "cis"}} for p in subset]
+    runs = mr_runs(args, mcp, jobs)
+    refusals, failures = run_failures(runs)
+    estimates, records = {k: {} for k in OUTCOMES}, []
+    methods, ks = Counter(), Counter()
+    for run in runs:
+        rec = {"protein": run["label"], "status": run["status"], "seconds": run["seconds"],
+               "requests": (run.get("requests") or {}).get("total"),
+               "error": (run.get("error") or "")[:300]}
+        for key, code in codes.items():
+            result = by_phenotype(run, code)
+            if result is None:
+                continue
+            est, se, p, k = headline(result)
+            estimates[key][run["label"]] = (est, se, p)
+            rec.update({f"{key}_method": result["headline"], f"{key}_K": k,
+                        f"{key}_estimate": est, f"{key}_se": se, f"{key}_p": p})
+            if key == "ibd":
+                methods[result["headline"]] += 1
+                ks[k] += 1
+                rec["steiger_correct_direction"] = result["steiger"].get("correct_causal_direction")
+                rec["steiger_pval"] = result["steiger"].get("steiger_pval")
+                rec["failing_checks"] = "; ".join(failing_checks(result))
+        records.append(rec)
+    print(f"  IBD headline methods {dict(methods)}; K distribution {dict(sorted(ks.items()))}")
+    print("  refusals (counted separately from failures):")
+    for kind, n in refusals.most_common():
+        print(f"    {n:>4}  {kind}")
+    print(f"  failures (data route or module exception): {len(failures)}")
+    for line in failures:
+        print(f"    {line}")
+    print("  tier-1 runs:")
+    for rec in records:
+        if rec["protein"] in TIER1:
+            print(f"    {rec['protein']:<6} {rec['status']:<7} "
+                  + (f"{rec.get('ibd_method')} K={rec.get('ibd_K')} "
+                     f"{rec.get('ibd_estimate', float('nan')):+.3f} "
+                     f"(se {rec.get('ibd_se', float('nan')):.3f})" if 'ibd_estimate' in rec
+                     else rec["error"][:200]))
+
+    sub_b1 = {k: {p: v for p, v in b1["estimates"][k].items() if p in subset} for k in OUTCOMES}
+    print("  known confounders:")
+    for item in CONFOUNDERS:
+        print(f"    - {item}")
+    passes, b1_sum = compare("b1 lead-only Wald on the b2 subset vs Data 9 IIBDGC IBD (ruled)",
+                             sub_b1["ibd"], theirs["ibd"], True, rhos)
+    _, b2_sum = compare("b2 mr.run cis headline (ivw_correlated where K > 1) vs Data 9 IIBDGC "
+                        "IBD (reported)", estimates["ibd"], theirs["ibd"], True, rhos,
+                        ruled=False)
+    for key in ("cd", "uc"):
+        compare(f"b2 mr.run cis headline vs Data 9 IIBDGC {key.upper()} (extra, not ruled on)",
+                estimates[key], theirs[key], False, rhos)
+    print("  b2 (reported) beside b1 (ruled), IBD, same subset:")
+    for name, summary in (("b1 Wald", b1_sum), ("b2 mr.run", b2_sum)):
+        if "r" not in summary:
+            print(f"    {name:<10} n {summary['n']}: too few for a correlation")
+            continue
+        print(f"    {name:<10} n {summary['n']}  r {summary['r']:.3f}  SE(r) "
+              f"{summary['se_r']:.3f}  "
+              + "; ".join(f"[{c[0]}] ceiling {c[2]:.3f}, r {(summary['r'] - c[2]) / summary['se_r']:+.2f} SE"
+                          for c in summary["ceilings"]))
+    common = sorted(set(sub_b1["ibd"]) & set(estimates["ibd"]))
+    if len(common) >= 3:
+        r, slope = pearson([sub_b1["ibd"][p][0] for p in common],
+                           [estimates["ibd"][p][0] for p in common])
+        print(f"  b2 headline vs b1 Wald, ours against ours: n {len(common)}, r {r:.3f}, "
+              f"slope {slope:.3f}")
+
+    print("  reverse direction (IBD -> protein): refused by design in v1. Its exposure would be "
+          "IIBDGC credible sets, which are pseudo sets, and run() refuses pseudo-credible-set "
+          "exposures; no reverse run is attempted. Steiger from the forward run instead (IBD "
+          "is a case-control consortium: the sample prevalence is used, so the outcome's "
+          "variance explained is approximate):")
+    for rec in records:
+        p = rec["protein"]
+        if p in TIER1 and "ibd_estimate" in rec and abs(rec["ibd_estimate"] / rec["ibd_se"]) >= Z95:
+            print(f"    {p:<6} correct_causal_direction {rec.get('steiger_correct_direction')}, "
+                  f"steiger_pval {rec.get('steiger_pval')}")
+    write_tsv(args, "b2_runs.tsv", records)
+    write_tsv(args, "b2_proteins.tsv", [
+        {"outcome": key, "protein": p,
+         **{f"{name}_{col}": src[p][i] for name, src in (("theirs", theirs[key]),
+                                                         ("b2", estimates[key]),
+                                                         ("b1", sub_b1[key])) if p in src
+            for i, col in enumerate(("logor", "se", "p"))}}
+        for key in OUTCOMES for p in sorted(set(estimates[key]) | (set(theirs[key]) & set(subset)))])
+    check("b2: b1's lead-only Wald on the b2 subset vs Data 9 IIBDGC IBD meets the ruling "
+          "(mr.run's headline reported beside it)", passes, "see the RULING line above")
+    crashes = [f for f in failures if "[module exception]" in f]
+    check("b2: no mr.run call crashed (a module exception is a defect, not a refusal)",
+          not crashes, "; ".join(crashes))
+    routes = [f for f in failures if f not in crashes]
+    if routes:
+        die(f"b2: {len(routes)} mr.run calls failed on the data route")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--results-api-url", default="http://127.0.0.1:2000",
@@ -1244,6 +1700,12 @@ def main():
             group_zhou(args, mcp)
         elif group == "d13":
             group_d13(args, mcp)
+        elif group == "c":
+            group_c(args, mcp)
+        elif group == "b2":
+            group_b2(args, mcp)
+        elif group == "a":
+            group_a(args, mcp)
         else:
             skip(group, f"{NOT_YET[group]}: not implemented yet")
         print(f"  [{group}] {time.monotonic() - started:.1f} s")
