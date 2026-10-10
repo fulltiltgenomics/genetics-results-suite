@@ -18,6 +18,12 @@ did not measure rather than looking greener than it is.
             instruments: the premise proper. A set's lead is its max-pip variant with
             maf >= --maf-floor; a set with none contributes no instrument, so a rare pip-1.0
             coding variant, which carries no outcome power, is never the instrument.
+  zhou      Zhou 2021's OAS1 anchor: cis credible-set leads of the eQTL Catalogue SomaScan
+            plasma set qtd000584 through COVID-19 HGI R7 A2/B2/C2, Wald per SOMAmer against
+            Supplementary Table 2 (A2). Ruled on OAS1's direction alone; r is reported only.
+  d13       Zhang's deCODE replication (Supplementary Data 13): deCODE pseudo credible sets,
+            whose maf is NULL, so the floor reads the annotation AF (FinnGen, else gnomAD
+            AF_nfe), through IIBDGC IBD, ruled like b.
   c         LDL-C -> I9_CHD (OR 1.3-1.7 per SD) and the PCSK9 and IL6R cis anchors
             (protective per SD on CHD).
   a         estimator identity against the R MendelianRandomization/TwoSampleMR reference
@@ -26,11 +32,16 @@ did not measure rather than looking greener than it is.
             table is in scope.
 
 RULING FOR b (the kill criterion): per-protein log-OR estimates against Data 9's IIBDGC IBD
-column reach r >= ceiling, and every tier-1 protein (IL12B, CD6, MXRA8, CXCL9, IFNG, RSPO3,
+column reach r >= ceiling - SE(r), SE(r) = (1 - r^2) / sqrt(n - 1), and every tier-1 protein (IL12B, CD6, MXRA8, CXCL9, IFNG, RSPO3,
 IL18) whose estimate here has |z| >= 1.96 has Data 9's direction; a tier-1 protein below that
 is listed as underpowered and one absent on either side is listed, and neither is counted.
 Otherwise STOP: once the allele-frequency checks have verified harmonisation, a miss means
 credible sets as instruments are unfit for MR, and the module is descoped rather than tuned.
+The one-SE tolerance is there because the ceiling is an upper bound (below) and r's own
+sampling error is of the same size as the margins measured against it, so r below the ceiling
+by less than its SE does not distinguish the instruments from the ceiling. b0's ruled
+estimate is the fixed-effect IVW over every harmonised Data 8 instrument, because Data 9 is
+itself IVW over those instruments; the lead-only Wald is printed beside it, not ruled on.
 
 The ceiling is sqrt(rel_ours * rel_theirs) + rho * mean(se_ours * se_theirs) /
 sqrt(var_ours * var_theirs). The first term is the attenuation both sides' sampling error
@@ -65,11 +76,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import checks
@@ -80,7 +93,7 @@ from paths import DEV_STACK_RUN_DIR
 PANEL = "finngen_r12"
 DATASET = "genetics_results"
 FIXTURE_DIR_REL = os.path.join("tests", "fixtures", "mr")
-GROUPS = ("ground", "b0", "b1", "c", "a", "envelope")
+GROUPS = ("ground", "b0", "b1", "zhou", "d13", "c", "a", "envelope")
 NOT_YET = {
     "c": "LDL-C -> I9_CHD and the PCSK9/IL6R cis anchors",
     "a": "estimator identity vs the R reference fixtures",
@@ -310,10 +323,11 @@ WHERE l.pos BETWEEN g.gene_start - {window} AND g.gene_end + {window}
 # The two named releases' counts were supplied with the task and are read from no file here
 ZHANG_IIBDGC = (
     ("ieu-a-31 per Zhang Data 12, N 34,652, split not stated: n_eff <= N, rho upper bound, conservative toward STOP",
-     None, None, 34652),
-    ("de Lange 2017 IIBDGC, 25,042 cases / 34,915 controls, UNVERIFIED", 25042, 34915, None),
+     None, None, 34652, True),
+    ("de Lange 2017 IIBDGC, 25,042 cases / 34,915 controls, UNVERIFIED", 25042, 34915, None,
+     False),
     ("Liu 2023 IIBDGC multi-ancestry, 59,957 cases / 1,062,226 controls, UNVERIFIED",
-     59957, 1062226, None),
+     59957, 1062226, None, False),
 )
 
 
@@ -419,12 +433,12 @@ def shared_sample_rhos(ibd_rows, phenotypes_counts):
           + (f"; the rows' own n_eff column, median {median(row_neff):.0f}, is not the ruled "
              "formula and is not used" if row_neff else ""))
     rhos = []
-    for label, a, b, total in ZHANG_IIBDGC:
+    for label, a, b, total, is_ruled in ZHANG_IIBDGC:
         theirs = n_eff(a, b) if total is None else total
         rho = math.sqrt(theirs / ours)
         print(f"    Zhang [{label}]: n_eff {theirs:.0f}, rho {rho:.3f}"
               + ("  WARNING rho > 1: this n_eff is not nested inside ours" if rho > 1 else ""))
-        rhos.append((label.split(",")[0], rho))
+        rhos.append((label.split(",")[0], rho, is_ruled))
     return rhos
 
 
@@ -507,13 +521,21 @@ def reliability(estimates, ses):
     return (var - sum(s ** 2 for s in ses) / len(ses)) / var
 
 
-def compare(label, ours, theirs, verbose, rhos):
-    """Print the ruling's numbers for one estimate set against Data 9; return (passes, summary).
+def se_r(r, n):
+    return (1 - r * r) / math.sqrt(n - 1)
+
+
+def compare(label, ours, theirs, verbose, rhos, ruled=True, tier1=TIER1, ref="Data 9"):
+    """Print the ruling's numbers for one estimate set against `ref`; return (passes, summary).
 
     With several Zhang sample-size assumptions there is a ceiling and a RULING line for each,
-    and it passes only if every one says continue: which release Zhang used is not settled."""
+    and it passes only if the ruled row says continue. The ruled row is the one grounded in
+    Zhang's own supplementary data (ieu-a-31 per Data 12); the other rows come from no file on
+    this machine, so they are printed with the same verdict text as sensitivity rows and do
+    not gate.
+    `verbose` adds the tier-1 table; without `ruled` the ceilings are only reported."""
     common = sorted(set(ours) & set(theirs))
-    print(f"  -- {label}: {len(ours)} ours, {len(theirs)} Data 9, {len(common)} on both sides")
+    print(f"  -- {label}: {len(ours)} ours, {len(theirs)} {ref}, {len(common)} on both sides")
     if len(common) < 3:
         print("     too few proteins on both sides for a correlation")
         return False, {"n": len(common)}
@@ -525,24 +547,26 @@ def compare(label, ours, theirs, verbose, rhos):
     base = (math.sqrt(rel_ours * rel_theirs) if rel_ours > 0 and rel_theirs > 0 else None)
     shared = (sum(a * b for a, b in zip(ses_x, ses_y)) / len(common)
               / math.sqrt(variance(xs) * variance(ys)))
-    print(f"     n {len(common)}  r {r:.3f}  slope(ours on theirs) {slope_on_theirs:.3f}")
+    ser = se_r(r, len(common))
+    print(f"     n {len(common)}  r {r:.3f}  SE(r) {ser:.3f}  slope(ours on theirs) "
+          f"{slope_on_theirs:.3f}")
     print(f"     reliability ours {rel_ours:.3f}  theirs {rel_theirs:.3f}  "
           + (f"old ceiling sqrt(rel*rel) {base:.3f}" if base is not None
              else "ceiling undefined: a reliability is not positive"))
-    ceilings = [] if base is None else [(name, rho, base + rho * shared) for name, rho in rhos]
+    ceilings = [] if base is None else [(name, rho, base + rho * shared, ruled_row) for name, rho, ruled_row in rhos]
     if ceilings:
         print(f"     shared-sample term mean(se_x se_y)/sqrt(var_x var_y) {shared:.3f}; new ceiling "
-              + "; ".join(f"[{name}] rho {rho:.3f} -> {c:.3f}" for name, rho, c in ceilings))
+              + "; ".join(f"[{name}] rho {rho:.3f} -> {c:.3f}" for name, rho, c, _ in ceilings))
         print("     each ceiling is an upper bound conservative toward STOP: rho applies in full "
               "only where both sides instrument the same variant, elsewhere the error "
               "correlation is rho times the LD between the two variants")
-    summary = {"n": len(common), "r": r, "ceiling_old": base, "slope": slope_on_theirs,
-               "ceilings": ceilings}
+    summary = {"n": len(common), "r": r, "se_r": ser, "ceiling_old": base,
+               "slope": slope_on_theirs, "ceilings": ceilings}
     if not verbose:
         return None, summary
     print("     tier-1   ours logOR (se)        z        theirs logOR (se)      dir")
     flipped, compared, underpowered, absent = [], [], [], []
-    for protein in TIER1:
+    for protein in tier1:
         mine, pub = ours.get(protein), theirs.get(protein)
         if mine is None or pub is None:
             absent.append(protein)
@@ -563,29 +587,39 @@ def compare(label, ours, theirs, verbose, rhos):
               f"{pub[0]:+.3f} ({pub[1]:.3f}){'':<6} {verdict}")
     print(f"     tier-1: {len(compared)} compared {compared}, {len(flipped)} flipped {flipped}; "
           f"underpowered |z| < 1.96 {underpowered}; absent {absent}")
+    if not ruled:
+        for name, _, ceiling, _ in ceilings:
+            print(f"     not ruled on [{name}]: r {r:.3f} is {(r - ceiling) / ser:+.2f} SE(r) "
+                  f"from the ceiling {ceiling:.3f}")
+        return None, summary
     passes = bool(ceilings)
-    for name, _, ceiling in ceilings:
-        ok = r >= ceiling and not flipped
-        passes &= ok
-        print(f"     RULING [{name}]: r >= ceiling AND every compared tier-1 direction the same "
-              f"-> continue; otherwise STOP.  r {r:.3f} {'>=' if r >= ceiling else '<'} "
-              f"ceiling {ceiling:.3f}; tier-1 {len(compared) - len(flipped)}/{len(compared)} "
-              f"compared the same -> {'continue' if ok else 'STOP'}")
+    passes = passes and any(row[3] for row in ceilings)
+    for name, _, ceiling, ruled_row in ceilings:
+        ok = r >= ceiling - ser and not flipped
+        if ruled_row:
+            passes &= ok
+        print(f"     RULING ({'ruled' if ruled_row else 'sensitivity'}) [{name}]: r >= ceiling - SE(r) AND every compared tier-1 direction "
+              f"the same -> continue; otherwise STOP.  r {r:.3f} "
+              f"{'>=' if r >= ceiling - ser else '<'} {ceiling - ser:.3f} (ceiling {ceiling:.3f}, "
+              f"SE(r) {ser:.3f}, r {(r - ceiling) / ser:+.2f} SE from it); tier-1 "
+              f"{len(compared) - len(flipped)}/{len(compared)} compared the same -> "
+              f"{'continue' if ok else 'STOP'}")
     if not ceilings:
         print("     RULING: no ceiling -> STOP")
     return passes, summary
 
 
-def report_comparisons(label, estimates, theirs, rhos):
+def report_comparisons(label, estimates, theirs, rhos, confounders=CONFOUNDERS, tier1=TIER1,
+                       ref="Data 9"):
     print("  known confounders:")
-    for item in CONFOUNDERS:
+    for item in confounders:
         print(f"    - {item}")
-    passes, _ = compare(f"{label} vs Data 9 IIBDGC IBD", estimates["ibd"], theirs["ibd"], True,
-                        rhos)
+    passes, _ = compare(f"{label} vs {ref} IIBDGC IBD", estimates["ibd"], theirs["ibd"], True,
+                        rhos, tier1=tier1, ref=ref)
     # the rhos are IBD's: on CD and UC the printed ceiling only indicates
     for key in ("cd", "uc"):
-        compare(f"{label} vs Data 9 IIBDGC {key.upper()} (extra, not ruled on)",
-                estimates[key], theirs[key], False, rhos)
+        compare(f"{label} vs {ref} IIBDGC {key.upper()} (extra, not ruled on)",
+                estimates[key], theirs[key], False, rhos, ref=ref)
     return passes
 
 
@@ -690,14 +724,15 @@ def group_b0(args, mcp):
     drops["IBD: proteins whose every instrument lacked an outcome row or was flagged"] = \
         len(with_estimate - set(estimates["ibd"]))
     print_drops(drops)
-    passes = report_comparisons("b0 lead-only Wald", estimates, theirs, rhos)
-    print("  -- the same instruments, fixed-effect IVW over all that harmonised (Data 9 is IVW):")
+    passes = report_comparisons("b0 fixed-effect IVW over every harmonised Data 8 instrument",
+                                ivws, theirs, rhos)
+    print("  -- extra, not ruled on: the same instruments, lead-only Wald (the strongest per protein):")
     for key in OUTCOMES:
-        compare(f"b0 IVW vs Data 9 IIBDGC {key.upper()}", ivws[key], theirs[key], key == "ibd",
-                rhos)
+        compare(f"b0 lead-only Wald vs Data 9 IIBDGC {key.upper()}", estimates[key], theirs[key],
+                key == "ibd", rhos, ruled=False)
     write_tsv(args, "b0_instruments.tsv", per_instrument)
     write_tsv(args, "b0_proteins.tsv", protein_table(theirs, estimates, ivws))
-    check("b0: Data 8 instruments, lead-only Wald vs Data 9 IIBDGC IBD meets the ruling",
+    check("b0: Data 8 instruments, IVW vs Data 9 IIBDGC IBD meets the ruling",
           passes, "see the RULING line above")
 
 
@@ -797,41 +832,11 @@ def group_b1(args, mcp):
     rhos = shared_sample_rhos([r for r in out_rows if r["phenotype"] == codes["ibd"]],
                               phenotypes_counts)
 
-    estimates, per_protein = {k: {} for k in OUTCOMES}, []
-    status_counts, af_flags = {}, 0
-    for key, code in codes.items():
-        for protein, lead in sorted(instrument.items()):
-            swapped = f"{lead['chr']}:{lead['pos']}:{lead['alt']}:{lead['ref']}"
-            row = index.get((code, lead["variant"])) or index.get((code, swapped))
-            record = {"outcome": key, "protein": protein, "variant": lead["variant"],
-                      "cell_type": lead["cell_type"], "cs_id": lead["cs_id"], "pip": lead["pip"],
-                      "mlog10p_exp": lead["mlog10p"], "beta_exp": lead["beta"],
-                      "se_exp": lead["se"], "aaf_exp": lead["aaf"], "maf_exp": lead["maf"]}
-            if row is None:
-                record["status"] = "no outcome row"
-            else:
-                record.update({"outcome_variant": f"{row['chr']}:{row['pos']}:{row['ref']}:{row['alt']}",
-                               "af_out": row.get("af")})
-                h = harmonise(lead["alt"], lead["ref"], lead["aaf"], lead["beta"], row,
-                              eaf_is_maf=aaf_is_maf)
-                if h is None:
-                    record["status"] = "alleles do not match the outcome row"
-                else:
-                    oriented, _, flags = h
-                    ratio, se = wald(oriented, row)
-                    record.update({"beta_out": row["beta"], "se_out": row["se"], "ratio": ratio,
-                                   "se_ratio": se, "flags": ",".join(flags)})
-                    record["status"] = "flagged" if flags else "used"
-                    if flags:
-                        af_flags += key == "ibd"
-                    else:
-                        estimates[key][protein] = (ratio, se, z_to_p(ratio / se))
-            if key == "ibd":
-                status_counts[record["status"]] = status_counts.get(record["status"], 0) + 1
-                if protein in TIER1 and record["status"] != "used":
-                    tier1_drops.append(f"{protein}: lead {lead['variant']} {record['status']} "
-                                       f"{record.get('flags', '')}".rstrip())
-            per_protein.append(record)
+    estimates, per_protein, status_counts, af_flags = lead_estimates(
+        instrument, codes, index, aaf_is_maf, "ibd")
+    tier1_drops += [f"{r['protein']}: lead {r['variant']} {r['status']} {r.get('flags', '')}".rstrip()
+                    for r in per_protein
+                    if r["outcome"] == "ibd" and r["protein"] in TIER1 and r["status"] != "used"]
     for status in ("no outcome row", "alleles do not match the outcome row", "flagged"):
         drops[f"IBD: lead cis-pQTL {status}"] = status_counts.get(status, 0)
     print(f"  IBD lead instruments: {status_counts}; AF/palindrome flags (IBD) {af_flags}")
@@ -843,6 +848,351 @@ def group_b1(args, mcp):
     write_tsv(args, "b1_proteins.tsv", protein_table(theirs, estimates))
     check("b1: own UKB_PPP cis leads, Wald vs Data 9 IIBDGC IBD meets the ruling",
           passes, "see the RULING line above")
+
+
+def lead_estimates(instrument, codes, index, eaf_is_maf, counted):
+    """Wald ratio per protein and outcome from one lead each: (estimates, records, the
+    `counted` outcome's status counts, its AF/palindrome flags). A flagged lead is left out."""
+    estimates, records, status_counts, af_flags = {k: {} for k in codes}, [], {}, 0
+    for key, code in codes.items():
+        for protein, lead in sorted(instrument.items()):
+            swapped = f"{lead['chr']}:{lead['pos']}:{lead['alt']}:{lead['ref']}"
+            row = index.get((code, lead["variant"])) or index.get((code, swapped))
+            record = {"outcome": key, "protein": protein, "variant": lead["variant"],
+                      "cell_type": lead["cell_type"], "cs_id": lead["cs_id"], "pip": lead["pip"],
+                      "mlog10p_exp": lead["mlog10p"], "beta_exp": lead["beta"],
+                      "se_exp": lead["se"], "aaf_exp": lead["aaf"], "maf_exp": lead["maf"],
+                      "af_source": lead.get("af_source")}
+            if row is None:
+                record["status"] = "no outcome row"
+            else:
+                record.update({"outcome_variant": f"{row['chr']}:{row['pos']}:{row['ref']}:{row['alt']}",
+                               "af_out": row.get("af")})
+                h = harmonise(lead["alt"], lead["ref"], lead["aaf"], lead["beta"], row,
+                              eaf_is_maf=eaf_is_maf)
+                if h is None:
+                    record["status"] = "alleles do not match the outcome row"
+                else:
+                    oriented, _, flags = h
+                    ratio, se = wald(oriented, row)
+                    record.update({"beta_out": row["beta"], "se_out": row["se"], "ratio": ratio,
+                                   "se_ratio": se, "flags": ",".join(flags)})
+                    record["status"] = "flagged" if flags else "used"
+                    if flags:
+                        af_flags += key == counted
+                    else:
+                        estimates[key][protein] = (ratio, se, z_to_p(ratio / se))
+            if key == counted:
+                status_counts[record["status"]] = status_counts.get(record["status"], 0) + 1
+            records.append(record)
+    return estimates, records, status_counts, af_flags
+
+
+# every row of every cis credible set, not only the leads, because the floor may have to read
+# an annotation AF where the set's maf is NULL; `{key}` names the protein the reference joins on
+CIS_ROWS_SQL = """
+WITH genes AS (
+  SELECT symbol, chr, gene_start, gene_end, COUNT(*) OVER (PARTITION BY symbol) AS n_rows
+  FROM gene_annotations_v
+)
+SELECT {key} AS key, c.trait, c.trait_original, c.cell_type, c.cs_id, c.chr, c.pos, c.variant,
+       c.ref, c.alt, c.beta, c.se, c.mlog10p, c.pip, c.aaf, c.maf
+FROM credible_sets_v c JOIN genes g ON g.symbol = c.trait AND g.n_rows = 1 AND g.chr = c.chr
+WHERE c.resource = '{resource}' AND c.dataset = '{dataset}' AND {key} IN ({keys})
+  AND c.pos BETWEEN g.gene_start - {window} AND g.gene_end + {window}
+"""
+SETS_SQL = """
+SELECT {key} AS key, COUNT(DISTINCT CONCAT(c.trait_original, '|', c.cell_type, '|', c.cs_id)) AS n_sets
+FROM credible_sets_v c
+WHERE c.resource = '{resource}' AND c.dataset = '{dataset}' AND {key} IN ({keys})
+GROUP BY 1
+"""
+CIS_ROWS_MAX = 50000
+# results-api refuses a larger variant_annotation batch with a 422
+ANNOTATION_BATCH = 2000
+SAFE_KEY = re.compile(r"^[A-Za-z0-9._-]+$")
+CS_ID_VARIANT = re.compile(r"^chr([0-9XY]+)_([0-9]+)_([A-Z]+)_([A-Z]+)$")
+
+
+def annotation_af(args, mcp, variants):
+    """Alt-allele AF per variant: FinnGen's annotation first, gnomAD AF_nfe for the rest.
+
+    A variant found under the swapped spelling takes 1 - AF. Returns {variant: (af, source)}."""
+    found = {}
+    def take(rows, column, source, wanted):
+        by_key = {f"{r['chr']}:{r['pos']}:{r['ref']}:{r['alt']}": as_float(r.get(column))
+                  for r in rows}
+        for v in wanted:
+            chrom, pos, ref, alt = v.split(":")
+            af, flip = by_key.get(v), by_key.get(f"{chrom}:{pos}:{alt}:{ref}")
+            if af is not None and not math.isnan(af):
+                found[v] = (af, source)
+            elif flip is not None and not math.isnan(flip):
+                found[v] = (1 - flip, source)
+    for source, column in (("finngen", "AF"), ("gnomad", "AF_nfe")):
+        wanted = [v for v in variants if v not in found]
+        if not wanted:
+            break
+        batches = sdk_calls(args, mcp, [
+            ["variant_annotation", {"variants": wanted[i:i + ANNOTATION_BATCH], "source": source}]
+            for i in range(0, len(wanted), ANNOTATION_BATCH)])
+        take([r for rows in batches for r in rows], column, f"{source} {column}", wanted)
+    return found
+
+
+def cis_instruments(args, mcp, resource, dataset, key_sql, keys, floor):
+    """Per key, the lead of its strongest cis credible set under the ruled lead rule.
+
+    A set's lead is its max-pip variant (ties by mlog10p) whose MAF reaches `floor`; the MAF
+    is the set's own where it has one, the annotation AF's where it is NULL. The strongest set
+    is the one whose lead has the largest mlog10p, among leads at genome-wide significance
+    outside the MHC. Returns (instrument, drops, report) for the caller to print."""
+    bad = [k for k in keys if not SAFE_KEY.match(k)]
+    if bad:
+        die(f"protein keys unsafe to quote into SQL: {bad[:5]}")
+    fmt = {"key": key_sql, "resource": resource, "dataset": dataset,
+           "keys": ", ".join(f"'{k}'" for k in sorted(keys)), "window": CIS_WINDOW}
+    rows, set_counts = sdk_calls(args, mcp, [
+        ["sql", {"query": CIS_ROWS_SQL.format(**fmt), "max_rows": CIS_ROWS_MAX}],
+        ["sql", {"query": SETS_SQL.format(**fmt), "max_rows": CIS_ROWS_MAX}]])
+    if len(rows) >= CIS_ROWS_MAX:
+        die(f"the {dataset} cis query returned {len(rows)} rows, its max_rows: truncated")
+    n_sets = {r["key"]: r["n_sets"] for r in set_counts}
+
+    need = sorted({r["variant"] for r in rows if r["maf"] is None or r["aaf"] is None})
+    ann = annotation_af(args, mcp, need) if need else {}
+    sources = Counter()
+    for r in rows:
+        if r["maf"] is not None and r["aaf"] is not None:
+            r["af_source"] = "credible set"
+        elif r["variant"] in ann:
+            af, r["af_source"] = ann[r["variant"]]
+            r["aaf"] = af if r["aaf"] is None else r["aaf"]
+            r["maf"] = min(af, 1 - af) if r["maf"] is None else r["maf"]
+        else:
+            r["af_source"] = "none (fails the floor)"
+        sources[r["af_source"]] += 1
+
+    sets = {}
+    for r in rows:
+        sets.setdefault((r["key"], r["trait_original"], r["cell_type"], r["cs_id"]), []).append(r)
+    leads, no_floor, pip_ties, one_pip = {}, 0, 0, 0
+    for set_key, members in sets.items():
+        one_pip += len({m["pip"] for m in members}) == 1 and len(members) > 1
+        eligible = sorted((m for m in members if m["maf"] is not None and m["maf"] >= floor),
+                          key=lambda m: (-(m["pip"] or 0), -(m["mlog10p"] or 0), m["variant"]))
+        if not eligible:
+            no_floor += 1
+            continue
+        pip_ties += len(eligible) > 1 and eligible[1]["pip"] == eligible[0]["pip"]
+        leads.setdefault(set_key[0], []).append(eligible[0])
+
+    def outside_mhc(lead):
+        return not (lead["chr"] == MHC[0] and MHC[1] <= lead["pos"] <= MHC[2])
+    cis_keys = {k for k, *_ in sets}
+    drops, stage = {}, sorted(keys)
+    def narrow(reason, keep):
+        nonlocal stage
+        kept = [k for k in stage if keep(k)]
+        drops[reason] = len(stage) - len(kept)
+        stage = kept
+    narrow(f"no {dataset} credible set at all", lambda k: n_sets.get(k, 0) > 0)
+    narrow("credible sets, none within 1 Mb of the gene (trans only, or no single "
+           "gene_annotations_v row)", lambda k: k in cis_keys)
+    narrow(f"no cis set has a variant with MAF >= {floor}", lambda k: k in leads)
+    narrow("no cis lead with mlog10p >= 7.3",
+           lambda k: any((ld["mlog10p"] or 0) >= GWS_MLOG10P for ld in leads[k]))
+    narrow("every significant cis lead is in the MHC",
+           lambda k: any((ld["mlog10p"] or 0) >= GWS_MLOG10P and outside_mhc(ld) for ld in leads[k]))
+    instrument = {k: max((ld for ld in leads[k] if (ld["mlog10p"] or 0) >= GWS_MLOG10P
+                          and outside_mhc(ld)), key=lambda ld: (ld["mlog10p"], ld["pip"]))
+                  for k in stage}
+
+    per_key = Counter(k for k, *_ in sets)
+    named = 0
+    for k, lead in instrument.items():
+        m = CS_ID_VARIANT.match(lead["cs_id"] or "")
+        named += bool(m) and ":".join(m.groups()) == lead["variant"]
+    report = {"rows": len(rows), "sets": len(sets), "keys_cis": len(cis_keys),
+              "sets_per_key": sorted(per_key.values()), "sources": dict(sources),
+              "no_floor": no_floor, "pip_ties": pip_ties, "one_pip": one_pip,
+              "lead_is_cs_id": named,
+              "cs_id_names_variant": sum(bool(CS_ID_VARIANT.match(ld["cs_id"] or ""))
+                                         for ld in instrument.values()),
+              "n_sets": n_sets, "cis_sets": dict(per_key)}
+    return instrument, drops, report
+
+
+def print_cis_report(dataset, report, floor):
+    spk = report["sets_per_key"]
+    print(f"  {dataset}: {report['rows']} cis rows in {report['sets']} cis sets for "
+          f"{report['keys_cis']} proteins; sets per protein median {median(spk) if spk else 0} "
+          f"max {max(spk, default=0)}")
+    print(f"  AF for the MAF floor, by row: {report['sources']}")
+    print(f"  lead rule: max pip, ties by mlog10p, at MAF >= {floor}; {report['no_floor']} sets "
+          f"have no variant there and drop; {report['pip_ties']} chosen leads tie on pip with "
+          f"the next eligible variant; {report['one_pip']} sets of more than one variant give "
+          "every variant the same pip")
+    print(f"  chosen leads that are the variant the cs_id names: {report['lead_is_cs_id']} of "
+          f"{report['cs_id_names_variant']} whose cs_id names one")
+
+
+COVID_RESOURCE = "covid_hgi"
+COVID_OUTCOMES = {"a2": "COVID_A2", "b2": "COVID_B2", "c2": "COVID_C2"}
+ZHOU_SOMASCAN = ("qtd000584", "QTD000584")
+ZHOU_ANCHOR = "OAS1.10361.25.3"
+
+
+def group_zhou(args, mcp):
+    resource, dataset = ZHOU_SOMASCAN
+    (meta,) = sdk_calls(args, mcp, [["sql", {"query":
+        "SELECT dataset, dataset_id, resource, subdataset_of, author, n_samples, data_type, "
+        "description FROM datasets_v WHERE dataset_id IN ('QTD000584', 'interval') "
+        "OR dataset = 'QTD000584'"}]])
+    for m in meta:
+        print(f"  datasets_v: {m['dataset']} ({m['resource']}, subdataset_of "
+              f"{m['subdataset_of']}): author {m['author']}, n_samples {m['n_samples']}, "
+              f"{m['data_type']}, {m['description'][:120]}")
+    qtd = next((m for m in meta if m["dataset"] == dataset), None)
+    interval = next((m for m in meta if m["dataset_id"] == "interval"), None)
+    if qtd is None:
+        die(f"datasets_v has no {dataset}")
+    is_interval = (qtd["author"] == "Sun_2018" and interval is not None
+                   and qtd["n_samples"] == interval["n_samples"])
+    print(f"  cohort: {dataset} is "
+          + ("INTERVAL SomaScan (author Sun_2018, the INTERVAL pQTL paper, and n_samples equal "
+             "to the registry's INTERVAL row), the cohort Zhou used" if is_interval else
+             "NOT shown to be INTERVAL by the registry; Zhou used INTERVAL SomaScan (Sun 2018). "
+             "Running anyway"))
+
+    fixture = read_tsv(os.path.join(mcp, FIXTURE_DIR_REL, "zhou2021_st2_somamer_a2.tsv"))
+    fixture = [r for r in fixture if r["method"] in ("Wald ratio", "Inverse variance weighted")]
+    if len({r["somamer"] for r in fixture}) != len(fixture):
+        die("zhou2021_st2_somamer_a2.tsv: a SOMAmer has several Wald/IVW rows")
+    theirs = {r["somamer"]: (float(r["beta"]), float(r["se"]), as_float(r["p"])) for r in fixture}
+    print(f"  Zhou ST2 (A2 only; ST4/ST6 for B2/C2 are not extracted): {len(theirs)} SOMAmers; "
+          "joined on the SOMAmer id, which qtd000584's trait_original carries before '..', "
+          "finer than the symbol")
+    instrument, drops, report = cis_instruments(
+        args, mcp, resource, dataset, "SPLIT(c.trait_original, '..')[OFFSET(0)]", list(theirs),
+        args.maf_floor)
+    print_cis_report(dataset, report, args.maf_floor)
+    print_drops(drops)
+    symbols = {k.split(".")[0] for k in theirs}
+    print(f"  ({len({ld['trait'] for ld in instrument.values()} & symbols)} of the instrumented "
+          "SOMAmers' traits equal the symbol in Zhou's id)")
+
+    variants = sorted({v for ld in instrument.values()
+                       for v in (ld["variant"], f"{ld['chr']}:{ld['pos']}:{ld['alt']}:{ld['ref']}")})
+    (out_rows,) = sdk_calls(args, mcp, [["summary_stats", {
+        "phenotypes": list(COVID_OUTCOMES.values()), "variants": variants,
+        "resource": COVID_RESOURCE}]])
+    missing = [c for c in COVID_OUTCOMES.values() if not any(r["phenotype"] == c for r in out_rows)]
+    if missing:
+        die(f"summary_stats returned no {COVID_RESOURCE} rows for {missing}")
+    aafs = [ld["aaf"] for ld in instrument.values() if ld["aaf"] is not None]
+    eaf_is_maf = bool(aafs) and max(aafs) <= 0.5
+    print(f"  exposure eaf: alt AF (max {max(aafs, default=None)}), so the AF check verifies "
+          "orientation" if not eaf_is_maf else "  exposure aaf is a MAF: orientation unverified")
+    estimates, records, status_counts, af_flags = lead_estimates(
+        instrument, COVID_OUTCOMES, outcome_index(out_rows), eaf_is_maf, "a2")
+    print(f"  A2 lead instruments: {status_counts}; AF/palindrome flags (A2) {af_flags}")
+
+    common = sorted(set(estimates["a2"]) & set(theirs))
+    print(f"  per SOMAmer, ours (Wald on the lead) vs Zhou ST2 A2, n {len(common)}:")
+    print("    somamer              lead               A2 ours (se)     z      Zhou (se)        "
+          "dir   B2 ours (se)     C2 ours (se)")
+    for k in common:
+        mine, pub = estimates["a2"][k], theirs[k]
+        extra = "  ".join(f"{estimates[o][k][0]:+.3f} ({estimates[o][k][1]:.3f})"
+                          if k in estimates[o] else f"{'-':<15}" for o in ("b2", "c2"))
+        print(f"    {k:<20} {instrument[k]['variant']:<18} {mine[0]:+.3f} ({mine[1]:.3f})  "
+              f"{mine[0] / mine[1]:+6.2f}  {pub[0]:+.3f} ({pub[1]:.3f})  "
+              f"{'same' if (mine[0] > 0) == (pub[0] > 0) else 'opp':<5} {extra}")
+    _, summary = compare("zhou A2 vs Zhou ST2 (reported only)", estimates["a2"], theirs, False, [],
+                         ref="Zhou ST2")
+    if summary.get("ceiling_old") is not None:
+        base, ser = summary["ceiling_old"], summary["se_r"]
+        print(f"     information only: HGI R7 is not Zhou's R4 and the overlap term has no stated "
+              f"n, so only the base ceiling {base:.3f}; r {summary['r']:.3f} "
+              f"{'>=' if summary['r'] >= base - ser else '<'} ceiling - SE(r) {base - ser:.3f}")
+    write_tsv(args, "zhou_instruments.tsv", records)
+
+    ok = True
+    for o in ("a2", "b2"):
+        est = estimates[o].get(ZHOU_ANCHOR)
+        good = est is not None and est[0] < 0 and abs(est[0] / est[1]) >= Z95
+        ok &= good
+        print(f"  RULING {ZHOU_ANCHOR} on {COVID_OUTCOMES[o]}: protective per SD (log OR < 0) with "
+              f"|z| >= 1.96 -> "
+              + ("no estimate" if est is None else
+                 f"{est[0]:+.3f} (se {est[1]:.3f}, z {est[0] / est[1]:+.2f}, OR "
+                 f"{math.exp(est[0]):.3f})") + f" -> {'ok' if good else 'FAIL'}")
+    if ZHOU_ANCHOR in theirs:
+        print(f"    Zhou ST2 A2 {ZHOU_ANCHOR}: log OR {theirs[ZHOU_ANCHOR][0]:+.3f} (OR "
+              f"{math.exp(theirs[ZHOU_ANCHOR][0]):.3f})")
+    check(f"zhou: {ZHOU_ANCHOR} protective with |z| >= 1.96 on COVID_A2 and COVID_B2", ok,
+          "see the RULING lines above")
+
+
+DECODE = ("decode", "deCODE_pQTL_2021")
+TIER1_D13 = ("IL12B", "MXRA8", "CXCL9", "IFNG", "IL18")
+CONFOUNDERS_D13 = (
+    "Zhang's IIBDGC release is smaller than our 2026 IIBDGC file",
+    "deCODE credible sets here are pseudo sets, not fine-mapped ones",
+    "Data 13 names no instrument SNP, so whether our lead is Zhang's deCODE instrument cannot "
+    "be checked",
+    "Data 13's ORs are rounded to two decimals",
+)
+
+
+def published_data13(mcp):
+    """Data 13's IIBDGC column per outcome: protein -> (log OR, SE from the 95% CI, p)."""
+    out = {key: {} for key in OUTCOMES}
+    for row in read_tsv(os.path.join(mcp, FIXTURE_DIR_REL, "zhang2025_data13_decode_mr.tsv")):
+        odds, low, high = (as_float(row[f"iibdgc_{c}"]) for c in ("or", "ci_low", "ci_high"))
+        if odds and low and high:
+            out[row["outcome"]][row["protein"]] = (
+                math.log(odds), (math.log(high) - math.log(low)) / (2 * Z95),
+                as_float(row["iibdgc_p"]))
+    return out
+
+
+def group_d13(args, mcp):
+    codes, phenotypes_counts = outcome_codes(args, mcp)
+    theirs = published_data13(mcp)
+    keys = sorted(set().union(*(set(t) for t in theirs.values())))
+    print(f"  Data 13 IIBDGC: {', '.join(f'{k} {len(v)}' for k, v in theirs.items())} proteins "
+          f"({len(keys)} distinct)")
+    # the tier-1 proteins Data 13 lacks are looked up too, so their absence is measured here
+    instrument, drops, report = cis_instruments(args, mcp, *DECODE, "c.trait",
+                                                sorted(set(keys) | set(TIER1_D13)), args.maf_floor)
+    print_cis_report(DECODE[1], report, args.maf_floor)
+    print_drops(drops)
+    for protein in TIER1_D13:
+        lead = instrument.get(protein)
+        print(f"    tier-1 {protein:<6} in Data 13 IBD {protein in theirs['ibd']}, deCODE sets "
+              f"{report['n_sets'].get(protein, 0)} (cis {report['cis_sets'].get(protein, 0)}): "
+              + ("no cis instrument" if lead is None else
+                 f"{lead['variant']} (pip {lead['pip']}, mlog10p {lead['mlog10p']}, AF "
+                 f"{lead['aaf']} from {lead['af_source']}, {lead['trait_original']} {lead['cs_id']})"))
+
+    variants = sorted({v for ld in instrument.values()
+                       for v in (ld["variant"], f"{ld['chr']}:{ld['pos']}:{ld['alt']}:{ld['ref']}")})
+    (out_rows,) = sdk_calls(args, mcp, [["summary_stats", {
+        "phenotypes": list(codes.values()), "variants": variants, "resource": OUTCOME_RESOURCE}]])
+    rhos = shared_sample_rhos([r for r in out_rows if r["phenotype"] == codes["ibd"]],
+                              phenotypes_counts)
+    estimates, records, status_counts, af_flags = lead_estimates(
+        instrument, codes, outcome_index(out_rows), False, "ibd")
+    print(f"  IBD lead instruments: {status_counts}; AF/palindrome flags (IBD) {af_flags} "
+          "(the exposure AF is the annotation's alt AF)")
+    passes = report_comparisons("d13 deCODE cis leads, Wald", estimates, theirs, rhos,
+                                CONFOUNDERS_D13, TIER1_D13, "Data 13")
+    write_tsv(args, "d13_instruments.tsv", records)
+    write_tsv(args, "d13_proteins.tsv", protein_table(theirs, estimates))
+    check("d13: deCODE cis leads, Wald vs Data 13 IIBDGC IBD meets the ruling", passes,
+          "see the RULING line above")
 
 
 def main():
@@ -862,8 +1212,8 @@ def main():
                         help="write the b groups' per-instrument and per-protein tables here; "
                              "nothing is written without it")
     parser.add_argument("--maf-floor", type=float, default=MAF_FLOOR,
-                        help="b1: a credible set's lead is its max-pip variant with maf at or "
-                             "above this; a set with none contributes no instrument")
+                        help="b1, zhou, d13: a credible set's lead is its max-pip variant with "
+                             "maf at or above this; a set with none contributes no instrument")
     parser.add_argument("--groups", default=",".join(GROUPS),
                         help=f"comma-separated subset of {', '.join(GROUPS)}")
     args = parser.parse_args()
@@ -890,6 +1240,10 @@ def main():
             group_b0(args, mcp)
         elif group == "b1":
             group_b1(args, mcp)
+        elif group == "zhou":
+            group_zhou(args, mcp)
+        elif group == "d13":
+            group_d13(args, mcp)
         else:
             skip(group, f"{NOT_YET[group]}: not implemented yet")
         print(f"  [{group}] {time.monotonic() - started:.1f} s")
