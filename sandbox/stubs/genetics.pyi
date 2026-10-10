@@ -83,6 +83,7 @@ from genetics_mcp_server.sdk.client import GeneticsClient
 from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError
 from genetics_mcp_server.sdk import plots as plots
 from genetics_mcp_server.sdk import linemodels as linemodels
+from genetics_mcp_server.sdk import mr as mr
 
 MAX_ROWS: int = 100000
 

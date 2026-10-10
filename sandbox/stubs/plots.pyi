@@ -12,6 +12,7 @@
     genetics.plots.upset(sets={"Crohn": cd_ids, "UC": uc_ids})
     genetics.plots.forest(frame, label="cohort", scale="log_ratio", pool="fixed")
     genetics.plots.volcano(frame, label="gene", significance="bonferroni")
+    genetics.plots.mr(res)
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -42,6 +43,7 @@ a script's author to discover it.
 import polars as pl
 from typing import Any
 
+_MR_PANELS: tuple = ('scatter', 'forest', 'leave_one_out')
 _UPSET_MAX_INTERSECTIONS: int = 30
 
 def locuszoom(
@@ -495,5 +497,45 @@ def volcano(
     `path` may be relative, in which case it is written inside the execution's artifacts
     directory and returned to the user automatically; that is also where the default goes.
     Pass `ax` to draw into an existing axis instead, in which case nothing is saved.
+    """
+    ...
+
+def mr(
+    result: Any = None,
+    *,
+    frame: Any = None,
+    estimates: dict[str, Any] | None = None,
+    sensitivity: dict[str, Any] | None = None,
+    path: str | None = None,
+    title: str | None = None,
+    panels: Any = _MR_PANELS,
+) -> dict[str, Any]:
+    """Mendelian randomization figure: scatter with fitted lines, Wald-ratio forest, leave-one-out.
+
+    `result` is what `genetics.mr.run` returned — anything with `harmonised` (its `.frame`
+    holds `variant`, `beta_x`, `se_x`, `beta_y`, `se_y`, and optionally `in_outcome`,
+    `is_proxy`, `rsid`), `estimates` (method -> dict with `estimate`, `se`, and `intercept`
+    for `egger`) and `sensitivity` (`leave_one_out` and `single_snp` frames). Or pass the three
+    as `frame=`, `estimates=` and `sensitivity=`, which also override the result's own. Rows
+    whose `in_outcome` is False are left out of every panel.
+
+    - `"scatter"` — beta_y on beta_x with 95% bars both ways, every instrument oriented to a
+      positive beta_x (beta_y flipped with it, MR Egger's orientation). One line per estimate
+      present: through the origin for IVW, median, mode and the rest, through its intercept
+      for MR Egger; the legend gives each estimate (SE). Proxies are hollow.
+    - `"forest"` — the per-instrument Wald ratios with 95% CI (the `single_snp` frame when
+      given, else beta_y/beta_x with first-order SE), then each pooled estimate as a diamond.
+    - `"leave_one_out"` — the IVW estimate with each instrument left out, the "All" row as a
+      diamond under a rule. Needs K >= 3; without the frame the figure says why it is absent.
+
+    The forests are `forest()`'s, on a linear scale: an estimate per unit of exposure, a log
+    odds ratio when the outcome is binary. One figure, so there is no `ax=`; draw a single
+    panel into your own axes with `forest()`. `panels=` picks and orders the panels.
+
+    Returns `path`, `panels` (those drawn), `n_instruments`, `n_excluded` (in_outcome False),
+    `n_proxies`, `lines` (methods drawn on the scatter), `forest` and `leave_one_out` (what
+    `forest()` returned for each, or None), `notes` and `size_in`. `path` may be relative, in
+    which case it is written inside the execution's artifacts directory; the default is
+    `mr.png` there.
     """
     ...
