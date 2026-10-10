@@ -65,7 +65,7 @@ from paths import DATASETS_YAML, ROOT, SCHEMA_DIR, STAGED_SDK_SRC, STUBS_DIR
 # the SDK submodules a script reaches as `genetics.<name>` that are not client wrappers;
 # each gets its own stub, read from the module's `__all__`. sdk/__init__.py resolves the
 # same names lazily and the executor's _SDK_MODULES catalogues them.
-SURFACE_MODULES = ("plots", "linemodels")
+SURFACE_MODULES = ("plots", "linemodels", "mr")
 
 
 def prompt_schema_dir_for(sdk_src):
@@ -396,6 +396,11 @@ def _literal(value, package_root):
     """
     if isinstance(value, ast.Constant):
         return value.value
+    if isinstance(value, (ast.Tuple, ast.List)):
+        try:
+            return ast.literal_eval(value)
+        except ValueError:
+            return None
     if not (isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name)):
         return None
     owner, attr = value.value.id, value.attr
@@ -474,19 +479,123 @@ def _exported_functions(init_tree):
     raise SystemExit("sdk/__init__.py has no _FUNCTIONS tuple to read the surface from")
 
 
-def _module_all(tree, where):
+def _module_all(tree, where, sdk_dir=None):
     """`__all__` as the surface, for a module that is not a set of client wrappers.
 
     The plots module has no GeneticsClient counterpart to check itself against — its
     functions draw, they do not fetch — so `__all__` is what stands in for _FUNCTIONS'
     self-checking property: a function that is not exported does not reach a script, and one
-    that is exported but missing fails here rather than in a stub nobody reads."""
+    that is exported but missing fails here rather than in a stub nobody reads.
+
+    A starred element splices in a sibling SDK module's `__all__` imported under that name
+    (`from genetics_mcp_server.sdk._mr_estimators import __all__ as _ESTIMATORS`), read from
+    that module's source rather than trusted, so a re-exported surface cannot drift either."""
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
         ):
-            return [ast.literal_eval(e) for e in node.value.elts]
+            names = []
+            for e in node.value.elts:
+                if isinstance(e, ast.Starred) and isinstance(e.value, ast.Name):
+                    source = _sdk_import_source(tree, e.value.id, "__all__")
+                    if source is None or sdk_dir is None:
+                        raise SystemExit(
+                            f"{where}: __all__ splices *{e.value.id}, which is not a sibling "
+                            "SDK module's __all__ this generator can read"
+                        )
+                    names += _module_all(
+                        _module(os.path.join(sdk_dir, f"{source}.py")), f"sdk/{source}.py", sdk_dir
+                    )
+                else:
+                    names.append(ast.literal_eval(e))
+            return names
     raise SystemExit(f"{where} has no __all__ to read the surface from")
+
+
+_SDK_PACKAGE = "genetics_mcp_server.sdk."
+
+
+def _sdk_import_source(tree, bound_name, original=None):
+    """The sibling SDK module a top-level `from genetics_mcp_server.sdk.<m> import ...`
+    binds `bound_name` from, or None. `original`, when given, must be the imported name."""
+    for node in tree.body:
+        if not (isinstance(node, ast.ImportFrom) and (node.module or "").startswith(_SDK_PACKAGE)):
+            continue
+        for alias in node.names:
+            if (alias.asname or alias.name) == bound_name and original in (None, alias.name):
+                return node.module[len(_SDK_PACKAGE):]
+    return None
+
+
+def _surface_defs(tree, sdk_dir):
+    """name -> (def or class node, the tree it was read from), for one surface module.
+
+    Functions and classes defined in the module, plus names it re-exports from a sibling
+    SDK module (sdk/mr.py re-exports sdk/_mr_estimators.py's estimators): the stub
+    documents what `genetics.<module>.<name>` resolves to, wherever it is defined."""
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    # a local definition beats an import and the first import of a name wins, unlike Python's last binding
+    found = {n.name: (n, tree) for n in tree.body if isinstance(n, kinds)}
+    for node in tree.body:
+        if not (isinstance(node, ast.ImportFrom) and (node.module or "").startswith(_SDK_PACKAGE)):
+            continue
+        source = None
+        for alias in node.names:
+            bound = alias.asname or alias.name
+            if bound in found or alias.name == "__all__":
+                continue
+            if source is None:
+                source = _module(os.path.join(sdk_dir, f"{node.module[len(_SDK_PACKAGE):]}.py"))
+            for n in source.body:
+                if isinstance(n, kinds) and n.name == alias.name:
+                    found[bound] = (n, source)
+    return found
+
+
+def _render_surface_class(node):
+    """A class in a surface stub: its docstring, its annotated fields (a dataclass's
+    constructor arguments and attributes) and its public methods."""
+    bases = ", ".join(ast.unparse(b) for b in node.bases)
+    lines = [f"class {node.name}({bases}):" if bases else f"class {node.name}:"]
+    doc = ast.get_docstring(node, clean=True)
+    if doc:
+        lines.append(_docstring(doc, ""))
+    members = []
+    for stmt in node.body:
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            members.append(f"    {stmt.target.id}: {_annotation(stmt.annotation)}")
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and not stmt.name.startswith("_"):
+            members += ["", _render_def(stmt, indent="    ", drop_self=False)]
+    lines += members or ["    ..."]
+    return "\n".join(lines)
+
+
+def _surface_functions(node):
+    """The defs whose defaults a stub must define: the node itself, or a class's methods."""
+    if isinstance(node, ast.ClassDef):
+        return [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return [node]
+
+
+def _type_aliases(nodes_by_tree):
+    """Module-level type aliases (`AnnotationFn = Callable[...]`) the rendered annotations
+    name, so a stub does not annotate with a name it never defines."""
+    lines = []
+    for tree, nodes in nodes_by_tree:
+        used = {
+            n.id
+            for node in nodes
+            for sub in ast.walk(node)
+            if isinstance(sub, (ast.arg, ast.AnnAssign, ast.FunctionDef, ast.AsyncFunctionDef))
+            for ann in [getattr(sub, "annotation", None) or getattr(sub, "returns", None)]
+            if ann is not None
+            for n in ast.walk(ann)
+            if isinstance(n, ast.Name)
+        }
+        for name, value in sorted(_module_assignments(tree).items()):
+            if name in used and not isinstance(value, ast.Constant):
+                lines.append(f"{name} = {ast.unparse(value)}")
+    return lines
 
 
 def _init_exports(init_tree):
@@ -614,7 +723,7 @@ def render_stubs(sdk_dir):
         lines += ["    ...", ""]
     files["errors.pyi"] = "\n".join(lines).rstrip() + "\n"
 
-    # plots.pyi and linemodels.pyi — the analysis surfaces. Separate stubs rather than more
+    # plots.pyi, linemodels.pyi and mr.pyi — the analysis surfaces. Separate stubs rather than more
     # entries in genetics.pyi: these are not client wrappers, they draw or fit rather than
     # fetch, and a script reaches them as `genetics.<module>.<name>`.
     for module in SURFACE_MODULES:
@@ -625,8 +734,8 @@ def render_stubs(sdk_dir):
                 "cannot be invented from anything else"
             )
         tree = _module(source_path)
-        defs = _defs(tree)
-        exported = _module_all(tree, f"sdk/{module}.py")
+        defs = _surface_defs(tree, sdk_dir)
+        exported = _module_all(tree, f"sdk/{module}.py", sdk_dir)
         missing = [name for name in exported if name not in defs]
         if missing:
             raise SystemExit(f"exported by sdk/{module}.py __all__ but not defined there: {missing}")
@@ -634,15 +743,37 @@ def render_stubs(sdk_dir):
         doc = ast.get_docstring(tree, clean=True)
         if doc:
             lines += [f'"""{doc.rstrip()}\n"""', ""]
-        lines += ["import polars as pl", "from typing import Any", ""]
-        constants = _render_constants(
-            _default_names([defs[name] for name in exported]),
-            _module_assignments(tree),
-            package_root,
-        )
-        lines += (constants + [""]) if constants else []
+        # grouped by the source each def was read from: a default is resolved against the
+        # module that wrote it, never against the module that re-exports it
+        by_tree = {}
         for name in exported:
-            lines += [_render_def(defs[name], drop_self=False), ""]
+            node, origin = defs[name]
+            by_tree.setdefault(id(origin), (origin, []))[1].append(node)
+        rendered = [
+            _render_surface_class(defs[name][0])
+            if isinstance(defs[name][0], ast.ClassDef)
+            else _render_def(defs[name][0], drop_self=False)
+            for name in exported
+        ]
+        aliases = _type_aliases(by_tree.values())
+        typing_names = ["Any"] + (["Callable"] if any("Callable" in a for a in aliases) else [])
+        lines += ["import polars as pl", f"from typing import {', '.join(typing_names)}", ""]
+        constants = []
+        for origin, nodes in by_tree.values():
+            for line in _render_constants(
+                _default_names([f for n in nodes for f in _surface_functions(n)]),
+                _module_assignments(origin),
+                package_root,
+            ):
+                clash = [c for c in constants if c.split(":")[0] == line.split(":")[0] and c != line]
+                if clash:
+                    raise SystemExit(f"sdk/{module}.py: two sources define {clash[0]} and {line}")
+                if line not in constants:
+                    constants.append(line)
+        lines += (sorted(constants) + [""]) if constants else []
+        lines += (aliases + [""]) if aliases else []
+        for block in rendered:
+            lines += [block, ""]
         files[f"{module}.pyi"] = "\n".join(lines).rstrip() + "\n"
 
     return files

@@ -419,10 +419,12 @@ The final stage's environment, all of it:
 
 - `genetics_mcp_server/__init__.py`
 - `genetics_mcp_server/sdk/__init__.py`
+- `genetics_mcp_server/sdk/_mr_estimators.py`
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/errors.py`
 - `genetics_mcp_server/sdk/linemodels.py`
+- `genetics_mcp_server/sdk/mr.py`
 - `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/chembl.py`
@@ -540,19 +542,24 @@ rasters it hands back through `page.images` are decoded by Pillow, which matplot
 brings. It does not widen what may be delivered: the caps in the limits table apply to the
 decoded bytes, so a PDF over them is refused as `InputsTooLarge` before any extractor sees it.
 
-`genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
-— a locuszoom, a phewas, an upset, a forest plot, a volcano and the line-models figure today — and
-Pirinen's line
-models as a numpy port, as functions rather than as instructions a script rederives. Both
+`genetics.plots`, `genetics.linemodels` and `genetics.mr` are the SDK's analysis surfaces:
+standard figures, Pirinen's line models as a numpy port, and Mendelian randomization, as
+functions rather than as instructions a script rederives. All three
 are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
 SDK's import closure, resolved through a module `__getattr__` so chat-backend and mcp-server
 never import matplotlib or numpy. That has one consequence worth stating:
 genetics-mcp-server's `tests/test_sdk_import_closure.py` measures the shipped set by
 importing the SDK, so it cannot see these files — `SHIPPED_OUTSIDE_CLOSURE` in that test is
 the second list that keeps them scanned, and it and `SDK_ALLOWLIST` have to agree by hand.
-Each module's stub (`sandbox/stubs/plots.pyi`, `linemodels.pyi`) is generated from its
-`__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same way
-the data surface is; the generator's `SURFACE_MODULES` is where the pair is named.
+`sdk/mr.py` imports `sdk/_mr_estimators.py`, so both files are on both lists.
+Each module's stub (`sandbox/stubs/plots.pyi`, `linemodels.pyi`, `mr.pyi`) is generated from
+its `__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same
+way the data surface is; the generator's `SURFACE_MODULES` is where they are named. An
+exported name may be a class (rendered with its docstring, annotated fields and public
+methods) or a function re-exported from a sibling SDK module, read from that module's
+source; `mr.pyi` has both. It discloses nothing secret: the MR docstrings, the result
+classes' fields and the module constants used as signature defaults (a bootstrap seed, an iteration
+count, the frequency tolerance and the in-flight limit) — no endpoint, credential or service name.
 
 The line-models port widens what the image can *do* by nothing: numpy and scipy were already
 pinned, and the module opens no socket and reads no file. It was chosen over installing R in
