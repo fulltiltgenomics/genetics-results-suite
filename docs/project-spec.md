@@ -3271,6 +3271,16 @@ run only re-analyzes changed sessions unless `--force` is passed. Bumping the `A
 constant in `analyze_conversations.py` invalidates all cached rows so the next run (local or the
 nightly CronJob, with `--force`) re-scores everything.
 
+### Problem review skill
+
+The analyzer's issue taxonomy says what *kind* of thing went wrong, which is too coarse to
+act on. The `chat-problems` Claude Code skill (`.claude/skills/chat-problems/`) is the
+step after it: it reads the cached analysis plus the user-side signals (`chat_turn_metrics`
+outcomes, ratings, comments, thumbs) for the last N days on production, read-only through
+`kubectl exec` into chat-backend, groups them into concrete root causes, verifies the top
+ones against transcripts and logs, and proposes beads without filing them. Problems that
+only the user signals reveal are reported as gaps in the analyzer itself.
+
 ### Admin UI additions
 
 The admin page in `../genetics-results-browser` (`src/features/admin/AdminPage.tsx`) consumes
