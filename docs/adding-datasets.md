@@ -981,6 +981,22 @@ refresh them or add a collection:
 3. **Rebuild and roll out the sandbox image** (`build.sh sandbox` or `build-all.sh`). Check
    the release with `genetics.enrichment.collections()` in a `run_analysis` script.
 
+## 19. Worked example: a release whose cohort set varies per phenotype (R14 meta-analysis)
+
+FinnGen R14 + MVP + UKB + All of Us is one dataset (`FinnGen_R14_MVP_UKBB_AOU`, resource
+`finngen_mvp_ukbb_aou`), but each phenotype is pooled from whichever ancestry-split cohorts ran
+it. Two levels carry that, and they must not be conflated:
+
+- **Registry, dataset level:** `cohorts: [finngen, mvp, ukb, aou]`, the union of sample collections.
+- **Per phenotype:** `contributing_cohorts` (`ARRAY<STRING>`, e.g. `fg`, `aou_eur`,
+  `mvp_afr`), a `phenotypes_v` column added when the R14 phenotypes are loaded. It comes from the metadata JSON that `scripts/r14_meta_phenotypes.py` in
+  `genetics-results-munge` writes, alongside `cohort_families` and `n_by_cohort`.
+
+Steps specific to this shape: the `FinnGen%MVP_UKBB_AOU%` rule in `dataset_to_resource_rules` must
+precede `FinnGen%MVP_UKBB%`, which also matches the new name; the entry sets
+`pseudo_credible_sets: true` and `trait_type: mixed`. Re-run `load_phenotypes.sh` after the metadata
+JSON changes.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)

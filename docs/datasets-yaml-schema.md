@@ -226,9 +226,14 @@ Rules:
 ### Field details for `cohorts`
 
 An optional list of short lowercase tokens, one per sample collection whose individuals
-contributed to the dataset (`[finngen]`, `[ukb]`, `[decode]`, `[estbb, ukb]`). A meta-analysis
+contributed to the dataset (`[finngen]`, `[ukb]`, `[decode]`, `[estbb, ukb]`, `[finngen, mvp, ukb, aou]`;
+`aou` is All of Us). A meta-analysis
 lists every collection it pools. It surfaces unchanged in `GET /v1/datasets` and in
 `genetics.datasets()` (emitted only when set, so read it with `.get`).
+
+Do not confuse it with `phenotypes_v.contributing_cohorts`: that is a per-phenotype `ARRAY<STRING>`
+of ancestry-split cohort names (`fg`, `aou_eur`, `mvp_afr`, ...) inside one meta-analysis, read from the
+dataset's `metadata_file`, and is not a registry field. The view column is added when the R14 phenotypes are loaded.
 
 - **Semantics for readers.** A token names a sample *collection*, not a sample set, so the
   registry can establish only that two datasets draw on the same collection(s); the overlap

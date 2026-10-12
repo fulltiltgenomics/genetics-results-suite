@@ -21,6 +21,14 @@ resources:
     description: "FinnGen + Million Veteran Program + UK Biobank GWAS meta-analysis"
     aliases: ["finngen mvp", "finngen mvp ukbb"]
 
+  finngen_mvp_ukbb_aou:
+    label: "FinnGen+MVP+UKB+AoU"
+    description: >-
+      FinnGen + Million Veteran Program + UK Biobank + All of Us GWAS meta-analysis
+      (R14). The contributing cohorts vary per phenotype: each trait is pooled from
+      the ancestry-split cohorts that ran it (phenotypes_v.contributing_cohorts)
+    aliases: ["finngen aou", "finngen mvp ukbb aou", "R14 meta", "r14 meta-analysis", "all of us meta", "finngen all of us"]
+
   finngen_custom_r14:
     label: "FinnGen R14 custom GWAS"
     description: >-
@@ -2982,6 +2990,13 @@ tables:
 # ---------------------------------------------------------------------------
 dataset_to_resource_rules:
   # credible_sets_v, colocalization_v, coloc_credsets_v patterns
+  # the AOU pattern precedes MVP_UKBB because FinnGen_R14_MVP_UKBB_AOU also matches
+  # FinnGen%MVP_UKBB%, and first match wins
+  - pattern: "FinnGen%MVP_UKBB_AOU%"
+    resource: "finngen_mvp_ukbb_aou"
+    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    comment: "meta-analysis datasets including MVP and All of Us"
+
   - pattern: "FinnGen%MVP_UKBB%"
     resource: "finngen_mvp_ukbb"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
@@ -3321,6 +3336,26 @@ profiles:
         n_samples: 459553
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_drugs_pheno.json"
         metadata_harmonizer: finngen_drugs
+
+      finngen_mvp_ukbb_aou:
+        resource: finngen_mvp_ukbb_aou
+        dataset: FinnGen_R14_MVP_UKBB_AOU
+        version: "R14"
+        description: >-
+          FinnGen R14 + MVP + UK Biobank + All of Us meta-analysis (disease endpoints and
+          lab measurements). These genetic association results represent a multi-way meta
+          analysis (using standard inverse variance weighting) of ancestry-split cohorts.
+          The cohorts that contributed vary per phenotype; see contributing_cohorts in
+          phenotypes_v. For these data there are pseudo credible sets, no formal
+          fine-mapping results.
+        author: "FinnGen Consortium"
+        publication_date: "2026-07-24"
+        data_type: gwas
+        cohorts: [finngen, mvp, ukb, aou]
+        trait_type: mixed
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_mvp_ukbb_aou_meta.json"
+        metadata_harmonizer: finngen_r13
+        pseudo_credible_sets: true
 
       finngen_mvp_ukbb:
         resource: finngen_mvp_ukbb
