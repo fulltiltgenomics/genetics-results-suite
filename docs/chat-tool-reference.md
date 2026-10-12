@@ -2412,7 +2412,7 @@ Get all variants in linkage disequilibrium (LD) with a given variant. Returns va
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | yes | — | — | Variant ID in format chr:pos:ref:alt (e.g., '6:44693011:A:G') |
-| `window` | `integer` | no | `1500000` | — | Window size in base pairs around the variant (default 1500000) |
+| `window` | `integer` | no | `1500000` | — | TOTAL span in base pairs, centred on the variant (default 1500000, i.e. ±750 kb): partners farther than window/2 away are not returned. Unlike the by-gene tools' `window`, this is not a per-side flank — to reach partners D bp away, pass at least 2×D. |
 | `r2_threshold` | `number` | no | `0.6` | — | Minimum r2 threshold to return variants (default 0.6) |
 | `panel` | `string` | no | `"sisu42"` | enum: `sisu42`, `sisu4`, `sisu3`, `finngen_r12` | LD panel: 'sisu42' (FinnGen LD server, latest reference panel, r2 and D'), 'sisu4', 'sisu3', or 'finngen_r12' (FinnGen R12 in-sample LD with signed r and r2; the only panel with r, available where the deployment serves it) |
 | `fields` | `array` | no | — | items: `r`, `r2`, `d_prime` | Statistics to return on each entry, any of r, r2, d_prime; default every statistic the panel carries. Asking for one the panel lacks is refused naming what it has — r needs panel 'finngen_r12'. |
