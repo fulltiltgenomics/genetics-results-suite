@@ -598,9 +598,51 @@ def main(argv=None):
         private = {n for n in methods if n.startswith("_") and n != "__init__"}
         assert not private, f"private methods leaked into the stub: {sorted(private)}"
 
+    def _sdk_tree(name):
+        return ast.parse(open(os.path.join(sdk_dir, f"{name}.py")).read())
+
+    def _sibling_imports(tree):
+        """(sibling module, imported name, bound name) for each `from genetics_mcp_server.sdk.X import ...`."""
+        prefix = "genetics_mcp_server.sdk."
+        return [
+            (n.module[len(prefix):], a.name, a.asname or a.name)
+            for n in tree.body
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(prefix)
+            for a in n.names
+        ]
+
+    def _all_literal(tree):
+        for n in tree.body:
+            if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__all__" for t in n.targets
+            ):
+                return n.value.elts
+        raise AssertionError("no __all__")
+
+    def _sibling_all(tree):
+        names = []
+        for e in _all_literal(tree):
+            if isinstance(e, ast.Starred):
+                mods = [m for m, nm, b in _sibling_imports(tree) if nm == "__all__" and b == e.value.id]
+                assert mods, f"*{e.value.id} is not a sibling's __all__"
+                names += [ast.literal_eval(x) for x in _all_literal(_sdk_tree(mods[0]))]
+            else:
+                names.append(ast.literal_eval(e))
+        return names
+
+    def _sibling_defined(tree):
+        kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        defined = {n.name for n in tree.body if isinstance(n, kinds)}
+        for mod, name, bound in _sibling_imports(tree):
+            if name != "__all__" and any(
+                isinstance(n, kinds) and n.name == name for n in _sdk_tree(mod).body
+            ):
+                defined.add(bound)
+        return defined
+
     @case("each analysis-surface stub covers exactly what its sdk module exports")
     def _surface_stub_surfaces():
-        """Same equality, for the modules that are not client wrappers (plots, linemodels).
+        """Same equality, for the modules that are not client wrappers (gen.SURFACE_MODULES).
         They have no GeneticsClient to be checked against, so `__all__` is what each is
         held to — and it has to be held to something, because a stub is the only
         description of these functions a script's author gets: a name here the interpreter
@@ -610,19 +652,20 @@ def main(argv=None):
             source = os.path.join(sdk_dir, f"{module}.py")
             assert os.path.isfile(source), f"{source} is missing"
             tree = ast.parse(open(source).read())
-            exported = set(gen._module_all(tree, f"sdk/{module}.py"))
+            exported = set(_sibling_all(tree))
             stubbed = {
                 n.name
                 for n in ast.parse(stub_files[f"{module}.pyi"]).body
-                if isinstance(n, ast.FunctionDef)
+                if isinstance(n, (ast.FunctionDef, ast.ClassDef))
             }
             assert stubbed == exported, (
                 f"{module}: not stubbed: {sorted(exported - stubbed)}; "
                 f"stubbed but not exported: {sorted(stubbed - exported)}"
             )
-            defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+            # defined there, or re-exported from a sibling SDK module that defines it
+            defined = _sibling_defined(tree)
             assert exported <= defined, (
-                f"__all__ names functions sdk/{module}.py does not define: "
+                f"__all__ names functions sdk/{module}.py does not define or re-export: "
                 f"{sorted(exported - defined)}"
             )
             private = {n for n in stubbed if n.startswith("_")}

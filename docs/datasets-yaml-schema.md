@@ -10,6 +10,7 @@ and resource definitions consumed by all services in the genetics results platfo
 resources: { ... }
 tables: { ... }
 dataset_to_resource_rules: [ ... ]
+gene_sets: { ... }
 
 # per-profile
 profiles:
@@ -222,6 +223,33 @@ Rules:
 **Consumer**: `scripts/gen-sandbox-docs.py` (the sandbox schema markdown). db-api takes its
 `/schema` types from the live BigQuery job schema and ignores this block.
 
+### Field details for `cohorts`
+
+An optional list of short lowercase tokens, one per sample collection whose individuals
+contributed to the dataset (`[finngen]`, `[ukb]`, `[decode]`, `[estbb, ukb]`). A meta-analysis
+lists every collection it pools. It surfaces unchanged in `GET /v1/datasets` and in
+`genetics.datasets()` (emitted only when set, so read it with `.get`).
+
+- **Semantics for readers.** A token names a sample *collection*, not a sample set, so the
+  registry can establish only that two datasets draw on the same collection(s); the overlap
+  fraction is not recorded. The MR module intersects the two lists: a non-empty intersection
+  means overlapping samples from the named collection(s), fraction unknown; equal lists mean
+  the same collection(s), still with unknown fraction (never one-sample MR: `ukbb_pqtl` and
+  `ukbb_finucane` are both `[ukb]` with different sample sets). A list absent on either side
+  means *unknown*, not "no overlap". Disjoint lists do not establish independent samples (see
+  below). The statement is reported alongside the result and is never used to refuse an
+  analysis.
+- **Absence of a token is not evidence of absence.** A list records what the entry itself
+  documents. Consortium datasets (`pgc`, `gp2`, `covid_hgi`, `iibdgc`) carry one token naming
+  the consortium because their entries do not say whether FinnGen or UK Biobank individuals
+  are among the cohorts, so they can overlap with a dataset whose list shares no token.
+- Entries whose provenance the entry does not state (the eQTL Catalogue collection, the
+  Open Targets GWAS collection, `finngen_nmr`) leave the field out. The field is set on the
+  association-result data types the MR module consumes (`gwas`, `pqtl`, `eqtl`, `caqtl`,
+  `metaboqtl`, `asmqtl`, `mixed`) whose entry states its provenance, and left out elsewhere
+  (`hla`, exome, gene-based and annotation entries).
+- Tokens are free-form; keep one spelling per collection across entries.
+
 ### Field details for `tables.<table>.categorical_columns`
 
 The value for each categorical column entry controls how distinct values are fetched:
@@ -290,6 +318,33 @@ rules. This keeps the rules focused on SQL view generation and resource lookup.
 
 **Consumer**: db SQL view generation script, results-api dataset-to-resource mapper
 
+## Section: `gene_sets`
+
+Profile-independent pin for the gene-set bundle baked into the sandbox image.
+
+```yaml
+gene_sets:
+  release: string|null   # the bundle's release id, <raw YYYYMMDD>.hgnc<YYYYMMDD>.gencode<N>;
+                         # null = no bundle built
+```
+
+`release` is what build-time staging (`scripts/stage-gene-sets.py`) compares the bundle
+manifest's `bundle.release_id` against; null is refused, not treated as "any".
+`profiles.<p>.gene_set_licences` is the allowlist the same staging step checks each
+collection's licence id against — an SPDX id, or `LicenseRef-*` for terms SPDX has no id for.
+A collection the deployment cannot carry (share-alike, a licence needing a commercial
+agreement, or `LicenseRef-HPO` outside daly) is dropped from the
+staged bundle, and the drop is recorded in the staged manifest. It does not fail the build,
+because every bundle carries such a collection for some deployment. The enforcement lives in
+the staging script, not in this config: its `fetch` step verifies the pin and checksums on the
+build host, and its `filter` step drops collections in the sandbox image's builder stage,
+reading the pin and allowlist from the build's own copy of this file rather than from the
+unchecksummed `policy.json` that `fetch` writes.
+
+Only daly lists `LicenseRef-HPO`, MSigDB's `c5.hpo`: the HPO's own terms (cite the
+consortium, show the version, do not alter the content) suit an academic deployment, and its
+OMIM/Orphanet-derived annotations have not been cleared for the commercial-partner one.
+
 ## Section: `profiles`
 
 Per-deployment-profile configuration. Each profile has its own dataset registry and
@@ -299,6 +354,8 @@ GCS bucket paths. The two current profiles are `finngen` (internal FinnGen acces
 ```yaml
 profiles:
   <profile_name>:
+    gene_set_licences: [string]  # licence ids the sandbox gene-set bundle may contain in
+                                 # this deployment; see `gene_sets` above
     datasets:
       <dataset_id>:              # stable identifier referenced by product configs
         resource: string         # required -- resource_id (must exist in `resources`)
@@ -322,6 +379,9 @@ profiles:
         n_controls: integer              # control count (binary traits)
         n_phenotypes: integer            # number of phenotypes
         pseudo_credible_sets: boolean    # true if credible sets are pseudo (not fine-mapped)
+        cohorts: [string]                # lowercase tokens naming the sample collections whose
+                                         # individuals contributed (finngen, ukb, decode, ...);
+                                         # see "Field details for `cohorts`" below
         on_request: boolean              # true: served only when a request names the resource;
                                          # absent from default search and the /datasets catalogue
         collection: boolean              # true if this is a collection of sub-studies

@@ -280,6 +280,48 @@ defaults, not a requirement. One verification run used 12000/12001, 15000-15003,
 (`ss -ltnp | grep -E ':(2000|3000|4000|5000|8080|8082)'`) so you know you did not disturb the
 copy someone else is using.
 
+### MR proving ground: results-api with `finngen_r12`, db-api on `genetics_results`
+
+The `genetics.mr` work runs against results-api from source on the daly profile (it serves the
+`finngen_r12` LD panel from `gs://daly-genetics-results/ld/finngen/r12/` through ADC) and db-api
+on production data, with the SDK imported straight from the genetics-mcp-server checkout — no
+sandbox, no chat-api. The daly account cannot read the script's default
+`phewas-development:genetics_dev`, so name the project and dataset:
+
+```bash
+gcloud auth application-default print-access-token >/dev/null   # results-api reads GCS via ADC
+PROJECT_ID=daly-finngenie CONFIG_PROFILE=daly \
+  scripts/dev-stack.sh up --tree main --dataset genetics_results db-api results-api
+```
+
+`up` copies `configs/datasets.yaml` into genetics-results-db and genetics-results-api (gitignored
+there). results-api comes up on :2000; its LD routes are under `/api`, e.g.
+`curl localhost:2000/api/v1/ld/panels` lists `finngen_r12`. When :8080 is already held by a
+db-api that is not this suite's (`up` refuses to free it and skips db-api), start one by hand on a
+free port with the same environment `start_db_api` sets, the generated secrets included. On the
+daly dev VM that is the normal case: :8080 is the staging db-api, run from
+`~/staging/genetics-results-db` on `DATASET_ID=genetics_results_dev`, and the main checkout's
+db-api on `genetics_results` is the one started here on :8085:
+
+```bash
+RUN=~/.cache/genetics-dev-stack; cd ~/suite/genetics-results-db
+( export PROJECT_ID=daly-finngenie DATASET_ID=genetics_results PORT=8085 SANDBOX_ENABLED=false \
+    SANDBOX_TOKEN_SIGNING_KEY="$(cat $RUN/sandbox-token-signing-key)" \
+    INTERNAL_API_SECRET="$(cat $RUN/internal-api-secret)"
+  exec setsid .venv/bin/python api/main.py ) > $RUN/db-api-8085.log 2>&1 &
+```
+
+`dev-stack.sh down` does not know about that one; stop it by its port. The SDK reads
+`GENETICS_API_URL` (`http://localhost:2000/api`), `BIGQUERY_API_URL` (the db-api) and
+`INTERNAL_API_SECRET`, which `dev-stack.sh` generates once into
+`~/.cache/genetics-dev-stack/internal-api-secret`. `scripts/mr-proving-ground.py --groups ground`
+checks the whole of this, reading the secret from that file; pass the db-api with
+`MR_DB_API_URL=http://127.0.0.1:8085` (or `--db-api-url`) when it is not on :8080. A healthy
+db-api is not enough, since the staging one on :8080 answers `/health` too: `ground` dry-runs
+a query naming `genetics_results.credible_sets_v`, which db-api's table allow-list admits only
+when its `DATASET_ID` is `genetics_results`, and fails the check otherwise. No db-api route
+reports the dataset it does serve, so a failure says only that it is not `genetics_results`.
+
 ## 1. Create the VM
 
 ```bash

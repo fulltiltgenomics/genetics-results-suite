@@ -78,6 +78,11 @@ With `DEPLOY_ENV` unset the scripts keep the original single-deployment behaviou
 `terraform.tfvars`, backend derived from its `config_profile`), which is what the `finngen`
 instance uses.
 
+One `.env` knob differs by profile rather than by deployment: `GENE_SETS_BUCKET`, the bucket
+the sandbox build fetches the gene-set bundle from. Only the daly profile's bucket is built in
+(`scripts/stage-gene-sets.py`), so `daly` and `daly-staging` leave it unset and `finngen`, like
+any other profile, must set it or its sandbox image is not built.
+
 ## Two deployments in one GCP project
 
 `daly` and `daly-staging` share the `daly-finngenie` project, so anything **project**-scoped

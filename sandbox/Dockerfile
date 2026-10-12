@@ -1,8 +1,10 @@
 # Sandbox image for model-authored Python. Design of record: docs/code-execution-security.md.
 #
 # The build needs a staged genetics-mcp-server checkout at ./.sdk-src — the genetics SDK is
-# pip-installed from that repo and is not vendored here. scripts/build-all.sh and
-# scripts/build.sh stage it; a bare `docker build sandbox/` fails without it, by design.
+# pip-installed from that repo and is not vendored here — and the staged gene-set bundle at
+# ./.genesets-src and ./.genesets-tools. scripts/build-all.sh, scripts/build.sh and
+# scripts/run-sandbox-local.sh (with a fixture bundle) stage both;
+# a bare `docker build sandbox/` fails without them, by design.
 
 FROM gcr.io/distroless/python3-debian12:nonroot AS distroless
 
@@ -67,9 +69,28 @@ COPY --from=distroless /etc/passwd /out/passwd
 COPY --from=distroless /etc/group /out/group
 RUN printf 'sandboxchild:x:65533:65532:sandbox child:/nonexistent:/sbin/nologin\n' >> /out/passwd
 
+# The gene-set bundle. The build scripts fetch and verify it on the host into .genesets-src
+# (scripts/stage-gene-sets.py fetch; no polars there) and stage the script with THIS build's
+# configs/datasets.yaml into .genesets-tools. It is licence-filtered here, where polars is,
+# against that datasets.yaml rather than fetch's policy.json, which no checksum covers. Both
+# directories are copied by name: the staging renames through .genesets.tmp-*/.old-* siblings,
+# and a stale one must never reach the image. PyYAML goes to a path the final stage never copies.
+ARG GENESETS_PROFILE
+ARG GENESETS_RELEASE
+# local runs only (run-sandbox-local.sh); the build scripts that push never pass it
+ARG GENESETS_ALLOW_FIXTURE=0
+RUN python3 -m pip install --no-cache-dir --target /build/pyyaml PyYAML==6.0.2
+COPY .genesets-tools/ /build/genesets-tools/
+COPY .genesets-src/ /build/genesets-src/
+RUN test -n "${GENESETS_PROFILE}" || { echo "build arg GENESETS_PROFILE is required" >&2; exit 1; }; \
+    PYTHONPATH="${PYTHONPATH}:/build/pyyaml" python3 /build/genesets-tools/stage-gene-sets.py \
+      filter --profile "${GENESETS_PROFILE}" --datasets-yaml /build/genesets-tools/datasets.yaml \
+      --bundle-dir /build/genesets-src --out-dir /out/genesets
+
 # Assert the final image's properties from HERE: the final stage has no shell, so nothing can
 # be checked after it is assembled. /dl is the base rootfs verbatim, the Dockerfile is staged
 # so the checks can read the final stage's ENV, and schema/ and stubs/ for the placeholder gate.
+# The gene-set checks read GENESETS_* from the ARGs above.
 COPY --from=distroless / /dl/
 COPY schema/ /build/schema/
 COPY stubs/ /build/stubs/
@@ -84,6 +105,9 @@ FROM gcr.io/distroless/python3-debian12:nonroot
 # alone does not identify the contents. The build scripts pass that repo's short sha here.
 ARG SDK_REF=unknown
 LABEL com.fulltiltgenomics.genetics-mcp-server-ref="${SDK_REF}"
+# build-checks.py asserts the bundle in /genetics/genesets is this release
+ARG GENESETS_RELEASE=unknown
+LABEL com.fulltiltgenomics.gene-sets-release="${GENESETS_RELEASE}"
 
 COPY --from=builder /out/passwd /etc/passwd
 COPY --from=builder /out/group /etc/group
@@ -96,6 +120,9 @@ COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
 COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
 COPY --chown=65532:65532 schema/ /genetics/schema/
 COPY --chown=65532:65532 stubs/ /genetics/sdk/
+# root-owned, world-readable: the sandbox uid reads the bundle and cannot rewrite it even
+# where the rootfs is writable (a local run)
+COPY --from=builder /out/genesets /genetics/genesets
 
 # The venv's bin/python3 symlinks the BUILDER's interpreter, which does not exist here, so the
 # distroless one runs against the venv's site-packages — same minor version, so the cp311
@@ -117,7 +144,15 @@ COPY --chown=65532:65532 stubs/ /genetics/sdk/
 # affects the column count. MAX_ROWS stays finite because the supervisor's stdout window is
 # 64 KiB head-and-tail; unbounded rows would trade a silent column elision for a silent byte
 # elision, which is the same bug wearing a different hat.
-ENV POLARS_FMT_MAX_COLS=-1 \
+#
+# POLARS_MAX_THREADS because each polars thread's glibc malloc arena reserves address space
+# against the 2560 MiB RLIMIT_AS, and the pin bounds that reservation whatever CPU count the
+# runtime exposes to polars: under runc polars follows the cgroup quota, but under gVisor it
+# sees the node's CPUs, not the quota. Measured in the daly-staging sandbox: cpu_count 2 and
+# thread_pool_size 2 at a 1500m limit; gene-set load plus ORA over every collection peaked at
+# 1.41 GB VmSize.
+ENV POLARS_MAX_THREADS=2 \
+    POLARS_FMT_MAX_COLS=-1 \
     POLARS_FMT_MAX_ROWS=50 \
     POLARS_FMT_STR_LEN=100 \
     POLARS_TABLE_WIDTH=-1 \
@@ -129,6 +164,7 @@ ENV POLARS_FMT_MAX_COLS=-1 \
     GENETICS_MPLCACHE=/genetics/mplcache \
     GENETICS_SCHEMA_DIR=/genetics/schema \
     GENETICS_STUBS_DIR=/genetics/sdk \
+    GENETICS_GENESETS_DIR=/genetics/genesets \
     GENETICS_PREWARM=/genetics/prewarm.py \
     SANDBOX_SUPERVISOR_UID=65532 \
     SANDBOX_CHILD_UID=65533 \

@@ -723,6 +723,15 @@ the gitignored `sandbox/.sdk-src`, which only exists after an *interrupted* buil
 silently regenerate the shipped stubs from an old SDK.
 The build still fails while `sandbox/schema/` and `sandbox/stubs/` hold placeholders.
 
+Both scripts also stage the gene-set bundle the image serves at `/genetics/genesets`
+(`stage_gene_sets` in `scripts/lib/env.sh`): `./scripts/stage-gene-sets.py fetch` with the
+profile from the deployment tfvars' `config_profile` fetches and verifies the release pinned in
+`configs/datasets.yaml` into `sandbox/.genesets-src/`, and the image's builder stage
+licence-filters it and asserts the result (`sandbox/build-checks.py`). Only daly's bucket is
+known; any other profile needs `GENE_SETS_BUCKET` (e.g. in `.env.<DEPLOY_ENV>`), and
+`GENE_SETS_SOURCE_DIR` reads a local copy of the release instead of GCS. `build.sh sandbox`
+fails on a non-zero exit; `build-all.sh` skips the sandbox the same way as above.
+
 `./scripts/run-sandbox-local.sh` builds that same image and runs it in a **plain Docker
 container** on the developer machine — no cluster, no credentials, nothing pushed — with the
 supervisor passed as the container's command, `--read-only`, `--cap-drop ALL`, uid 65532 and a
@@ -735,7 +744,11 @@ local `/scratch` tmpfs is charged to the container's memory cgroup while the pod
 `emptyDir` is charged to `ephemeral-storage` instead. `--test` then runs
 `python3 scripts/test-supervisor.py --container http://127.0.0.1:8081 --container-name NAME`
 against it (the name is what lets the audit-stream group read the container's stdout);
-`--stop` removes it. See "Running the sandbox locally" in `docs/project-spec.md`.
+`--stop` removes it. Its gene-set bundle is genetics-mcp-server's `tests/fixtures/genesets`
+fixture, never GCS: the script rewrites the fixture's manifest to the release
+`configs/datasets.yaml` pins, fetches it with `stage-gene-sets.py fetch --source-dir`, and builds
+with `GENESETS_PROFILE` (default `daly`) and `GENESETS_ALLOW_FIXTURE=1` — the only build that
+passes it. See "Running the sandbox locally" in `docs/project-spec.md`.
 
 The Deployment is `k8s/deployments/sandbox.yaml`. The image ships no `CMD` and its ENTRYPOINT is
 the bare interpreter, so the manifest supplies the supervisor itself —

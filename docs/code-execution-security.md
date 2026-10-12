@@ -257,6 +257,14 @@ constant. Nothing here is configurable at runtime.
 
 <!-- END GENERATED: limits -->
 
+The image's `POLARS_MAX_THREADS=2` belongs with the memory bound. Each polars thread's glibc
+malloc arena reserves address space that `RLIMIT_AS` counts, and the pin bounds that
+reservation whatever CPU count the runtime exposes to polars: under runc polars follows the
+cgroup quota, but under gVisor it sees the node's CPUs, not the quota. Measured in the
+daly-staging sandbox: polars reported cpu_count 2 and thread_pool_size 2 at the 1500m limit,
+and loading the gene-set bundle and running ORA over every collection peaked at 1.41 GB
+VmSize.
+
 Two of these are worth reading together, because they are the ones that interact badly.
 Exceeding an `emptyDir` `sizeLimit` does not fail the write — **the kubelet evicts the pod**,
 killing the in-flight script *and* destroying every retained artifact from every earlier
@@ -379,6 +387,25 @@ and if polars stops honouring it — and `GCE_METADATA_HOST` pinned to a literal
 last one is the branch a distribution-name check cannot see: polars links
 `object_store`, a Rust GCS client that mints metadata tokens with no Python in the path.
 
+**Gene sets are public, licensed data baked into the image** at `/genetics/genesets`
+(`GENETICS_GENESETS_DIR`, root-owned, world-readable; the release is the
+`com.fulltiltgenomics.gene-sets-release` label). Nothing in them is secret — the risk they carry
+is a licence one: shipping a collection a deployment may not redistribute (KEGG, BioCarta, or
+HPO where `profiles.<profile>.gene_set_licences` omits it). The host fetches and verifies the
+pinned bundle (`scripts/stage-gene-sets.py fetch`); the builder drops every collection whose
+SPDX licence the build's own `configs/datasets.yaml` does not allow for the build-arg profile —
+not fetch's `policy.json`, which no checksum covers. `build-checks.py` then asserts the
+filtered result rather than trusting the filter: the profile it was filtered for and its
+release match the build; every collection in the data is in the manifest exactly once with an
+allowed licence; no member row outlives its set; no set id, name or collection matches
+KEGG/BioCarta after case and punctuation are dropped; the directory holds exactly the files
+the manifest lists, with matching bytes and sha256; it is non-empty and world-readable; and it
+is not a test fixture (a manifest with `"fixture": true` is refused unless the build passes
+`GENESETS_ALLOW_FIXTURE=1`, which only a local build does — the `PLACEHOLDER` gate's
+counterpart). One gap is accepted: the bundle's manifest certifies itself, so a manifest
+rewritten together with a file passes every checksum; closing it needs the manifest's sha256
+pinned beside `gene_sets.release`.
+
 One of those checks reads source rather than running it, and the reason is the same one that
 makes the prune worth doing at all. `import genetics_mcp_server.sdk` executes module bodies and
 nothing else, so an import deferred into a method — the house style for adding capability to
@@ -397,6 +424,7 @@ side of Python 3.11 a conditional requirement falls on.
 The final stage's environment, all of it:
 
 - `GCE_METADATA_HOST=169.254.169.254`
+- `GENETICS_GENESETS_DIR=/genetics/genesets`
 - `GENETICS_MPLCACHE=/genetics/mplcache`
 - `GENETICS_PREWARM=/genetics/prewarm.py`
 - `GENETICS_SCHEMA_DIR=/genetics/schema`
@@ -405,6 +433,7 @@ The final stage's environment, all of it:
 - `POLARS_FMT_MAX_COLS=-1`
 - `POLARS_FMT_MAX_ROWS=50`
 - `POLARS_FMT_STR_LEN=100`
+- `POLARS_MAX_THREADS=2`
 - `POLARS_TABLE_WIDTH=-1`
 - `PYTHONFAULTHANDLER=1`
 - `PYTHONPATH=/opt/venv/lib/python3.11/site-packages`
@@ -419,10 +448,13 @@ The final stage's environment, all of it:
 
 - `genetics_mcp_server/__init__.py`
 - `genetics_mcp_server/sdk/__init__.py`
+- `genetics_mcp_server/sdk/_mr_estimators.py`
 - `genetics_mcp_server/sdk/_runner.py`
 - `genetics_mcp_server/sdk/client.py`
+- `genetics_mcp_server/sdk/enrichment.py`
 - `genetics_mcp_server/sdk/errors.py`
 - `genetics_mcp_server/sdk/linemodels.py`
+- `genetics_mcp_server/sdk/mr.py`
 - `genetics_mcp_server/sdk/plots.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/chembl.py`
@@ -479,6 +511,13 @@ widening of the sandbox's egress — the NetworkPolicy is untouched, no DNS rule
 `sandbox-policy.yaml`'s "no ipBlock of any kind" still holds. The sandbox talks to
 results-api, as it already did for summary statistics.
 
+The delegation is only for panels results-api does not hold itself. A panel the profile
+configures (`finngen_r12` on daly: tabix-indexed pair matrices on the suite's own bucket, see
+"LD: own panels and the upstream proxy" in `docs/project-spec.md`) is read like any other data
+product — a GCS range read under the workload identity, no outbound call, no third party — so
+`panel=finngen_r12` has none of the exposure listed below, and the exfiltration channel is only
+reachable by naming a panel results-api does not have.
+
 What bounds the delegation, all in `app/routers/ld.py` and `app/services/ld_service.py`:
 
 - the caller controls **three** values and each is shape-checked before the outbound request:
@@ -533,22 +572,28 @@ rasters it hands back through `page.images` are decoded by Pillow, which matplot
 brings. It does not widen what may be delivered: the caps in the limits table apply to the
 decoded bytes, so a PDF over them is refused as `InputsTooLarge` before any extractor sees it.
 
-`genetics.plots` and `genetics.linemodels` are the SDK's analysis surfaces: standard figures
-— a locuszoom, a phewas, an upset, a forest plot, a volcano and the line-models figure today — and
-Pirinen's line
-models as a numpy port, as functions rather than as instructions a script rederives. Both
-are shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while deliberately staying *outside* the
-SDK's import closure, resolved through a module `__getattr__` so chat-backend and mcp-server
+The modules listed in `SURFACE_MODULES` (`scripts/gen-sandbox-docs.py`) are the SDK's analysis
+surfaces: figures, models and statistical tests offered as functions rather than as
+instructions a script rederives. Each is shipped by `prune_venv.py`'s `SDK_ALLOWLIST` while
+deliberately staying *outside* the SDK's import closure, resolved through a module
+`__getattr__` so chat-backend and mcp-server
 never import matplotlib or numpy. That has one consequence worth stating:
 genetics-mcp-server's `tests/test_sdk_import_closure.py` measures the shipped set by
 importing the SDK, so it cannot see these files — `SHIPPED_OUTSIDE_CLOSURE` in that test is
 the second list that keeps them scanned, and it and `SDK_ALLOWLIST` have to agree by hand.
-Each module's stub (`sandbox/stubs/plots.pyi`, `linemodels.pyi`) is generated from its
+`sdk/mr.py` imports `sdk/_mr_estimators.py`, so both files are on both lists.
+Each module's stub (`sandbox/stubs/<module>.pyi`) is generated from its
 `__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same way
-the data surface is; the generator's `SURFACE_MODULES` is where the pair is named.
+the data surface is; the generator's `SURFACE_MODULES` is where they are named. An
+exported name may be a class (rendered with its docstring, annotated fields and public
+methods) or a function re-exported from a sibling SDK module, read from that module's
+source; `mr.pyi` has both. It discloses nothing secret: the MR docstrings, the result
+classes' fields and the module constants used as signature defaults (a bootstrap seed, an iteration
+count, the frequency tolerance and the in-flight limit) — no endpoint, credential or service name.
 
 The line-models port widens what the image can *do* by nothing: numpy and scipy were already
-pinned, and the module opens no socket and reads no file. It was chosen over installing R in
+pinned, and the module opens no socket and reads no file. The enrichment module is the same
+apart from one read: the root-owned bundle under `GENETICS_GENESETS_DIR`. It was chosen over installing R in
 the image precisely on that ground — R runs without a shell (`bin/exec/R` with a hand-built
 environment), but it is a second runtime of ~140 MB with its own `system()` and download
 paths to reason about, for a model whose core is a Cholesky and a rotation.
@@ -1524,7 +1569,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | harness | proves | needs |
 |---|---|---|
 | `scripts/test-supervisor.py` | the wire contract, the queue, every supervisor limit watched *firing*, the artifact manifest and its integrity binding, encryption at rest, the fork server and its failure paths, cross-execution memory isolation, the bounded header read, the head deadlines, descriptor ownership, the shutdown gate, PID 1 orphan reaping | nothing: no cluster, no credentials, no image |
-| `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache and the absence of credentials in the child's environment | a container from `scripts/run-sandbox-local.sh` |
+| `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache, the absence of credentials in the child's environment, and the gene-set bundle as an execution sees it (present, root-owned and unwritable, loaded by `genetics.enrichment` within the address-space cap) | a container from `scripts/run-sandbox-local.sh` |
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union. It covers **both** pods whose NetworkPolicy is the reason they are safe: for the URL fetcher, that only chat-backend may reach it and the **sandbox may not** (a sandbox that can call the fetcher has internet egress through a proxy), that its egress is 443 with every one of the five `except` blocks present, that its KSA carries no Workload Identity annotation and mounts no token, that no credential reaches its environment in any form, and that it is distroless, non-root and read-only | the manifests and `url-fetcher/Dockerfile`; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |

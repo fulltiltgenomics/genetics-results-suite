@@ -505,6 +505,56 @@ set_build_cache_args() {
   BUILD_CACHE_ARGS=(--cache-from "${REGISTRY}/$1:latest" --build-arg BUILDKIT_INLINE_CACHE=1)
 }
 
+# The host half of the sandbox image's gene-set bundle (scripts/stage-gene-sets.py): fetch and
+# verify the pinned bundle into <sandbox>/.genesets-src, and stage in <sandbox>/.genesets-tools
+# what the builder stage needs to licence-filter it and assert the result — the script, its
+# lib/paths.py, and THIS checkout's configs/datasets.yaml, which the builder reads instead of
+# fetch's policy.json because no checksum covers that file. Sets GENESETS_BUILD_ARGS.
+#
+# The profile is passed explicitly: left to the script it would be resolved a second time from
+# the same tfvars by a stricter parser. The bucket is not derived here either — the script knows
+# daly's and refuses any other profile without GENE_SETS_BUCKET (set it in .env.<DEPLOY_ENV>).
+# GENE_SETS_SOURCE_DIR reads a local copy of the release prefix instead of GCS.
+#
+# The script, lib/paths.py and datasets.yaml come from the checkout that owns <sandbox>, like
+# the Dockerfile and build-checks.py do, so an exported ROOT_DIR naming another checkout cannot
+# make the build enforce that tree's pin and allowlist. ROOT_DIR itself still supplies the
+# tfvars (worktree builds rely on that), so a mismatch is warned about, not refused.
+#
+# Returns non-zero rather than exiting, because build-all.sh skips the sandbox where build.sh
+# fails; under `||` set -e is off in here, so every step returns explicitly.
+stage_gene_sets() {
+  local sandbox_dir=$1 profile release src_root
+  src_root="$(cd "${sandbox_dir}/.." && pwd)" || return $?
+  if [ "${src_root}" != "$(cd "${ROOT_DIR}" && pwd)" ]; then
+    echo "WARNING: ROOT_DIR is ${ROOT_DIR} but the sandbox being built is in ${src_root};" >&2
+    echo "         the gene-set pin and licence allowlist are read from ${src_root}/configs/datasets.yaml," >&2
+    echo "         the tfvars from ROOT_DIR." >&2
+  fi
+  local fetch=(fetch --out-dir "${sandbox_dir}/.genesets-src")
+  rm -rf "${sandbox_dir}/.genesets-src" "${sandbox_dir}/.genesets-tools"
+  profile="$(tfvar config_profile)"
+  if [ -z "${profile}" ]; then
+    echo "ERROR: no config_profile in ${TFVARS:-the tfvars of this deployment}. The gene-set licence" >&2
+    echo "       allowlist is per profile, so the sandbox image cannot be built without one." >&2
+    return 2
+  fi
+  fetch+=(--profile "${profile}")
+  if [ -n "${GENE_SETS_SOURCE_DIR:-}" ]; then
+    fetch+=(--source-dir "${GENE_SETS_SOURCE_DIR}")
+  fi
+  echo "--- Fetching the gene-set bundle for profile ${profile} (datasets.yaml: ${src_root}/configs/datasets.yaml)"
+  python3 "${src_root}/scripts/stage-gene-sets.py" "${fetch[@]}" || return $?
+  release="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["bundle"]["release_id"])' \
+    "${sandbox_dir}/.genesets-src/manifest.json")" || return $?
+  mkdir -p "${sandbox_dir}/.genesets-tools/lib" || return $?
+  cp "${src_root}/scripts/stage-gene-sets.py" "${src_root}/configs/datasets.yaml" \
+    "${sandbox_dir}/.genesets-tools/" || return $?
+  cp "${src_root}/scripts/lib/paths.py" "${sandbox_dir}/.genesets-tools/lib/" || return $?
+  GENESETS_BUILD_ARGS=(--build-arg GENESETS_PROFILE="${profile}"
+                       --build-arg GENESETS_RELEASE="${release}")
+}
+
 # THE OUT-OF-IMAGE HALF OF THE URL-FETCHER BUILD GATE.
 #
 # url-fetcher/build-checks.py runs inside a BUILDER STAGE, and BuildKit builds only the stages

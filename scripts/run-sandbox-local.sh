@@ -37,6 +37,15 @@ set -euo pipefail
 #                    not $REGISTRY/sandbox:latest — nothing here pushes, and a local build
 #                    must not be mistakable for the image the cluster pulls.
 #   SANDBOX_DOCKER_RUNTIME  force a runtime (e.g. runsc). Auto-detected when present.
+#   GENESETS_PROFILE profile whose gene_set_licences filter the fixture bundle (default daly,
+#                    which keeps both fixture collections).
+#
+# The gene-set bundle is the FIXTURE in genetics-mcp-server's tests/fixtures/genesets — the
+# toy sets the SDK's enrichment tests run against — never the real release, so nothing here
+# touches GCS. Its manifest is rewritten to name the release configs/datasets.yaml pins
+# (fetch refuses any other, and build-checks.py asserts bundle == pin == LABEL) and to list
+# each file's bytes and sha256; its top-level "fixture": true is kept, so only the
+# GENESETS_ALLOW_FIXTURE=1 this script passes lets the image build.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -79,7 +88,7 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     --logs) exec docker logs -f "${NAME}" ;;
-    -h | --help) sed -n '3,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h | --help) sed -n '3,48p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -137,8 +146,10 @@ if [ "${DO_BUILD}" = "1" ]; then
   fi
   echo "--- SDK source: ${MCP_DIR}"
 
-  trap 'rm -rf "${SANDBOX_DIR}/.sdk-src"' EXIT
-  rm -rf "${SANDBOX_DIR}/.sdk-src"
+  FIXTURE_DIR="${MCP_DIR}/tests/fixtures/genesets"
+  GENESETS_STAGE="$(mktemp -d)"
+  trap 'rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${GENESETS_STAGE}"' EXIT
+  rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
   mkdir -p "${SANDBOX_DIR}/.sdk-src"
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
@@ -165,9 +176,41 @@ if [ "${DO_BUILD}" = "1" ]; then
     echo "         in a way that has no runtime symptom. scripts/build.sh treats this as fatal."
   }
 
+  echo "--- Staging the fixture gene-set bundle from ${FIXTURE_DIR}"
+  GENESETS_RELEASE="$(python3 - "${REPO_ROOT}/configs/datasets.yaml" "${FIXTURE_DIR}" "${GENESETS_STAGE}" <<'PY'
+import hashlib, json, os, shutil, sys
+import yaml
+config, src, dest = sys.argv[1:]
+release = str((yaml.safe_load(open(config)).get("gene_sets") or {})["release"])
+manifest = json.load(open(os.path.join(src, "manifest.json")))
+assert manifest.get("fixture") is True, f"{src}/manifest.json is not marked fixture: true"
+files = {}
+for name in ("sets.parquet", "members.parquet", "genes.parquet"):
+    shutil.copyfile(os.path.join(src, name), os.path.join(dest, name))
+    data = open(os.path.join(dest, name), "rb").read()
+    files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+manifest["bundle"] = {"release_id": release, "files": files}
+json.dump(manifest, open(os.path.join(dest, "manifest.json"), "w"), indent=1)
+print(release)
+PY
+)"
+  GENESETS_PROFILE="${GENESETS_PROFILE:-daly}"
+  python3 "${SCRIPT_DIR}/stage-gene-sets.py" fetch --profile "${GENESETS_PROFILE}" \
+    --source-dir "${GENESETS_STAGE}" --out-dir "${SANDBOX_DIR}/.genesets-src"
+  # the same tools stage_gene_sets in scripts/lib/env.sh stages for the builder's filter step
+  mkdir -p "${SANDBOX_DIR}/.genesets-tools/lib"
+  cp "${SCRIPT_DIR}/stage-gene-sets.py" "${REPO_ROOT}/configs/datasets.yaml" "${SANDBOX_DIR}/.genesets-tools/"
+  cp "${SCRIPT_DIR}/lib/paths.py" "${SANDBOX_DIR}/.genesets-tools/lib/"
+
   SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD 2>/dev/null || echo local)"
-  echo "=== Building ${IMAGE} (SDK ${SDK_REF})"
-  docker build --build-arg SDK_REF="${SDK_REF}" -t "${IMAGE}" "${SANDBOX_DIR}"
+  echo "=== Building ${IMAGE} (SDK ${SDK_REF}; FIXTURE gene sets as ${GENESETS_RELEASE}, profile ${GENESETS_PROFILE})"
+  # an explicit =1: a bare --build-arg NAME reads the value from the caller's environment.
+  # No other script passes it.
+  docker build --build-arg SDK_REF="${SDK_REF}" \
+    --build-arg GENESETS_PROFILE="${GENESETS_PROFILE}" \
+    --build-arg GENESETS_RELEASE="${GENESETS_RELEASE}" \
+    --build-arg GENESETS_ALLOW_FIXTURE=1 \
+    -t "${IMAGE}" "${SANDBOX_DIR}"
 fi
 
 # --------------------------------------------------------------------------------------

@@ -37,7 +37,7 @@ be installed into a sandbox image on its own.
 
 AN EMPTY RESULT MAY HAVE NO COLUMNS (genetics-results-suite-6uk). The functions backed by
 results-api rather than BigQuery — exome, gene_burden, hla(phenotype=...), summary_stats,
-ld, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
+ld, ld_panels, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
 `[]` with no schema when nothing matches, so the DataFrame comes back 0x0 and `df.filter(pl.col("beta")
 > 0)` raises ColumnNotFoundError instead of yielding an empty frame. Check `df.is_empty()`
 (or `df.height == 0`) before naming a column, rather than assuming the shape of an empty
@@ -83,6 +83,8 @@ from genetics_mcp_server.sdk.client import GeneticsClient
 from genetics_mcp_server.sdk.errors import GeneticsError, GeneticsUsageError
 from genetics_mcp_server.sdk import plots as plots
 from genetics_mcp_server.sdk import linemodels as linemodels
+from genetics_mcp_server.sdk import mr as mr
+from genetics_mcp_server.sdk import enrichment as enrichment
 
 MAX_ROWS: int = 100000
 
@@ -156,7 +158,7 @@ def gene_burden(
                  gene tested in this trait and what came out" needs. Codes are
                  `trait_original` values (`search_phenotypes` / `phenotypes()` return
                  them), and a BRaVa ancestry stratum is its own code — 'AFib' is the
-                 cross-ancestry meta, 'AFib|EUR' the EUR stratum; results-api bounds how
+                 cross-ancestry meta, 'AFib|EUR' the EUR stratum; the server bounds how
                  many one call may name and answers 422 over it.
     phenotype  — every gene tested in one trait, unfiltered, from `resource`
                  (default 'finngen'). A Genebass trait is every gene x annotation and
@@ -437,16 +439,45 @@ def ld(
     window: int | None = None,
     r2_threshold: float | None = None,
     panel: str = 'sisu42',
+    fields: str | list[str] | None = None,
 ) -> pl.DataFrame:
-    """LD from the FinnGen LD server, proxied rather than called directly.
+    """LD from the suite's own panels, or from the FinnGen LD server proxied.
 
-    With `other`, one row for that pair; without it, every variant in LD above the
-    threshold. Defaults differ per shape and match the tool layer (0.1 for a named
-    pair, 0.6 for a neighbourhood scan).
+    With `other`, one row for that pair (`variant1`, `variant2`, `in_ld`, the statistics,
+    `panel`); without it, one row per variant in LD above the threshold (`variant` and
+    the statistics), strongest first. Defaults differ per shape and match the tool layer
+    (0.1 for a named pair, 0.6 for a neighbourhood scan); pass `r2_threshold=0` to get a
+    pair whenever the panel holds it.
+
+    `window` (neighbourhood scan only, default 1_500_000) is the TOTAL span centred on
+    `variant`, not a per-side flank as in the by-gene calls: a partner farther than
+    window/2 away is silently absent, not "below threshold" and not cut by a row cap. To
+    build an LD matrix over a set of variants, pass at least twice their full span.
+
+    WHICH STATISTICS COME BACK depends on the panel, and `ld_panels()` says which panels
+    this deployment serves. The LD server's panels (`sisu42`, the default) carry `r2` and
+    `d_prime`. `finngen_r12` — FinnGen R12 in-sample LD from the suite's own matrices, where
+    configured — carries SIGNED `r` and `r2`, for the alt alleles as spelled in the ids, for
+    every pair within 3 Mb at r2 >= 0.01. It is the only source of r, which a correlated-
+    instrument estimator needs and r2 cannot give; a swapped ref/alt is an error naming the
+    panel's spelling, never a silently negated r. `fields` picks a subset ("r", or
+    ["r", "r2"]); asking a panel for a statistic it lacks raises, naming what it carries.
+
+    On `finngen_r12` an empty pair answer (`in_ld` False) means both variants are in the
+    panel and the pair is below the floor — independent, not unknown — because a variant
+    the panel lacks raises instead. On the LD server the two cannot be told apart.
 
     The proxy is what makes this callable from a sandbox script at all: the LD server is
     on the public internet and the sandbox has no DNS and no internet egress, so a direct
     call resolves nothing. A script does not have to know or do anything about that.
+    """
+    ...
+
+def ld_panels() -> pl.DataFrame:
+    """The LD panels this deployment serves from its own matrices, one row each:
+    `panel`, `fields` (the statistics it carries), `r2_floor`, `max_distance`,
+    `n_samples`, `description`. Any other panel name goes to the FinnGen LD server,
+    which carries r2 and D' only. Empty where no own panel is configured.
     """
     ...
 
@@ -599,11 +630,18 @@ def datasets(resource: str | None = None, include_stats: bool = True) -> list[di
         {"dataset_id", "resource", "version", "description", "author",
          "publication_date", "trait_type", "data_type", "products", "dataset"?,
          "qtl_types"?, "n_samples"?, "n_phenotypes"?, "pseudo_credible_sets"?,
-         "collection"?, "subdataset_id_field"?, "stats"?, "metadata_endpoint"?}
+         "cohorts"?, "collection"?, "subdataset_id_field"?, "stats"?, "metadata_endpoint"?}
 
     The trailing `?` keys are present only when the registry sets them, so read them
     with `.get`. Filter it as a list comprehension over `data_type` or `resource`
     rather than walking it for nested dicts.
+
+    `cohorts` is a list of lowercase tokens naming the sample collections whose
+    individuals contributed (["finngen", "ukb"]). Two datasets sharing a token may share
+    samples (the overlap fraction is not recorded); a missing key means the provenance is
+    unrecorded, not that there is no overlap. Disjoint lists do not establish independent
+    samples: consortium tokens such as "iibdgc" or "pgc" may contain FinnGen or UK Biobank
+    individuals.
 
     `dataset_id` is the registry key and `dataset` is the value the results views hold
     in their `dataset` column ("finngen_somascan" vs "FinnGen_SomaScan"): a SQL filter
