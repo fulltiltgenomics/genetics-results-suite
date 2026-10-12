@@ -3354,7 +3354,7 @@ profiles:
         cohorts: [finngen, mvp, ukb, aou]
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_mvp_ukbb_aou_meta.json"
-        metadata_harmonizer: finngen_r13
+        metadata_harmonizer: finngen_meta
         pseudo_credible_sets: true
 
       finngen_mvp_ukbb:
