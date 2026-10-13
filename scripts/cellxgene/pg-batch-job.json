@@ -1,0 +1,64 @@
+{
+  "taskGroups": [
+    {
+      "taskCount": 1,
+      "taskSpec": {
+        "runnables": [
+          {
+            "container": {
+              "imageUri": "gcr.io/google.com/cloudsdktool/google-cloud-cli:slim",
+              "entrypoint": "/bin/bash",
+              "commands": [
+                "-c",
+                "set -euo pipefail; ID=d2a063da-2fd3-4be1-97bd-4ecc41631890; OUT=gs://daly-expression-data/cellxgene-staging/pg; start=$(date +%s); curl -fsSL --retry 3 -o /tmp/$ID.h5ad https://datasets.cellxgene.cziscience.com/$ID.h5ad; dl=$(( $(date +%s) - start )); bytes=$(stat -c %s /tmp/$ID.h5ad); gcloud storage cp /tmp/$ID.h5ad $OUT/$ID.h5ad; printf '{\"dataset_version_id\":\"%s\",\"bytes\":%s,\"download_seconds\":%s,\"total_seconds\":%s,\"host\":\"%s\"}\\n' $ID $bytes $dl $(( $(date +%s) - start )) $(hostname) | gcloud storage cp - $OUT/$ID.result.json"
+              ]
+            }
+          }
+        ],
+        "computeResource": {
+          "cpuMilli": 2000,
+          "memoryMib": 4096
+        },
+        "maxRetryCount": 2,
+        "maxRunDuration": "1800s"
+      }
+    }
+  ],
+  "allocationPolicy": {
+    "location": {
+      "allowedLocations": [
+        "regions/us-central1"
+      ]
+    },
+    "instances": [
+      {
+        "policy": {
+          "machineType": "e2-standard-2",
+          "provisioningModel": "SPOT"
+        }
+      }
+    ],
+    "network": {
+      "networkInterfaces": [
+        {
+          "network": "projects/daly-finngenie/global/networks/expression-batch-network",
+          "subnetwork": "projects/daly-finngenie/regions/us-central1/subnetworks/expression-batch-subnet",
+          "noExternalIpAddress": false
+        }
+      ]
+    },
+    "serviceAccount": {
+      "email": "expression-batch-worker@daly-finngenie.iam.gserviceaccount.com",
+      "scopes": [
+        "https://www.googleapis.com/auth/cloud-platform"
+      ]
+    }
+  },
+  "labels": {
+    "purpose": "expression-data",
+    "phase": "proving-ground"
+  },
+  "logsPolicy": {
+    "destination": "CLOUD_LOGGING"
+  }
+}
