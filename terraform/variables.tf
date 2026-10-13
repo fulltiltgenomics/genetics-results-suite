@@ -234,3 +234,34 @@ variable "services_cidr" {
   type        = string
   default     = "10.20.0.0/20"
 }
+
+variable "expression_data_enabled" {
+  description = <<-EOT
+    Create the single-cell expression bucket, enable batch.googleapis.com and create the Cloud
+    Batch worker service account (terraform/expression.tf). Default false because the bucket is
+    owned by exactly one deployment: daly-staging shares daly's project, and a bucket name is
+    global, so a second state enabling it would fail on create or, after an import, both states
+    would own it. scripts/deploy.sh runs `terraform apply -auto-approve`, so setting this true
+    in a tfvars file means the next full deploy of that environment creates the resources.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "expression_bucket_name" {
+  description = "Name of the single-cell expression bucket. Global namespace; only read when expression_data_enabled."
+  type        = string
+  default     = "daly-expression-data"
+}
+
+variable "expression_bucket_extra_readers" {
+  description = "Service-account emails, besides this deployment's own Workload Identity GSA, granted roles/storage.objectViewer on the expression bucket — the other deployments that serve it but do not own it (daly-staging's results-api GSA)."
+  type        = list(string)
+  default     = []
+}
+
+variable "expression_subnet_cidr" {
+  description = "Primary IPv4 range of the Cloud Batch workers' subnet. Must not overlap the GKE subnets and their secondary ranges, or broad-allow's central-subnet (10.10.0.0/20), in case the VPCs are ever peered."
+  type        = string
+  default     = "10.30.0.0/20"
+}

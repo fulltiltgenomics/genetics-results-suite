@@ -101,7 +101,7 @@ appended to exactly those names:
 `cluster_name` and need no suffix. PVCs live inside the cluster and are separate by
 construction.
 
-Two shared-project hazards are handled explicitly:
+Shared-project hazards handled explicitly:
 
 - **The dataset the cluster serves.** `bq_dataset` in the tfvars (default `genetics_results`)
   is rendered by `deploy.sh` into db-api's `DATASET_ID` *and* the monitor CronJob's
@@ -110,6 +110,23 @@ Two shared-project hazards are handled explicitly:
   pointed at a rehearsal clone (`docs/bigquery-dev-dataset.md`) for the life of one change.
   `deploy.sh` refuses an empty value rather than defaulting it: db-api's own fallback is
   `genetics_results`, so an empty render serves production data from staging without failing.
+- **The expression bucket is owned, not suffixed.** `gs://daly-expression-data`, the
+  `batch.googleapis.com` API and the Cloud Batch worker GSA `expression-batch-worker`
+  (`terraform/expression.tf`) exist once for the project and are served to both clusters, so
+  only one state may create them: `expression_data_enabled = true` is set in
+  `terraform.tfvars.daly` alone and defaults to false everywhere else. Staging's results-api
+  GSA reads the bucket through `expression_bucket_extra_readers` in **daly's** tfvars, so a
+  change to that grant is a daly apply, not a staging one. Because `deploy.sh` applies
+  terraform unattended, setting the flag in a tfvars file is itself the decision to create the
+  resources on that environment's next full deploy. The Batch workers run in a dedicated VPC
+  (`expression-batch-network`, also created by that flag) with no ingress firewall rules and
+  egress through each worker's external IP, because every existing network would expose
+  something to a VM that parses third-party files: in a cluster's VPC, GKE's
+  `gke-<cluster>-…-vms` rule admits the node subnet to every node port, and `broad-allow` holds
+  the admin dev VM, with its owner credentials, tfvars and kube contexts, under an
+  allow-all-internal rule. Submitting a job that runs as `expression-batch-worker` needs
+  `roles/batch.jobsEditor` plus `roles/iam.serviceAccountUser` on that GSA (project Owners
+  hold both).
 - **Log sinks.** `terraform/logging.tf` filters both sinks on
   `resource.labels.cluster_name`. Without it a namespace/container-only filter routes both
   clusters into the same BigQuery dataset, mixing staging traffic into the production chat and
