@@ -126,7 +126,18 @@ Shared-project hazards handled explicitly:
   the admin dev VM, with its owner credentials, tfvars and kube contexts, under an
   allow-all-internal rule. Submitting a job that runs as `expression-batch-worker` needs
   `roles/batch.jobsEditor` plus `roles/iam.serviceAccountUser` on that GSA (project Owners
-  hold both).
+  hold both). The same flag creates the refresh chain — Cloud Scheduler runs as
+  `expression-scheduler`, which may act as `expression-batch-driver` only, which may act as
+  `expression-batch-worker` only — so no identity in it can launch a job as anything else in
+  the project. The Cloud Scheduler job itself sits behind a second flag,
+  `expression_refresh_schedule_enabled`, because its body is the driver's Batch job spec
+  (`expression_refresh_job_spec_path`); it is created paused, and unpausing it with
+  `gcloud scheduler jobs resume` is the decision to start weekly refreshes — terraform ignores
+  `paused` after creation, so a later apply (including `deploy.sh`'s) leaves that decision
+  alone in either direction. Raw files are kept under `cellxgene/raw/` by
+  `dataset_version_id` and are never overwritten, so the bucket has no versioning: a version
+  CELLxGENE has retired is deleted 90 days after the driver sets its `customTime`, and one
+  that is never marked is kept.
 - **Log sinks.** `terraform/logging.tf` filters both sinks on
   `resource.labels.cluster_name`. Without it a namespace/container-only filter routes both
   clusters into the same BigQuery dataset, mixing staging traffic into the production chat and

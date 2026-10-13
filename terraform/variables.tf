@@ -265,3 +265,21 @@ variable "expression_subnet_cidr" {
   type        = string
   default     = "10.30.0.0/20"
 }
+
+variable "expression_refresh_schedule_enabled" {
+  description = "Create the Cloud Scheduler job that submits the expression driver Batch job (created paused). Separate from expression_data_enabled because it needs the driver job spec, which does not exist until the driver lands."
+  type        = bool
+  default     = false
+}
+
+variable "expression_refresh_job_spec_path" {
+  description = "Path to the driver Batch job spec (the JSON body of a batch.googleapis.com jobs.create request, with the job running as expression-batch-driver). Read only when expression_refresh_schedule_enabled."
+  type        = string
+  default     = ""
+}
+
+variable "expression_refresh_schedule" {
+  description = "Cron schedule (UTC) of the expression refresh job."
+  type        = string
+  default     = "0 3 * * 1"
+}
