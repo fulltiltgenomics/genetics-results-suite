@@ -310,9 +310,11 @@ is computed by a `CASE` in the *view SQL itself* is exactly `resource_derivation
 the view — so `mode != none` overcounts this subset by one). The views outside the
 `view_case` subset that still carry a `resource` column as a hardcoded single-source
 constant — `gene_annotations_v`, `dosage_sensitivity_v`, `variant_annotation_v`,
-`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are exactly `resource_derivation.mode == 'none'` with
-`resource` in `columns:`; re-derive the list from the yaml rather than trusting a
-hand-written one, since it has already gone stale once.
+`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are `resource_derivation.mode == 'none'` with
+`resource` in `columns:`, except `decode_pqtl_signals_v`, which is `none` because it passes
+through the `resource` credible_sets stored at load time rather than holding a constant;
+re-derive the list from the yaml rather than trusting a hand-written one, since it has
+already gone stale once.
 
 ### Column types (`tables.<view>.column_types`)
 
