@@ -51,6 +51,46 @@ resource "google_storage_bucket" "expression_data" {
   public_access_prevention    = "enforced"
   force_destroy               = false
 
+  # lifecycle actions run asynchronously (up to ~24 h), so a raw file sits in Standard for its
+  # first day; the worker may upload with storage class COLDLINE to skip that
+  lifecycle_rule {
+    condition {
+      age                   = 0
+      matches_prefix        = ["cellxgene/raw/"]
+      matches_storage_class = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # raw files are named by dataset_version_id and never overwritten, so with versioning off
+  # nothing ever becomes noncurrent: a superseded version is marked instead, by the driver
+  # setting the object's customTime when CELLxGENE retires that version. A metadata patch, not a
+  # copy, so it costs no Coldline retrieval or early-deletion fee. customTime can never be
+  # cleared or moved earlier — an object marked by mistake is rescued by pushing it far forward.
+  # An object nobody marks is kept indefinitely.
+  lifecycle_rule {
+    condition {
+      days_since_custom_time = 90
+      matches_prefix         = ["cellxgene/raw/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  lifecycle_rule {
+    condition {
+      age            = 30
+      matches_prefix = ["cellxgene/runs/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
   labels = {
     managed-by = "terraform"
     purpose    = "expression-data"
@@ -95,4 +135,103 @@ resource "google_storage_bucket_iam_member" "expression_readers" {
   bucket   = google_storage_bucket.expression_data[0].name
   role     = "roles/storage.objectViewer"
   member   = each.value
+}
+
+resource "google_project_service" "cloudscheduler" {
+  count              = var.expression_data_enabled ? 1 : 0
+  project            = var.project_id
+  service            = "cloudscheduler.googleapis.com"
+  disable_on_destroy = false
+}
+
+# the driver itself runs as a Batch job: it plans, submits and supervises the per-dataset worker
+# jobs, then publishes. BigQuery grants for the cellxgene tables are added with those tables.
+resource "google_service_account" "expression_driver" {
+  count        = local.expression_iam ? 1 : 0
+  account_id   = "expression-batch-driver"
+  display_name = "Expression data refresh driver"
+  description  = "Submits and supervises the CellXGene worker Batch jobs and publishes their output"
+}
+
+resource "google_project_iam_member" "expression_driver" {
+  for_each = local.expression_iam ? toset([
+    "roles/batch.jobsEditor",
+    "roles/batch.agentReporter",
+    "roles/logging.logWriter",
+  ]) : toset([])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.expression_driver[0].email}"
+}
+
+resource "google_storage_bucket_iam_member" "expression_driver_writer" {
+  count  = local.expression_iam ? 1 : 0
+  bucket = google_storage_bucket.expression_data[0].name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.expression_driver[0].email}"
+}
+
+# on the worker GSA only: a project-wide serviceAccountUser would let the driver run jobs as
+# any service account in the project, including the cluster's
+resource "google_service_account_iam_member" "expression_driver_acts_as_worker" {
+  count              = local.expression_iam ? 1 : 0
+  service_account_id = google_service_account.expression_worker[0].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.expression_driver[0].email}"
+}
+
+resource "google_service_account" "expression_scheduler" {
+  count        = local.expression_iam ? 1 : 0
+  account_id   = "expression-scheduler"
+  display_name = "Expression data refresh scheduler"
+  description  = "Identity Cloud Scheduler uses to create the expression driver Batch job"
+}
+
+resource "google_project_iam_member" "expression_scheduler_batch" {
+  count   = local.expression_iam ? 1 : 0
+  project = var.project_id
+  role    = "roles/batch.jobsEditor"
+  member  = "serviceAccount:${google_service_account.expression_scheduler[0].email}"
+}
+
+resource "google_service_account_iam_member" "expression_scheduler_acts_as_driver" {
+  count              = local.expression_iam ? 1 : 0
+  service_account_id = google_service_account.expression_driver[0].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.expression_scheduler[0].email}"
+}
+
+# created paused; unpausing (gcloud scheduler jobs resume) is the decision to start weekly
+# refreshes, taken after the initial full run is approved. paused is ignored after create so a
+# later apply, including deploy.sh's unattended one, never re-pauses a resumed job.
+resource "google_cloud_scheduler_job" "expression_refresh" {
+  count     = local.expression_iam && var.expression_refresh_schedule_enabled ? 1 : 0
+  name      = "expression-refresh"
+  project   = var.project_id
+  region    = var.region
+  schedule  = var.expression_refresh_schedule
+  time_zone = "Etc/UTC"
+  paused    = true
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://batch.googleapis.com/v1/projects/${var.project_id}/locations/${var.region}/jobs"
+    headers     = { "Content-Type" = "application/json" }
+    body        = filebase64(var.expression_refresh_job_spec_path)
+
+    oauth_token {
+      service_account_email = google_service_account.expression_scheduler[0].email
+    }
+  }
+
+  depends_on = [google_project_service.cloudscheduler]
+
+  lifecycle {
+    ignore_changes = [paused]
+
+    precondition {
+      condition     = var.expression_refresh_job_spec_path != ""
+      error_message = "expression_refresh_schedule_enabled needs expression_refresh_job_spec_path: the driver Batch job spec (JSON)."
+    }
+  }
 }
