@@ -20,6 +20,7 @@ FRONTEND_BRANCH="${FRONTEND_BRANCH:-master}"
 RESULTS_API_BRANCH="${RESULTS_API_BRANCH:-master}"
 MCP_SERVER_BRANCH="${MCP_SERVER_BRANCH:-master}"
 DB_API_BRANCH="${DB_API_BRANCH:-master}"
+MUNGE_BRANCH="${MUNGE_BRANCH:-master}"
 RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 
 # see deploy.sh: core.hooksPath is not tracked, so warn if this checkout is unwired
@@ -245,7 +246,35 @@ else
   echo "!!! the SDK. Every other image was built."
 fi
 
+# cellxgene (single-cell expression pipeline image; source is genetics-results-munge, built from
+# that repo's root with its own Dockerfile). Only deployments whose tfvars enable expression data
+# need it, the same tfvars-derived gate with an env override that ENABLE_SANDBOX uses. It sits
+# after the sandbox so a munge problem (branch not pushed, no Dockerfile) cannot stop the core
+# images or the sandbox from being pushed; it still fails the build, because an enabled
+# deployment would otherwise be handed a missing image.
+TFVARS_EXPRESSION="false"
+if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*expression_data_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
+  TFVARS_EXPRESSION="true"
+fi
+ENABLE_EXPRESSION="${ENABLE_EXPRESSION:-${TFVARS_EXPRESSION}}"
+if [ "${ENABLE_EXPRESSION}" = "true" ]; then
+  clone_repo genetics-results-munge "${MUNGE_BRANCH}"
+  if [ ! -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile" ]; then
+    echo "!!! expression data is enabled for this deployment but ${MUNGE_BRANCH} of"
+    echo "!!! genetics-results-munge has no docker/cellxgene/Dockerfile. Push that work to the"
+    echo "!!! branch, or set MUNGE_BRANCH to one that has it."
+    exit 1
+  fi
+  TAG=$(tag_for "${WORK_DIR}/genetics-results-munge")
+  build_and_push cellxgene "${WORK_DIR}/genetics-results-munge" "${TAG}" \
+    -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile"
+  CELLXGENE_NOTE="cellxgene built and pushed."
+else
+  CELLXGENE_NOTE="cellxgene skipped: expression_data_enabled is not true for this deployment (ENABLE_EXPRESSION=true forces it)."
+fi
+
 echo ""
+echo "${CELLXGENE_NOTE}"
 if [ -z "${SANDBOX_SKIPPED}" ]; then
   echo "All images built and pushed."
   exit 0
