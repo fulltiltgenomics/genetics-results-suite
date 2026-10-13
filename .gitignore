@@ -42,3 +42,6 @@ __pycache__/
 
 # harness-created git worktrees; never part of the repo
 .claude/worktrees/
+
+# research notes for in-progress work; kept locally, not versioned
+docs/research/mendelian-randomization/
