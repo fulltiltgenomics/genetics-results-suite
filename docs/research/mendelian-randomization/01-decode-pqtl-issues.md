@@ -2,7 +2,7 @@
 
 Brief for whoever investigates the deCODE data. Everything below was measured on
 `daly-finngenie.genetics_results` on 2026-10-08 with the queries given; nothing has been
-changed or filed. The pipeline that produced the data is documented in
+changed or filed (see Outcomes below for the 2026-10-13 follow-up). The pipeline that produced the data is documented in
 genetics-results-munge `docs/pseudo-credible-sets.md` ("The deCODE pQTL run") and
 `scripts/munge_decode_pqtl.py`; the per-aptamer outputs are in
 `gs://daly-genetics-results/credible_sets/decode_pseudo/seq.<id>.report.out.pseudo_cs.*.tsv`
@@ -12,7 +12,42 @@ side.
 
 "Lead" below means the max-PIP row of each (trait, trait_original, cs_id).
 
+## Outcomes (2026-10-13)
+
+Followed up from the daly VM and against deCODE's original data. Each item below keeps
+its 2026-10-08 measurements and has a **Status** line added under its heading.
+
+| item | status |
+|---|---|
+| 1. Missing aptamers | **Not a defect.** 257 of the 258 are not in deCODE's 4,907-aptamer release |
+| 2. Empty shards | Open, needs finngen-side access |
+| 3. OAS1 cis absent | **Not a defect.** The signal is not genome-wide significant in deCODE's original data |
+| 4. Satellite sets | **Mitigated.** Count signals with `decode_pqtl_signals_v.window_top` |
+| 5. Trans hotspots | **Not a munge defect.** Top loci replicate in FinnGen SomaScan aptamer by aptamer |
+| 6. Semantics | Unchanged, except signal counting (item 4) |
+| 7. Platform caveat | Unchanged |
+
+**Labels and alleles.** For aptamers in both datasets, deCODE's top locus matches FinnGen
+SomaScan's (same aptamer ids, independent samples) in 210 of 218 aptamers with a FinnGen
+top −log10 p ≥ 50, and 330 of 364 at 20–50. deCODE has some set at FinnGen's top locus in
+217 and 359 of them respectively. A label or column mix-up in the bucketed split could
+not produce that agreement.
+
+**The p < 0.005 input does not affect the credible sets.** Every candidate lead
+(p ≤ 5e-8) is in the filtered file, and a dropped partner (0.005 ≤ p < 0.01) could have
+been neither a lead nor a member (membership needs −log10 p within 2 of a lead ≥ 7.3, or
+r² > 0.95 to it). Full summary statistics matter for MR itself, not for the pseudo
+credible sets: absence from a p < 0.005 file is not a null, so exposure lookups for an
+arbitrary instrument, coloc and SuSiE-RSS need the full region. If they are needed,
+fetching only the cis windows (gene ±1 Mb) would be far cheaper than the genome-wide set.
+
 ## 1. Whole aptamers missing, including ones with a strong cis-pQTL on the same platform
+
+**Status (2026-10-13): not a defect.** Of the 258 aptamers the query below lists, 257 are
+not among the 4,907 aptamers deCODE released (`genetics-results-munge
+configs/decode_pqtl_pheno.json`), among them both IL6R aptamers, PLXNB2, AHSG and every
+other named example. The one that is in the release, ADSL seq.5023.23, is weak in FinnGen
+(−log10 p 8.8). Check (a) below is answered; (b) is moot.
 
 FinnGen SomaScan (n = 1,000, SuSiE) has a cis credible set (±1 Mb of the coding gene) for
 1,017 aptamers. 258 of those aptamers have **no row at all** in deCODE (n = 35,559), and
@@ -54,6 +89,11 @@ WHERE d.trait_original IS NULL ORDER BY s.m DESC
 
 ## 2. 80 aptamers whose shard ran and produced no locus
 
+**Status (2026-10-13): open.** Not checked: it needs the munged sumstats and the LD panel
+on the finngen side. Note that genetics-results-munge `docs/pseudo-credible-sets.md`
+counts 36 aptamers with a 0-byte `.report.out`, while this item counts 80 header-only
+pseudo-CS files. Reconcile the two lists first.
+
 Of the 4,844 per-aptamer pseudo-CS files, 80 are header-only (under 400 bytes; list with
 `gcloud storage ls -l 'gs://daly-genetics-results/credible_sets/decode_pseudo/seq.*'`).
 Every aptamer in the input array had a p ≤ 5e-8 row, so a shard with zero loci means
@@ -64,6 +104,15 @@ seq.11544.39, seq.11590.5, seq.11626.7, seq.12424.107. For each, look at the str
 in its munged sumstat and whether that variant exists in the FinnGen R12 LD panel.
 
 ## 3. Cis signals absent from aptamers that do have a report (OAS1)
+
+**Status (2026-10-13): not a defect for OAS1.** deCODE's original data confirm that the
+OAS1 seq.10361.25 cis signal is not genome-wide significant in deCODE. The absence is in
+the source, not lost in step 0 or step 1, so OAS1 is a real discordance with INTERVAL
+(QTD000584, −log10 p 30.2 for the same aptamer). FinnGen SomaScan has no cis set either,
+though at n = 1,000 that settles nothing. IL18 seq.5661.15 was not checked. The
+Ferkingstad sentinel comparison proposed at the end of this item remains the way to
+size the class, and it would now be expected to turn up source discordances rather than
+munge losses.
 
 OAS1 seq.10361.25 (the aptamer Zhou et al. 2021 used; its cis-pQTL at the splice variant
 12:112919388:G:A is among the strongest in Ferkingstad 2021 and is present in QTD000584,
@@ -86,6 +135,36 @@ every published cis sentinel should have a deCODE pseudo CS within ±1 Mb, and t
 are the list to explain.
 
 ## 4. Hundreds of satellite "credible sets" around every huge signal
+
+**Status (2026-10-13): mitigated by a view, not by a pipeline change.** The excess is not
+confined to the huge signals. Of the 130,685 sets, 26,904 have a lead that is the
+strongest of its aptamer within ±2 Mb (autoreporting's window): a median of 4 per
+aptamer against the paper's 3.7, and 27 % of them singletons. The other 103,781 sit within
+2 Mb of a stronger lead of the same aptamer, and 58 % of those are singletons:
+
+| stronger lead nearby | sets | singletons |
+|---|---|---|
+| none (window top) | 26,904 | 27 % |
+| −log10 p ≥ 1000 | 17,392 | 64 % |
+| 100–1000 | 11,668 | 58 % |
+| < 100 | 74,721 | 56 % |
+
+Those beside leads of −log10 p ≥ 1000 are LD shadows. Those beside modest leads (median
+1.06 Mb from a stronger lead of median −log10 p 31) are too far and too weak to be
+shadows, and some are likely real secondary signals. The probable singleton mechanism,
+still to be confirmed from the `.report.out` files: a variant joins at most one clump
+(`overlap = false`), so the stronger clump has already taken the weaker lead's partners.
+The p < 0.005 input filter plays no part (see Outcomes).
+
+genetics-results-db now serves `decode_pqtl_signals_v` (live in daly-finngenie;
+genetics-results-db `d88f537`). It has one row per set, with `window_top` and, for the
+other sets, the stronger lead nearby (`stronger_cs_id`, `stronger_mlog10p`,
+`stronger_distance`). Count signals with `WHERE window_top`; the datasets.yaml
+description says so. The view is not a test of independence: 206 window tops lie 2–5 Mb
+from a lead of −log10 p ≥ 1000 in the same aptamer (TST seq.12663.1 keeps 40 of its 678
+sets, IL6R seq.15602.43 11 of 532). The repairs listed at the end of this item (a
+χ²-scaled radius, Ferkingstad's sentinels, conditional analysis) remain the options if
+that residue matters.
 
 The pseudo-CS pipeline turns one colossal pQTL into hundreds of loci. The munge doc
 records the mechanism for COL6A1 (471 loci over 4 Mb): the dynamic r² threshold drops far
@@ -115,6 +194,13 @@ rule in the dataset description, which today says only "not formally fine-mapped
 
 ## 5. Pervasive trans hotspots to verify against the paper
 
+**Status (2026-10-13): not a munge defect.** The same-aptamer comparison with FinnGen
+SomaScan (see Outcomes) rules out a column or aptamer mix-up. The aptamers whose
+strongest signal is a huge non-cis one land on the known SomaScan hotspots: VTN rs704
+(MICOS10 at −log10 p 27,329, MAPKAPK5, TMPRSS6), APOE (NRXN1, IL26, COPS7B), CFH (NDUFS4,
+TST), HRG/KNG1 (DAP, DEPP1), ABO and FUT2. Whether CFH's prominence matches Ferkingstad's
+hotspot figure was not checked against the paper.
+
 1 Mb bins with the most aptamers carrying a lead: chr1:196 Mb CFH — **2,242 of 4,808
 aptamers**, median −log10 p 24; chr3:165 Mb BCHE/unnamed — 1,173 + 572; chr6:31–32 Mb MHC —
 1,293 + 787; chr17:7 Mb ASGR2 — 622 + 458; chr3:56 Mb ARHGEF3 — 583; chr17:4 Mb SPNS2 —
@@ -128,6 +214,9 @@ artefact in the source). Per-aptamer files for OAS1 and IL18 both show the CFH s
 chr1:196,677,046 with cs_size 82–93, so it is in the loaded data, not an aggregation error.
 
 ## 6. Semantics a consumer can misread
+
+**Status (2026-10-13):** unchanged, except that signal counting now has a supported path
+(item 4).
 
 - `pip` is heuristic (relative association strength within an LD clump), not a posterior;
   the 0.99 on 67,013 singleton sets means "no partner was listed", not "causal".
