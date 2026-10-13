@@ -129,6 +129,32 @@ if [ "${SERVICE}" = "sandbox" ]; then
   exit 0
 fi
 
+# cellxgene: the worker/planner/publisher/driver image for the single-cell expression pipeline.
+# Its source is genetics-results-munge, so it follows the clone pattern of the services below
+# (GITHUB_ORG + a branch override) rather than the local-context pattern of url-fetcher and
+# sandbox; the Dockerfile is docker/cellxgene/Dockerfile in that repo, built from the repo root.
+if [ "${SERVICE}" = "cellxgene" ]; then
+  MUNGE_BRANCH="${MUNGE_BRANCH:-master}"
+  WORK_DIR=$(mktemp -d)
+  trap 'rm -rf "${WORK_DIR}"' EXIT
+  echo "--- Cloning genetics-results-munge (branch: ${MUNGE_BRANCH})"
+  git clone --depth 1 --branch "${MUNGE_BRANCH}" "${GITHUB_ORG}/genetics-results-munge.git" "${WORK_DIR}/genetics-results-munge"
+  TAG="$(date +%Y%m%d).$(git -C "${WORK_DIR}/genetics-results-munge" rev-parse --short HEAD)"
+  echo "=== Building cellxgene (tag: ${TAG}) ==="
+  set_build_cache_args cellxgene
+  docker build "${BUILD_CACHE_ARGS[@]}" \
+    -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile" \
+    -t "${REGISTRY}/cellxgene:${TAG}" \
+    -t "${REGISTRY}/cellxgene:latest" \
+    "${WORK_DIR}/genetics-results-munge"
+  docker push "${REGISTRY}/cellxgene:${TAG}"
+  docker push "${REGISTRY}/cellxgene:latest"
+  echo ""
+  echo "Image pushed: ${REGISTRY}/cellxgene:${TAG}"
+  echo "The driver must set WORKER_IMAGE_DIGEST on each job from the pushed digest."
+  exit 0
+fi
+
 # service → image name
 declare -A IMAGE_MAP=(
   [frontend]=genetics-results-browser
@@ -143,7 +169,7 @@ declare -A IMAGE_MAP=(
 IMAGE="${IMAGE_MAP[$SERVICE]:-}"
 if [ -z "${IMAGE}" ]; then
   echo "Unknown service: ${SERVICE}"
-  echo "Available services: ${!IMAGE_MAP[*]} sandbox url-fetcher"
+  echo "Available services: ${!IMAGE_MAP[*]} sandbox url-fetcher cellxgene"
   exit 1
 fi
 
