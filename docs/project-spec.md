@@ -358,6 +358,7 @@ scripts/                             build, deploy and verification scripts
   bq-dev-dataset.sh                  stand up, verify or tear down the BigQuery rehearsal dataset (docs/bigquery-dev-dataset.md)
   build-all.sh                       build and push every image
   build.sh                           build and push one service's image
+  cellxgene/                         the CELLxGENE proving-ground Batch job spec; the pipeline itself lives in genetics-results-munge
   chat-memory-proving-ground.py      staging recipe and check runner for the per-project chat memory feature; `check all` or one numbered check, each PASS/FAIL with its numbers; cleanup reports DONE or FAILED
   chat_usage_stats.sh                chat usage counts from the BigQuery chat-log sink
   check-doc-drift.sh                 warn when a commit changes code the docs describe
@@ -398,6 +399,7 @@ terraform/                           infrastructure
   backups.tf                         disk snapshot schedule and the Keycloak backup bucket
   daly-staging.tfbackend             per-environment GCS state backends, selected by DEPLOY_ENV
   daly.tfbackend                     per-environment GCS state backends, selected by DEPLOY_ENV
+  expression.tf                      single-cell expression: bucket, Cloud Batch network and service accounts, refresh scheduler, the driver's grants
   finngen.tfbackend                  per-environment GCS state backends, selected by DEPLOY_ENV
   gke.tf                             the GKE cluster and its node pools, the sandbox pool included
   iam.tf                             service accounts and Workload Identity

@@ -139,11 +139,17 @@ if [ "${SERVICE}" = "cellxgene" ]; then
   trap 'rm -rf "${WORK_DIR}"' EXIT
   echo "--- Cloning genetics-results-munge (branch: ${MUNGE_BRANCH})"
   git clone --depth 1 --branch "${MUNGE_BRANCH}" "${GITHUB_ORG}/genetics-results-munge.git" "${WORK_DIR}/genetics-results-munge"
+  # the driver's load step runs genetics-results-db's BigQuery loader, so the image carries it;
+  # passed as the named build context `db`, not copied into the munge tree
+  DB_BRANCH="${DB_API_BRANCH:-master}"
+  echo "--- Cloning genetics-results-db (branch: ${DB_BRANCH}) for the BigQuery loader"
+  git clone --depth 1 --branch "${DB_BRANCH}" "${GITHUB_ORG}/genetics-results-db.git" "${WORK_DIR}/genetics-results-db"
   TAG="$(date +%Y%m%d).$(git -C "${WORK_DIR}/genetics-results-munge" rev-parse --short HEAD)"
   echo "=== Building cellxgene (tag: ${TAG}) ==="
   set_build_cache_args cellxgene
   docker build "${BUILD_CACHE_ARGS[@]}" \
     -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile" \
+    --build-context db="${WORK_DIR}/genetics-results-db" \
     -t "${REGISTRY}/cellxgene:${TAG}" \
     -t "${REGISTRY}/cellxgene:latest" \
     "${WORK_DIR}/genetics-results-munge"

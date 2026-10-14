@@ -411,6 +411,8 @@ LAYOUT = {
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
     "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder",
+    "scripts/cellxgene": "the CELLxGENE proving-ground Batch job spec; the pipeline itself "
+                         "lives in genetics-results-munge",
     "scripts/monitor": "the monitoring CronJob's Python package",
     "scripts/supervisor_tests": "the check groups scripts/test-supervisor.py runs",
     "scripts/deploy.sh": "full deploy: terraform apply, then every manifest",
@@ -490,6 +492,8 @@ LAYOUT = {
     "terraform/backups.tf": "disk snapshot schedule and the Keycloak backup bucket",
     "terraform/logging.tf": "Cloud Logging to BigQuery sinks, gated by `enable_log_sinks`",
     "terraform/iam.tf": "service accounts and Workload Identity",
+    "terraform/expression.tf": "single-cell expression: bucket, Cloud Batch network and "
+                               "service accounts, refresh scheduler, the driver's grants",
     "terraform/kubernetes.tf": "namespace and Kubernetes service accounts",
     "terraform/variables.tf": "input variables",
     "terraform/outputs.tf": "output values",
