@@ -68,7 +68,7 @@ below `r2_prune` with each other, so a scan at that threshold could only ever re
 identity r matrix. At instruments()' default `r2_prune` (equal to finngen_r12's floor of
 0.01) the matrix is the identity anyway; it carries information only with a looser prune,
 which is why run()'s cis default is 0.1. Pseudo credible sets
-are refused as exposures by default: their satellite and singleton sets put leads tens of kb
+are refused as exposures: their satellite and singleton sets put leads tens of kb
 from the real signal (deCODE against UKB_PPP, 2026-10-10).
 
 RUN. `run()` is instruments() -> one batched summary_stats per chunk of outcomes (leads and
@@ -119,7 +119,6 @@ def run(
     p_threshold: float = 5e-08,
     maf_floor: float = 0.01,
     panel: str = 'finngen_r12',
-    allow_pseudo_credible_sets: bool = False,
     attach_coloc: bool = True,
     max_in_flight: int = MAX_IN_FLIGHT,
     **injectables: Any,
@@ -142,14 +141,16 @@ def run(
 
     REFUSED: the same dataset and trait on both sides; an outcome dataset without summary
     statistics; an outcome where no instrument (lead or r2 >= 0.8 proxy) is found; more
-    than `MAX_IN_FLIGHT` in flight; and a batch whose estimated requests exceed
+    than `MAX_IN_FLIGHT` in flight; a batch whose estimated requests exceed
     `REQUEST_CAP` (1,000 requests per execution: instrument selection + phenotypes + summary_stats chunks + coloc, the
-    annotation lookups for rows without a frequency not included). instruments() adds the
+    annotation lookups for rows without a frequency not included); and `outcomes` longer
+    than `OUTCOME_CAP` (250, refused before any fetch: the execution's wall clock, not the
+    request cap, bounds a screen, so split it across executions). instruments() adds the
     no-cis-set (D6) and pseudo-credible-set refusals. In a batch, an outcome that fails is
     listed in `.failed` with the reason instead of stopping the others.
 
     Injectables (each defaults to the SDK function): ld, annotation, sql, ld_panels,
-    datasets, phenotypes, colocalization, summary_stats (sync or async, called with
+    datasets, phenotypes, summary_stats (sync or async, called with
     phenotypes=, variants=, resource=, data_type=), and exposure_dataset (a datasets() row).
     """
     ...
@@ -164,7 +165,6 @@ def instruments(
     r2_prune: float = 0.01,
     exclude_mhc: bool = True,
     panel: str = 'finngen_r12',
-    allow_pseudo_credible_sets: bool = False,
     exposure_dataset: dict[str, Any] | None = None,
     outcome: dict[str, Any] | None = None,
     ld: Callable[..., pl.DataFrame] | None = None,
@@ -198,8 +198,10 @@ def instruments(
     dataset are refused, and a dataset with no registry row is treated as non-Finnish and not
     pseudo, with a note.
 
-    Pseudo-credible-set datasets are refused unless `allow_pseudo_credible_sets`; then the
-    lead is the variant `cs_id` names when it passes the floor, else the max-pip one.
+    Pseudo-credible-set datasets are always refused: the pseudo-set pipeline emits many
+    satellite and singleton sets per signal whose leads sit 12-65 kb from the real one, so
+    the max-pip lead rule picks a satellite set's variant, and the deCODE replication did
+    not reproduce (r 0.29 against Zhang's Data 13).
 
     PRUNING: greedy by mlog10p, one `ld` neighbourhood scan per lead considered; a lead
     with r2 >= `r2_prune` to a kept one is dropped, and one the panel lacks is dropped as
