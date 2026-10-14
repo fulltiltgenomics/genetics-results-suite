@@ -37,7 +37,7 @@ be installed into a sandbox image on its own.
 
 AN EMPTY RESULT MAY HAVE NO COLUMNS (genetics-results-suite-6uk). The functions backed by
 results-api rather than BigQuery — exome, gene_burden, hla(phenotype=...), summary_stats,
-ld, ld_panels, search, expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
+ld, ld_panels, search, expression, cell_type_expression, gene_disease, lookup_phenotype_names, resource_metadata — return a bare
 `[]` with no schema when nothing matches, so the DataFrame comes back 0x0 and `df.filter(pl.col("beta")
 > 0)` raises ColumnNotFoundError instead of yielding an empty frame. Check `df.is_empty()`
 (or `df.height == 0`) before naming a column, rather than assuming the shape of an empty
@@ -412,6 +412,25 @@ def gene_annotations(
 
 def expression(gene: str) -> pl.DataFrame:
     """Tissue expression for a gene, across expression resources.
+    """
+    ...
+
+def cell_type_expression(gene: str, level: str = 'summary') -> pl.DataFrame:
+    """Single-cell expression by cell type, from CZ CELLxGENE Discover; `expression` is bulk.
+
+    `gene` is a symbol or Ensembl id (a `.N` version is dropped), or a comma-separated
+    list. Units are log1p CP10K, not TPM. `mean_log1p_cp10k` and `frac_expressing` are
+    the primary metrics; `donor_pseudobulk_mean_cp10k` (linear CP10K) is secondary.
+    level="summary" pools normal tissue across datasets per (cell type, tissue);
+    level="dataset" is sparse: a row per dataset group with at least one expressing cell,
+    so in a dataset with any `present` row, a missing group that passes the size
+    thresholds (50 cells and 3 donors) had zero expressing cells; a below-threshold group
+    never has a row, so its absence is unknown, not zero.
+    One `status == "measured_no_row"` row per dataset means it measured the gene and no
+    cell in its groups passing the size thresholds expressed it (a real zero). A dataset
+    absent from the frame did not measure the gene, or had every group below the
+    thresholds (50 cells or 3 donors). Raises GeneticsError on a deployment that does
+    not serve this data.
     """
     ...
 
