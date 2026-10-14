@@ -260,6 +260,12 @@ variable "expression_bucket_extra_readers" {
   default     = []
 }
 
+variable "expression_bq_dataset" {
+  description = "BigQuery dataset the expression driver is granted roles/bigquery.dataEditor on. Places that grant only: the driver passes no DATASET_ID, so its load step writes to the loader's default, genetics_results, and this must equal it. Must already exist (it is not managed here); only read when expression_data_enabled and manage_iam."
+  type        = string
+  default     = "genetics_results"
+}
+
 variable "expression_subnet_cidr" {
   description = "Primary IPv4 range of the Cloud Batch workers' subnet. Must not overlap the GKE subnets and their secondary ranges, or broad-allow's central-subnet (10.10.0.0/20), in case the VPCs are ever peered."
   type        = string
