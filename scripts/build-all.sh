@@ -267,7 +267,8 @@ if [ "${ENABLE_EXPRESSION}" = "true" ]; then
   fi
   TAG=$(tag_for "${WORK_DIR}/genetics-results-munge")
   build_and_push cellxgene "${WORK_DIR}/genetics-results-munge" "${TAG}" \
-    -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile"
+    -f "${WORK_DIR}/genetics-results-munge/docker/cellxgene/Dockerfile" \
+    --build-context db="${WORK_DIR}/genetics-results-db"
   CELLXGENE_NOTE="cellxgene built and pushed."
 else
   CELLXGENE_NOTE="cellxgene skipped: expression_data_enabled is not true for this deployment (ENABLE_EXPRESSION=true forces it)."
