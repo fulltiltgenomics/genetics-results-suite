@@ -3070,6 +3070,361 @@ tables:
       dataset: "resource"
       data_type: null
 
+  cellxgene_summary_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [gene_name, gene_id]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        CELLxGENE expression has no `dataset` column; its datasets are CELLxGENE dataset
+        versions listed in cellxgene_datasets_v, not registry entries
+    summary: "Single-cell expression per cell type x tissue, pooled over CELLxGENE datasets"
+    description: >-
+      CZ CELLxGENE Discover human single-cell expression, pooled across every dataset that
+      measured the gene: one row per (gene, rolled-up cell type, tissue_general), normal
+      tissue only (disease PATO:0000461, tissue_type 'tissue', no spatial assays). Rank cell
+      types by the PRIMARY metrics mean_log1p_cp10k and frac_expressing.
+      donor_pseudobulk_mean_cp10k is SECONDARY: linear-scale CP10k, NULL with fewer than 3
+      donors, and it does not rank anything. Rows below 50 cells or 3 donors are dropped,
+      not shown as 0. Genes are GENCODE v49; chr uses X=23, Y=24, MT=26. Always filter on
+      chr: it is the partition column, and a query without it scans the whole table.
+      Per-dataset, per-disease detail is in cellxgene_expression_v.
+    columns:
+      gene_id: "GENCODE v49 Ensembl gene ID, versioned (ENSG00000169442.9)"
+      chr: "Chromosome (X=23, Y=24, MT=26). Partition column — always filter on it"
+      gene_start: "Gene start (GRCh38)"
+      gene_end: "Gene end (GRCh38)"
+      gene_name: "GENCODE v49 gene symbol"
+      source_gene_ids: "Comma-separated Ensembl IDs as the source datasets spelled them"
+      cell_type_rollup_ontology_term_id: "Rolled-up Cell Ontology term (CL:...)"
+      cell_type_rollup: "Rolled-up cell type label"
+      tissue_general_ontology_term_id: "UBERON tissue_general term"
+      tissue_general: "tissue_general label, e.g. lung, blood, liver"
+      n_cells: "Cells pooled over the datasets that measured the gene"
+      n_donors: "Donors pooled: distinct donors per dataset, summed over datasets (a donor in two datasets counts twice)"
+      n_datasets: "Datasets that measured the gene and contribute cells"
+      mean_log1p_cp10k: "PRIMARY: cell-level mean of log1p(CP10k), zeros included"
+      frac_expressing: "PRIMARY: fraction of cells with nonzero counts"
+      donor_pseudobulk_mean_cp10k: "SECONDARY, does not rank: donor-pseudobulk mean CP10k (linear scale); NULL with fewer than 3 donors"
+      donor_pseudobulk_n_donors: "SECONDARY: donors behind donor_pseudobulk_mean_cp10k"
+      tau: "Tissue-specificity index (0 = ubiquitous, 1 = one cell type) over the gene's cell-type profile; the same on every row of the gene"
+    column_types:
+      gene_id: STRING
+      chr: INT64
+      gene_start: INT64
+      gene_end: INT64
+      gene_name: STRING
+      source_gene_ids: STRING
+      cell_type_rollup_ontology_term_id: STRING
+      cell_type_rollup: STRING
+      tissue_general_ontology_term_id: STRING
+      tissue_general: STRING
+      n_cells: INT64
+      n_donors: INT64
+      n_datasets: INT64
+      mean_log1p_cp10k: FLOAT64
+      frac_expressing: FLOAT64
+      donor_pseudobulk_mean_cp10k: FLOAT64
+      donor_pseudobulk_n_donors: INT64
+      tau: FLOAT64
+    examples:
+      - description: "Which cell types express a gene most, across all normal tissues"
+        sql: >-
+          SELECT cell_type_rollup, tissue_general, mean_log1p_cp10k, frac_expressing,
+                 n_cells, n_donors, n_datasets
+          FROM cellxgene_summary_v
+          WHERE chr = 11 AND gene_name = 'CD3E'
+          ORDER BY mean_log1p_cp10k DESC
+          LIMIT 20
+    categorical_columns:
+      tissue_general: null
+      cell_type_rollup: null
+
+  cellxgene_expression_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [gene_name, gene_id]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        CELLxGENE expression has no `dataset` column; its datasets are CELLxGENE dataset
+        versions listed in cellxgene_datasets_v, not registry entries
+    summary: "Single-cell expression per CELLxGENE dataset and cell group, 0 vs not measured"
+    description: >-
+      CZ CELLxGENE Discover human single-cell expression per dataset and cell group (tissue x
+      cell type x disease x assay), every disease, tissue_type and assay, with the native and
+      rolled-up labels. DENSE over measured genes: a gene the dataset measured but never
+      detected in a group has a row with mean_log1p_cp10k = 0 and frac_expressing = 0; a
+      dataset that did NOT measure the gene has no row at all — absence means not measured,
+      never 0. Groups below 50 cells or 3 donors are left out. PRIMARY metrics:
+      mean_log1p_cp10k and frac_expressing; donor_pseudobulk_mean_cp10k is SECONDARY
+      (linear scale, NULL with fewer than 3 donors, does not rank). Genes are GENCODE v49;
+      chr uses X=23, Y=24, MT=26. Always filter on chr.
+    columns:
+      chr: "Chromosome (X=23, Y=24, MT=26). Partition column — always filter on it"
+      gene_start: "Gene start (GRCh38)"
+      gene_id: "GENCODE v49 Ensembl gene ID, versioned"
+      gene_name: "GENCODE v49 gene symbol"
+      dataset_id: "CELLxGENE dataset (stable across versions)"
+      dataset_version_id: "CELLxGENE dataset version"
+      collection_name: "CELLxGENE collection name"
+      tissue_ontology_term_id: "Native tissue term"
+      tissue: "Native tissue label"
+      tissue_type: "tissue, organoid or cell culture"
+      tissue_general_ontology_term_id: "Rolled-up tissue term"
+      tissue_general: "Rolled-up tissue label"
+      cell_type_ontology_term_id: "Native Cell Ontology term"
+      cell_type: "Native cell type label"
+      cell_type_rollup_ontology_term_id: "Rolled-up Cell Ontology term"
+      cell_type_rollup: "Rolled-up cell type label"
+      disease_ontology_term_id: "Disease term (PATO:0000461 = normal)"
+      disease: "Disease label"
+      assay_ontology_term_id: "Assay term (EFO)"
+      assay: "Assay label"
+      suspension_type: "cell, nucleus or na"
+      spatial: "Spatial assay (a Visium spot is not a cell)"
+      n_cells: "Cells in the group"
+      n_donors: "Donors in the group"
+      mean_log1p_cp10k: "PRIMARY: cell-level mean of log1p(CP10k), zeros included; 0 = measured, not detected"
+      frac_expressing: "PRIMARY: fraction of the group's cells with nonzero counts"
+      donor_pseudobulk_mean_cp10k: "SECONDARY, does not rank: donor-pseudobulk mean CP10k (linear scale); NULL with fewer than 3 donors"
+      dataset_key: "Release-local key into cellxgene_datasets_v; do not compare across releases"
+      group_key: "Release-local key into cellxgene_groups_v; do not compare across releases"
+    column_types:
+      chr: INT64
+      gene_start: INT64
+      gene_id: STRING
+      gene_name: STRING
+      dataset_id: STRING
+      dataset_version_id: STRING
+      collection_name: STRING
+      tissue_ontology_term_id: STRING
+      tissue: STRING
+      tissue_type: STRING
+      tissue_general_ontology_term_id: STRING
+      tissue_general: STRING
+      cell_type_ontology_term_id: STRING
+      cell_type: STRING
+      cell_type_rollup_ontology_term_id: STRING
+      cell_type_rollup: STRING
+      disease_ontology_term_id: STRING
+      disease: STRING
+      assay_ontology_term_id: STRING
+      assay: STRING
+      suspension_type: STRING
+      spatial: BOOL
+      n_cells: INT64
+      n_donors: INT64
+      mean_log1p_cp10k: FLOAT64
+      frac_expressing: FLOAT64
+      donor_pseudobulk_mean_cp10k: FLOAT64
+      dataset_key: INT64
+      group_key: INT64
+    examples:
+      - description: "A gene's expression in diseased versus normal cells of one tissue, per dataset"
+        sql: >-
+          SELECT dataset_id, cell_type, disease, mean_log1p_cp10k, frac_expressing, n_cells
+          FROM cellxgene_expression_v
+          WHERE chr = 1 AND gene_name = 'CD52' AND tissue_general = 'lung'
+          ORDER BY cell_type, disease
+    categorical_columns:
+      tissue_general: null
+      cell_type_rollup: null
+      disease: null
+      assay: null
+      tissue_type: null
+
+  cellxgene_groups_v:
+    exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        CELLxGENE metadata has no `dataset` column; its datasets are CELLxGENE dataset
+        versions, not registry entries
+    summary: "CELLxGENE cell groups: tissue x cell type x disease x assay per dataset"
+    description: >-
+      One row per CELLxGENE cell group: the cells of one dataset sharing tissue, cell type,
+      disease, assay and suspension type, with cell and donor counts. Lists every group,
+      including those below the 50-cell / 3-donor threshold that have no expression rows.
+      Use it to see which cell types, tissues and diseases the data covers.
+    columns:
+      group_key: "Release-local group key"
+      dataset_key: "Release-local key into cellxgene_datasets_v"
+      dataset_version_id: "CELLxGENE dataset version"
+      dataset_id: "CELLxGENE dataset (stable across versions)"
+      tissue_ontology_term_id: "Native tissue term"
+      tissue: "Native tissue label"
+      tissue_type: "tissue, organoid or cell culture"
+      tissue_general_ontology_term_id: "Rolled-up tissue term"
+      tissue_general: "Rolled-up tissue label"
+      cell_type_ontology_term_id: "Native Cell Ontology term"
+      cell_type: "Native cell type label"
+      cell_type_rollup_ontology_term_id: "Rolled-up Cell Ontology term"
+      cell_type_rollup: "Rolled-up cell type label"
+      disease_ontology_term_id: "Disease term (PATO:0000461 = normal)"
+      disease: "Disease label"
+      assay_ontology_term_id: "Assay term (EFO)"
+      assay: "Assay label"
+      suspension_type: "cell, nucleus or na"
+      spatial: "Spatial assay"
+      n_cells: "Cells in the group"
+      n_donors: "Donors in the group"
+      collection_name: "CELLxGENE collection name"
+      title: "Dataset title"
+    column_types:
+      group_key: INT64
+      dataset_key: INT64
+      dataset_version_id: STRING
+      dataset_id: STRING
+      tissue_ontology_term_id: STRING
+      tissue: STRING
+      tissue_type: STRING
+      tissue_general_ontology_term_id: STRING
+      tissue_general: STRING
+      cell_type_ontology_term_id: STRING
+      cell_type: STRING
+      cell_type_rollup_ontology_term_id: STRING
+      cell_type_rollup: STRING
+      disease_ontology_term_id: STRING
+      disease: STRING
+      assay_ontology_term_id: STRING
+      assay: STRING
+      suspension_type: STRING
+      spatial: BOOL
+      n_cells: INT64
+      n_donors: INT64
+      collection_name: STRING
+      title: STRING
+    examples:
+      - description: "Cells and donors per disease for one rolled-up cell type"
+        sql: >-
+          SELECT disease, SUM(n_cells) AS cells, SUM(n_donors) AS donors,
+                 COUNT(DISTINCT dataset_id) AS datasets
+          FROM cellxgene_groups_v
+          WHERE cell_type_rollup = 'T cell'
+          GROUP BY disease
+          ORDER BY cells DESC
+    categorical_columns:
+      tissue_general: null
+      cell_type_rollup: null
+      disease: null
+      assay: null
+      tissue_type: null
+
+  cellxgene_datasets_v:
+    exposed: true
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        CELLxGENE metadata has no `dataset` column; its datasets are CELLxGENE dataset
+        versions, not registry entries
+    summary: "CELLxGENE dataset versions in the loaded release, with citations"
+    description: >-
+      One row per CELLxGENE Discover dataset version in the loaded release: collection,
+      title, DOI, citation, cells aggregated and gene counts. `release` names the release
+      the cellxgene_* views were loaded from; min_cells and min_donors are its suppression
+      thresholds.
+    columns:
+      dataset_key: "Release-local key"
+      dataset_id: "CELLxGENE dataset (stable across versions)"
+      dataset_version_id: "CELLxGENE dataset version"
+      collection_id: "CELLxGENE collection"
+      collection_name: "Collection name"
+      title: "Dataset title"
+      collection_doi: "Publication DOI of the collection"
+      citation: "Citation string from CELLxGENE"
+      cells_kept: "Primary cells aggregated"
+      n_groups: "Cell groups, before suppression"
+      n_genes: "Features in the source file"
+      n_genes_measured: "Features the dataset measured"
+      n_genes_mapped: "Measured features mapped to GENCODE v49"
+      release: "Release the cellxgene_* views were loaded from"
+      min_cells: "Suppression threshold: cells per group"
+      min_donors: "Suppression threshold: donors per group"
+    column_types:
+      dataset_key: INT64
+      dataset_id: STRING
+      dataset_version_id: STRING
+      collection_id: STRING
+      collection_name: STRING
+      title: STRING
+      collection_doi: STRING
+      citation: STRING
+      cells_kept: INT64
+      n_groups: INT64
+      n_genes: INT64
+      n_genes_measured: INT64
+      n_genes_mapped: INT64
+      release: STRING
+      min_cells: INT64
+      min_donors: INT64
+    examples:
+      - description: "Largest CELLxGENE datasets in the release, with citations"
+        sql: >-
+          SELECT title, collection_name, collection_doi, cells_kept, release
+          FROM cellxgene_datasets_v
+          ORDER BY cells_kept DESC
+          LIMIT 20
+
+  cellxgene_measured_genes_v:
+    exposed: true
+    partition_column: chr
+    clustering_columns: [gene_name, gene_id]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        CELLxGENE metadata has no `dataset` column; its datasets are CELLxGENE dataset
+        versions, not registry entries
+    summary: "Which genes each CELLxGENE dataset measured"
+    description: >-
+      One row per (gene, CELLxGENE dataset) for every GENCODE v49 gene the dataset
+      measured. cellxgene_expression_v already uses it to tell 0 from not measured; query
+      it directly to count how many datasets could have seen a gene. Always filter on chr.
+    columns:
+      chr: "Chromosome (X=23, Y=24, MT=26). Partition column — always filter on it"
+      gene_start: "Gene start (GRCh38)"
+      gene_id: "GENCODE v49 Ensembl gene ID, versioned"
+      gene_name: "GENCODE v49 gene symbol"
+      dataset_key: "Release-local key into cellxgene_datasets_v"
+      dataset_id: "CELLxGENE dataset (stable across versions)"
+      dataset_version_id: "CELLxGENE dataset version"
+    column_types:
+      chr: INT64
+      gene_start: INT64
+      gene_id: STRING
+      gene_name: STRING
+      dataset_key: INT64
+      dataset_id: STRING
+      dataset_version_id: STRING
+    examples:
+      - description: "How many CELLxGENE datasets measured a gene"
+        sql: >-
+          SELECT gene_name, COUNT(DISTINCT dataset_id) AS datasets
+          FROM cellxgene_measured_genes_v
+          WHERE chr = 11 AND gene_name = 'CD3E'
+          GROUP BY gene_name
+
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
 # Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views
