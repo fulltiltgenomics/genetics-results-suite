@@ -235,3 +235,17 @@ resource "google_cloud_scheduler_job" "expression_refresh" {
     }
   }
 }
+
+# repo-scoped (not project-level) so the Batch VM and the driver can pull the pipeline image
+# without reading any other repository in the project.
+resource "google_artifact_registry_repository_iam_member" "expression_image_reader" {
+  for_each = local.expression_iam ? {
+    worker = google_service_account.expression_worker[0].email
+    driver = google_service_account.expression_driver[0].email
+  } : {}
+  project    = google_artifact_registry_repository.docker.project
+  location   = google_artifact_registry_repository.docker.location
+  repository = google_artifact_registry_repository.docker.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${each.value}"
+}
