@@ -6,9 +6,9 @@ WHY THESE FILES EXIST. The code-execution agent gets a sandbox and an SDK, not 4
 schemas. It has to learn the BigQuery views and the SDK's
 signatures the way a developer does — by reading documentation when a question needs it —
 because there is no spare prompt-cache breakpoint to front-load a schema block into
-(genetics-mcp-server/docs/project-spec.md:420). The Dockerfile copies these two
-directories verbatim to /genetics/schema (GENETICS_SCHEMA_DIR) and /genetics/sdk
-(GENETICS_STUBS_DIR).
+(genetics-mcp-server/docs/project-spec.md:420). The image ships them as /genetics/schema
+(GENETICS_SCHEMA_DIR), filtered for the deployment's profile by --emit-filtered, and
+/genetics/sdk (GENETICS_STUBS_DIR), verbatim.
 
 WHY IT GENERATES RATHER THAN TRANSCRIBES. Everything below is derived at run time from
 configs/datasets.yaml (this repo's canonical copy) and from the SDK's own source. Not one
@@ -35,12 +35,16 @@ importing the SDK would execute genetics_mcp_server.config.settings.
 
 Usage:
     scripts/gen-sandbox-docs.py [--sdk-src DIR] [--check]
+    scripts/gen-sandbox-docs.py --emit-filtered PROFILE OUTDIR
 
     --sdk-src   a genetics-mcp-server checkout. Defaults to GENETICS_SDK_SRC, then
                 MCP_SERVER_DIR, then the LIVE sibling checkout — never to the staged
                 sandbox/.sdk-src; see resolve_sdk_src.
     --check     generate into memory and diff against what is on disk; exit 1 on any
                 difference. This is what keeps the committed copies from rotting.
+    --emit-filtered  copy sandbox/schema as PROFILE may see it (filter_schema_docs) into
+                OUTDIR; the build scripts stage the sandbox image's /genetics/schema this
+                way. An unknown PROFILE exits 1.
 
 Exit 0 = written (or up to date under --check), 1 = out of date / a rule is missing,
 2 = the generator could not run.
@@ -51,6 +55,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -314,6 +319,53 @@ def render_schema_docs(datasets_yaml_path):
     return files
 
 
+def hidden_views(availability, profile):
+    """The gated views `profile` may not see; every gated view when the profile is unknown."""
+    known = profile in availability["profiles"]
+    return {
+        view for view, allowed in availability["views"].items()
+        if not known or profile not in allowed
+    }
+
+
+def profile_error(availability, profile):
+    """Why `profile` cannot be served, or None. A consumer that runs before deploying refuses
+    here; a running pod instead fails closed through hidden_views."""
+    if profile in availability["profiles"]:
+        return None
+    return (
+        f"profile {profile!r} is not one of {availability['profiles']}, the top-level "
+        "`profiles:` block of configs/datasets.yaml"
+    )
+
+
+def emit_filtered(profile, out_dir):
+    """Write the on-disk sandbox/schema as `profile` may see it into `out_dir`, for the image.
+
+    Reads the generated tree rather than re-rendering, so the image ships the files the
+    build just generated and tested (or, for run-sandbox-local.sh, what is committed).
+    """
+    files = {}
+    for name in sorted(os.listdir(SCHEMA_DIR)):
+        path = os.path.join(SCHEMA_DIR, name)
+        if os.path.isfile(path):
+            with open(path) as fh:
+                files[name] = fh.read()
+    if AVAILABILITY in files:
+        error = profile_error(json.loads(files[AVAILABILITY]), profile)
+        if error:
+            print(f"cannot filter the schema docs: {error}", file=sys.stderr)
+            return 1
+    shown = filter_schema_docs(files, profile)
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir)
+    for name, content in shown.items():
+        with open(os.path.join(out_dir, name), "w") as fh:
+            fh.write(content)
+    print(f"schema docs for profile {profile}: {len(shown)} of {len(files)} files in {out_dir}")
+    return 0
+
+
 def filter_schema_docs(files, profile):
     """The schema tree as `profile` may see it: gated-off views lose their file and their
     README row, and `_availability.json` itself is dropped because it names them.
@@ -330,12 +382,7 @@ def filter_schema_docs(files, profile):
             "which views are gated, so nothing can be filtered safely. Regenerate with "
             "scripts/gen-sandbox-docs.py."
         )
-    availability = json.loads(files[AVAILABILITY])
-    known = profile in availability["profiles"]
-    hidden = {
-        view for view, allowed in availability["views"].items()
-        if not known or profile not in allowed
-    }
+    hidden = hidden_views(json.loads(files[AVAILABILITY]), profile)
     rows = [re.compile(rf"^\| `{re.escape(view)}` \|") for view in hidden]
     out = {}
     for name, content in files.items():
@@ -973,7 +1020,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sdk-src", default=None)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--emit-filtered", nargs=2, metavar=("PROFILE", "OUTDIR"),
+        help="write sandbox/schema filtered for PROFILE into OUTDIR (the image's copy) and exit",
+    )
     args = parser.parse_args(argv)
+    if args.emit_filtered:
+        return emit_filtered(*args.emit_filtered)
 
     sdk_src = resolve_sdk_src(args.sdk_src)
     sdk_dir = sdk_src and sdk_dir_for(sdk_src)

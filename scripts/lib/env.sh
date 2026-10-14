@@ -511,6 +511,10 @@ set_build_cache_args() {
 # lib/paths.py, and THIS checkout's configs/datasets.yaml, which the builder reads instead of
 # fetch's policy.json because no checksum covers that file. Sets GENESETS_BUILD_ARGS.
 #
+# It also stages <sandbox>/.schema-profile, the image's /genetics/schema: sandbox/schema with
+# the views gated off this profile removed (gen-sandbox-docs.py --emit-filtered). It is done
+# here so the docs and the gene sets are filtered for one profile, resolved once.
+#
 # The profile is passed explicitly: left to the script it would be resolved a second time from
 # the same tfvars by a stricter parser. The bucket is not derived here either — the script knows
 # daly's and refuses any other profile without GENE_SETS_BUCKET (set it in .env.<DEPLOY_ENV>).
@@ -532,7 +536,7 @@ stage_gene_sets() {
     echo "         the tfvars from ROOT_DIR." >&2
   fi
   local fetch=(fetch --out-dir "${sandbox_dir}/.genesets-src")
-  rm -rf "${sandbox_dir}/.genesets-src" "${sandbox_dir}/.genesets-tools"
+  rm -rf "${sandbox_dir}/.genesets-src" "${sandbox_dir}/.genesets-tools" "${sandbox_dir}/.schema-profile"
   profile="$(tfvar config_profile)"
   if [ -z "${profile}" ]; then
     echo "ERROR: no config_profile in ${TFVARS:-the tfvars of this deployment}. The gene-set licence" >&2
@@ -551,6 +555,8 @@ stage_gene_sets() {
   cp "${src_root}/scripts/stage-gene-sets.py" "${src_root}/configs/datasets.yaml" \
     "${sandbox_dir}/.genesets-tools/" || return $?
   cp "${src_root}/scripts/lib/paths.py" "${sandbox_dir}/.genesets-tools/lib/" || return $?
+  python3 "${src_root}/scripts/gen-sandbox-docs.py" \
+    --emit-filtered "${profile}" "${sandbox_dir}/.schema-profile" || return $?
   GENESETS_BUILD_ARGS=(--build-arg GENESETS_PROFILE="${profile}"
                        --build-arg GENESETS_RELEASE="${release}")
 }

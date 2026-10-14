@@ -31,6 +31,10 @@ spec:
         ports:
         - containerPort: 8080
         env:
+        # the view gate: views `tables.<view>.profiles` in datasets.yaml excludes are hidden.
+        # Unset or unknown hides every gated view (fail closed), so this is not optional.
+        - name: CONFIG_PROFILE
+          value: "${CONFIG_PROFILE}"
         - name: PROJECT_ID
           value: "${GCP_PROJECT}"
         # the dataset this deployment serves, substituted from the same BQ_DATASET the monitor

@@ -101,7 +101,10 @@ What the script is doing on your behalf, and why each piece matters:
 script sets only `BIGQUERY_API_URL`, `GENETICS_API_URL`, `DEFAULT_MODEL`,
 `EXTERNAL_MCP_SERVERS`, `REQUIRE_AUTH` and `SANDBOX_URL`, and each as a `${VAR:-default}` —
 so a value already in `MCP_ENV_FILE` **wins**, because the file is sourced first. Anything
-the script does not name is passed through untouched. Put these there rather than in the
+the script does not name is passed through untouched. The exception is `CONFIG_PROFILE`:
+the script exports one value (default `finngen`) to db-api, results-api, chat-api and
+mcp-server after sourcing the file, because services that disagreed on it would advertise
+views db-api refuses; export it before `dev-stack.sh up` to change it. Put these there rather than in the
 `~/genie.env` of [step 5](#5-environment-variables-that-are-not-in-the-repos), which
 `dev-stack.sh` never reads:
 
