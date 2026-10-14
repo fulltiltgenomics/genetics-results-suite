@@ -5,10 +5,12 @@ Verifies service liveness via health endpoints and dataset accessibility
 via the results-api /api/v1/datasets endpoint.
 """
 
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -21,6 +23,11 @@ API_SERVED_DATA_TYPES = frozenset({
     "gwas", "eqtl", "pqtl", "sqtl", "caqtl", "metaboqtl", "mixed",
     "exome", "gene_based", "expression", "gene_disease", "chromatin_peaks",
 })
+
+# profiles whose deployments hold the single-cell expression data. daly and daly-staging both run
+# profile "daly" and share one bucket, but only daly's tfvars sets expression_data_enabled (the
+# flag creates the bucket, so staging must leave it off); the profile is what both pods agree on.
+CELLXGENE_PROFILES = frozenset({"daly"})
 
 
 @dataclass
@@ -75,6 +82,14 @@ class HealthChecker:
             or os.environ.get("CONFIG_PROFILE", "finngen")
         )
         self.timeout = timeout
+        self.cellxgene_bucket = os.environ.get("CELLXGENE_BUCKET", "daly-expression-data")
+        self.cellxgene_root = os.environ.get("CELLXGENE_ROOT", "cellxgene")
+        # off until the initial full driver run has published a release: before that a missing
+        # pointer or table is the expected state, not an outage
+        self.cellxgene_live = os.environ.get("CELLXGENE_LIVE", "false").lower() == "true"
+        self.cellxgene_max_age_days = float(os.environ.get("CELLXGENE_MAX_AGE_DAYS", "10"))
+        self.bq_project = os.environ.get("GCP_PROJECT", "")
+        self.bq_dataset = os.environ.get("BQ_DATASET", "genetics_results")
 
     # ------------------------------------------------------------------
     # public API
@@ -85,6 +100,93 @@ class HealthChecker:
         results: list[CheckResult] = []
         results.extend(self.check_service_health())
         results.extend(self.check_datasets())
+        if self.config_profile in CELLXGENE_PROFILES:
+            results.extend(self.check_cellxgene_release())
+        return results
+
+    def check_cellxgene_release(self, now: datetime | None = None) -> list[CheckResult]:
+        """The CELLxGENE release pointer: present, recent, and agreeing with BigQuery."""
+        now = now or datetime.now(timezone.utc)
+        results: list[CheckResult] = []
+
+        def unavailable(check: str, what: str, why: str) -> CheckResult:
+            if self.cellxgene_live:
+                return CheckResult("cellxgene", check, "fail", error=f"{what}: {why}")
+            return CheckResult(
+                "cellxgene", check, "ok",
+                details={"note": f"{what}: {why}; CELLXGENE_LIVE is false, so not expected yet"},
+            )
+
+        pointer_uri = f"gs://{self.cellxgene_bucket}/{self.cellxgene_root}/releases/CURRENT"
+        try:
+            raw = self._read_cellxgene_current()
+            current = json.loads(raw) if raw is not None else None
+            if current is not None and not isinstance(current.get("release"), str):
+                raise ValueError("no string 'release' field")
+        except Exception as exc:
+            logger.warning("cellxgene: could not read %s: %s", pointer_uri, exc)
+            return [unavailable("release_pointer", pointer_uri, f"unreadable ({exc})")]
+        if current is None:
+            return [unavailable("release_pointer", pointer_uri, "missing")]
+        release = current["release"]
+        results.append(CheckResult(
+            "cellxgene", "release_pointer", "ok",
+            details={"release": release, "datasets": current.get("datasets")},
+        ))
+
+        try:
+            written = datetime.fromisoformat(str(current["written_at"]).replace("Z", "+00:00"))
+            if written.tzinfo is None:
+                written = written.replace(tzinfo=timezone.utc)
+            age_days = (now - written).total_seconds() / 86400
+        except Exception:
+            results.append(CheckResult(
+                "cellxgene", "release_age", "fail",
+                error=f"{pointer_uri} has no parseable written_at ({current.get('written_at')!r})",
+            ))
+        else:
+            if age_days > self.cellxgene_max_age_days:
+                results.append(CheckResult(
+                    "cellxgene", "release_age", "fail",
+                    error=(
+                        f"release {release} was written {age_days:.1f} days ago "
+                        f"(limit {self.cellxgene_max_age_days:g}); the weekly refresh is not "
+                        f"landing. Check the Cloud Scheduler job's state first: a recreated job "
+                        f"comes back PAUSED and nothing else announces it. Then the driver's "
+                        f"latest Batch job and runs/<run_id>/report.json"
+                    ),
+                    details={"age_days": round(age_days, 1)},
+                ))
+            else:
+                results.append(CheckResult(
+                    "cellxgene", "release_age", "ok", details={"age_days": round(age_days, 1)},
+                ))
+
+        table = f"{self.bq_project}.{self.bq_dataset}.cellxgene_datasets"
+        try:
+            loaded = self._loaded_cellxgene_releases()
+        except Exception as exc:
+            logger.error("cellxgene: BigQuery release query failed: %s", exc)
+            results.append(CheckResult(
+                "cellxgene", "bigquery_release", "fail", error=f"could not query {table}: {exc}",
+            ))
+            return results
+        if loaded is None:
+            results.append(unavailable("bigquery_release", table, "table does not exist"))
+        elif loaded != {release}:
+            hint = " (the pointer says bigquery_loaded=false)" if current.get("bigquery_loaded") is False else ""
+            results.append(CheckResult(
+                "cellxgene", "bigquery_release", "fail",
+                error=(
+                    f"BigQuery holds {sorted(loaded) or 'no rows'} but CURRENT is {release}{hint}. "
+                    f"BigQuery ahead means the loader was killed after its commit; behind means "
+                    f"a load failed. Re-run the driver or the loader to converge"
+                ),
+            ))
+        else:
+            results.append(CheckResult(
+                "cellxgene", "bigquery_release", "ok", details={"release": release},
+            ))
         return results
 
     def check_service_health(self) -> list[CheckResult]:
@@ -238,6 +340,33 @@ class HealthChecker:
                 response_time_ms=round(elapsed_ms, 1),
                 error=str(exc),
             )
+
+    def _read_cellxgene_current(self) -> bytes | None:
+        """The pointer's bytes, or None when the object does not exist."""
+        from google.api_core.exceptions import NotFound
+        from google.cloud import storage
+
+        blob = storage.Client(project=self.bq_project or None).bucket(self.cellxgene_bucket).blob(
+            f"{self.cellxgene_root}/releases/CURRENT"
+        )
+        try:
+            return blob.download_as_bytes(timeout=self.timeout)
+        except NotFound:
+            return None
+
+    def _loaded_cellxgene_releases(self) -> set[str] | None:
+        """Distinct releases in cellxgene_datasets, or None when the table does not exist."""
+        from google.api_core.exceptions import NotFound
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=self.bq_project)
+        try:
+            rows = client.query(
+                f"SELECT DISTINCT release FROM `{self.bq_project}.{self.bq_dataset}.cellxgene_datasets`"
+            ).result()
+            return {r.release for r in rows}
+        except NotFound:
+            return None
 
     def _load_datasets_config(self) -> dict | None:
         """Load and parse datasets.yaml. Returns None on failure."""

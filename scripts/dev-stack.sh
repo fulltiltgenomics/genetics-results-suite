@@ -197,6 +197,10 @@ repo_dir() {
 }
 
 PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT:-phewas-development}}"
+# one data profile for the whole stack: db-api, chat-api and mcp-server hide the views
+# `tables.<view>.profiles` in datasets.yaml gates off it, and a stack whose services disagreed
+# would advertise views db-api refuses. finngen was results-api's local default before the others read it.
+CONFIG_PROFILE="${CONFIG_PROFILE:-finngen}"
 MCP_ENV_FILE="${MCP_ENV_FILE:-$SIBLING_ROOT/genetics-mcp-server/.env}"
 SANDBOX_URL="${SANDBOX_URL:-http://127.0.0.1:8081}"
 
@@ -503,7 +507,7 @@ start_db_api() {
     local dir; dir="$(repo_dir genetics-results-db)"
     (
         cd "$dir"
-        export PROJECT_ID="$PROJECT_ID" DATASET_ID="$DATASET" PORT=8080
+        export PROJECT_ID="$PROJECT_ID" DATASET_ID="$DATASET" PORT=8080 CONFIG_PROFILE="$CONFIG_PROFILE"
         exec setsid .venv/bin/python api/main.py
     ) >"$RUN_DIR/db-api.log" 2>&1 &
     LAST_CHILD=$!
@@ -513,7 +517,7 @@ start_results_api() {
     local dir; dir="$(repo_dir genetics-results-api)"
     (
         cd "$dir"
-        export CONFIG_PROFILE="${CONFIG_PROFILE:-finngen}" DEPLOY_ENV="${DEPLOY_ENV:-local}" RELOAD="${RELOAD:-1}"
+        export CONFIG_PROFILE="$CONFIG_PROFILE" DEPLOY_ENV="${DEPLOY_ENV:-local}" RELOAD="${RELOAD:-1}"
         exec setsid .venv/bin/python run_server.py 2000
     ) >"$RUN_DIR/results-api.log" 2>&1 &
     LAST_CHILD=$!
@@ -536,6 +540,7 @@ start_chat_api() {
         fi
         export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
         export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
+        export CONFIG_PROFILE="$CONFIG_PROFILE"
         export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
         export EXTERNAL_MCP_SERVERS="${EXTERNAL_MCP_SERVERS:-https://mcp.platform.opentargets.org}"
         export REQUIRE_AUTH="${REQUIRE_AUTH:-false}"
@@ -558,6 +563,7 @@ start_mcp_server() {
         export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}"
         export BIGQUERY_API_URL="${BIGQUERY_API_URL:-http://localhost:8080}"
         export CHAT_BACKEND_URL="${CHAT_BACKEND_URL:-http://localhost:4000/chat}"
+        export CONFIG_PROFILE="$CONFIG_PROFILE"
         export EXTERNAL_MCP_SERVERS="${EXTERNAL_MCP_SERVERS:-}"
         # no TLS and no proxy in front of it here, as in the cluster where the gateway
         # terminates both; without this FastMCP's DNS-rebinding guard refuses the call

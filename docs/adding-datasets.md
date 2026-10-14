@@ -310,9 +310,11 @@ is computed by a `CASE` in the *view SQL itself* is exactly `resource_derivation
 the view — so `mode != none` overcounts this subset by one). The views outside the
 `view_case` subset that still carry a `resource` column as a hardcoded single-source
 constant — `gene_annotations_v`, `dosage_sensitivity_v`, `variant_annotation_v`,
-`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are exactly `resource_derivation.mode == 'none'` with
-`resource` in `columns:`; re-derive the list from the yaml rather than trusting a
-hand-written one, since it has already gone stale once.
+`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are `resource_derivation.mode == 'none'` with
+`resource` in `columns:`, except `decode_pqtl_signals_v`, which is `none` because it passes
+through the `resource` credible_sets stored at load time rather than holding a constant;
+re-derive the list from the yaml rather than trusting a hand-written one, since it has
+already gone stale once.
 
 ### Column types (`tables.<view>.column_types`)
 
@@ -348,7 +350,7 @@ own `DATASET_ID` (`genetics-results-suite-bee`; see `docs/datasets-yaml-schema.m
 ```bash
 python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type
 python3 scripts/test-sandbox-docs.py      # gates scripts/build.sh
-scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results
+scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results --profile daly
 ```
 
 The third command is the one the offline harness cannot replace: it dry-runs every example on
@@ -360,6 +362,15 @@ clustering key or on the derived `resource` column lowers the bytes billed, not 
 estimate. Declare a new view's `partition_column` and `clustering_columns` from the
 `PARTITION BY` / `CLUSTER BY` in genetics-results-db's `schemas/<table>.sql`; the same
 script holds the declaration to the live table.
+
+If the view's data is loaded on some deployments only, add `profiles: [<profile>, ...]` to
+its `tables:` entry (see `docs/datasets-yaml-schema.md`). The view then appears in
+`_availability.json` after regenerating, and `scripts/test-sandbox-docs.py` checks that no
+schema file or stub a profile outside the list is shown still names it, or its base-table
+stem, in any case. Another view's prose or an SDK function that mentions a gated view fails
+that check, so word it without the name or gate it the same way. On a deployment whose
+`config_profile` is not listed, db-api refuses the view, the mcp-server prompt omits it, the
+sandbox image is built without its doc, and `check-example-scans.py` skips its examples.
 
 The harness fails on a missing entry, on a stale entry naming a column that no longer
 exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted

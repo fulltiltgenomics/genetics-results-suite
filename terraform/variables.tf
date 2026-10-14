@@ -234,3 +234,58 @@ variable "services_cidr" {
   type        = string
   default     = "10.20.0.0/20"
 }
+
+variable "expression_data_enabled" {
+  description = <<-EOT
+    Create the single-cell expression bucket, enable batch.googleapis.com and create the Cloud
+    Batch worker service account (terraform/expression.tf). Default false because the bucket is
+    owned by exactly one deployment: daly-staging shares daly's project, and a bucket name is
+    global, so a second state enabling it would fail on create or, after an import, both states
+    would own it. scripts/deploy.sh runs `terraform apply -auto-approve`, so setting this true
+    in a tfvars file means the next full deploy of that environment creates the resources.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "expression_bucket_name" {
+  description = "Name of the single-cell expression bucket. Global namespace; only read when expression_data_enabled."
+  type        = string
+  default     = "daly-expression-data"
+}
+
+variable "expression_bucket_extra_readers" {
+  description = "Service-account emails, besides this deployment's own Workload Identity GSA, granted roles/storage.objectViewer on the expression bucket — the other deployments that serve it but do not own it (daly-staging's results-api GSA)."
+  type        = list(string)
+  default     = []
+}
+
+variable "expression_bq_dataset" {
+  description = "BigQuery dataset the expression driver is granted roles/bigquery.dataEditor on. Places that grant only: the driver passes no DATASET_ID, so its load step writes to the loader's default, genetics_results, and this must equal it. Must already exist (it is not managed here); only read when expression_data_enabled and manage_iam."
+  type        = string
+  default     = "genetics_results"
+}
+
+variable "expression_subnet_cidr" {
+  description = "Primary IPv4 range of the Cloud Batch workers' subnet. Must not overlap the GKE subnets and their secondary ranges, or broad-allow's central-subnet (10.10.0.0/20), in case the VPCs are ever peered."
+  type        = string
+  default     = "10.30.0.0/20"
+}
+
+variable "expression_refresh_schedule_enabled" {
+  description = "Create the Cloud Scheduler job that submits the expression driver Batch job (created paused). Separate from expression_data_enabled because it needs the driver job spec, which does not exist until the driver lands."
+  type        = bool
+  default     = false
+}
+
+variable "expression_refresh_job_spec_path" {
+  description = "Path to the driver Batch job spec (the JSON body of a batch.googleapis.com jobs.create request, with the job running as expression-batch-driver). Read only when expression_refresh_schedule_enabled."
+  type        = string
+  default     = ""
+}
+
+variable "expression_refresh_schedule" {
+  description = "Cron schedule (UTC) of the expression refresh job."
+  type        = string
+  default     = "0 3 * * 1"
+}

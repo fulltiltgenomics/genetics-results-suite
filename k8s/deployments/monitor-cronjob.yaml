@@ -38,6 +38,11 @@ spec:
               value: "/app/configs/datasets.yaml"
             - name: CONFIG_PROFILE
               value: "${CONFIG_PROFILE}"
+            # "true" once the CELLxGENE driver has published the first release (daly profile
+            # only): until then a missing release pointer or cellxgene_datasets table is
+            # expected and not alerted. Flip by editing this line and re-running deploy.sh.
+            - name: CELLXGENE_LIVE
+              value: "false"
             - name: GCP_PROJECT
               value: "${GCP_PROJECT}"
             - name: BQ_DATASET

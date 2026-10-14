@@ -512,7 +512,8 @@ This applies any terraform changes, configures kubectl, and deploys all k8s mani
 > The worked examples in `configs/datasets.yaml` are chat-backend's system prompt as much as
 > the sandbox's schema docs, so one the sandbox's scan cap refuses teaches the model a query
 > that fails. `scripts/check-example-scans.py` is the guard: once `deploy.sh` knows the project
-> and dataset it dry-runs every example on live BigQuery against the cap and holds each view's
+> and dataset it dry-runs every example of the views the deployment's profile serves
+> (`--profile`) on live BigQuery against the cap and holds each view's
 > declared partition/clustering layout to its base table, aborting the deploy on a failure and
 > only warning when it cannot run (no `bq`, no credentials). The cap is checked against
 > BigQuery's partition-pruned estimate, so a literal predicate on the partition column is the
@@ -708,8 +709,8 @@ by `build-all.sh`, with a loud message, while that repo has no
 `src/genetics_mcp_server/sdk/`** — which is the case on `master` today. Both build scripts
 first run `./scripts/gen-sandbox-docs.py`, which regenerates the on-demand schema markdown
 (`sandbox/schema/`, one file per BigQuery view in `configs/datasets.yaml`) and the SDK
-signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` and
-`/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
+signature stubs (`sandbox/stubs/`) the image carries at `/genetics/schema` (filtered for the
+deployment's `config_profile`, so a view gated off it ships no doc) and `/genetics/sdk`, and then `./scripts/test-sandbox-docs.py`, which checks the committed
 copies are current, that every view and column reaches a file **with its BigQuery type**,
 that the stubs cover exactly the SDK's exported surface, and that every bare name a stub
 signature defaults to is defined in that same stub — the generator resolves such a default

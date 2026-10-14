@@ -148,8 +148,8 @@ if [ "${DO_BUILD}" = "1" ]; then
 
   FIXTURE_DIR="${MCP_DIR}/tests/fixtures/genesets"
   GENESETS_STAGE="$(mktemp -d)"
-  trap 'rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${GENESETS_STAGE}"' EXIT
-  rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
+  trap 'rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile" "${GENESETS_STAGE}"' EXIT
+  rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile"
   mkdir -p "${SANDBOX_DIR}/.sdk-src"
   cp "${MCP_DIR}/pyproject.toml" "${MCP_DIR}/README.md" "${SANDBOX_DIR}/.sdk-src/"
   cp -r "${MCP_DIR}/src" "${SANDBOX_DIR}/.sdk-src/src"
@@ -201,6 +201,8 @@ PY
   mkdir -p "${SANDBOX_DIR}/.genesets-tools/lib"
   cp "${SCRIPT_DIR}/stage-gene-sets.py" "${REPO_ROOT}/configs/datasets.yaml" "${SANDBOX_DIR}/.genesets-tools/"
   cp "${SCRIPT_DIR}/lib/paths.py" "${SANDBOX_DIR}/.genesets-tools/lib/"
+  # and the schema docs filtered for the same profile, as stage_gene_sets does
+  python3 "${SCRIPT_DIR}/gen-sandbox-docs.py" --emit-filtered "${GENESETS_PROFILE}" "${SANDBOX_DIR}/.schema-profile"
 
   SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD 2>/dev/null || echo local)"
   echo "=== Building ${IMAGE} (SDK ${SDK_REF}; FIXTURE gene sets as ${GENESETS_RELEASE}, profile ${GENESETS_PROFILE})"
