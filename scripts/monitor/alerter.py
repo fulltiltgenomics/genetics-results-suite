@@ -93,6 +93,15 @@ _IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # A restart makes them noisy once; silencing them would make a real outage silent.
 ]
 
+# dropped only while CELLXGENE_LIVE is not "true" (the monitor's CELLxGENE switch). results-api
+# logs these every 15 minutes (refresh) and on every start (initial load) until the first
+# release exists. "still serving none" is not specific to that period: a pod that restarts
+# while the release is unreadable also serves none, so once live these must alert.
+_PRELAUNCH_IGNORE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("results-api", re.compile(r"cell-type expression: refresh failed, still serving none\b")),
+    ("results-api", re.compile(r"cell-type expression: initial release load failed:")),
+]
+
 # GKE's logging agent tags everything a container writes to stderr as severity=ERROR
 # regardless of content, so the entry severity is meaningless for the many services that
 # log normally to stderr (uvicorn, postgres, batch scripts). Recover the level the app
@@ -121,7 +130,10 @@ _MIN_ALERT_RANK = _LEVEL_RANK["WARNING"]
 
 
 def _should_ignore(container: str, message: str) -> bool:
-    return any(c == container and p.search(message) for c, p in _IGNORE_PATTERNS)
+    patterns = _IGNORE_PATTERNS
+    if os.environ.get("CELLXGENE_LIVE", "false").lower() != "true":
+        patterns = patterns + _PRELAUNCH_IGNORE_PATTERNS
+    return any(c == container and p.search(message) for c, p in patterns)
 
 
 def _embedded_level(message: str) -> str | None:
