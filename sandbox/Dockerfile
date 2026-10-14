@@ -2,8 +2,9 @@
 #
 # The build needs a staged genetics-mcp-server checkout at ./.sdk-src — the genetics SDK is
 # pip-installed from that repo and is not vendored here — and the staged gene-set bundle at
-# ./.genesets-src and ./.genesets-tools. scripts/build-all.sh, scripts/build.sh and
-# scripts/run-sandbox-local.sh (with a fixture bundle) stage both;
+# ./.genesets-src and ./.genesets-tools, and the schema docs filtered for the deployment's
+# profile at ./.schema-profile. scripts/build-all.sh, scripts/build.sh and
+# scripts/run-sandbox-local.sh (with a fixture bundle) stage all three;
 # a bare `docker build sandbox/` fails without them, by design.
 
 FROM gcr.io/distroless/python3-debian12:nonroot AS distroless
@@ -91,8 +92,14 @@ RUN test -n "${GENESETS_PROFILE}" || { echo "build arg GENESETS_PROFILE is requi
 # be checked after it is assembled. /dl is the base rootfs verbatim, the Dockerfile is staged
 # so the checks can read the final stage's ENV, and schema/ and stubs/ for the placeholder gate.
 # The gene-set checks read GENESETS_* from the ARGs above.
+# The schema docs are .schema-profile/, not schema/: views gated off this deployment's profile
+# and their index rows are already removed, along with _availability.json, which names every
+# gated view (gen-sandbox-docs.py --emit-filtered, staged with the same profile as
+# GENESETS_PROFILE). The rootfs is read-only at run time, so build time is the only place the
+# sandbox's copy can be filtered.
 COPY --from=distroless / /dl/
-COPY schema/ /build/schema/
+# must have been staged for this build's GENESETS_PROFILE: stage_gene_sets guarantees it, a hand-run docker build over a leftover dir does not
+COPY .schema-profile/ /build/schema/
 COPY stubs/ /build/stubs/
 COPY Dockerfile /build/Dockerfile
 COPY build-checks.py /build/build-checks.py
@@ -118,7 +125,7 @@ COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
 # k8s/deployments/sandbox.yaml names it in `args:` instead, which keeps a manifest that has
 # lost its args a loud CrashLoopBackOff rather than a silently defaulted process.
 COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
-COPY --chown=65532:65532 schema/ /genetics/schema/
+COPY --from=builder --chown=65532:65532 /build/schema/ /genetics/schema/
 COPY --chown=65532:65532 stubs/ /genetics/sdk/
 # root-owned, world-readable: the sandbox uid reads the bundle and cannot rewrite it even
 # where the rootfs is writable (a local run)

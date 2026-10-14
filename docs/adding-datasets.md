@@ -350,7 +350,7 @@ own `DATASET_ID` (`genetics-results-suite-bee`; see `docs/datasets-yaml-schema.m
 ```bash
 python3 scripts/gen-sandbox-docs.py       # refuses if any documented column has no type
 python3 scripts/test-sandbox-docs.py      # gates scripts/build.sh
-scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results
+scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results --profile daly
 ```
 
 The third command is the one the offline harness cannot replace: it dry-runs every example on
@@ -368,8 +368,9 @@ its `tables:` entry (see `docs/datasets-yaml-schema.md`). The view then appears 
 `_availability.json` after regenerating, and `scripts/test-sandbox-docs.py` checks that no
 schema file or stub a profile outside the list is shown still names it, or its base-table
 stem, in any case. Another view's prose or an SDK function that mentions a gated view fails
-that check, so word it without the name or gate it the same way. The gate is recorded only:
-no consumer (db-api, the sandbox image, the mcp-server prompt) hides the view yet.
+that check, so word it without the name or gate it the same way. On a deployment whose
+`config_profile` is not listed, db-api refuses the view, the mcp-server prompt omits it, the
+sandbox image is built without its doc, and `check-example-scans.py` skips its examples.
 
 The harness fails on a missing entry, on a stale entry naming a column that no longer
 exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted

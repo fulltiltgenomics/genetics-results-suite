@@ -166,11 +166,13 @@ unaffected. Each name must be a key of the top-level `profiles:` block, and the 
 be non-empty: `scripts/gen-sandbox-docs.py` refuses a misspelled name because it would
 silently drop a profile the author meant to include, and an empty list because it hides the
 view everywhere while reading as a deliberate scope. The view's `.md` and README row are still
-generated as before; the gate is recorded in the generated `_availability.json` beside them.
-Nothing enforces it yet: db-api, the sandbox image and mcp-server's prompt copy still show
-every view until each is taught to read the gate.
+generated as before; the gate is recorded in the generated `_availability.json` beside them,
+and each consumer hides the view on a profile outside the list. An unset or unknown profile
+hides every gated view at run time and is refused before deploy and at build time.
 
-**Consumers**: `scripts/gen-sandbox-docs.py` (`_availability.json`, `filter_schema_docs`).
+**Consumers**: `scripts/gen-sandbox-docs.py` (`_availability.json`, `filter_schema_docs`,
+`--emit-filtered` for the sandbox image's `/genetics/schema`), `scripts/check-example-scans.py
+--profile`, db-api and mcp-server's `schema_docs` (both by `CONFIG_PROFILE`).
 
 ### Field details for `tables.<table>.resource_derivation` and `tables.<table>.dataset_cross_check`
 

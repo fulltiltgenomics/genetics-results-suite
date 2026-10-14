@@ -504,8 +504,15 @@ listed. The generator's `filter_schema_docs(files, profile)` is the reference re
 drops a gated-off view's file and its README row, drops the json itself (because it names the
 gated views), and fails closed: an unset or unknown profile sees no gated view.
 `scripts/test-sandbox-docs.py` asserts that no file left after filtering, README and the
-unfiltered stubs included, names a hidden view or its base-table stem, for every profile. The generator only emits the json; until a consumer
-filters, every tree still ships every view's file.
+unfiltered stubs included, names a hidden view or its base-table stem, for every profile.
+
+The sandbox's copy is filtered at build time, because its root filesystem is read-only at run
+time. `stage_gene_sets` (`scripts/lib/env.sh`) runs `gen-sandbox-docs.py --emit-filtered
+<config_profile>`, with the profile it also passes as `GENESETS_PROFILE`, into
+`sandbox/.schema-profile/`, and the Dockerfile copies that tree rather than `schema/`. So
+`/genetics/schema` holds no gated-off view's file or README row and no `_availability.json`.
+mcp-server's copy keeps the json and filters at import, and db-api refuses a gated-off view;
+both read `CONFIG_PROFILE`, which `k8s/deployments/` gives db-api, chat-backend and mcp-server.
 
 ### The LD proxy: one third-party call the sandbox can cause
 

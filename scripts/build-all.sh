@@ -75,7 +75,7 @@ SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
 SANDBOX_SKIPPED=""
 
 WORK_DIR=$(mktemp -d)
-trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"' EXIT
+trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile"' EXIT
 
 clone_repo() {
   local name=$1 branch=$2
@@ -222,7 +222,7 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     echo ""
     echo "!!! SKIPPING sandbox: ${SANDBOX_SKIPPED}."
     echo "!!! Every other image was built."
-    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
+    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile"
   elif [ "${SANDBOX_DOCS_OK}" -ne 0 ] || [ -n "${SANDBOX_PLACEHOLDERS}" ]; then
     SANDBOX_SKIPPED="the schema docs / SDK stubs could not be generated or verified"
     echo ""
@@ -236,7 +236,7 @@ if [ -d "${MCP_DIR}/src/genetics_mcp_server/sdk" ]; then
     TAG="$(date +%Y%m%d).$(git -C "${SCRIPT_DIR}/.." rev-parse --short HEAD)"
     build_and_push sandbox "${SANDBOX_DIR}" "${TAG}" "${GENESETS_BUILD_ARGS[@]}" \
       --build-arg SDK_REF="$(git -C "${MCP_DIR}" rev-parse --short HEAD)"
-    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"
+    rm -rf "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile"
   fi
 else
   SANDBOX_SKIPPED="${MCP_SERVER_BRANCH} of genetics-mcp-server has no src/genetics_mcp_server/sdk"

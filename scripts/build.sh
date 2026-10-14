@@ -66,7 +66,7 @@ fi
 if [ "${SERVICE}" = "sandbox" ]; then
   SANDBOX_DIR="${SCRIPT_DIR}/../sandbox"
   WORK_DIR=$(mktemp -d)
-  trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools"' EXIT
+  trap 'rm -rf "${WORK_DIR}" "${SANDBOX_DIR}/.sdk-src" "${SANDBOX_DIR}/.genesets-src" "${SANDBOX_DIR}/.genesets-tools" "${SANDBOX_DIR}/.schema-profile"' EXIT
 
   MCP_BRANCH="${MCP_SERVER_BRANCH:-master}"
   MCP_DIR="${WORK_DIR}/genetics-mcp-server"
