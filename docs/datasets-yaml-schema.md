@@ -59,6 +59,7 @@ column descriptions, example queries, and categorical column configuration.
 tables:
   <table_name>:                    # e.g. "credible_sets_v"
     exposed: true                  # optional (default: NOT exposed) -- see below
+    profiles: [string]             # optional (default: every profile) -- see below
     summary: string                # required -- a few words for the schema index; see below
     description: string            # required -- table-level description
 
@@ -156,6 +157,20 @@ from it (`api/yaml_loader.py::load_views`) and refuses to start when the result 
 widening and a narrowing fail that test. Nothing on the deploy path re-checks it.
 
 **Consumers**: db-api (`VIEWS` and the `/query` allow-list), `live_dataset_scope.py`.
+
+### Field details for `tables.<table>.profiles`
+
+Gates a view to the deployments whose `config_profile` is listed, for a view whose data is
+loaded on some deployments only. Absent means every profile, so an entry without it is
+unaffected. Each name must be a key of the top-level `profiles:` block, and the list must
+be non-empty: `scripts/gen-sandbox-docs.py` refuses a misspelled name because it would
+silently drop a profile the author meant to include, and an empty list because it hides the
+view everywhere while reading as a deliberate scope. The view's `.md` and README row are still
+generated as before; the gate is recorded in the generated `_availability.json` beside them.
+Nothing enforces it yet: db-api, the sandbox image and mcp-server's prompt copy still show
+every view until each is taught to read the gate.
+
+**Consumers**: `scripts/gen-sandbox-docs.py` (`_availability.json`, `filter_schema_docs`).
 
 ### Field details for `tables.<table>.resource_derivation` and `tables.<table>.dataset_cross_check`
 

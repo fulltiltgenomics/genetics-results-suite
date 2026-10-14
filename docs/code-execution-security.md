@@ -498,6 +498,15 @@ arrives unasked. The files stay in the image, because a script may still open on
 `PLACEHOLDER` gate still guards both staged trees. The stubs are still reached through
 `list_capabilities` rather than by path.
 
+Both schema trees also carry a generated `_availability.json`: the known profiles and, for each
+view with a `tables.<view>.profiles` gate, the profiles that may see it. Ungated views are not
+listed. The generator's `filter_schema_docs(files, profile)` is the reference reading of it. It
+drops a gated-off view's file and its README row, drops the json itself (because it names the
+gated views), and fails closed: an unset or unknown profile sees no gated view.
+`scripts/test-sandbox-docs.py` asserts that no file left after filtering, README and the
+unfiltered stubs included, names a hidden view or its base-table stem, for every profile. The generator only emits the json; until a consumer
+filters, every tree still ships every view's file.
+
 ### The LD proxy: one third-party call the sandbox can cause
 
 A `run_analysis` script cannot reach the internet, and that has not changed. What changed is
@@ -1572,7 +1581,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-supervisor.py --container URL` | the same wire checks against the real image, plus the read-only rootfs, the pruned venv, the seeded font cache, the absence of credentials in the child's environment, and the gene-set bundle as an execution sees it (present, root-owned and unwritable, loaded by `genetics.enrichment` within the address-space cap) | a container from `scripts/run-sandbox-local.sh` |
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union. It covers **both** pods whose NetworkPolicy is the reason they are safe: for the URL fetcher, that only chat-backend may reach it and the **sandbox may not** (a sandbox that can call the fetcher has internet egress through a proxy), that its egress is 443 with every one of the five `except` blocks present, that its KSA carries no Workload Identity annotation and mounts no token, that no credential reaches its environment in any form, and that it is distroless, non-root and read-only | the manifests and `url-fetcher/Dockerfile`; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
-| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, and no placeholder survives | a genetics-mcp-server checkout |
+| `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, no placeholder survives, and the profile filter leaves no file naming a view gated away from that profile | a genetics-mcp-server checkout |
 | `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. It is the feature's acceptance test, written before the code rather than after it, so it could say what "working" meant while that was still negotiable | a loopback origin it starts itself, the local sandbox container, a signing key |

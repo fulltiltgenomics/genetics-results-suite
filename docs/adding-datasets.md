@@ -363,6 +363,14 @@ estimate. Declare a new view's `partition_column` and `clustering_columns` from 
 `PARTITION BY` / `CLUSTER BY` in genetics-results-db's `schemas/<table>.sql`; the same
 script holds the declaration to the live table.
 
+If the view's data is loaded on some deployments only, add `profiles: [<profile>, ...]` to
+its `tables:` entry (see `docs/datasets-yaml-schema.md`). The view then appears in
+`_availability.json` after regenerating, and `scripts/test-sandbox-docs.py` checks that no
+schema file or stub a profile outside the list is shown still names it, or its base-table
+stem, in any case. Another view's prose or an SDK function that mentions a gated view fails
+that check, so word it without the name or gate it the same way. The gate is recorded only:
+no consumer (db-api, the sandbox image, the mcp-server prompt) hides the view yet.
+
 The harness fails on a missing entry, on a stale entry naming a column that no longer
 exists, and on anything that is not a BigQuery type spelling (`INT`, `float`, a pasted
 description). It does **not** compare the recorded type against live BigQuery — it runs on
