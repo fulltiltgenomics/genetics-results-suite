@@ -1153,8 +1153,10 @@ plots":
   the FinnGen annotation, never gnomAD; a binary outcome's Steiger test uses the sample
   prevalence when none is given, and says so. It refuses, with a message that names the
   reason: a protein with no cis credible set whose lead passes the MAF floor (no
-  summary-statistic fallback), by default a dataset of pseudo credible sets as the exposure
-  (deCODE's leads were measured to sit tens of kb from the real signal), and a list of
+  summary-statistic fallback), always a dataset of pseudo credible sets as the exposure
+  (deCODE's leads were measured to sit tens of kb from the real signal), a list of
+  outcomes longer than `OUTCOME_CAP` (refused before any fetch: the 120 s wall clock, not the
+  request cap, bounds a screen — 400 FinnGen outcomes took 94 s on staging), and a list of
   exposures — proteome-wide screens
   are out of scope. The sample-overlap statement comes from each dataset's `cohorts` field,
   which names a sample collection rather than a sample set: a shared token means overlap of
