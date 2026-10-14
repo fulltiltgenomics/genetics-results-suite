@@ -134,7 +134,8 @@ Shared-project hazards handled explicitly:
   (`expression_refresh_job_spec_path`); it is created paused, and unpausing it with
   `gcloud scheduler jobs resume` is the decision to start weekly refreshes — terraform ignores
   `paused` after creation, so a later apply (including `deploy.sh`'s) leaves that decision
-  alone in either direction. Raw files are kept under `cellxgene/raw/` by
+  alone in either direction. Both batch GSAs hold `roles/artifactregistry.reader` on the
+  registry repository itself (not the project) so they can pull the cellxgene image. Raw files are kept under `cellxgene/raw/` by
   `dataset_version_id` and are never overwritten, so the bucket has no versioning: a version
   CELLxGENE has retired is deleted 90 days after the driver sets its `customTime`, and one
   that is never marked is kept.
