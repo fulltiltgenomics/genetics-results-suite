@@ -145,7 +145,7 @@ resource "google_project_service" "cloudscheduler" {
 }
 
 # the driver itself runs as a Batch job: it plans, submits and supervises the per-dataset worker
-# jobs, then publishes. BigQuery grants for the cellxgene tables are added with those tables.
+# jobs, then publishes and loads the release into BigQuery.
 resource "google_service_account" "expression_driver" {
   count        = local.expression_iam ? 1 : 0
   account_id   = "expression-batch-driver"
@@ -158,6 +158,8 @@ resource "google_project_iam_member" "expression_driver" {
     "roles/batch.jobsEditor",
     "roles/batch.agentReporter",
     "roles/logging.logWriter",
+    # runs the load and query jobs; what they may write is the dataset grant below
+    "roles/bigquery.jobUser",
   ]) : toset([])
   project = var.project_id
   role    = each.value
@@ -169,6 +171,17 @@ resource "google_storage_bucket_iam_member" "expression_driver_writer" {
   bucket = google_storage_bucket.expression_data[0].name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.expression_driver[0].email}"
+}
+
+# dataset-scoped rather than project-wide. The loader creates its staging tables next to the
+# targets, which needs tables.create on the dataset, so a grant on the cellxgene tables alone
+# would not do; this covers every table in var.expression_bq_dataset, not only cellxgene_*.
+resource "google_bigquery_dataset_iam_member" "expression_driver_data_editor" {
+  count      = local.expression_iam ? 1 : 0
+  project    = var.project_id
+  dataset_id = var.expression_bq_dataset
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.expression_driver[0].email}"
 }
 
 # on the worker GSA only: a project-wide serviceAccountUser would let the driver run jobs as
