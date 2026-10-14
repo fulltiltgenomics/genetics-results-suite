@@ -383,16 +383,24 @@ echo "BigQuery dataset: ${BQ_DATASET}"
 # docs, so an example the cap refuses teaches the model a query shape that fails. Only live
 # BigQuery can answer this — the cap is checked against BigQuery's own estimate — so it runs
 # here, once the project and dataset are known, rather than in build.sh's offline gate.
-# exit 1 = an example is over the cap or a declared table layout is wrong; abort.
+# Only the views this deployment's profile serves are checked. The profile is read here with
+# the precedence CONFIG_PROFILE gets below (environment, then tfvars), because the pods are
+# given that value and this check has to cover what they serve; terraform output, the source
+# below, is not read yet at this point.
+# exit 1 = an example is over the cap, a declared table layout is wrong, or no profile; abort.
 # exit 2 = could not tell (no bq, no credentials); warn and continue, as the other preflights do.
 set +e
-python3 "${SCRIPT_DIR}/check-example-scans.py" --project "${GCP_PROJECT}" --dataset "${BQ_DATASET}"
+python3 "${SCRIPT_DIR}/check-example-scans.py" --project "${GCP_PROJECT}" --dataset "${BQ_DATASET}" \
+  --profile "${CONFIG_PROFILE:-$(tfvar config_profile)}"
 scan_check=$?
 set -e
 if [ "${scan_check}" -eq 1 ]; then
-  echo "ERROR: a worked example in configs/datasets.yaml does not run under the sandbox scan cap"
-  echo "       on ${GCP_PROJECT}:${BQ_DATASET}, or a declared partition/clustering layout is wrong."
-  echo "       Fix the example (add the view's partition predicate) and regenerate sandbox/schema."
+  echo "ERROR: scripts/check-example-scans.py refused this deploy; its own output above says which:"
+  echo "       - the deployment's config_profile is missing or unknown (fix config_profile in"
+  echo "         ${TFVARS##*/} or CONFIG_PROFILE), or"
+  echo "       - a worked example in configs/datasets.yaml does not run under the sandbox scan cap on"
+  echo "         ${GCP_PROJECT}:${BQ_DATASET}, or a declared partition/clustering layout is wrong. Fix the"
+  echo "         example (add the view's partition predicate) and regenerate sandbox/schema."
   exit 1
 elif [ "${scan_check}" -ne 0 ]; then
   echo "WARNING: scripts/check-example-scans.py could not run (exit ${scan_check}); deploying unverified."

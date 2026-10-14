@@ -25,15 +25,21 @@ view declares nothing is reported as a warning (the doc is then silent where it 
 Needs the `bq` CLI with credentials for the target project. Run from scripts/deploy.sh once
 GCP_PROJECT and BQ_DATASET are resolved; also runnable by hand:
 
-  scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results
+  scripts/check-example-scans.py --project daly-finngenie --dataset genetics_results --profile daly
 
-Exit 0 = every example fits and every declaration matches; 1 = an example is over the cap or a
-declaration is wrong; 2 = could not tell (no bq, no credentials, no PyYAML), which is not
+Only the views the deployment's profile serves are checked: a view whose `profiles:` list
+excludes it is not in that deployment's data, so its examples cannot dry-run there and are not
+shipped there either. Which views those are is gen-sandbox-docs.py's decision, imported rather
+than restated, so the gate and the shipped docs cannot disagree.
+
+Exit 0 = every example fits and every declaration matches; 1 = an example is over the cap, a
+declaration is wrong, or the profile is missing or unknown; 2 = could not tell (no bq, no credentials, no PyYAML), which is not
 evidence of a broken example — the caller warns and continues, the convention the other
 preflights share.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -42,7 +48,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-from paths import DATASETS_YAML
+from paths import DATASETS_YAML, ROOT
 
 # db-api's SANDBOX_MAX_BYTES_BILLED (genetics-results-db api/main.py). Not importable from
 # here, so the value is repeated and overridable; a drift shows up as this gate passing an
@@ -88,6 +94,15 @@ def live_layout(view, *, project, dataset):
     return partition, list(clustering)
 
 
+def _generator():
+    spec = importlib.util.spec_from_file_location(
+        "gen_sandbox_docs", os.path.join(ROOT, "scripts", "gen-sandbox-docs.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _fmt_gb(n):
     return f"{n / 1024**3:.1f} GB"
 
@@ -103,22 +118,43 @@ def main(argv=None):
         help="per-query estimate the sandbox is allowed (default: db-api's 50 GB)",
     )
     parser.add_argument("--datasets-yaml", default=DATASETS_YAML)
+    # not argparse `required`: its exit 2 reads as "could not tell" to deploy.sh, which would
+    # then deploy unverified; a deployment that cannot name its profile is a refusal
+    parser.add_argument("--profile", help="config_profile of the deployment (tfvars)")
     args = parser.parse_args(argv)
+    if not args.profile:
+        print("check-example-scans: --profile is required (the deployment's config_profile)",
+              file=sys.stderr)
+        return 1
 
     try:
         import yaml
     except ImportError:
         return _cannot_run("PyYAML is missing (pip install pyyaml)")
+    with open(args.datasets_yaml) as fh:
+        config = yaml.safe_load(fh)
+    tables = config.get("tables") or {}
+
+    gen = _generator()
+    availability = json.loads(gen.render_availability(config))
+    error = gen.profile_error(availability, args.profile)
+    if error:
+        print(f"check-example-scans: {error}", file=sys.stderr)
+        return 1
+    hidden = gen.hidden_views(availability, args.profile)
+    for view in sorted(hidden):
+        print(f"skip {view}: not served on profile {args.profile}")
+
     if shutil.which("bq") is None:
         return _cannot_run("the bq CLI is not on PATH")
     code, _out, err = _bq(["ls", "--max_results=1", f"{args.project}:{args.dataset}"], project=args.project)
     if code != 0:
         return _cannot_run(f"bq cannot list {args.project}:{args.dataset}: {err.strip().splitlines()[-1:]}")
 
-    with open(args.datasets_yaml) as fh:
-        tables = yaml.safe_load(fh).get("tables") or {}
-
-    exposed = {view: table for view, table in tables.items() if table.get("exposed")}
+    exposed = {
+        view: table for view, table in tables.items()
+        if table.get("exposed") and view not in hidden
+    }
     examples = [
         (view, " ".join(str(example.get("description", "")).split())[:70], str(example["sql"]))
         for view, table in exposed.items()
@@ -176,7 +212,8 @@ def main(argv=None):
     for line in failures:
         print(f"FAIL {line}")
     print(
-        f"check-example-scans: {checked} examples against {args.project}:{args.dataset}, "
+        f"check-example-scans: {checked} examples against {args.project}:{args.dataset} "
+        f"(profile {args.profile}), "
         f"{len(failures)} failing, {len(warnings)} warnings"
     )
     return 1 if failures else 0
