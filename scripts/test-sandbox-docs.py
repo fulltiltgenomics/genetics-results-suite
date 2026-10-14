@@ -33,6 +33,7 @@ import ast
 import builtins
 import copy
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -301,7 +302,7 @@ def main(argv=None):
         expected set is loaded from the YAML, so a view added there and forgotten here is
         impossible by construction; what this catches is the generator dropping one."""
         expected = {f"{name}.md" for name in tables}
-        produced = set(schema_files) - {"README.md"}
+        produced = set(schema_files) - {"README.md", gen.AVAILABILITY}
         assert produced == expected, (
             f"missing {sorted(expected - produced)}, unexpected {sorted(produced - expected)}"
         )
@@ -455,6 +456,125 @@ def main(argv=None):
             "refusing — the check fails open"
         )
 
+    # rendered here rather than beside the stub cases: the leak scan below covers the stubs
+    # too, since they ship unfiltered to every profile
+    stub_files = gen.render_stubs(sdk_dir)
+
+    def _name_patterns(view):
+        """The view's name and its base-table stem (`x_v` -> `x`), case-insensitively: prose
+        naming the underlying table discloses the view as surely as the view name does."""
+        names = {view, view[:-2] if view.endswith("_v") else view}
+        return [re.compile(rf"\b{re.escape(n)}\b", re.IGNORECASE) for n in names]
+
+    def _named_in(files, view):
+        patterns = _name_patterns(view)
+        return sorted(n for n, c in files.items() if any(p.search(c) for p in patterns))
+
+    def _others(view):
+        """Every generated file but the view's own and the index, stubs included."""
+        out = {n: c for n, c in schema_files.items() if n not in (f"{view}.md", "README.md")}
+        out.update({f"stubs/{n}": c for n, c in stub_files.items()})
+        return out
+
+    def _gated_mutant(cross_referenced=False):
+        """datasets.yaml gating one existing view to one profile, because the canonical file
+        may gate none and a filter exercised on an empty map proves nothing. By default the
+        view is one no other generated file mentions, so the run must come out clean; with
+        `cross_referenced` it is one another file DOES mention, and the scan must catch it.
+        Returns the mutant, the view, the profile it is gated to and the referring files."""
+        profiles = sorted(config.get("profiles") or {})
+        assert len(profiles) >= 2, f"need two profiles to gate between, have {profiles}"
+        for view in sorted(tables):
+            referrers = _named_in(_others(view), view)
+            if bool(referrers) == cross_referenced:
+                mutated = copy.deepcopy(config)
+                mutated["tables"][view]["profiles"] = [profiles[0]]
+                return mutated, view, profiles[0], referrers
+        raise AssertionError(f"no view to gate with cross_referenced={cross_referenced}")
+
+    def _expected_availability(cfg):
+        return {
+            "profiles": sorted(cfg.get("profiles") or {}),
+            "views": {
+                n: sorted(set(t["profiles"])) for n, t in cfg["tables"].items() if "profiles" in t
+            },
+        }
+
+    @case("_availability.json matches the profiles keys in datasets.yaml")
+    def _availability_matches_yaml():
+        """Checked on the canonical file and on a mutant that gates a view, since the
+        canonical file may gate none and an always-empty `views` would pass on its own."""
+        assert json.loads(schema_files[gen.AVAILABILITY]) == _expected_availability(config)
+        mutated, view, _, _ = _gated_mutant()
+        produced = json.loads(_render_mutated(gen, mutated)[gen.AVAILABILITY])
+        assert produced == _expected_availability(mutated), produced
+        assert view in produced["views"], f"gating {view} did not reach _availability.json"
+
+    def _hidden_for(cfg, files, profile):
+        views = json.loads(files[gen.AVAILABILITY])["views"]
+        known = profile in (cfg.get("profiles") or {})
+        return {v for v, allowed in views.items() if not known or profile not in allowed}
+
+    def _leaks(cfg, files):
+        """{(profile, hidden view): files that still name it}, over every known profile plus
+        None and an unknown name (which must fail closed), stubs included. Also asserts the
+        filter keeps every visible view's file and README row, so dropping everything fails."""
+        found = {}
+        for profile in [*sorted(cfg.get("profiles") or {}), None, "no-such-profile"]:
+            shown = gen.filter_schema_docs(files, profile)
+            hidden = _hidden_for(cfg, files, profile)
+            scanned = {**shown, **{f"stubs/{n}": c for n, c in stub_files.items()}}
+            for view in hidden:
+                named = _named_in(scanned, view)
+                if named:
+                    found[(profile, view)] = named
+            visible = set(cfg["tables"]) - hidden
+            missing = sorted(v for v in visible if f"{v}.md" not in shown)
+            assert not missing, f"profile {profile!r}: visible views dropped: {missing}"
+            unlisted = sorted(v for v in visible if f"| `{v}` |" not in shown["README.md"])
+            assert not unlisted, f"profile {profile!r}: README lost rows for {unlisted}"
+        return found
+
+    @case("no file a profile is shown names a view hidden from it")
+    def _filter_hides_gated_views():
+        """README and the unfiltered stubs included. Run on the canonical file and on a
+        mutant gating an unreferenced view, both of which must be clean, and on one gating a
+        view another file mentions, where the scan must report that mention."""
+        leaks = _leaks(config, schema_files)
+        assert not leaks, f"hidden views still named: {leaks}"
+
+        mutated, view, allowed, _ = _gated_mutant()
+        files = _render_mutated(gen, mutated)
+        leaks = _leaks(mutated, files)
+        assert not leaks, f"hidden views still named: {leaks}"
+        assert view not in _hidden_for(mutated, files, allowed)
+        assert all(view in _hidden_for(mutated, files, p) for p in (None, "no-such-profile")), (
+            f"{view} is not hidden from an unset or unknown profile"
+        )
+
+        mutated, view, allowed, referrers = _gated_mutant(cross_referenced=True)
+        leaks = _leaks(mutated, _render_mutated(gen, mutated))
+        reported = {n for (p, v), named in leaks.items() if v == view and p != allowed
+                    for n in named}
+        assert set(referrers) <= reported, (
+            f"{view} is named in {referrers}, which stay visible when it is gated away, but "
+            f"the leak scan reported only {sorted(reported)}"
+        )
+
+    @case("an unknown profile name or an empty profiles list is REFUSED")
+    def _bad_profiles_refused():
+        view = sorted(tables)[0]
+        for bad in (["no-such-profile"], [], "daly"):
+            mutated = copy.deepcopy(config)
+            mutated["tables"][view]["profiles"] = bad
+            try:
+                _render_mutated(gen, mutated)
+            except SystemExit:
+                continue
+            raise AssertionError(
+                f"tables.{view}.profiles: {bad!r} was rendered instead of refused"
+            )
+
     @case("the correctness rules are present in configs/datasets.yaml")
     def _rules_in_yaml():
         """Asserted against the canonical file, not the generated output: the generated
@@ -544,8 +664,6 @@ def main(argv=None):
             assert open(path).read() == content, (
                 f"{name} differs from a fresh generation — run scripts/gen-sandbox-docs.py"
             )
-
-    stub_files = gen.render_stubs(sdk_dir)
 
     @case("stubs cover exactly the SDK's exported surface")
     def _stub_surface():
