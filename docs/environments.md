@@ -110,6 +110,10 @@ Shared-project hazards handled explicitly:
   pointed at a rehearsal clone (`docs/bigquery-dev-dataset.md`) for the life of one change.
   `deploy.sh` refuses an empty value rather than defaulting it: db-api's own fallback is
   `genetics_results`, so an empty render serves production data from staging without failing.
+- **The release results-api reads.** `cell_type_expression_release_pointer` in the tfvars
+  (default empty = the config profile's pointer) is rendered by `deploy.sh` into results-api's
+  `CELL_TYPE_EXPRESSION_RELEASE_POINTER`; daly-staging points it at
+  `gs://daly-expression-data/cellxgene-staging/releases/CURRENT`, production leaves it unset.
 - **The expression bucket is owned, not suffixed.** `gs://daly-expression-data`, the
   `batch.googleapis.com` API and the Cloud Batch worker GSA `expression-batch-worker`
   (`terraform/expression.tf`) exist once for the project and are served to both clusters, so
