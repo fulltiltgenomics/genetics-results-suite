@@ -1917,6 +1917,10 @@ non-production and therefore safe to mutate. It is production.
 Two further facts, measured 2026-08-30 from db-api's and results-api's environments on the
 two clusters this admin instance can reach:
 
+- **Which cell-type expression release results-api reads is overridable per deployment.**
+  `deploy.sh` renders the `cell_type_expression_release_pointer` tfvar into results-api's
+  `CELL_TYPE_EXPRESSION_RELEASE_POINTER`; empty or absent means the profile's pointer
+  (daly production), and daly-staging sets `cellxgene-staging/releases/CURRENT`.
 - **Which dataset a cluster serves is a per-deployment tfvars key, `bq_dataset`.**
   `deploy.sh` renders it into db-api's `DATASET_ID` and the monitor CronJob's `BQ_DATASET`;
   absent, it is `genetics_results`, so daly production is unaffected.
