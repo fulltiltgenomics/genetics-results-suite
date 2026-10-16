@@ -900,14 +900,6 @@ one `ok` line.
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
 
-One image runs outside the cluster: `cellxgene`, the single-cell expression pipeline, built from
-genetics-results-munge (`MUNGE_BRANCH`; the branch must contain `docker/cellxgene/`, and the
-build takes genetics-results-db as a second context for its BigQuery loader). It runs on Cloud
-Batch on daly only, from the resources in `terraform/expression.tf`, and `build-all.sh` builds it
-only when the deployment's tfvars set `expression_data_enabled = true` (`ENABLE_EXPRESSION=true`
-forces it). How it runs and why it is wired that way: "Single-cell expression by cell type" in
-`docs/project-spec.md`; who owns those resources in a shared project: `docs/environments.md`.
-
 ## Authentication
 
 Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header. That header is not itself a credential — results-api honours it only when the request also carries `Authorization: Bearer $INTERNAL_API_SECRET`, proving it came from an in-cluster proxy, and then still checks the address against the shared email allow-list; without the bearer the header is ignored and the request is unauthenticated. The BFF attaches that bearer on every upstream call, including the generic `/api` passthrough that forwards the identity header, so the two always arrive together on the browser path. **Shipping the two halves of that change in the wrong order locks all browser users out** — see [Deploying the trusted-proxy marker](#deploying-the-trusted-proxy-marker) under Updating Services.
