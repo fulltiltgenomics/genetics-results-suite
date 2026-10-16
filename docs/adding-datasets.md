@@ -543,7 +543,7 @@ only genuine fine-mapping must filter on `dataset`, not on `resource`.
 ## 11. Worked example: FinnGen classical HLA allele associations
 
 Context: a new **data type** on an existing resource, where the association unit is not a
-variant. FinnGen R14 ships imputed classical HLA allele results — 187 alleles x 2,712
+variant. FinnGen R14 ships imputed classical HLA allele results — 187 alleles x 2,808
 endpoints — encoded as a variant (`ref='<absent>'`, `alt='A*02:01'`). Reusing `gwas` would have
 handed every consumer rows that look variant-keyed but can never join on chr/pos/ref/alt.
 

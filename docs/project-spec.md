@@ -447,8 +447,8 @@ The ASC 2026 autism exome release (Satterstrom, Auwerx, Fu et al.) is the second
 
 FinnGen R14 imputed **classical HLA allele** results are served for both profiles: 187
 alleles at 4-digit (two-field) resolution across 10 genes (HLA-A, -B, -C, -DPB1, -DQA1,
--DQB1, -DRB1, -DRB3, -DRB4, -DRB5), tested with REGENIE against 2,712 core R14 endpoints —
-~507k (phenotype, allele) rows in all. One dataset `finngen_hla` under the existing
+-DQB1, -DRB1, -DRB3, -DRB4, -DRB5), tested with REGENIE against 2,808 core R14 endpoints —
+~525k (phenotype, allele) rows in all. One dataset `finngen_hla` under the existing
 `finngen` resource, `data_type: hla`, `trait_type: mixed`.
 
 **Why it is a separate data type rather than more GWAS.** The association unit is an
@@ -495,7 +495,7 @@ Served two ways, because the data has two query axes and neither storage layout 
   point reads at the selected anchors rather than the span between them.
 - **BigQuery** (`hla_associations` table / `hla_associations_v` view, added to the db-api
   `VIEWS` allowlist and the monitor's view list): the only place the cross-phenotype
-  question is answerable — "which traits is `B*27:05` associated with?" spans all 2,712
+  question is answerable — "which traits is `B*27:05` associated with?" spans all 2,808
   per-phenotype files. The view maps `dataset` to `resource = 'finngen'` explicitly, since
   the lowercase fallback would give `finngen_hla`.
 
