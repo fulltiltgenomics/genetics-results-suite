@@ -1008,6 +1008,46 @@ precede `FinnGen%MVP_UKBB%`, which also matches the new name; the entry sets
 `pseudo_credible_sets: true` and `trait_type: mixed`. Re-run `load_phenotypes.sh` after the metadata
 JSON changes.
 
+## 20. Worked example: CELLxGENE, an externally sourced dataset refreshed weekly
+
+Context: data that **someone else publishes and keeps changing**, served both as BigQuery views
+and as a tabix route. Every section above stages a file once, names its path in results-api's
+profile config and redeploys; a weekly refresh cannot work that way. CELLxGENE single-cell
+expression is the reference implementation (how it runs: "Single-cell expression by cell type"
+in `docs/project-spec.md`). What this shape needs that the others do not:
+
+1. **A pointer, not a path.** Each refresh publishes a new release directory and never touches a
+   served file; the only object written in place is a small `releases/CURRENT` JSON, written
+   last. results-api's profile names the pointer (`app/config/profiles/<p>/cell_type_expression.py`),
+   re-reads it on a timer and warms a new release fully before swapping it in
+   (`app/services/data_access_cell_type_expression.py`), so a refresh needs no results-api
+   deploy. Its startup check (`app/services/startup_checks.py`) treats an unreadable pointer as
+   a warning — a deployment may start before the first release — but a broken release it names
+   as an error.
+2. **Load before the flip, all-or-none.** The pipeline loads BigQuery after publishing and before
+   writing the pointer, so the two sides never name different releases for long. The
+   `cellxgene_*` tables share release-local keys, so genetics-results-db's
+   `scripts/load_cellxgene.sh` replaces them together with `load_data.py --transaction` and
+   writes the release name into a table, which is what lets the monitor compare BigQuery with
+   the pointer.
+3. **A pipeline image and a schedule.** The pipeline (genetics-results-munge
+   `scripts/cellxgene/`, image `docker/cellxgene/Dockerfile`) runs on Cloud Batch from
+   `terraform/expression.tf`, started by a Cloud Scheduler job that is created paused. Its image
+   runs `--help` on every entry point at build time, so a missing module fails the build rather
+   than the first scheduled run.
+4. **A rehearsal root.** The pipeline takes a bucket root (`--root`), and the
+   `cell_type_expression_release_pointer` tfvar points staging's results-api at the rehearsal
+   root, so staging can be refreshed without moving production. BigQuery has no such split: the
+   driver loads `genetics_results` whatever its root (`expression_bq_dataset` in
+   `terraform/variables.tf`), so a rehearsal load replaces the tables production reads.
+5. **A profile gate.** The data exists on one brand, so each view's `tables.<view>.profiles`
+   names that profile, the MCP tool is withdrawn elsewhere by `Settings.disabled_tools`, and the
+   registry entries merge only once production holds a release — `deploy.sh`'s example-scan
+   preflight refuses views with no tables.
+6. **A freshness check.** Nothing alerts on a refresh that silently stops, so the monitor checks
+   the pointer's age and that BigQuery serves the release it names (`scripts/monitor/health.py`,
+   `check_cellxgene_release`).
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
