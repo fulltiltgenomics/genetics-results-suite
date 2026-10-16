@@ -2877,7 +2877,7 @@ tables:
       symbol in trait with the Ensembl id in trait_original. Joining on trait returns
       zero rows silently.
       COVERAGE IS PARTIAL BY DESIGN. Only datasets that ship a phenotype metadata file
-      have rows: FinnGen R14/R12/Kanta/drugs, the FinnGen+UKBB and FinnGen+MVP+UKBB
+      have rows: FinnGen R14/R12/Kanta/drugs, the FinnGen multi-cohort (UKBB, MVP, AoU)
       meta-analyses, Open Targets GWAS, Genebass, BRaVa, COVID-19 HGI and IIBDGC. QTL datasets
       (FinnGen_snRNAseq, FinnGen_ATACseq, FinnGen_Olink*, UKB_PPP, Open_Targets_QTL_*, every QTD*) have
       NO rows — their traits are genes, proteins and peaks, resolved through
@@ -3461,91 +3461,6 @@ profiles:
         trait_type: mixed
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r14_mvp_ukbb_aou_meta.json"
         metadata_harmonizer: finngen_meta
-        pseudo_credible_sets: true
-
-      finngen_mvp_ukbb:
-        resource: finngen_mvp_ukbb
-        dataset: FinnGen_R13_MVP_UKBB
-        version: "R13"
-        description: >-
-          FinnGen R13 + MVP + UK Biobank meta-analysis (disease endpoints).
-          These genetic association results represent a multi-way meta analysis
-          (using standard inverse variance weighting).
-          This current release contains aligned disease endpoints/phecodes from
-          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
-          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
-          For these data there are pseudo credible sets, no formal fine-mapping results.
-        author: "FinnGen Consortium"
-        publication_date: "2025-12-19"
-        data_type: gwas
-        cohorts: [finngen, mvp, ukb]
-        trait_type: mixed
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_nonlabs.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      finngen_mvp_ukbb_labs:
-        resource: finngen_mvp_ukbb
-        dataset: FinnGen_R13_MVP_UKBB_labs
-        version: "R13"
-        description: >-
-          FinnGen R13 + MVP + UK Biobank meta-analysis (lab measurements).
-          These genetic association results represent a multi-way meta analysis
-          (using standard inverse variance weighting).
-          This current release contains aligned lab measurements from
-          VA Million Veteran Program (3 analyses: n EUR=449,042; n AFR=121,177; n AMR=59,048)
-          FinnGen freeze 13 (n=500,186) UKBB (pan-UKBB European subset n=420,531).
-          For these data there are pseudo credible sets, no formal fine-mapping results.
-        author: "FinnGen Consortium"
-        publication_date: "2025-12-19"
-        data_type: gwas
-        cohorts: [finngen, mvp, ukb]
-        trait_type: quantitative
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_mvp_ukbb_labs.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      finngen_ukbb:
-        resource: finngen_ukbb
-        dataset: FinnGen_R13_UKBB
-        version: "R13"
-        description: >-
-          FinnGen R13 + UK Biobank meta-analysis (disease endpoints).
-          These genetic association results are from the FinnGen study meta-analyzed
-          (inverse variance weighting) with 936 matching disease endpoints
-          (matching based on ICD-10 definitions of endpoints) from the pan-UKBB study
-          (https://pan.ukbb.broadinstitute.org/).
-          European subset of the pan ukbb study was used.
-          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
-          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
-        author: "FinnGen Consortium"
-        publication_date: "2025-12-19"
-        data_type: gwas
-        cohorts: [finngen, ukb]
-        trait_type: mixed
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_nonlabs.json"
-        metadata_harmonizer: finngen_r13
-        pseudo_credible_sets: true
-
-      finngen_ukbb_labs:
-        resource: finngen_ukbb
-        dataset: FinnGen_R13_UKBB_labs
-        version: "R13"
-        description: >-
-          FinnGen R13 + UK Biobank meta-analysis (lab measurements).
-          These genetic association results are from the FinnGen study meta-analyzed
-          (inverse variance weighting) with 48 lab measurements from the pan-UKBB study
-          (https://pan.ukbb.broadinstitute.org/).
-          European subset of the pan ukbb study was used.
-          Some of the pan-ukbb endpoints were custom defined to better match the FinnGen definitions.
-          The FinnGen results are based on data freeze 13, consisting of 500,186 Finnish individuals.
-        author: "FinnGen Consortium"
-        publication_date: "2025-12-19"
-        data_type: gwas
-        cohorts: [finngen, ukb]
-        trait_type: quantitative
-        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r13_ukbb_labs.json"
-        metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
       # --- QTL ---
