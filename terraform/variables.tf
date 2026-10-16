@@ -62,6 +62,18 @@ variable "alphagenome_enabled" {
   default     = false
 }
 
+variable "cell_type_expression_release_pointer" {
+  description = <<-EOT
+    gs:// URI of the cell-type expression release pointer results-api reads, when this
+    deployment must read a different release than its config profile names (staging reads
+    cellxgene-staging). Read by scripts/deploy.sh, which renders it into results-api's
+    CELL_TYPE_EXPRESSION_RELEASE_POINTER. NO resource reads it; declared here only so terraform
+    does not warn "Value for undeclared variable". Empty means the profile default.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "namespace" {
   description = "Kubernetes namespace"
   default     = "genetics"

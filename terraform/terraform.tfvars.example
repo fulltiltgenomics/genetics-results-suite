@@ -73,3 +73,14 @@ enable_log_sinks = false
 # subnet_cidr   = "10.0.0.0/20"
 # pods_cidr     = "10.16.0.0/14"
 # services_cidr = "10.20.0.0/20"
+
+# Single-cell expression pipeline. Only the deployment that owns the bucket sets
+# expression_data_enabled (a bucket name is global, so a second state enabling it would fail on
+# create); scripts/deploy.sh applies with -auto-approve, so the next full deploy creates the
+# bucket, the Batch worker service account and the worker VPC. Defaults are in variables.tf.
+# expression_data_enabled         = true
+# expression_bucket_name          = "daly-expression-data"
+# deployments that serve the bucket without owning it list their results-api GSA here:
+# expression_bucket_extra_readers = ["<gsa>@<project>.iam.gserviceaccount.com"]
+# must not overlap the GKE subnets or their secondary ranges:
+# expression_subnet_cidr          = "10.30.0.0/20"

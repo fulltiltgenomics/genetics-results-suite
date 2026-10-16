@@ -21,8 +21,8 @@ resource "google_project_service" "batch" {
   disable_on_destroy = false
 }
 
-# the Batch workers parse third-party files, so they get a VPC of their own with no ingress rules
-# (implied deny); egress goes out through each worker's external IP, so no NAT. Neither existing
+# the aggregation workers parse third-party files, so the Batch workers get a VPC of their own with
+# no ingress rules (implied deny); egress goes out through each worker's external IP, so no NAT. Neither existing
 # network is safe: GKE's gke-<cluster>-...-vms rule admits the node subnet to every node port,
 # and broad-allow holds the admin dev VM under an allow-all-internal rule.
 resource "google_compute_network" "expression_batch" {
