@@ -49,6 +49,13 @@ _CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_resu
 # views where expected resources come from the API (coloc pairs)
 _API_VIEWS = {"colocalization_v", "coloc_credsets_v"}
 
+# (profile, view) -> resources whose absence is not alerted. finngen_ukbb survives in the
+# finngen profile for its pQTL dataset while the credible-set rule that maps to it is shared
+# with a deployment that still serves the meta datasets; remove the entry when that rule goes.
+_EXPECTED_ABSENT: dict[tuple[str, str], set[str]] = {
+    ("finngen", "credible_sets_v"): {"finngen_ukbb"},
+}
+
 
 @dataclass
 class ViewSummary:
@@ -278,7 +285,11 @@ class BigQuerySummary:
         for view in VIEWS:
             summary = self._query_view(view)
             summary.expected_resources = expected_by_view.get(view, set())
-            summary.missing_resources = summary.expected_resources - summary.actual_resources
+            summary.missing_resources = (
+                summary.expected_resources
+                - summary.actual_resources
+                - _EXPECTED_ABSENT.get((self.profile, view), set())
+            )
             results.append(summary.to_dict())
 
         return results
