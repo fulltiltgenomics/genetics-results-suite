@@ -83,11 +83,6 @@ check '^(scripts/lint-staged\.sh|ruff\.toml)$' "$DOCS_SPEC" \
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
     'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
 
-# the terraform/ row covers project-spec/README; environments.md reasons about this one file on
-# its own (single ownership in a shared project, the Batch network, the act-as chain)
-check '^terraform/expression\.tf$' '^docs/environments\.md$' \
-    'terraform/expression.tf -> docs/environments.md (one owner per project, the no-ingress Batch network, the scheduler -> driver -> worker act-as chain, the paused scheduler job, bucket lifecycle)'
-
 # One rule, not two: environments.md reasons about the cookie surface of this host as a single
 # passage (oauth2-proxy's --cookie-* flags, keycloak.yaml setting none, and deploy.sh's gateway
 # block rewriting them with proxy_cookie_flags plus building KEYCLOAK_HOST). All three stale the
