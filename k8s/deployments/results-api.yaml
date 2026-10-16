@@ -33,6 +33,9 @@ spec:
           value: "prod"
         - name: CONFIG_PROFILE
           value: "${CONFIG_PROFILE}"
+        # empty means the profile's own release pointer
+        - name: CELL_TYPE_EXPRESSION_RELEASE_POINTER
+          value: "${CELL_TYPE_EXPRESSION_RELEASE_POINTER}"
         # match the CPU limit below: the decompress/filter process pool sizes off
         # os.cpu_count() (host cores, not the cgroup quota) unless told otherwise
         - name: TABIX_FILTER_WORKERS

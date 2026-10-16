@@ -69,12 +69,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 67 | the data tools — `api` 45, `general` 22 |
+| `TOOL_DEFINITIONS` | 68 | the data tools — `api` 46, `general` 22 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `orchestration` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `bigquery` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `orchestration` 1 |
 
-**73 tool definitions in total** across the four lists: `api` 45, `bigquery` 2, `general` 22, `orchestration` 4.
+**74 tool definitions in total** across the four lists: `api` 46, `bigquery` 2, `general` 22, `orchestration` 4.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -146,7 +146,7 @@ existing `disabled_tools` refusal — is refused as a `ToolNotAvailable` `tool_r
 model reads, and the check reads the resolved set rather than re-deriving anything from
 `tool_profile`.
 
-`settings.disabled_tools` (`config/settings.py`) is a *property* derived from five inputs:
+`settings.disabled_tools` (`config/settings.py`) is a *property* derived from six inputs:
 
 | flag / env var | default | removes, when it is off (or, for the key, unset) |
 |---|---|---|
@@ -154,19 +154,21 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 | `ENABLE_SUBAGENTS` | `false` | `launch_subagents` |
 | `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~2.2 KB of citation, backend-naming and result-reading guidance, because the prompt gate keys on the name; the literature-grading rubric names no tool and stays (section 4a) |
 | `ALPHAGENOME_ENABLED` **and** `ALPHAGENOME_API_KEY` | `false` / unset | `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured` — either one missing withdraws both tools, and the opt-in prompt block with them |
+| `CONFIG_PROFILE` | unset | `get_cell_type_expression` on every profile but `daly` (`CELL_TYPE_EXPRESSION_PROFILES`), unset included — the only profile whose results-api configures a single-cell release; elsewhere the endpoint answers 404 "not configured", which the tool and `genetics.cell_type_expression` report as not available on this deployment |
 | `SANDBOX_ENABLED` | `false` | `run_analysis` only; `list_capabilities` and `read_artifact` are inert without a sandbox rather than broken by it |
 
 `k8s/deployments/chat-backend.yaml` sets `ENABLE_SUBAGENTS: "false"` and
 `SANDBOX_ENABLED: "true"` explicitly, takes `ALPHAGENOME_ENABLED` from `${ALPHAGENOME_ENABLED}`
 (resolved by `deploy.sh` from the environment or the deployment's tfvars) with the key from the
-`alphagenome-api-key` secret entry (`optional: true`), and sets neither of the other two. Read
+`alphagenome-api-key` secret entry (`optional: true`), takes `CONFIG_PROFILE` from
+`${CONFIG_PROFILE}` (`daly` on both daly clusters), and sets neither of the other two. Read
 off both daly clusters' chat-backend pods on 2026-10-06
 (`kubectl -n genetics exec deploy/chat-backend -- env`): subagents off, sandbox on, AlphaGenome
 on with a key present, the rest at their defaults — so **in the deployed configuration
 `disabled_tools` is exactly `get_credible_sets_stats` and
 `launch_subagents`**, which is also what `genetics-mcp-server/tests/golden/tool_surface.json`
 records under `chat_backend.disabled_tools`. The resolved sets are frozen there too
-(`chat_backend.profiles.<value>.local`): 68 local tools on the no-code surface,
+(`chat_backend.profiles.<value>.local`): 69 local tools on the no-code surface,
 22 on `code`. Read the counts from that file rather than from a number written by hand
 here.
 
@@ -264,7 +266,7 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 69 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `False` — the no-code surface | 70 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
 | `True` — the code surface | 22 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 19 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.
@@ -1928,13 +1930,39 @@ Get QTL associations where a gene is the molecular trait (target). Returns varia
 
 `required`: ['gene']
 
+#### `get_cell_type_expression`
+`TOOL_DEFINITIONS` — category `api`
+
+Description as sent to the model:
+
+```text
+Get SINGLE-CELL expression of a gene by cell type, from human CZ CELLxGENE Discover datasets with raw integer counts on supported assays, primary cells only. This is cell-type-resolved and distinct from get_gene_expression, which is bulk tissue (GTEx): use this tool for "which cell types express X", "is X expressed in hepatocytes / T cells / microglia", or cell-type specificity; use get_gene_expression for tissue-level questions.
+
+UNITS ARE log1p CP10K, NOT TPM. Never compare these numbers with bulk TPM values or describe them as TPM.
+- PRIMARY metrics, per cell type: `mean_log1p_cp10k` (mean of log1p counts-per-10k over every cell of that type, expressing or not) and `frac_expressing` (fraction of those cells with any count of the gene). Report both: a low mean can be a few cells expressing highly or many expressing weakly, and `frac_expressing` tells which.
+- SECONDARY: `donor_pseudobulk_mean_cp10k` (counts pooled per donor, then averaged across donors; linear CP10K, not log; NA when fewer than 3 donors have a nonzero library, or at dataset level on measured_no_row rows) — a robustness check against a few donors dominating, not the headline number and not for ranking.
+- `n_cells`, `n_donors` (and `n_datasets` at summary level) are the support behind a row; weigh a row with few donors accordingly. Cell groups with fewer than 50 cells or 3 donors are dropped, not shown. `tau` (summary level, same value on every row of a gene) is the gene's cell-type specificity index: 0 = ubiquitous, 1 = one cell type only.
+
+level='summary' (default): normal tissue, pooled across datasets, one row per (cell type, tissue), leaving out broad lineage labels such as 'leukocyte' or 'epithelial cell' (level='dataset' keeps them). Start here.
+level='dataset': per-dataset groups (tissue, cell type, disease, assay), for per-dataset detail or to check that a summary value is not one dataset's artefact. Unlike the summary it includes disease samples — read the `disease` column. Rows are SPARSE: a `status: "present"` row exists only for a group where at least one cell expressed the gene, so in a dataset with any present row, a group passing the size thresholds (50 cells and 3 donors) that is missing had zero expressing cells; a below-threshold group never has a row, so its absence is unknown, not zero. One `status: "measured_no_row"` row per dataset means the dataset measured the gene and has groups passing the size thresholds, but no cell in any of those groups expressed it: real zeros, not missing data. A dataset absent from the result either did not measure the gene or had every group below the thresholds — unknown, not zero.
+
+A versioned Ensembl id (ENSG....14) is accepted; the version is dropped before the lookup.
+```
+
+| parameter | type | req | default | enum / items / bounds | description |
+|---|---|---|---|---|---|
+| `gene` | `string` | yes | — | — | Gene symbol or Ensembl gene id, or a comma-separated list of them (e.g. 'PCSK9', 'ENSG00000169174') |
+| `level` | `string` | no | `"summary"` | enum: `summary`, `dataset` | 'summary' (pooled across datasets per cell type and tissue, the default) or 'dataset' (per-dataset rows, including measured_no_row placeholders) |
+
+`required`: ['gene']
+
 #### `get_gene_expression`
 `TOOL_DEFINITIONS` — category `api`
 
 Description as sent to the model:
 
 ```text
-Get tissue-specific gene expression levels. Returns expression data across tissues/cell types. Use this to understand where a gene is expressed.
+Get tissue-specific gene expression levels from bulk-tissue resources (e.g. GTEx). Returns expression data across tissues. Use this to understand where a gene is expressed. For single-cell, cell-type-resolved expression (which cell types within a tissue express the gene) use get_cell_type_expression where it is available.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |

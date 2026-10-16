@@ -1061,7 +1061,10 @@ JSON changes.
       `sandbox/schema/*.md`. `scripts/test-sandbox-docs.py` (which gates `build.sh`) fails
       on any documented column without a type, and on any view without a `summary:`.
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
-      tool shape covers (see the HLA example above).
+      tool shape covers (see the HLA example above). A new tool for data that only some
+      profiles serve is withdrawn elsewhere by `Settings.disabled_tools` keyed on
+      `CONFIG_PROFILE`, as `get_cell_type_expression` is (daly only); mirror the profile set
+      in `tests/golden/tool_surface.json`'s deployed flags by regenerating it.
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
       `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.
 - [ ] Data that already lives in a bucket in a pipeline's own layout and keeps arriving? It
