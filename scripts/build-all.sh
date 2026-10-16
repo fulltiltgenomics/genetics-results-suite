@@ -277,7 +277,7 @@ fi
 echo ""
 echo "${CELLXGENE_NOTE}"
 if [ -z "${SANDBOX_SKIPPED}" ]; then
-  echo "All images built and pushed."
+  echo "All images built and pushed, except any the cellxgene line above reports as skipped."
   exit 0
 fi
 
@@ -291,7 +291,7 @@ fi
 # make it FATAL when this deployment's tfvars actually enables the sandbox — the same
 # sandbox_pool_enabled derivation deploy.sh uses for ENABLE_SANDBOX, read from the same file.
 # An explicit ENABLE_SANDBOX in the environment wins, as it does there.
-echo "!!! Every image EXCEPT the sandbox was built and pushed."
+echo "!!! Every image EXCEPT the sandbox (and cellxgene, if skipped above) was built and pushed."
 echo "!!! sandbox SKIPPED: ${SANDBOX_SKIPPED}"
 TFVARS_SANDBOX_POOL="false"
 if [ -f "${TFVARS}" ] && grep -Eq '^[[:space:]]*sandbox_pool_enabled[[:space:]]*=[[:space:]]*true' "${TFVARS}"; then
