@@ -417,12 +417,19 @@ fi
 ALPHAGENOME_ENABLED="${ALPHAGENOME_ENABLED:-${TFVARS_ALPHAGENOME}}"
 export ALPHAGENOME_ENABLED
 echo "AlphaGenome enabled: ${ALPHAGENOME_ENABLED}"
-# results-api's cell-type-expression release pointer, when this deployment reads a different
-# release than its profile default (staging). Empty or absent renders an empty env value, which
-# results-api treats as unset.
+# results-api's cell-type-expression release pointer, and with it the feature's per-deployment
+# switch: no profile names a pointer, so empty or absent leaves the route answering 404 "not
+# configured" and the browser section hidden. The chat tool's flag is derived from the same value
+# rather than read from its own tfvar, so the tool is offered exactly where the endpoint answers.
 CELL_TYPE_EXPRESSION_RELEASE_POINTER="${CELL_TYPE_EXPRESSION_RELEASE_POINTER:-$(tfvar cell_type_expression_release_pointer)}"
 export CELL_TYPE_EXPRESSION_RELEASE_POINTER
-echo "Cell-type expression release pointer: ${CELL_TYPE_EXPRESSION_RELEASE_POINTER:-<profile default>}"
+if [ -n "${CELL_TYPE_EXPRESSION_RELEASE_POINTER}" ]; then
+  CELL_TYPE_EXPRESSION_ENABLED="true"
+else
+  CELL_TYPE_EXPRESSION_ENABLED="false"
+fi
+export CELL_TYPE_EXPRESSION_ENABLED
+echo "Cell-type expression release pointer: ${CELL_TYPE_EXPRESSION_RELEASE_POINTER:-<unset, feature off>}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
@@ -796,7 +803,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER} ${CELL_TYPE_EXPRESSION_ENABLED}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 
