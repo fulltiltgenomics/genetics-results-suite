@@ -1004,7 +1004,8 @@ it. Two levels carry that, and they must not be conflated:
   `genetics-results-munge` writes, alongside `cohort_families` and `n_by_cohort`.
 
 Steps specific to this shape: the `FinnGen%MVP_UKBB_AOU%` rule in `dataset_to_resource_rules` must
-precede `FinnGen%MVP_UKBB%`, which also matches the new name; the entry sets
+precede `FinnGen%`, which also matches the new name, and applies to `credible_sets_v` only, since
+no colocalization has been computed for a meta-analysis; the entry sets
 `pseudo_credible_sets: true` and `trait_type: mixed`. Re-run `load_phenotypes.sh` after the metadata
 JSON changes.
 

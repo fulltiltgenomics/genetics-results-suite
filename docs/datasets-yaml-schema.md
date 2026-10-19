@@ -306,14 +306,13 @@ dataset_to_resource_rules:
 
 | Pattern | SQL equivalent | Matches |
 |---------|---------------|---------|
-| `"FinnGen%MVP_UKBB%"` | `dataset LIKE 'FinnGen%MVP_UKBB%'` | FinnGen_R13_MVP_UKBB, FinnGen_R13_MVP_UKBB_labs |
-| `"FinnGen%UKBB%"` | `dataset LIKE 'FinnGen%UKBB%'` | FinnGen_R13_UKBB, FinnGen_R13_UKBB_labs |
+| `"FinnGen%MVP_UKBB_AOU%"` | `dataset LIKE 'FinnGen%MVP_UKBB_AOU%'` | FinnGen_R14_MVP_UKBB_AOU |
 | `"FinnGen%"` | `dataset LIKE 'FinnGen%'` | All other FinnGen datasets |
 | `"genebass"` | `dataset = 'genebass'` | Exact match |
 | `"*"` + `transform: "lowercase"` | `ELSE LOWER(dataset)` | Fallback: lowercased dataset name becomes resource |
 
 **Order matters**: more specific patterns must come before broader ones (e.g.
-`FinnGen%MVP_UKBB%` before `FinnGen%`).
+`FinnGen%MVP_UKBB_AOU%` before `FinnGen%`).
 
 An exact rule is also worth writing where the `*` fallback already yields the right resource
 (`BRaVa` → `brava`): `scripts/monitor/bq_summary.py` derives the resources it expects in each
