@@ -144,6 +144,10 @@ spec:
         # whenever this is false, independent of whether a key happens to be configured.
         - name: ALPHAGENOME_ENABLED
           value: "${ALPHAGENOME_ENABLED}"
+        # true exactly where results-api has a cell-type expression release pointer (derived by
+        # scripts/deploy.sh from the same tfvar); false withdraws get_cell_type_expression.
+        - name: CELL_TYPE_EXPRESSION_ENABLED
+          value: "${CELL_TYPE_EXPRESSION_ENABLED}"
         # optional even where the flag above is true: with no key Settings.disabled_tools
         # withdraws get_alphagenome_variant_predictions too, so the model is never offered a
         # tool whose every call would fail. chat-backend is the only holder — results-api

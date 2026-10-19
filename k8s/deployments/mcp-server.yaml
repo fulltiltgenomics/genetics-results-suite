@@ -28,6 +28,10 @@ spec:
         # Unset or unknown hides every gated view (fail closed), so this is not optional.
         - name: CONFIG_PROFILE
           value: "${CONFIG_PROFILE}"
+        # see chat-backend.yaml: offers get_cell_type_expression on /mcp only where the
+        # deployment sets a release pointer
+        - name: CELL_TYPE_EXPRESSION_ENABLED
+          value: "${CELL_TYPE_EXPRESSION_ENABLED}"
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"
         - name: BIGQUERY_API_URL

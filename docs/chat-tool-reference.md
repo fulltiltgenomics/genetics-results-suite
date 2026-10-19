@@ -154,19 +154,22 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 | `ENABLE_SUBAGENTS` | `false` | `launch_subagents` |
 | `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~2.2 KB of citation, backend-naming and result-reading guidance, because the prompt gate keys on the name; the literature-grading rubric names no tool and stays (section 4a) |
 | `ALPHAGENOME_ENABLED` **and** `ALPHAGENOME_API_KEY` | `false` / unset | `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured` — either one missing withdraws both tools, and the opt-in prompt block with them |
-| `CONFIG_PROFILE` | unset | `get_cell_type_expression` on every profile but `daly` (`CELL_TYPE_EXPRESSION_PROFILES`), unset included — the only profile whose results-api configures a single-cell release; elsewhere the endpoint answers 404 "not configured", which the tool and `genetics.cell_type_expression` report as not available on this deployment |
+| `CELL_TYPE_EXPRESSION_ENABLED` **and** `CONFIG_PROFILE` | `false` / unset | `get_cell_type_expression` unless the flag is true and the profile is `daly` (`CELL_TYPE_EXPRESSION_PROFILES`). `deploy.sh` sets the flag exactly where the deployment gives results-api a release pointer; elsewhere the endpoint answers 404 "not configured", which `genetics.cell_type_expression` (still listed) reports as not available on this deployment |
 | `SANDBOX_ENABLED` | `false` | `run_analysis` only; `list_capabilities` and `read_artifact` are inert without a sandbox rather than broken by it |
 
 `k8s/deployments/chat-backend.yaml` sets `ENABLE_SUBAGENTS: "false"` and
 `SANDBOX_ENABLED: "true"` explicitly, takes `ALPHAGENOME_ENABLED` from `${ALPHAGENOME_ENABLED}`
 (resolved by `deploy.sh` from the environment or the deployment's tfvars) with the key from the
 `alphagenome-api-key` secret entry (`optional: true`), takes `CONFIG_PROFILE` from
-`${CONFIG_PROFILE}` (`daly` on both daly clusters), and sets neither of the other two. Read
+`${CONFIG_PROFILE}` (`daly` on both daly clusters), takes `CELL_TYPE_EXPRESSION_ENABLED` from
+`deploy.sh` (true only where the deployment sets a cell-type expression release pointer), and
+sets neither of the other two. Read
 off both daly clusters' chat-backend pods on 2026-10-06
 (`kubectl -n genetics exec deploy/chat-backend -- env`): subagents off, sandbox on, AlphaGenome
 on with a key present, the rest at their defaults — so **in the deployed configuration
 `disabled_tools` is exactly `get_credible_sets_stats` and
-`launch_subagents`**, which is also what `genetics-mcp-server/tests/golden/tool_surface.json`
+`launch_subagents`**, plus `get_cell_type_expression` on a deployment with no release pointer
+(production daly), which is also what `genetics-mcp-server/tests/golden/tool_surface.json`
 records under `chat_backend.disabled_tools`. The resolved sets are frozen there too
 (`chat_backend.profiles.<value>.local`): 69 local tools on the no-code surface,
 22 on `code`. Read the counts from that file rather than from a number written by hand

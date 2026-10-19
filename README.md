@@ -102,7 +102,7 @@ deploy. All three are documented per deployment in `docs/environments.md`.
 
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
-tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor; `cell_type_expression_release_pointer`, default empty, into results-api). The setup below describes a single deployment; see
+tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor; `cell_type_expression_release_pointer`, default empty = cell-type expression off, into results-api and, as an on/off flag, chat-backend and mcp-server). The setup below describes a single deployment; see
 [docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
 against deploying across environments, and the staging bring-up runbook.
 
@@ -899,6 +899,14 @@ one `ok` line.
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
+
+One image runs outside the cluster: `cellxgene`, the single-cell expression pipeline, built from
+genetics-results-munge (`MUNGE_BRANCH`; the branch must contain `docker/cellxgene/`, and the
+build takes genetics-results-db as a second context for its BigQuery loader). It runs on Cloud
+Batch on daly only, from the resources in `terraform/expression.tf`, and `build-all.sh` builds it
+only when the deployment's tfvars set `expression_data_enabled = true` (`ENABLE_EXPRESSION=true`
+forces it). How it runs and why it is wired that way: "Single-cell expression by cell type" in
+`docs/project-spec.md`; who owns those resources in a shared project: `docs/environments.md`.
 
 ## Authentication
 

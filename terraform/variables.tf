@@ -64,11 +64,12 @@ variable "alphagenome_enabled" {
 
 variable "cell_type_expression_release_pointer" {
   description = <<-EOT
-    gs:// URI of the cell-type expression release pointer results-api reads, when this
-    deployment must read a different release than its config profile names (staging reads
-    cellxgene-staging). Read by scripts/deploy.sh, which renders it into results-api's
-    CELL_TYPE_EXPRESSION_RELEASE_POINTER. NO resource reads it; declared here only so terraform
-    does not warn "Value for undeclared variable". Empty means the profile default.
+    gs:// URI of the cell-type expression release pointer results-api reads, and the feature's
+    per-deployment switch: no config profile names a pointer, so empty means the feature is off
+    (staging reads cellxgene-staging). Read by scripts/deploy.sh, which renders it into
+    results-api's CELL_TYPE_EXPRESSION_RELEASE_POINTER and derives CELL_TYPE_EXPRESSION_ENABLED
+    for chat-backend and mcp-server from it. NO resource reads it; declared here only so
+    terraform does not warn "Value for undeclared variable".
   EOT
   type        = string
   default     = ""
