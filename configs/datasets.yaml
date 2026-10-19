@@ -13,13 +13,8 @@ resources:
 
   finngen_ukbb:
     label: "FinnGen+UKB"
-    description: "FinnGen + UK Biobank GWAS and pQTL meta-analysis"
+    description: "FinnGen + UK Biobank pQTL meta-analysis"
     aliases: ["finngen ukbb", "finngen uk biobank"]
-
-  finngen_mvp_ukbb:
-    label: "FinnGen+MVP+UKB"
-    description: "FinnGen + Million Veteran Program + UK Biobank GWAS meta-analysis"
-    aliases: ["finngen mvp", "finngen mvp ukbb"]
 
   finngen_mvp_ukbb_aou:
     label: "FinnGen+MVP+UKB+AoU"
@@ -3462,22 +3457,12 @@ tables:
 # ---------------------------------------------------------------------------
 dataset_to_resource_rules:
   # credible_sets_v, colocalization_v, coloc_credsets_v patterns
-  # the AOU pattern precedes MVP_UKBB because FinnGen_R14_MVP_UKBB_AOU also matches
-  # FinnGen%MVP_UKBB%, and first match wins
+  # credible sets only: colocalization has never been computed for a meta-analysis, so
+  # the coloc views would carry a branch that matches nothing
   - pattern: "FinnGen%MVP_UKBB_AOU%"
     resource: "finngen_mvp_ukbb_aou"
-    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
+    applies_to: ["credible_sets_v"]
     comment: "meta-analysis datasets including MVP and All of Us"
-
-  - pattern: "FinnGen%MVP_UKBB%"
-    resource: "finngen_mvp_ukbb"
-    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
-    comment: "meta-analysis datasets including MVP"
-
-  - pattern: "FinnGen%UKBB%"
-    resource: "finngen_ukbb"
-    applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
-    comment: "FinnGen + UK Biobank meta-analysis (without MVP)"
 
   - pattern: "FinnGen%"
     resource: "finngen"

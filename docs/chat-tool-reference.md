@@ -2471,7 +2471,7 @@ Do NOT use this as a discovery tool — use credible set tools or PheWAS for tha
 |---|---|---|---|---|---|
 | `variants` | `array` | yes | — | items: `{"type": "string"}` | List of variant IDs in chr:pos:ref:alt format (e.g., ['19:44908684:T:C', '1:154453788:C:T']). Separator can be : - _ or \| |
 | `phenotypes` | `array` | yes | — | items: `{"type": "string"}` | List of phenotype codes (e.g., ['T2D', 'I9_CHD']) |
-| `resource` | `string` | no | `"finngen"` | — | Data resource — use list_datasets to find available resources. Common values: 'finngen', 'finngen_mvp_ukbb', 'finngen_ukbb', 'pgc' |
+| `resource` | `string` | no | `"finngen"` | — | Data resource — use list_datasets to find available resources. Common values: 'finngen', 'finngen_mvp_ukbb_aou', 'finngen_ukbb', 'pgc' |
 | `data_type` | `string` | no | `"gwas"` | — | Analysis data type: 'gwas' or 'eqtl' |
 
 `required`: ['variants', 'phenotypes']
@@ -2604,7 +2604,7 @@ Phenotypes are REQUIRED: summary stats are stored per phenotype, so there is no 
 |---|---|---|---|---|---|
 | `region` | `string` | yes | — | — | Region as chr:start-end (e.g. '1:1000000-1100000'; X is accepted) |
 | `phenotypes` | `array` | yes | — | items: `{"type": "string"}` | List of phenotype codes (e.g. ['T2D', 'I9_CHD']) |
-| `resource` | `string` | no | `"finngen"` | — | Data resource — use list_datasets to find available ones. Common: 'finngen', 'finngen_mvp_ukbb', 'finngen_ukbb' |
+| `resource` | `string` | no | `"finngen"` | — | Data resource — use list_datasets to find available ones. Common: 'finngen', 'finngen_mvp_ukbb_aou', 'finngen_ukbb' |
 | `data_type` | `string` | no | `"gwas"` | — | Analysis data type: 'gwas', 'pqtl' or 'eqtl' |
 
 `required`: ['region', 'phenotypes']
