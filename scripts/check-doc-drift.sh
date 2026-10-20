@@ -81,12 +81,12 @@ check '^(scripts/lint-staged\.sh|ruff\.toml)$' "$DOCS_SPEC" \
     'lint gate (scripts/lint-staged.sh, ruff.toml) -> docs/project-spec.md + README.md (which commits are blocked, the rule set and its exclusions, how ruff is resolved in a worktree)'
 
 check '^(scripts/lib/env\.sh|terraform/[a-z-]+\.tfbackend)$' '^docs/environments\.md$' \
-    'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (env table, DEPLOY_ENV rules)'
+    'environment selection (scripts/lib/env.sh, *.tfbackend) -> docs/environments.md (internal repo) (env table, DEPLOY_ENV rules)'
 
 # the terraform/ row covers project-spec/README; environments.md reasons about this one file on
 # its own (single ownership in a shared project, the Batch network, the act-as chain)
 check '^terraform/expression\.tf$' '^docs/environments\.md$' \
-    'terraform/expression.tf -> docs/environments.md (one owner per project, the no-ingress Batch network, the scheduler -> driver -> worker act-as chain, the paused scheduler job, bucket lifecycle)'
+    'terraform/expression.tf -> docs/environments.md (internal repo) (one owner per project, the no-ingress Batch network, the scheduler -> driver -> worker act-as chain, the paused scheduler job, bucket lifecycle)'
 
 # One rule, not two: environments.md reasons about the cookie surface of this host as a single
 # passage (oauth2-proxy's --cookie-* flags, keycloak.yaml setting none, and deploy.sh's gateway
@@ -97,7 +97,7 @@ check '^terraform/expression\.tf$' '^docs/environments\.md$' \
 # this rule exists to catch. Scoped to the two manifests that actually set cookies rather than to
 # k8s/ — a broader pattern would fire on manifests the passage says nothing about.
 check '^(k8s/deployments/(oauth2-proxy|keycloak)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
-    'cookie/host surface (k8s/deployments/oauth2-proxy.yaml, keycloak.yaml, deploy.sh gateway block) -> docs/environments.md (cookie domain, the SameSite=None proxy_cookie_flags rewrite, KEYCLOAK_HOST on the shared host)'
+    'cookie/host surface (k8s/deployments/oauth2-proxy.yaml, keycloak.yaml, deploy.sh gateway block) -> docs/environments.md (internal repo) (cookie domain, the SameSite=None proxy_cookie_flags rewrite, KEYCLOAK_HOST on the shared host)'
 
 # named literally rather than folded into the glob above: broadening `build*.sh` to reach
 # these would also catch unrelated scripts, and a rule that fires where it cannot apply is
@@ -109,7 +109,7 @@ check '^scripts/run-sandbox-local\.sh$' "$DOCS_SPEC" \
 # persists SANDBOX_TOKEN_SIGNING_KEY and INTERNAL_API_SECRET into DEV_STACK_RUN_DIR, and
 # with those set db-api stops failing open — which is what both named docs describe.
 check '^scripts/dev-stack\.sh$' '^docs/(local-dev-vm|code-execution-security)\.md$' \
-    'scripts/dev-stack.sh -> docs/local-dev-vm.md (run dir, generated secrets, what the stack starts) or docs/code-execution-security.md (locally minted sandbox tokens, what an unauthenticated local caller can reach)'
+    'scripts/dev-stack.sh -> docs/local-dev-vm.md (internal repo) (run dir, generated secrets, what the stack starts) or docs/code-execution-security.md (locally minted sandbox tokens, what an unauthenticated local caller can reach)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
@@ -238,7 +238,7 @@ check '^scripts/gen-doc-blocks\.py$' \
 KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
 check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
-    'keycloak config/scripts -> docs/keycloak-apple-signin.md (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (onboarding commands, IdP list)' \
+    'keycloak config/scripts -> docs/keycloak-apple-signin.md (internal repo) (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (internal repo) (onboarding commands, IdP list)' \
     "$KEYCLOAK_BRANDING"
 
 if [ "$found" -eq 1 ]; then

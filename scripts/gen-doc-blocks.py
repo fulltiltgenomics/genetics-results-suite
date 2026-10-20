@@ -383,18 +383,9 @@ LAYOUT = {
                                    "names, descriptions and schemas, the profiles, the system "
                                    "prompt, and the chat surface versus /mcp",
     "docs/code-execution-security.md": "threat model and security design for the sandbox",
-    "docs/environments.md": "the three deployments, DEPLOY_ENV, and the staging runbook",
-    "docs/local-dev-vm.md": "running the whole suite from source on a VM, no docker or k8s",
-    "docs/bigquery-dev-dataset.md": "the BigQuery rehearsal dataset",
-    "docs/keycloak-apple-signin.md": "Keycloak broker setup, MCP OAuth clients, backup/restore",
-    "docs/mcp-oauth-onboarding.md": "runbook for onboarding an external app to /mcp",
-    "docs/genegenie-migration.md": "record of the legacy-hostname redirect",
-    "docs/nginx-setup.md": "notes for the legacy VM nginx setup",
     "docs/postmortem-code-execution-epic.md": "why the sandbox epic took as long as it did",
     "docs/duplication-baseline.json": "the duplication ratchet's last-written snapshot, "
                                       "read by check-duplication.py --check",
-    "docs/research": "dated research write-ups behind planned features — reviews of chat "
-                     "transcripts, architecture alternatives — records, not maintained docs",
     "k8s": "manifests, applied by deploy.sh",
     "k8s/namespace.yaml": "the `genetics` namespace",
     "k8s/deployments": "one file per workload, CronJobs included",
@@ -448,6 +439,9 @@ LAYOUT = {
     "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
                                              "the template and the default IdP redirect",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
+    "scripts/keycloak-register-access-grants-client.sh": "register the service-account client "
+                                                       "the access-grant reconciler writes "
+                                                       "the realm through; stores its secret",
     "scripts/gen-sandbox-docs.py": (
         "generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema "
         "markdown into genetics-mcp-server's prompt copy"

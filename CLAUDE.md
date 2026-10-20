@@ -30,7 +30,8 @@ QUALITY CODING RULES
 # Documentation ownership
 
 Changing a path on the left makes the doc on the right wrong until it is updated in
-the same commit. `scripts/check-doc-drift.sh` warns (never blocks) on commits that
+the same commit. A doc marked "private internal repo" lives in
+`genetics-results-suite-internal` at the same path, so a warning naming it means: update it there. `scripts/check-doc-drift.sh` warns (never blocks) on commits that
 violate this; it runs from the `pre-commit` hook. It reads `git diff --cached`, so it
 only ever sees **staged** changes — run by hand with an empty index it checks nothing
 and says so; that message is not a pass.
@@ -65,12 +66,12 @@ one became a second source of truth that the next repair silently overwrote.
 | `scripts/deploy.sh`, `rollout.sh`, `build*.sh`, `sync-datasets.sh`, `install-git-hooks.sh`, `check-worktree-paths.sh`, `check-siblings.sh`, `check-duplication.py`, `check-example-scans.py`, `scripts/lib/**` | `docs/project-spec.md`, `README.md` | operational procedures, which manifests are generated vs committed, what the preflights check and when they stay silent |
 | `scripts/lint-staged.sh`, `ruff.toml` | `docs/project-spec.md`, `README.md` | which commits the lint gate blocks and which it lets through, the rule set and its per-file exclusions, how ruff is resolved when a worktree has no `.venv` |
 | `scripts/run-sandbox-local.sh` | `docs/project-spec.md`, `README.md` | how the sandbox image is built and staged locally, what the local supervisor run does and does not reproduce |
-| `scripts/dev-stack.sh` | `docs/local-dev-vm.md`, `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
-| `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
-| `terraform/expression.tf` | `docs/environments.md` | why the expression bucket, APIs and identities have one owner per project (`expression_data_enabled` on daly alone, staging's read grant in daly's tfvars), the no-ingress Batch network and the networks it was chosen over, the scheduler → driver → worker act-as chain, the scheduler job created paused, the bucket lifecycle |
-| `k8s/deployments/oauth2-proxy.yaml`, `k8s/deployments/keycloak.yaml`, `scripts/deploy.sh` | `docs/environments.md` | the cookie surface of the shared host: that no component sets an explicit cookie `Domain`, the `--cookie-*` flags, the deliberate `proxy_cookie_flags ~ secure samesite=none` rewrite in the gateway block, `KEYCLOAK_HOST` |
+| `scripts/dev-stack.sh` | `docs/local-dev-vm.md` (private internal repo), `docs/code-execution-security.md` | the generated-and-persisted `SANDBOX_TOKEN_SIGNING_KEY` / `INTERNAL_API_SECRET`, where they are stored, and what an unauthenticated local caller can reach once they are set |
+| `scripts/lib/env.sh`, `terraform/*.tfbackend` | `docs/environments.md` (private internal repo) | the environment table, `DEPLOY_ENV` selection rules, shared-project resource suffixes |
+| `terraform/expression.tf` | `docs/environments.md` (private internal repo) | why the expression bucket, APIs and identities have one owner per project (`expression_data_enabled` on daly alone, staging's read grant in daly's tfvars), the no-ingress Batch network and the networks it was chosen over, the scheduler → driver → worker act-as chain, the scheduler job created paused, the bucket lifecycle |
+| `k8s/deployments/oauth2-proxy.yaml`, `k8s/deployments/keycloak.yaml`, `scripts/deploy.sh` | `docs/environments.md` (private internal repo) | the cookie surface of the shared host: that no component sets an explicit cookie `Domain`, the `--cookie-*` flags, the deliberate `proxy_cookie_flags ~ secure samesite=none` rewrite in the gateway block, `KEYCLOAK_HOST` |
 | `scripts/monitor/**` | `docs/project-spec.md` | monitored views, alert ignore patterns |
-| `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md`, `docs/mcp-oauth-onboarding.md` | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
+| `keycloak/**` **except static branding assets under `keycloak/themes/**`** (`.css`, `.properties`, images, fonts), `scripts/keycloak-*.sh` | `docs/keycloak-apple-signin.md` (private internal repo), `docs/mcp-oauth-onboarding.md` (private internal repo) | client setup, allowlist, backup and restore paths; the onboarding runbook's commands and IdP list |
 | `sandbox/**` (**including** `sandbox/schema/**` and `sandbox/stubs/**`), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/code-execution-security.md` | isolation boundary (uid, rootfs, seccomp, runtime class), egress/ingress allow-lists, resource and timeout caps, the sandbox token's claims and validation rules, the three MCP-exclusion layers, what the shipped schema docs and stubs disclose |
 | `sandbox/**` (**including** the generated trees), `k8s/deployments/sandbox.yaml`, `k8s/network-policies/sandbox-policy.yaml` | `docs/project-spec.md` | services table, isolation-boundary summary, sandbox network policy, what the sandbox exposes |
 | `url-fetcher/**` | `docs/code-execution-security.md` | the guard's refusal order and what makes its host allow-list configuration, per-hop re-validation and IP pinning, the `/fetch` request and response shape and its error types, what this pod deliberately holds none of |
@@ -215,7 +216,7 @@ Repo-specific consequences:
 
 # Project-specific conventions
 
-1. All of a deployment's services run in one GKE cluster, in the `genetics` namespace — one cluster per deployment, three today (`docs/environments.md`)
+1. All of a deployment's services run in one GKE cluster, in the `genetics` namespace — one cluster per deployment, three today (`docs/environments.md` (private internal repo))
 2. Docker images are stored in Google Artifact Registry (registry path derived from `project_id` in terraform, overridable via `REGISTRY` env var)
 3. Configuration uses Kubernetes secrets and environment variables — never hardcode credentials
 4. Terraform state is stored in a GCS backend bucket

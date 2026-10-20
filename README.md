@@ -2,6 +2,8 @@
 
 Terraform/Kubernetes deployment for the genetics results suite.
 
+Runbooks that name projects, hosts and users are kept out of this public repository: any `docs/` path referred to here that is not in this repository lives at the same path in the private [genetics-results-suite-internal](https://github.com/fulltiltgenomics/genetics-results-suite-internal).
+
 ## Architecture
 
 ```
@@ -103,7 +105,7 @@ deploy. All three are documented per deployment in `docs/environments.md`.
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
 tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor; `cell_type_expression_release_pointer`, default empty = cell-type expression off, into results-api and, as an on/off flag, chat-backend and mcp-server). The setup below describes a single deployment; see
-[docs/environments.md](docs/environments.md) for the multi-environment rules, the guardrails
+[docs/environments.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/environments.md) for the multi-environment rules, the guardrails
 against deploying across environments, and the staging bring-up runbook.
 
 ## Setup
@@ -300,7 +302,7 @@ Create Google OAuth credentials for oauth2-proxy:
 > With the Keycloak identity broker enabled, oauth2-proxy talks to Keycloak instead and the Google
 > client belongs to Keycloak — its redirect URI is
 > `https://your-domain.example.com/auth/realms/genetics/broker/google/endpoint`. See
-> [docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md).
+> [docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
 
 ### 3. Create secrets
 
@@ -466,18 +468,11 @@ unchecked. `git commit --no-verify` is the deliberate bypass.
 ./scripts/check-worktree-paths.sh
 ```
 
-Several things resolve to the **main checkout** even when you run them from a worktree,
+Two things resolve to the **main checkout** even when you run them from a worktree,
 and they degrade silently rather than erroring: `terraform.tfvars` (gitignored, main
-checkout only), `core.hooksPath`, and bd's `.beads/issues.jsonl` export. The
-`.beads/issues.jsonl` case is the most misleading — the worktree's
-copy is tracked but nothing writes it, so `git add .beads/issues.jsonl && git commit`
-stages nothing and git replies "nothing to commit, working tree clean". Bead state
-itself is safe: the shared Dolt database is authoritative, and the git hooks never
-import from the jsonl. You can refresh the committed export **from the worktree** —
-one Dolt database is shared by every worktree, so `bd export -o .beads/issues.jsonl`
-run from here writes the same current snapshot the main checkout would produce
-(verified byte-identical). Running it in the main checkout works equally well; what
-does not work is assuming a `git add` from here refreshed anything.
+checkout only) and `core.hooksPath`. Bead state is safe either way: the shared Dolt
+database is authoritative and is what the private `-beads` remote syncs; nothing under
+`.beads/` is tracked here.
 
 `sync-datasets.sh` used to be a fourth case, but it now resolves the sibling repos from
 the git common dir, so it works from a worktree and fails loudly when it cannot resolve
@@ -563,7 +558,7 @@ kubectl describe managedcertificate managed-cert -n genetics
 ```
 
 To 301-redirect an old hostname to a new one (keeping the old one in `domains` so its cert stays
-valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migration.md](docs/genegenie-migration.md).
+valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migration.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/genegenie-migration.md).
 
 ## Updating Services
 
@@ -781,7 +776,7 @@ gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` 
 Everything above deploys. To run the services from source on one machine — results-api
 `:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the
 standalone mcp-server `:8082`, out of four repos —
-see [docs/local-dev-vm.md](docs/local-dev-vm.md) for the from-scratch setup and
+see [docs/local-dev-vm.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/local-dev-vm.md) for the from-scratch setup and
 `scripts/dev-stack.sh` to drive them:
 
 ```bash
@@ -914,7 +909,7 @@ Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth
 
 Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` provider against Keycloak
 (which in turn federates Google and Apple); otherwise it talks to Google directly. See
-[docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md).
+[docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
 
 - **Frontend, Chat backend**: Protected by oauth2-proxy. Unauthenticated users are redirected to the sign-in page (Google directly, or the Keycloak provider chooser).
 - **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens — the recommended path — Google Identity Tokens (deprecated) or internal shared secret).
@@ -958,7 +953,7 @@ deployment does not issue it and therefore cannot revoke it for one person; and 
 rests entirely on the email allow-list (`ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS` from the
 `bearer-auth-allowed` ConfigMap — see [Managing access](#managing-access) below). `GOOGLE_TOKEN_AUDIENCE`
 does **not** narrow that: its default includes the gcloud CLI's *public* OAuth client id (alongside
-brainzzz's own clients — see [docs/mcp-oauth-onboarding.md](docs/mcp-oauth-onboarding.md)), which anyone's
+brainzzz's own clients — see [docs/mcp-oauth-onboarding.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/mcp-oauth-onboarding.md)), which anyone's
 `gcloud auth print-identity-token` mints, so it buys cross-*OAuth-client* replay protection and
 nothing more — it rejects a token minted for a different client id (ADC's `764086051850-…`, a
 project-owned client), but not one the same user handed to another service that documents this same
@@ -1002,7 +997,7 @@ via `envFrom`:
 Set them in the deployment's tfvars and re-run `./scripts/deploy.sh`. Where the Keycloak broker is
 enabled the same two values are also enforced at first-broker-login, so a non-allowlisted federated
 user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after changing them (see
-[docs/keycloak-apple-signin.md](docs/keycloak-apple-signin.md)). The realm's SSO session lifespans
+[docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md)). The realm's SSO session lifespans
 and the default-IdP redirect (`KEYCLOAK_DEFAULT_IDP`) are reconciled the same way, with
 `DEPLOY_ENV=<env> scripts/keycloak-sync-login-policy.sh`.
 
