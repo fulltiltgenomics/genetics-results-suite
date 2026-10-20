@@ -1,0 +1,15 @@
+{
+  "alias": "microsoft",
+  "providerId": "microsoft",
+  "displayName": "Microsoft",
+  "enabled": true,
+  "trustEmail": true,
+  "config": {
+    "displayName": "Microsoft",
+    "guiOrder": "3",
+    "clientId": "${MICROSOFT_CLIENT_ID}",
+    "clientSecret": "${MICROSOFT_CLIENT_SECRET}",
+    "tenantId": "${MICROSOFT_TENANT_ID}",
+    "syncMode": "IMPORT"
+  }
+}

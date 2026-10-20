@@ -1,5 +1,5 @@
-# Keycloak identity broker: sits between oauth2-proxy and the real providers (Google +
-# Apple) and exposes a single OIDC issuer at https://${KEYCLOAK_HOST}/realms/genetics.
+# Keycloak identity broker: sits between oauth2-proxy and the real providers (Google, Apple,
+# Microsoft) and exposes a single OIDC issuer at https://${KEYCLOAK_HOST}/realms/genetics.
 # Runs behind the GKE ingress -> auth-gateway (TLS terminated at the ingress), so it is
 # configured for an edge proxy (KC_PROXY_HEADERS=xforwarded, KC_HTTP_ENABLED=true).
 apiVersion: apps/v1

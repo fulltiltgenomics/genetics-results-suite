@@ -623,8 +623,10 @@ kubectl create configmap oauth2-allowed-emails \
 
 # Keycloak realm import: render the template (secrets from .env) into the keycloak-realm
 # Secret. Imported by Keycloak only on first start (empty DB); later edits go via the admin
-# console. The Apple IdP is injected automatically once APPLE_SERVICES_ID is set in .env
-# (register for the Apple Developer Program first); until then the realm is Google-only.
+# console. The Apple and Microsoft IdPs are injected automatically once APPLE_SERVICES_ID /
+# MICROSOFT_CLIENT_ID are set in .env (register the app with the provider first); until then
+# the realm is Google-only. On an already-imported realm use the admin console or
+# scripts/keycloak-register-microsoft-idp.sh instead.
 # Skipped when the broker is disabled, or if GOOGLE_CLIENT_ID isn't set.
 if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   APPLE_IDP_ENTRY=""
@@ -634,6 +636,17 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
     APPLE_IDP_ENTRY=",${APPLE_JSON}"
   fi
   export APPLE_IDP_ENTRY
+  # Keycloak's built-in Microsoft provider; an empty tenant means Keycloak's "common" endpoints,
+  # which accept personal (outlook.com) and any work/school account alike — the e-mail
+  # allow-list is what gates who gets in
+  MICROSOFT_IDP_ENTRY=""
+  if [ -n "${MICROSOFT_CLIENT_ID:-}" ]; then
+    MICROSOFT_JSON="$(MICROSOFT_TENANT_ID="${MICROSOFT_TENANT_ID:-common}" \
+      envsubst '${MICROSOFT_CLIENT_ID} ${MICROSOFT_CLIENT_SECRET} ${MICROSOFT_TENANT_ID}' \
+      < "${ROOT_DIR}/keycloak/microsoft-idp.json.template")"
+    MICROSOFT_IDP_ENTRY=",${MICROSOFT_JSON}"
+  fi
+  export MICROSOFT_IDP_ENTRY
   # brainzzz OAuth client (GeneGenie MCP integration): injected only when its secret is set in
   # .env, so deployments that don't use it stay unaffected. On an already-imported realm this
   # template change does nothing (import runs on a fresh DB only) — use
@@ -648,12 +661,12 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \
     -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-  echo "keycloak-realm rendered (apple IdP: ${APPLE_SERVICES_ID:+enabled}${APPLE_SERVICES_ID:-google-only})"
+  echo "keycloak-realm rendered (IdPs: google${APPLE_SERVICES_ID:+ apple}${MICROSOFT_CLIENT_ID:+ microsoft})"
 elif [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   echo "Skipping keycloak-realm render (GOOGLE_CLIENT_ID not set in .env)"
 fi

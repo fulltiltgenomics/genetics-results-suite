@@ -873,7 +873,7 @@ baseline" in `docs/project-spec.md`.
 | bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx:1.27-alpine | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
-| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google + Apple), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
+| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
 | keycloak-postgres | — | postgres:16-alpine | 5432 | Keycloak database (PVC + daily `pg_dump` CronJob to GCS) |
 | results-api | genetics-results-api | genetics-results-api | 4000 | FastAPI |
 | chat-backend | genetics-mcp-server | genetics-mcp-server | 8000 | FastAPI, LLM chat with MCP tools |
@@ -908,7 +908,7 @@ forces it). How it runs and why it is wired that way: "Single-cell expression by
 Authentication is handled by [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) behind an nginx auth-gateway. The auth-gateway uses nginx `auth_request` to validate each request against oauth2-proxy before proxying to backend services. Authenticated user email is passed via the `X-Goog-Authenticated-User-Email` header. That header is not itself a credential — results-api honours it only when the request also carries `Authorization: Bearer $INTERNAL_API_SECRET`, proving it came from an in-cluster proxy, and then still checks the address against the shared email allow-list; without the bearer the header is ignored and the request is unauthenticated. The BFF attaches that bearer on every upstream call, including the generic `/api` passthrough that forwards the identity header, so the two always arrive together on the browser path. **Shipping the two halves of that change in the wrong order locks all browser users out** — see [Deploying the trusted-proxy marker](#deploying-the-trusted-proxy-marker) under Updating Services.
 
 Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` provider against Keycloak
-(which in turn federates Google and Apple); otherwise it talks to Google directly. See
+(which in turn federates Google, Apple and Microsoft); otherwise it talks to Google directly. See
 [docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
 
 - **Frontend, Chat backend**: Protected by oauth2-proxy. Unauthenticated users are redirected to the sign-in page (Google directly, or the Keycloak provider chooser).

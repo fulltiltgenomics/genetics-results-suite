@@ -38,6 +38,6 @@
         "defaultScope": "openid email profile",
         "syncMode": "IMPORT"
       }
-    }${APPLE_IDP_ENTRY}
+    }${APPLE_IDP_ENTRY}${MICROSOFT_IDP_ENTRY}
   ]
 }

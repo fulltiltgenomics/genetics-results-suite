@@ -438,6 +438,8 @@ LAYOUT = {
                                           "attributes",
     "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
                                              "the template and the default IdP redirect",
+    "scripts/keycloak-register-microsoft-idp.sh": "add or update the Microsoft IdP in the live "
+                                                  "realm from MICROSOFT_* in .env",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
     "scripts/keycloak-register-access-grants-client.sh": "register the service-account client "
                                                        "the access-grant reconciler writes "

@@ -10,7 +10,8 @@ set -euo pipefail
 # the allow-list). Requires kubectl access and python3 on the machine running it.
 #
 # Built-in flows can't be edited, so this copies "first broker login" to a custom flow, inserts
-# the allow-list check as the first REQUIRED step, and points the Google/Apple IdPs at the copy.
+# the allow-list check as the first REQUIRED step, and points the brokered IdPs (IDPS, those of
+# them that exist in the realm) at the copy.
 #
 # Allow-list source (same as deploy.sh / oauth2-proxy):
 #   OAUTH_EMAIL_DOMAIN    comma/space separated domains   (e.g. "broadinstitute.org")
@@ -23,7 +24,7 @@ FLOW="first broker login allowlist"
 FLOW_ENC="${FLOW// /%20}"
 BUILTIN_ENC="${BUILTIN_FLOW// /%20}"
 PROVIDER="script-email-allowlist.js"
-IDPS="${IDPS:-google apple}"
+IDPS="${IDPS:-google apple microsoft}"
 
 POD="$(kubectl get pods -n "${NAMESPACE}" -l app=keycloak -o jsonpath='{.items[0].metadata.name}')"
 AU="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 -d)"
@@ -88,8 +89,8 @@ for _ in $(seq 1 "${TOP_COUNT:-8}"); do
   kc create "authentication/executions/${EXEC_ID}/raise-priority" -r "${REALM}" >/dev/null 2>&1 || true
 done
 
-# 3b) disable the "Review Profile" step — Google/Apple are trusted, so don't prompt federated
-# users with a profile form on first login.
+# 3b) disable the "Review Profile" step — the brokered IdPs are trusted, so don't prompt
+# federated users with a profile form on first login.
 REVIEW_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
 import json,sys
 for e in json.load(sys.stdin):
