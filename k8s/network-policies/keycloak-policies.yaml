@@ -25,7 +25,10 @@ spec:
   policyTypes:
   - Ingress
 ---
-# keycloak: allow from auth-gateway (public traffic proxied via the ingress) and oauth2-proxy
+# keycloak: allow from auth-gateway (public traffic proxied via the ingress), oauth2-proxy, and
+# chat-backend, whose access-grant reconciler keeps the realm's allow-list attribute in step
+# with the grants it holds and disables the accounts of ended grants (admin REST, as a
+# confidential client with realm-management roles — never the bootstrap admin)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,6 +46,9 @@ spec:
     - podSelector:
         matchLabels:
           app: oauth2-proxy
+    - podSelector:
+        matchLabels:
+          app: chat-backend
     ports:
     - port: 8080
   policyTypes:

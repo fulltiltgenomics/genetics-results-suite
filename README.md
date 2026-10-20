@@ -1006,6 +1006,15 @@ user never gets an account — re-run `scripts/keycloak-bind-allowlist.sh` after
 and the default-IdP redirect (`KEYCLOAK_DEFAULT_IDP`) are reconciled the same way, with
 `DEPLOY_ENV=<env> scripts/keycloak-sync-login-policy.sh`.
 
+**Temporary access without a deploy** (a conference, a visitor): set `ACCESS_GRANT_BUTTON_LABEL`
+and `ACCESS_GRANT_EXPIRES_AT` (ISO 8601 with offset) plus the `SMTP_*`/`ACCESS_GRANT_EMAIL_*`
+knobs in the deployment's `.env`, put the e-mail body in `k8s/configs/access-grant-email.yaml`, run
+`scripts/keycloak-register-access-grants-client.sh` once where the broker is enabled, and deploy.
+Admins then get a button of that label in the chat header: entering an address grants it until
+the deadline, mails the person, and the grant propagates to oauth2-proxy and Keycloak on its own
+(`docs/project-spec.md`, "Runtime access grants"). Per-user API keys of a granted address stop
+working when the grant does. Unset the label to remove the button.
+
 ## Data Storage
 
 - **Chat backend**: 10Gi PVC (`chat-data`) for SQLite databases and file attachments. Data persists across deployments, and is snapshotted daily (see `terraform/backups.tf`).

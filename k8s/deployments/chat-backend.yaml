@@ -206,6 +206,50 @@ spec:
               name: genetics-secrets
               key: admin-users
               optional: true
+        # runtime access grants (genetics-mcp-server access_grants.py): an admin admits an
+        # address until ACCESS_GRANT_EXPIRES_AT with no deploy. The label is the switch — empty
+        # shows no button and runs no reconciler, which is every deployment that leaves these
+        # unset in its .env. The reconciler rewrites the oauth2-proxy allow-list ConfigMap
+        # through the API server (Role in terraform/kubernetes.tf, on this pod's
+        # genetics-suite KSA) and the Keycloak realm attribute through a confidential client
+        # whose secret scripts/keycloak-register-access-grants-client.sh stores; that secret
+        # is what turns the Keycloak target on, so a deployment without a broker never tries.
+        - name: ACCESS_GRANT_BUTTON_LABEL
+          value: "${ACCESS_GRANT_BUTTON_LABEL}"
+        - name: ACCESS_GRANT_EXPIRES_AT
+          value: "${ACCESS_GRANT_EXPIRES_AT}"
+        - name: ACCESS_GRANT_CONFIGMAP
+          value: "oauth2-allowed-emails"
+        - name: KEYCLOAK_ADMIN_URL
+          value: "http://keycloak.genetics.svc.cluster.local:8080"
+        - name: KEYCLOAK_ACCESS_GRANTS_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: keycloak-access-grants-client-secret
+              optional: true
+        # the notification mail: authenticated SMTP with STARTTLS. From must be the account
+        # SMTP_USERNAME authenticates as, or Gmail rewrites it
+        - name: SMTP_HOST
+          value: "${SMTP_HOST}"
+        - name: SMTP_PORT
+          value: "${SMTP_PORT}"
+        - name: SMTP_USERNAME
+          value: "${SMTP_USERNAME}"
+        - name: SMTP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: smtp-password
+              optional: true
+        - name: ACCESS_GRANT_EMAIL_FROM
+          value: "${ACCESS_GRANT_EMAIL_FROM}"
+        - name: ACCESS_GRANT_EMAIL_REPLY_TO
+          value: "${ACCESS_GRANT_EMAIL_REPLY_TO}"
+        - name: ACCESS_GRANT_EMAIL_SUBJECT
+          value: "${ACCESS_GRANT_EMAIL_SUBJECT}"
+        - name: ACCESS_GRANT_EMAIL_BODY_FILE
+          value: "/etc/access-grant/email.txt"
         # the profile a user starts on before choosing one, served through the user-settings
         # endpoint (the browser sends its choice on every turn, null meaning "All", so a
         # request-side default could not exist). Empty = the browser's own default, the full
@@ -226,6 +270,9 @@ spec:
         volumeMounts:
         - name: chat-data
           mountPath: /data
+        - name: access-grant-email
+          mountPath: /etc/access-grant
+          readOnly: true
         readinessProbe:
           httpGet:
             path: /healthz
@@ -261,6 +308,12 @@ spec:
       - name: chat-data
         persistentVolumeClaim:
           claimName: chat-data
+      # the e-mail body (k8s/configs/access-grant-email.yaml); a whole-directory mount, so an
+      # edit reaches the pod without a restart
+      - name: access-grant-email
+        configMap:
+          name: access-grant-email
+          optional: true
 ---
 apiVersion: v1
 kind: Service

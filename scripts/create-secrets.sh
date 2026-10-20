@@ -293,6 +293,9 @@ reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional C3PO_MCP_OAUTH       c3po-mcp-oauth
 reuse_optional ADMIN_USERS          admin-users
 reuse_optional SLACK_WEBHOOK_URL    slack-webhook-url
+reuse_optional SMTP_PASSWORD        smtp-password
+# written by scripts/keycloak-register-access-grants-client.sh, never by hand; reuse keeps it
+reuse_optional KEYCLOAK_ACCESS_GRANTS_CLIENT_SECRET keycloak-access-grants-client-secret
 
 # required
 : "${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}"
@@ -355,6 +358,8 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic genetics-secrets \
   --from-literal=sandbox-token-signing-key="${SANDBOX_TOKEN_SIGNING_KEY}" \
   --from-literal=gateway-identity-secret="${GATEWAY_IDENTITY_SECRET}" \
   --from-literal=slack-webhook-url="${SLACK_WEBHOOK_URL:-}" \
+  --from-literal=smtp-password="${SMTP_PASSWORD:-}" \
+  --from-literal=keycloak-access-grants-client-secret="${KEYCLOAK_ACCESS_GRANTS_CLIENT_SECRET:-}" \
   --dry-run=client -o yaml | kubectl --context "${ACTING_CONTEXT}" apply -f -
 
 echo "genetics-secrets created/updated."
