@@ -576,8 +576,8 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
    `SCHEMAS["hla_associations"]`.
 5. `genetics-mcp-server`: `get_hla_by_phenotype` (results-api) and `get_hla_by_allele`
    (BigQuery), plus an HLA section in the chat system prompt.
-6. `genetics-results-suite`: `hla_associations_v` added to the monitor's `VIEWS` and
-   `_CONFIG_VIEWS` in `scripts/monitor/bq_summary.py`.
+6. `genetics-results-suite`: no monitor change; `hla_associations_v` is monitored because
+   a `dataset_to_resource_rules` entry names it in `applies_to` (`scripts/monitor/views.py`).
 
 Two points of interest. First, **a new data type is not automatically a new storage layout**:
 the files are shaped exactly like summary stats and reuse that machinery, so only the ordering
@@ -625,9 +625,9 @@ no results-api product config):
    the `collins_rcnv_2022` entry's `dataset` field names `Collins_rCNV_2022`,
    so `scripts/load_phenotypes.sh` fails the whole profile's registry cross-check until at
    least one results table carrying that `dataset` value is loaded.
-5. `genetics-results-suite`: the three association views added to the monitor's `VIEWS` and `_CONFIG_VIEWS`
-   (`scripts/monitor/bq_summary.py`); the sandbox schema docs and SDK stubs regenerate from
-   `datasets.yaml` (`scripts/gen-sandbox-docs.py`).
+5. `genetics-results-suite`: no monitor change; the three association views are monitored
+   because rules name them in `applies_to` (`scripts/monitor/views.py`). The sandbox schema docs
+   and SDK stubs regenerate from `datasets.yaml` (`scripts/gen-sandbox-docs.py`).
 6. `genetics-mcp-server`: `get_dosage_sensitivity` and `get_rcnv_associations`, plus the SDK's
    `genetics.dosage_sensitivity()` / `genetics.rcnv()` on the code surface.
 7. `genetics-results-api`: **nothing**. The registry entry alone makes the dataset appear in
@@ -941,8 +941,9 @@ Changes made (new resource `asc2`, datasets `asc_gene_based` + `asc_exome` shari
    deletes `dataset = 'ASC2'` from each and appends, so it is idempotent and independent of
    the Genebass truncate. The entry is in both profiles' registries and both deployments
    are loaded, so `ABSENT_FROM_RESULTS` carries no `ASC2` entry.
-4. `genetics-results-suite`: the three views on the monitor's `VIEWS`/`_CONFIG_VIEWS`; the
-   sandbox schema docs regenerate from `datasets.yaml`.
+4. `genetics-results-suite`: no monitor change; the three views are monitored because rules
+   name them in `applies_to` (`scripts/monitor/views.py`). The sandbox schema docs regenerate
+   from `datasets.yaml`.
 5. `genetics-mcp-server`: no tool. The "what is in the database" paragraph of both system
    prompts names the three views; `get_database_schema` lists them because its table
    enumeration is derived from the schema docs.
