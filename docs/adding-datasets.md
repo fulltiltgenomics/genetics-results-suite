@@ -268,15 +268,15 @@ recorded beside it — so the question a new view raises, dataset-discriminated 
 registry-authoritative vs single-source constant, is answered in `configs/datasets.yaml` and
 nowhere else, and a view added without an answer fails loudly.
 
-`scripts/monitor/bq_summary.py`'s `VIEWS` is narrower still: it compares per-resource coverage
-of *result* views against `dataset_to_resource_rules`, which is meaningless for a table whose
-rows are the registry itself and for a single-source table whose `resource` is a constant, and
-it also leaves out some views that do have a generated `CASE`. Re-derive both rather than
-trusting this paragraph — from this repo's root:
+The monitor (`scripts/monitor/views.py`) checks per-resource coverage of every view some
+`dataset_to_resource_rules` entry names in `applies_to`: a view no rule covers takes its
+`resource` from the registry, a constant or a base table it regroups, and has no expected set
+to compare against. Adding a
+rule with a new view in `applies_to` therefore adds that view to the daily BigQuery check.
+Re-derive the modes rather than trusting this paragraph — from this repo's root:
 
 ```bash
 python3 -c "import yaml;t=yaml.safe_load(open('configs/datasets.yaml'))['tables'];print('\n'.join(f\"{i['resource_derivation']['mode']:<10} {n}\" for n,i in t.items()))"
-sed -n '/^VIEWS = \[/,/^]/p' scripts/monitor/bq_summary.py
 ```
 
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
@@ -1090,10 +1090,9 @@ in `docs/project-spec.md`). What this shape needs that the others do not:
       - `dataset_cross_check.excluded_reason` — **only** if the view contributes no `dataset`
         values to the registry cross-check, and then only with the reason. Omitting it for a
         view with no `dataset` column fails `load_phenotypes.sh` loudly, which is the point.
-      - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
-        only for *result* views whose per-resource coverage is meaningful to compare against
-        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Exposing a
-        view also brings its `dataset` values under the registry cross-check (next item).
+      - nothing for the monitor: it checks every view a `dataset_to_resource_rules` entry
+        names in `applies_to` (`scripts/monitor/views.py`). Exposing a view also brings its
+        `dataset` values under the registry cross-check (next item).
 - [ ] genetics-results-db: re-run `scripts/load_phenotypes.sh`. Exposing the view
       automatically brings its `dataset` values under the registry cross-check, so the
       loader will fail until an entry's `dataset` field covers them. Skipping this leaves the dataset invisible in

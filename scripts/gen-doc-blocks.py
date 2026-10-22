@@ -563,43 +563,26 @@ def block_suite_repos():
     return "\n".join(f"- `{r}`" for r in siblings.SUITE_REPOS)
 
 
-def _monitor_views():
-    """`VIEWS` / `_CONFIG_VIEWS` / `_API_VIEWS` out of scripts/monitor/bq_summary.py, by AST.
-
-    Read rather than imported: the module pulls in google.cloud.bigquery, which the build
-    gate has no reason to install.
-    """
-    path = os.path.join(ROOT, "scripts", "monitor", "bq_summary.py")
-    with open(path) as fh:
-        tree = ast.parse(fh.read(), path)
-    wanted = {"VIEWS", "_CONFIG_VIEWS", "_API_VIEWS"}
-    found = {}
-    for node in tree.body:
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id in wanted):
-            try:
-                found[node.targets[0].id] = ast.literal_eval(node.value)
-            except ValueError:
-                pass
-    missing = wanted - set(found)
-    if missing:
-        print(f"HARNESS: {path} no longer assigns {sorted(missing)} at module level",
-              file=sys.stderr)
-        raise SystemExit(2)
-    return found
+def _monitor_views_module():
+    """scripts/monitor/views.py, the derivation the CronJob itself runs. Loaded by path:
+    the rest of the monitor package pulls in google.cloud, which the build gate has no
+    reason to install."""
+    import importlib.util
+    path = os.path.join(ROOT, "scripts", "monitor", "views.py")
+    spec = importlib.util.spec_from_file_location("monitor_views", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def block_monitored_views():
-    v = _monitor_views()
+    views = _monitor_views_module()
     rows = ["| view | expected resources come from |", "|---|---|"]
-    for name in v["VIEWS"]:
-        if name in v["_CONFIG_VIEWS"]:
-            source = "`dataset_to_resource_rules` in `configs/datasets.yaml`"
-        elif name in v["_API_VIEWS"]:
+    for name in views.monitored_views(load_yaml("configs/datasets.yaml")[0]):
+        if views.expected_source(name) == "api":
             source = "the results-api's coloc pairs"
         else:
-            source = "nothing — row counts and distinct resources only"
+            source = "`dataset_to_resource_rules` in `configs/datasets.yaml`"
         rows.append(f"| `{name}` | {source} |")
     return "\n".join(rows)
 

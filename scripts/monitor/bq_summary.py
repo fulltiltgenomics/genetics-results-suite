@@ -2,8 +2,10 @@
 
 Queries BQ views for row counts and resource coverage. Uses a hybrid approach
 for expected resources:
-- credible_sets, exome, gene_based: config-driven (dataset_to_resource_rules)
-- colocalization: API-driven (results-api knows actual coloc pairs)
+- most views: config-driven (dataset_to_resource_rules)
+- coloc views (views.API_VIEWS): API-driven (results-api knows actual coloc pairs)
+
+The views themselves are derived from datasets.yaml by monitor.views.
 
 Collection resources (e.g. eqtl_catalogue) appear as individual sub-resources
 in BQ (qtd000001, ...) but as the collection name in the API. The comparison
@@ -19,35 +21,9 @@ import yaml
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
+from monitor.views import dual_resource_views, expected_source, monitored_views
+
 logger = logging.getLogger(__name__)
-
-VIEWS = [
-    "credible_sets_v",
-    "colocalization_v",
-    "coloc_credsets_v",
-    "exome_variant_results_v",
-    "gene_burden_results_v",
-    "asm_qtl_v",
-    "mpra_v",
-    "hla_associations_v",
-    "rcnv_gene_associations_v",
-    "rcnv_segments_v",
-    "rcnv_window_associations_v",
-    "exome_gene_counts_v",
-    "exome_gene_bayes_results_v",
-    "exome_variant_counts_v",
-]
-
-# colocalization_v uses resource1/resource2 instead of resource
-_DUAL_RESOURCE_VIEWS = {"colocalization_v"}
-
-# views where expected resources come from config rules
-_CONFIG_VIEWS = {"credible_sets_v", "exome_variant_results_v", "gene_burden_results_v", "asm_qtl_v", "mpra_v", "hla_associations_v",
-                 "rcnv_gene_associations_v", "rcnv_segments_v", "rcnv_window_associations_v",
-                 "exome_gene_counts_v", "exome_gene_bayes_results_v", "exome_variant_counts_v"}
-
-# views where expected resources come from the API (coloc pairs)
-_API_VIEWS = {"colocalization_v", "coloc_credsets_v"}
 
 # (profile, view) -> resources whose absence is not alerted: for a rule shared across
 # profiles whose resource one profile does not serve in that view
@@ -101,6 +77,10 @@ class BigQuerySummary:
         self.api_secret = api_secret or os.environ.get("INTERNAL_API_SECRET", "")
         self.client = bigquery.Client(project=self.project)
         self._config: dict | None = None
+
+    @property
+    def views(self) -> list[str]:
+        return monitored_views(self.config)
 
     @property
     def config(self) -> dict:
@@ -167,7 +147,7 @@ class BigQuerySummary:
     def _get_config_expected(self) -> dict[str, set[str]]:
         """Expected resources for credible_sets, exome, gene_based views
         from explicit dataset_to_resource_rules entries."""
-        expected: dict[str, set[str]] = {v: set() for v in VIEWS}
+        expected: dict[str, set[str]] = {v: set() for v in self.views}
 
         profile_data = self.config.get("profiles", {}).get(self.profile, {})
         datasets = profile_data.get("datasets", {})
@@ -189,14 +169,15 @@ class BigQuerySummary:
             if resource not in resource_to_views:
                 continue
             for view in resource_to_views[resource]:
-                if view in _CONFIG_VIEWS:
+                if view in expected and expected_source(view) == "rules":
                     expected[view].add(resource)
 
         return expected
 
     def _get_api_coloc_expected(self) -> dict[str, set[str]]:
         """Expected resources for coloc views from the API's dataset products."""
-        expected: dict[str, set[str]] = {v: set() for v in _API_VIEWS}
+        api_views = [v for v in self.views if expected_source(v) == "api"]
+        expected: dict[str, set[str]] = {v: set() for v in api_views}
 
         try:
             headers = {}
@@ -219,7 +200,7 @@ class BigQuerySummary:
             if resource and "colocalization" in products:
                 # map API resource to BQ resource (e.g. ukbb_finucane -> ukbb)
                 bq_resource = self._map_to_bq_resource(resource)
-                for view in _API_VIEWS:
+                for view in api_views:
                     expected[view].add(bq_resource)
 
         return expected
@@ -238,7 +219,7 @@ class BigQuerySummary:
         full_view = f"`{self.project}.{self.bq_dataset}.{view}`"
 
         try:
-            if view in _DUAL_RESOURCE_VIEWS:
+            if view in dual_resource_views(self.config):
                 count_sql = f"SELECT COUNT(*) AS row_count FROM {full_view}"
                 resource_sql = (
                     f"SELECT DISTINCT r FROM ("
@@ -276,10 +257,15 @@ class BigQuerySummary:
 
     def run(self) -> list[dict]:
         """Query all views and return structured comparison results."""
+        if not self.views:
+            return [ViewSummary(
+                view="datasets.yaml",
+                error=f"no monitored views derived from {self.config_path}",
+            ).to_dict()]
         expected_by_view = self._get_expected_resources()
         results = []
 
-        for view in VIEWS:
+        for view in self.views:
             summary = self._query_view(view)
             summary.expected_resources = expected_by_view.get(view, set())
             summary.missing_resources = (

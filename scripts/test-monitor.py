@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline assertions about the monitor's report delivery and alert dedup.
+"""Offline assertions about the monitor's report delivery, alert dedup and view derivation.
 
 Run: python3 scripts/test-monitor.py   (needs PyYAML and requests; no network, no GCP)
 Exit 0 = pass, 1 = a property is broken, 2 = the harness could not run.
@@ -54,10 +54,21 @@ def _stub_google():
     logging_stub.ASCENDING = "asc"
     sys.modules["google.cloud.logging"] = logging_stub
     cloud.logging = logging_stub
+    bigquery_stub = types.ModuleType("google.cloud.bigquery")
+    bigquery_stub.Client = lambda project=None: None
+    sys.modules["google.cloud.bigquery"] = bigquery_stub
+    cloud.bigquery = bigquery_stub
+    api_core = sys.modules.setdefault("google.api_core", types.ModuleType("google.api_core"))
+    exceptions = types.ModuleType("google.api_core.exceptions")
+    exceptions.NotFound = type("NotFound", (Exception,), {})
+    sys.modules["google.api_core.exceptions"] = exceptions
+    api_core.exceptions = exceptions
 
 
 _stub_google()
-from monitor import alerter, main  # noqa: E402
+from monitor import alerter, bq_summary, main, views  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def run_main(db, entries, delivered):
@@ -119,8 +130,46 @@ def test_check_is_read_only(tmp):
     check("mark_seen is idempotent", a.check() == [])
 
 
+def test_views(tmp):
+    with open(os.path.join(ROOT, "configs", "datasets.yaml")) as fh:
+        config = yaml.safe_load(fh)
+    monitored = views.monitored_views(config)
+    tables = list(config["tables"])
+    check("every monitored view is a table", set(monitored) <= set(tables), str(set(monitored) - set(tables)))
+    check("API_VIEWS are monitored", views.API_VIEWS <= set(monitored), str(views.API_VIEWS - set(monitored)))
+    check("credible_sets_v is monitored", "credible_sets_v" in monitored)
+    check("a single-source view is not monitored", "gene_annotations_v" not in monitored)
+    check("only colocalization_v carries resource1/resource2", views.dual_resource_views(config) == {"colocalization_v"},
+          str(views.dual_resource_views(config)))
+
+    synthetic = {
+        "tables": {"b_v": {}, "a_v": {}, "c_v": {}, "coloc_credsets_v": {}},
+        "dataset_to_resource_rules": [
+            {"pattern": "X%", "resource": "x", "applies_to": ["a_v", "coloc_credsets_v", "missing_v"]},
+            {"pattern": "Y", "resource": "y", "applies_to": ["b_v"]},
+            {"pattern": "*", "resource": "LOWER(dataset)"},
+        ],
+        "profiles": {"p": {"datasets": {"dx": {"resource": "x"}, "dy": {"resource": "y"}}}},
+    }
+    check("tables order, rule-covered only, unknown views dropped",
+          views.monitored_views(synthetic) == ["b_v", "a_v", "coloc_credsets_v"],
+          str(views.monitored_views(synthetic)))
+
+    s = bq_summary.BigQuerySummary(project="p", config_path="unused", profile="p")
+    s._config = synthetic
+    got = {k: sorted(v) for k, v in s._get_config_expected().items()}
+    check("rule views expect their profile's resources; API views expect none from rules",
+          got == {"b_v": ["y"], "a_v": ["x"], "coloc_credsets_v": []}, str(got))
+
+    s = bq_summary.BigQuerySummary(project="p", config_path=os.path.join(tmp, "absent.yaml"), profile="p")
+    out = s.run()
+    check("no derivable views reports an error rather than an empty report",
+          len(out) == 1 and "no monitored views" in (out[0]["error"] or ""), str(out))
+
+
 def main_():
     with tempfile.TemporaryDirectory() as tmp:
+        test_views(tmp)
         test_check_is_read_only(tmp)
         test_delivery(tmp)
 

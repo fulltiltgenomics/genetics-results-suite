@@ -1456,9 +1456,11 @@ A report Slack did not accept is the monitor failing, so it exits 1: `send_slack
 - **BigQuery data coverage** (`bq_summary.py`): queries each view in the table below for row counts and distinct resources, and compares the resources it finds against the expected set for that view. Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns. `_EXPECTED_ABSENT` in `bq_summary.py` lists `(profile, view)` pairs whose missing resources are not alerted.
 - **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace **of its own cluster** over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts. The cluster clause matters because Cloud Logging is project-wide and two deployments in one project (daly + daly-staging) both use the `genetics` namespace — without `K8S_CLUSTER` each would alert on the other's errors.
 
-The views it queries, and where each one's expected resources come from — a view is added to
-the check by adding it to `VIEWS` and to whichever of `_CONFIG_VIEWS` / `_API_VIEWS` it belongs
-in (`scripts/monitor/bq_summary.py`):
+The views it queries, and where each one's expected resources come from. The list is not kept
+anywhere: `scripts/monitor/views.py` takes every `tables` entry in the mounted `datasets.yaml`
+that some `dataset_to_resource_rules` entry names in `applies_to`, so a view is monitored from
+the moment a rule covers it. Only the choice of the results-api's coloc pairs over the rules
+(`API_VIEWS`) is held in the monitor, since `datasets.yaml` has no field for it:
 
 <!-- BEGIN GENERATED: monitored-views -->
 
@@ -1469,15 +1471,18 @@ in (`scripts/monitor/bq_summary.py`):
 | `coloc_credsets_v` | the results-api's coloc pairs |
 | `exome_variant_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `gene_burden_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_gene_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_gene_bayes_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `exome_variant_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `asm_qtl_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `open_chromatin_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `variant_effect_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `mpra_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `hla_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `rcnv_gene_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `rcnv_segments_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 | `rcnv_window_associations_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
-| `exome_gene_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
-| `exome_gene_bayes_results_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
-| `exome_variant_counts_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
+| `peak_to_gene_v` | `dataset_to_resource_rules` in `configs/datasets.yaml` |
 
 <!-- END GENERATED: monitored-views -->
 
