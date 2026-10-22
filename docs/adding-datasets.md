@@ -1003,7 +1003,7 @@ it. Two levels carry that, and they must not be conflated:
 
 - **Registry, dataset level:** `cohorts: [finngen, mvp, ukb, aou]`, the union of sample collections.
 - **Per phenotype:** `contributing_cohorts` (`ARRAY<STRING>`, e.g. `fg`, `aou_eur`,
-  `mvp_afr`), a `phenotypes_v` column added when the R14 phenotypes are loaded. It comes from the metadata JSON that `scripts/r14_meta_phenotypes.py` in
+  `mvp_afr`), a `phenotypes_v` column populated by the R14 phenotype load. It comes from the metadata JSON that `scripts/r14_meta_phenotypes.py` in
   `genetics-results-munge` writes, alongside `cohort_families` and `n_by_cohort`.
 
 Steps specific to this shape: the `FinnGen%MVP_UKBB_AOU%` rule in `dataset_to_resource_rules` must

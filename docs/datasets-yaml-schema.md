@@ -250,7 +250,7 @@ lists every collection it pools. It surfaces unchanged in `GET /v1/datasets` and
 
 Do not confuse it with `phenotypes_v.contributing_cohorts`: that is a per-phenotype `ARRAY<STRING>`
 of ancestry-split cohort names (`fg`, `aou_eur`, `mvp_afr`, ...) inside one meta-analysis, read from the
-dataset's `metadata_file`, and is not a registry field. The view column is added when the R14 phenotypes are loaded.
+dataset's `metadata_file`, and is not a registry field. The R14 phenotype load populates it.
 
 - **Semantics for readers.** A token names a sample *collection*, not a sample set, so the
   registry can establish only that two datasets draw on the same collection(s); the overlap
