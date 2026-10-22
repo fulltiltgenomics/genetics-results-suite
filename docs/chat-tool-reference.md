@@ -19,8 +19,9 @@ Every count and list below was re-derived from `genetics-mcp-server` source in t
 the prompt by rendering `default_system_prompt` per profile inside that repo's venv with the
 flag values read off the production and staging chat-backend pods, the catalogue by rendering
 `all_anthropic_tools()` — the schema the model receives — and nothing read off an existing doc. CLAUDE.md's rule
-applies to this file more than to most: it is an enumeration, so **re-derive rather than
-trust it** — the recipe is in "How to re-derive" at the end.
+applies to this file more than to most: it is an enumeration, and edits since that session
+outside the generated blocks are hand patches rather than re-derivations, so **re-derive
+rather than trust it** — the recipe is in "How to re-derive" at the end.
 
 Two inputs to that rendering are read at runtime rather than from source, so the render pins
 them to what the daly deployments answer: the url-fetcher's host allow-list (the seeded
@@ -1240,7 +1241,7 @@ are as recorded at the earlier derivation and were not re-read.
 
 ## 8. Full tool catalogue
 
-Every entry below is rendered from `all_anthropic_tools()` at the commit in the header (the recipe at the end), with the defining list read from the four list objects — no build gate regenerates this section, unlike sections 1 and 3, so re-run the recipe rather than trust it. The
+The entries below were rendered from `all_anthropic_tools()` at the commit in the header (the recipe at the end), with the defining list read from the four list objects, and some have been hand-patched since rather than re-rendered — no build gate regenerates this section, unlike sections 1 and 3, so re-run the recipe rather than trust it. The
 description block is the **exact** string sent to the model — the definitions use implicit
 string concatenation and triple-quoted literals, so what appears here is the joined result.
 The parameter table is the `input_schema` `get_anthropic_tools()` builds; a `minimum`/
