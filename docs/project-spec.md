@@ -3096,7 +3096,7 @@ starts (it defaults to empty and `dev-stack.sh` never sets it) and both headers 
 local run proves the code, not the build. The kubectl context used for every check must be the
 context `kubectl` is already on and must end in `-staging` (the suite's is named
 `gke_daly-finngenie_us-central1-a_finngenie-staging`); a name is not an endpoint, so the script
-prints the kubeconfig it resolved. Getting a build there: `scripts/build-all.sh` clones the
+prints the `KUBECONFIG` it ran under, as set (a colon-separated list is printed unresolved). Getting a build there: `scripts/build-all.sh` clones the
 pushed GitHub staging branches of the sibling repos and builds and pushes their images;
 `scripts/rollout.sh --context <ctx> <service> <TAG>` then updates one deployment to an explicit
 `YYYYMMDD.sha` tag — a bare `:latest` is a silent no-op on this cluster. Verify a rollout

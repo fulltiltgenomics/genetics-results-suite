@@ -547,7 +547,7 @@ def ensure_warm_session(context, user, state, project_id):
 
 
 # ---------------------------------------------------------------------------
-# Checks (numbered as in the bead description)
+# Checks (numbered as in docs/project-spec.md, "Chat memory (per-project digest)")
 # ---------------------------------------------------------------------------
 
 def check1_log_line_project_only(context, user, user2, state):
