@@ -2029,9 +2029,9 @@ rehearsal ground is `scripts/bq-dev-dataset.sh`, which builds a rehearsal datase
 project and the same location** — `europe-west1` in `phewas-development`, `us-central1`
 in `daly-finngenie` (`bq show --format=prettyjson <project>:genetics_results`) — out of
 zero-copy `CREATE TABLE … CLONE` statements, then creates the views with their table
-references **rewritten** to the dev dataset. Which rehearsal dataset stands in which
-project — in `daly-finngenie` it is `genetics_results_brava_dev`, not the default name —
-is in `docs/bigquery-dev-dataset.md`, "Which rehearsal datasets exist, per project".
+references **rewritten** to the dev dataset. Which rehearsal datasets stand in which
+project is in `docs/bigquery-dev-dataset.md` (private internal repo), "Which rehearsal
+datasets exist, per project"; re-derive it with `bq ls <project>:` rather than trusting it.
 
 The rewrite is the correctness crux, not a detail: every view in `genetics_results`
 embeds a fully-qualified `` `<project>.genetics_results.<table>` `` reference, so a
@@ -2050,7 +2050,7 @@ when the rehearsal writes to the clone. Drop a table's dev clone once its produc
 counterpart has been promoted away — for the `phewas-development` batch that is ~105 GB
 across the four tables `eyg` and `4ci` replace or drop — rather than waiting for the batch
 teardown. A rehearsal can also write standalone, non-clone tables that bill their full size
-from the start; `genetics_results_brava_dev` holds one of ~277 GB.
+from the start, so a finished rehearsal dataset is worth tearing down rather than keeping.
 
 Dry run is the default (`--apply` executes), `teardown` additionally needs `--yes` and the
 dataset name typed at a tty, and the target dataset name is refused outright if it is one
