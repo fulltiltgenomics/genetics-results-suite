@@ -448,7 +448,11 @@ LAYOUT = {
         "markdown into genetics-mcp-server's prompt copy"
     ),
     "scripts/gen-doc-blocks.py": "generate the marked blocks in docs/*.md; `--check` is the "
-                                 "build gate",
+                                 "build gate. genetics-mcp-server carries its own "
+                                 "scripts/gen-doc-blocks.py for the blocks in its spec (routes, "
+                                 "chat_turn_metrics columns, database env table, module tree), "
+                                 "gated by that repo's tests/test_doc_blocks.py rather than by "
+                                 "this build",
     "scripts/check-doc-drift.sh": "warn when a commit changes code the docs describe",
     "scripts/check-duplication.py": "ratchet on the suite's UNDECLARED duplication count "
                                     "(and on the declared one), measured from the trees "
@@ -623,7 +627,7 @@ def block_phenotype_join_views():
 # branch that grows a filter, an inverted `sdk_replaceable` polarity and a module-level
 # `TOOL_DEFINITIONS.extend(...)` all satisfy one and emit a wrong table.
 #   - _read_definitions asserts the SHAPE the rules read: the four list names bound to
-#     literal lists, a dict per entry, `name`/`category` strings and a bool
+#     literal lists, a dict per entry, `name`/`group` strings and a bool
 #     `sdk_replaceable`; and that nothing at module level mutates the four lists after
 #     their literal, which is the one way a literal read can be complete and still wrong.
 #   - _assert_resolver_shape pins the normalised source of `resolve_tools`' body against
@@ -778,11 +782,11 @@ def _read_definitions():
                 print(f"HARNESS: {path}: {name} holds a non-literal entry", file=sys.stderr)
                 raise SystemExit(2)
             fields = {_const(k): v for k, v in zip(entry.keys, entry.values)}
-            tool = {k: _const(fields.get(k)) for k in ("name", "category", "sdk_replaceable")}
-            if not isinstance(tool["name"], str) or not isinstance(tool["category"], str) \
+            tool = {k: _const(fields.get(k)) for k in ("name", "group", "sdk_replaceable")}
+            if not isinstance(tool["name"], str) or not isinstance(tool["group"], str) \
                     or not isinstance(tool["sdk_replaceable"], bool):
                 print(f"HARNESS: {path}: an entry in {name} ({tool['name']!r}) is missing "
-                      f"name, category or a boolean sdk_replaceable", file=sys.stderr)
+                      f"name, group or a boolean sdk_replaceable", file=sys.stderr)
                 raise SystemExit(2)
             tools.append(tool)
         if not tools:
@@ -845,11 +849,12 @@ def _names(tools):
     return ", ".join(f"`{t['name']}`" for t in tools)
 
 
-def _by_category(tools):
+def _by_group(tools):
+    """Per-group counts; `group` is the tools panel's section, so these are what the panel shows."""
     counts = {}
     for t in tools:
-        counts[t["category"]] = counts.get(t["category"], 0) + 1
-    return ", ".join(f"`{c}` {n}" for c, n in sorted(counts.items()))
+        counts[t["group"]] = counts.get(t["group"], 0) + 1
+    return ", ".join(f"`{g}` {n}" for g, n in sorted(counts.items()))
 
 
 def block_tool_lists():
@@ -860,10 +865,10 @@ def block_tool_lists():
         # keyed on the list rather than on its length: a sixth code-execution tool would
         # otherwise cross a length threshold and be labelled "the data tools"
         contents = "the data tools" if name == "TOOL_DEFINITIONS" else _names(tools)
-        rows.append(f"| `{name}` | {len(tools)} | {contents} — {_by_category(tools)} |")
+        rows.append(f"| `{name}` | {len(tools)} | {contents} — {_by_group(tools)} |")
     every = [t for name in _DEF_LISTS for t in lists[name]]
     rows += ["", f"**{len(every)} tool definitions in total** across the four lists: "
-                 f"{_by_category(every)}."]
+                 f"{_by_group(every)}."]
     return "\n".join(rows)
 
 
