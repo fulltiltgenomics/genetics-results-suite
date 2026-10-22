@@ -364,7 +364,7 @@ scripts/                                     build, deploy and verification scri
   deploy.sh                                  full deploy: terraform apply, then every manifest
   dev-stack.sh                               start/stop the local dev servers from one tree (docs/local-dev-vm.md)
   external-inputs-proving-ground.py          offline: a loopback origin serving the linemodels fixture, the fetcher's refusals, and delivery into a sandbox execution; the feature's acceptance test
-  gen-doc-blocks.py                          generate the marked blocks in docs/*.md; `--check` is the build gate
+  gen-doc-blocks.py                          generate the marked blocks in docs/*.md; `--check` is the build gate. genetics-mcp-server carries its own scripts/gen-doc-blocks.py for the blocks in its spec (routes, chat_turn_metrics columns, database env table, module tree), gated by that repo's tests/test_doc_blocks.py rather than by this build
   gen-sandbox-docs.py                        generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema markdown into genetics-mcp-server's prompt copy
   install-git-hooks.sh                       wire core.hooksPath; run once per clone
   keycloak-bind-allowlist.sh                 bind the email allow-list authenticator and realm attributes
