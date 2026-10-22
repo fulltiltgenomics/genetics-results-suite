@@ -108,8 +108,14 @@ check '^scripts/run-sandbox-local\.sh$' "$DOCS_SPEC" \
 # dev-stack.sh is a credential-provisioning script, not only a launcher: it generates and
 # persists SANDBOX_TOKEN_SIGNING_KEY and INTERNAL_API_SECRET into DEV_STACK_RUN_DIR, and
 # with those set db-api stops failing open — which is what both named docs describe.
-check '^scripts/dev-stack\.sh$' '^docs/(local-dev-vm|code-execution-security)\.md$' \
-    'scripts/dev-stack.sh -> docs/local-dev-vm.md (internal repo) (run dir, generated secrets, what the stack starts) or docs/code-execution-security.md (locally minted sandbox tokens, what an unauthenticated local caller can reach)'
+check '^scripts/dev-stack\.sh$' '^docs/local-dev-vm\.md$' \
+    'scripts/dev-stack.sh -> docs/local-dev-vm.md (internal repo) (run dir, generated secrets, what the stack starts, what an unauthenticated local caller can reach)'
+
+check '^scripts/(test-supervisor\.py$|supervisor_tests/)' '^docs/code-execution-security\.md$' \
+    'scripts/test-supervisor.py, scripts/supervisor_tests/ -> docs/code-execution-security.md (the verification table: which check groups run in process vs against a container, what each needs, the 0/1/2 exit codes)'
+
+check '^(k8s/deployments/(chat-backend|mcp-server)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
+    'k8s/deployments/chat-backend.yaml, mcp-server.yaml, scripts/deploy.sh -> docs/environments.md (internal repo) (the per-deployment .env knobs the bring-up checklist enumerates: DEFAULT_TOOL_PROFILE, ALPHAGENOME_ENABLED, cell-type expression release, GENE_SETS_BUCKET; what an unset one defaults to)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
