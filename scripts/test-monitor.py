@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import checks  # noqa: E402
 from checks import check  # noqa: E402
+from paths import ROOT  # noqa: E402
 
 try:
     import requests  # noqa: F401
@@ -67,8 +68,6 @@ def _stub_google():
 
 _stub_google()
 from monitor import alerter, bq_summary, health, main, views  # noqa: E402
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def run_main(db, entries, delivered):
