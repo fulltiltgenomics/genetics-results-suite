@@ -216,16 +216,17 @@ check '^scripts/gen-doc-blocks\.py$' \
 
 check '^scripts/gen-doc-blocks\.py$' \
     '^docs/project-spec\.md$' \
-    'scripts/gen-doc-blocks.py -> docs/project-spec.md (which blocks are generated, what each derives from, and the build gate that runs it)'
+    'scripts/gen-doc-blocks.py -> docs/project-spec.md (which blocks are generated, what each derives from, and the build gate that runs it; the chat-memory blocks read genetics-mcp-server and genetics-results-browser, which no diff staged here contains)'
 
-# The one doc it owns whose SOURCE this repo cannot see: the tool-surface
-# blocks are derived from genetics-mcp-server's tools/definitions.py, which no diff staged
-# here can contain. This rule therefore catches only a change to the generator; a tool added
-# or an sdk_replaceable flipped in the sibling repo is caught by `--check` at build time and
-# by nothing at commit time. Said in the doc itself rather than left for a reader to discover.
+# A doc whose SOURCE this repo cannot see: the tool-surface and /mcp exclusion
+# blocks are derived from genetics-mcp-server's tools/definitions.py and mcp_server.py, which
+# no diff staged here can contain. This rule therefore catches only a change to the generator;
+# a tool added, an sdk_replaceable flipped or an exclusion changed in the sibling repo is
+# caught by `--check` at build time and by nothing at commit time. Said in the doc itself
+# rather than left for a reader to discover.
 check '^scripts/gen-doc-blocks\.py$' \
     '^docs/chat-tool-reference\.md$' \
-    'scripts/gen-doc-blocks.py -> docs/chat-tool-reference.md (the generated tool-list and tool-surface blocks: the rules mirrored from resolve_tools, and the cross-repo limit of this warning)'
+    'scripts/gen-doc-blocks.py -> docs/chat-tool-reference.md (the generated tool-list, tool-surface and /mcp exclusion blocks: the rules mirrored from resolve_tools, the _mcp_disabled shape read, and the cross-repo limit of this warning)'
 
 check '^scripts/gen-doc-blocks\.py$' \
     '^docs/adding-datasets\.md$' \

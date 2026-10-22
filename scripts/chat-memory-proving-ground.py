@@ -547,7 +547,8 @@ def ensure_warm_session(context, user, state, project_id):
 
 
 # ---------------------------------------------------------------------------
-# Checks (numbered as in docs/project-spec.md, "Chat memory (per-project digest)")
+# Checks. docs/project-spec.md's numbered list is generated from CHECKS and these
+# docstrings, so a docstring is the check's description there too.
 # ---------------------------------------------------------------------------
 
 def check1_log_line_project_only(context, user, user2, state):
@@ -632,8 +633,10 @@ def check2_digest_byte_equality(context, user, user2, state):
 
 
 def check3_cache_warm_second_turn(context, user, user2, state):
-    """Turn 2 cache_read >= turn 1 cache_create, on the default model, tools on, inside a
-    project session — confirms the frozen digest is actually part of the cached prefix."""
+    """Turn 2 cache_read >= turn 1 cache_create (chat_turn_metrics.cache_read_tokens against
+    cache_create_tokens, matched on each turn's message_id), on the default model, tools on,
+    inside a project session — confirms the frozen digest is actually part of the cached
+    prefix."""
     enable_memory(context, user, state)
     project = ensure_project(context, user, state, "project_a", "a")
     ensure_seed_session(context, user, state, project["id"], "seed_a",

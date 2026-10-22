@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Regenerate the enumerated blocks of docs/*.md from the code.
 
-Everything this script owns is a list or a number the code already computes: the sandbox's
-per-execution bounds and pod spec, the egress and ingress allow-lists, the image environment,
-the reserved `error.type` names, the workload table, the repository layout, and the two
-tool surfaces read out of genetics-mcp-server's tool definitions. Those are the
-parts of a document that rot silently — the prose around them stays plausible while the table
-stops matching the thing it describes — so they are derived rather than transcribed.
+Everything this script owns is a list or a number the code already computes; `BLOCKS` at
+the bottom names each block and the function that derives it, some of them from sibling
+checkouts (`SIBLING_BLOCKS`). Those are the parts of a document that rot silently — the prose
+around them stays plausible while the table stops matching the thing it describes — so they
+are derived rather than transcribed.
 
 A block is delimited in the doc by `<!-- BEGIN GENERATED: name -->` / `<!-- END GENERATED:
 name -->`; a block with no marker, or a marker with no block, is an error, so the two cannot
@@ -916,6 +915,237 @@ def block_tool_surfaces():
     ])
 
 
+# ---------------------------------------------------------------------------------------
+# other lists read out of the sibling repos, by AST or by name
+# ---------------------------------------------------------------------------------------
+#
+# Same resolution and the same cross-repo limit as the tool blocks: the source is a sibling
+# working tree, so a staged diff here never contains it, and only --check notices a change.
+
+BROWSER_SRC = None  # set from --browser-src; otherwise the sibling checkout
+MCP_PACKAGE = os.path.join("src", "genetics_mcp_server")
+
+
+def _harness(msg):
+    print(f"HARNESS: {msg}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _mcp_file(rel):
+    if "src" not in _defs_cache:
+        _definitions_path()
+    path = os.path.join(_defs_cache["src"], MCP_PACKAGE, rel)
+    if not os.path.isfile(path):
+        _harness(f"no {path}")
+    return path
+
+
+def _parse(path):
+    with open(path) as fh:
+        text = fh.read()
+    return text, ast.parse(text, filename=path)
+
+
+def _browser_root():
+    if BROWSER_SRC:
+        if not os.path.isdir(BROWSER_SRC):
+            _harness(f"--browser-src {BROWSER_SRC} is not a directory")
+        return BROWSER_SRC
+    try:
+        src = siblings.resolve_matching("genetics-results-browser")
+    except siblings.SiblingError as exc:
+        _harness(str(exc))
+    if src is None:
+        _harness("no genetics-results-browser checkout was found next to this repo. Pass "
+                 "--browser-src DIR or set SUITE_REPO_GENETICS_RESULTS_BROWSER.")
+    return src
+
+
+def _md_text(s):
+    """Prose from a docstring, with `<` escaped outside code spans so `<hash>` survives."""
+    parts = " ".join(s.split()).split("`")
+    return "`".join(p if i % 2 else p.replace("<", "&lt;") for i, p in enumerate(parts))
+
+
+def block_mcp_exclusions():
+    """The hardcoded half of `_mcp_disabled` in the sibling's mcp_server.py.
+
+    `_settings.disabled_tools` is env-driven, a deployment's choice, so only the literal is
+    listed. The product/security split is the source's own: the entries after its
+    `SECURITY CONTROL` comment are the control.
+    """
+    path = _mcp_file("mcp_server.py")
+    text, tree = _parse(path)
+    assigns = [n for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AugAssign))
+               and any(isinstance(t, ast.Name) and t.id == "_mcp_disabled"
+                       for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
+    node = assigns[0] if len(assigns) == 1 and isinstance(assigns[0], ast.Assign) else None
+    v = node.value if node else None
+    if not (isinstance(v, ast.BinOp) and isinstance(v.op, ast.BitOr)
+            and ast.unparse(v.left) == "_settings.disabled_tools"
+            and isinstance(v.right, ast.Set)
+            and all(isinstance(_const(e), str) for e in v.right.elts)):
+        _harness(f"{path}: `_mcp_disabled` is no longer one assignment of "
+                 f"`_settings.disabled_tools | {{literal names}}`; the exclusion block "
+                 f"cannot be read off it")
+    mutated = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
+               and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name)
+               and n.func.value.id == "_mcp_disabled"
+               and n.func.attr in ("add", "update", "discard", "remove", "pop", "clear",
+                                   "difference_update", "intersection_update",
+                                   "symmetric_difference_update")]
+    if mutated:
+        _harness(f"{path}: `_mcp_disabled` is changed after its literal (lines {mutated}); "
+                 f"the literal is no longer the whole set")
+    if not any(isinstance(n, ast.Call) and ast.unparse(n.func) == "register_mcp_tools"
+               and any(k.arg == "disabled_tools" and ast.unparse(k.value) == "_mcp_disabled"
+                       for k in n.keywords) for n in ast.walk(tree)):
+        _harness(f"{path}: `_mcp_disabled` no longer reaches register_mcp_tools as "
+                 f"disabled_tools, so it is not the /mcp exclusion set")
+    lines = text.splitlines()
+    marker = next((i + 1 for i in range(node.lineno - 1, node.end_lineno)
+                   if "SECURITY CONTROL" in lines[i]), None)
+    if marker is None:
+        _harness(f"{path}: no `SECURITY CONTROL` comment inside the `_mcp_disabled` literal "
+                 f"to split product decisions from the control")
+    product = [_const(e) for e in v.right.elts if e.lineno < marker]
+    control = [_const(e) for e in v.right.elts if e.lineno > marker]
+    if not control:
+        _harness(f"{path}: nothing follows the `SECURITY CONTROL` comment in _mcp_disabled")
+    width = max(len(n) for n in product + control) + 1
+    rows = [product[i:i + 3] for i in range(0, len(product), 3)] + [control]
+    return "\n".join([
+        f"`_mcp_disabled` = `_settings.disabled_tools | {{` the following "
+        f"{len(product) + len(control)} names `}}`:",
+        "",
+        "```text",
+        *("".join(n.ljust(width) for n in row).rstrip() for row in rows),
+        "```",
+        "",
+        f"The {len(product)} before the source's `SECURITY CONTROL` comment are product "
+        f"decisions; the {len(control)} after it ({_names([{'name': n} for n in control])}) "
+        f"are the security control.",
+    ])
+
+
+def block_project_routes():
+    """Every chat-history route that calls `is_identifiable_user`.
+
+    Selected on that call rather than on a path prefix because the paragraph around the
+    block claims exactly that gate, plus `Depends(auth_required)`, which is checked here
+    rather than trusted.
+    """
+    path = _mcp_file(os.path.join("routers", "chat_history.py"))
+    _, tree = _parse(path)
+    _, app = _parse(_mcp_file("chat_api.py"))
+    prefix = next((_const(k.value) for n in ast.walk(app) if isinstance(n, ast.Call)
+                   and ast.unparse(n.func).endswith("include_router") and n.args
+                   and ast.unparse(n.args[0]) == "chat_history_router"
+                   for k in n.keywords if k.arg == "prefix"), None)
+    if not isinstance(prefix, str):
+        _harness("chat_api.py no longer mounts chat_history_router with a literal prefix")
+    rows = ["| handler | route | summary |", "|---|---|---|"]
+    for fn in tree.body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        called = {ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+        if "is_identifiable_user" not in called:
+            continue
+        route = next((d for d in fn.decorator_list if isinstance(d, ast.Call)
+                      and ast.unparse(d.func).startswith("router.")), None)
+        if route is None:
+            continue
+        defaults = {ast.unparse(d) for d in fn.args.defaults + fn.args.kw_defaults if d}
+        if "Depends(auth_required)" not in defaults:
+            _harness(f"{path}: {fn.name} is gated on is_identifiable_user but does not "
+                     f"take Depends(auth_required), which the spec says every one does")
+        summary = next((_const(k.value) for k in route.keywords if k.arg == "summary"), "")
+        rows.append(f"| `{fn.name}` | `{route.func.attr.upper()} {prefix}"
+                    f"{_const(route.args[0])}` | {summary} |")
+    if len(rows) == 2:
+        _harness(f"{path}: no route calls is_identifiable_user; the paragraph around the "
+                 f"project-routes block has no subject")
+    return "\n".join(rows)
+
+
+# The memory feature's pieces. The descriptions and the choice of files cannot be derived —
+# nothing in either repo marks a file as part of this feature — so they are written here;
+# what is derived is that each named file still exists and still mentions each name cited
+# beside it, which is how this table rots (a rename or a deletion). A file added to the
+# feature without a row here goes unnoticed.
+MEMORY_PIECES = (
+    ("Entity extraction, session clustering, digest rendering, caps",
+     "genetics-mcp-server", (("memory_digest.py", ()),)),
+    ("Opt-in setting, the four-condition gate, the in-project session cap, the log-line "
+     "pseudonyms", "genetics-mcp-server", (("memory_gate.py", ()),)),
+    ("Envelope wrapping, per-turn resolution, block-1 assembly", "genetics-mcp-server",
+     (("config/defaults.py", ("memory_envelope",)),
+      ("chat_api.py", ("_resolve_user_memory", "_load_user_memory")),
+      ("llm_service.py", ("_stream_anthropic",)))),
+    ("Project rows, session membership, first-writer-wins digest write, pin",
+     "genetics-mcp-server",
+     (("db/chat_history_db.py",
+       ("chat_projects", "chat_sessions.project_id", "chat_sessions.context_digest")),)),
+    ("Project, filing, memory and pin endpoints", "genetics-mcp-server",
+     (("routers/chat_history.py", ()),)),
+    ("Sidebar project sections and filing, memory dialog, pin star, memory chip",
+     "genetics-results-browser",
+     (("src/features/chat/ChatHistorySidebar.tsx", ()),
+      ("src/features/chat/useProjects.ts", ()),
+      ("src/features/chat/projectsApi.ts", ()),
+      ("src/features/chat/MemoryDialog.tsx", ()),
+      ("src/features/chat/memoryApi.ts", ()),
+      ("src/features/chat/LLMChat.tsx", ()))),
+)
+
+
+def block_memory_pieces():
+    roots = {"genetics-mcp-server": lambda rel: _mcp_file(rel),
+             "genetics-results-browser": lambda rel: os.path.join(_browser_root(), rel)}
+    rows = ["| Piece | Repo | Where |", "|-------|------|-------|"]
+    for piece, repo, files in MEMORY_PIECES:
+        cited = []
+        for rel, names in files:
+            path = roots[repo](rel)
+            if not os.path.isfile(path):
+                _harness(f"memory piece table: {path} does not exist; fix MEMORY_PIECES")
+            with open(path) as fh:
+                text = fh.read()
+            gone = [n for n in names for part in n.split(".")
+                    if not re.search(rf"\b{re.escape(part)}\b", text)]
+            if gone:
+                _harness(f"memory piece table: {path} no longer mentions {sorted(set(gone))}; "
+                         f"fix MEMORY_PIECES")
+            cited.append(f"`{rel}`" + (" (" + ", ".join(f"`{n}`" for n in names) + ")"
+                                       if names else ""))
+        rows.append(f"| {piece} | `../{repo}` | {', '.join(cited)} |")
+    return "\n".join(rows)
+
+
+def block_chat_memory_checks():
+    """The proving ground's checks, from the script's own CHECKS registry and docstrings."""
+    path = os.path.join(ROOT, "scripts", "chat-memory-proving-ground.py")
+    _, tree = _parse(path)
+    registry = next((n.value for n in tree.body if isinstance(n, ast.Assign)
+                     and ast.unparse(n.targets[0]) == "CHECKS"), None)
+    if not isinstance(registry, ast.Dict):
+        _harness(f"{path}: no literal CHECKS dict")
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    out = []
+    for key, value in zip(registry.keys, registry.values):
+        n = _const(key)
+        if not (isinstance(n, int) and isinstance(value, ast.Tuple) and len(value.elts) == 2
+                and isinstance(_const(value.elts[0]), str)
+                and isinstance(value.elts[1], ast.Name) and value.elts[1].id in fns):
+            _harness(f"{path}: CHECKS entry {ast.unparse(key)} is not "
+                     f"`int: (slug, check function)`")
+        doc = ast.get_docstring(fns[value.elts[1].id])
+        if not doc:
+            _harness(f"{path}: {value.elts[1].id} has no docstring to describe the check")
+        out.append(f"{n}. `check{n}-{_const(value.elts[0])}` — {_md_text(doc)}")
+    return "\n".join(out)
+
+
 SECURITY = "docs/code-execution-security.md"
 SPEC = "docs/project-spec.md"
 TOOLS = "docs/chat-tool-reference.md"
@@ -935,11 +1165,16 @@ BLOCKS = {
     "tool-lists": (TOOLS, block_tool_lists),
     "tool-surfaces": (TOOLS, block_tool_surfaces),
     "tool-surfaces-spec": (SPEC, block_tool_surfaces_spec),
+    "mcp-exclusions": (TOOLS, block_mcp_exclusions),
+    "project-routes": (SPEC, block_project_routes),
+    "memory-pieces": (SPEC, block_memory_pieces),
+    "chat-memory-checks": (SPEC, block_chat_memory_checks),
 }
 
-# the blocks that need a genetics-mcp-server checkout; --skip-tool-blocks leaves them as they
-# stand, so a build can gate everything else before it has cloned that repo
-TOOL_BLOCKS = {"tool-lists", "tool-surfaces", "tool-surfaces-spec"}
+# the blocks that need a sibling checkout; --skip-tool-blocks leaves them as they stand, so a
+# build can gate everything else before it has cloned those repos
+SIBLING_BLOCKS = {"tool-lists", "tool-surfaces", "tool-surfaces-spec", "mcp-exclusions",
+                  "project-routes", "memory-pieces"}
 
 MARKER = re.compile(
     r"(<!-- BEGIN GENERATED: (?P<name>[a-z-]+) -->\n)(?P<body>.*?)(<!-- END GENERATED: (?P=name) -->)",
@@ -971,16 +1206,21 @@ def main():
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if any generated block is stale; write nothing")
     ap.add_argument("--mcp-src", default=None,
-                    help="a genetics-mcp-server checkout to read tools/definitions.py "
-                         "from; resolved as scripts/gen-sandbox-docs.py --sdk-src is")
+                    help="a genetics-mcp-server checkout to read the tool definitions, "
+                         "mcp_server.py and the chat-history router from; resolved as "
+                         "scripts/gen-sandbox-docs.py --sdk-src is")
+    ap.add_argument("--browser-src", default=None,
+                    help="a genetics-results-browser checkout for the memory piece table; "
+                         "otherwise the sibling checkout scripts/lib/siblings.py resolves")
     ap.add_argument("--skip-tool-blocks", action="store_true",
-                    help="leave the blocks that need a genetics-mcp-server checkout "
-                         "untouched, and neither read nor check them")
+                    help="leave the blocks that need a sibling checkout untouched, and "
+                         "neither read nor check them")
     args = ap.parse_args()
 
-    global MCP_SRC
+    global MCP_SRC, BROWSER_SRC
     MCP_SRC = args.mcp_src
-    skip = TOOL_BLOCKS if args.skip_tool_blocks else frozenset()
+    BROWSER_SRC = args.browser_src
+    skip = SIBLING_BLOCKS if args.skip_tool_blocks else frozenset()
 
     stale = []
     for doc in sorted({d for d, _ in BLOCKS.values()}):

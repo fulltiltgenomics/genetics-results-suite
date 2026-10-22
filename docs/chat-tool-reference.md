@@ -33,13 +33,14 @@ custom-GWAS hints (`_CUSTOM_GWAS_HINTS`, `tools/definitions.py`) are absent from
 quoted here. A FinnGen deployment, whose results-api names its sandbox custom GWAS releases,
 gets both.
 
-The exception is the two `<!-- BEGIN GENERATED -->` blocks in sections 1 and 3: those are
+The exception is the `<!-- BEGIN GENERATED -->` blocks in sections 1, 2b and 3: those are
 rewritten by `scripts/gen-doc-blocks.py`, which parses the sibling `tools/definitions.py`
-with `ast` (never importing it, so no mcp-server venv is needed) and applies `resolve_tools`'
-own rules. `scripts/build-all.sh` runs `gen-doc-blocks.py --check` fatally, and checks these
-two blocks against the mcp-server branch it clones rather than a local checkout. **Know what that
-gate does not cover:** `scripts/check-doc-drift.sh` reads `git diff --cached` in *this* repo
-only, so a tool added or a `sdk_replaceable` flipped in genetics-mcp-server produces no
+and `mcp_server.py` with `ast` (never importing them, so no mcp-server venv is needed) and
+applies `resolve_tools`' own rules. `scripts/build-all.sh` runs `gen-doc-blocks.py --check`
+fatally, and checks these blocks against the mcp-server branch it clones rather than a local
+checkout. **Know what that gate does not cover:** `scripts/check-doc-drift.sh` reads `git diff
+--cached` in *this* repo only, so a tool added, a `sdk_replaceable` flipped or an `/mcp`
+exclusion changed in genetics-mcp-server produces no
 warning here at commit time — the staleness surfaces at the next suite build (or the next
 `gen-doc-blocks.py --check` run in this repo, the only one that has the generator), and
 nothing at all if the suite is never built. A cross-repo commit hook is the thing that would
@@ -213,6 +214,11 @@ returns the capped count, so a `Field` bound would turn a working MCP call into 
 validation error. This asymmetry is intentional and is stated in `register_mcp_tools`'
 docstring.
 
+Generated from the `_mcp_disabled` literal in the sibling `mcp_server.py`, parsed with `ast` like
+the blocks in sections 1 and 3:
+
+<!-- BEGIN GENERATED: mcp-exclusions -->
+
 `_mcp_disabled` = `_settings.disabled_tools | {` the following 16 names `}`:
 
 ```text
@@ -224,13 +230,17 @@ get_alphagenome_variant_predictions compare_alphagenome_with_measured
 read_artifact                       run_analysis
 ```
 
-The first fourteen are product decisions (literature search needs the Perplexity API key;
-the UniProt and ChEMBL tools are chat-only by choice; AlphaGenome runs on a free
-non-commercial key with a per-minute quota shared by the whole deployment, and `/mcp` is
-reachable by any Google-account holder). `read_artifact` and `run_analysis` are stated in
-the source comment as a **security control**, not a product decision. `list_capabilities`
-is deliberately **not** in the set — the comment beside its absence says padding the set with
-non-controls would stop the next reader telling which entries are load-bearing.
+The 14 before the source's `SECURITY CONTROL` comment are product decisions; the 2 after it (`read_artifact`, `run_analysis`) are the security control.
+
+<!-- END GENERATED: mcp-exclusions -->
+
+The product decisions: literature search needs the Perplexity API key; the UniProt and ChEMBL
+tools are chat-only by choice; AlphaGenome runs on a free non-commercial key with a per-minute
+quota shared by the whole deployment, and `/mcp` is reachable by any Google-account holder. The
+control is stated in the source comment as a **security control**, not a product decision.
+`list_capabilities` is deliberately **not** in the set — the comment beside its absence says
+padding the set with non-controls would stop the next reader telling which entries are
+load-bearing.
 
 **The effective `/mcp` tool set with the deployed flags** is the handlers, less the hardcoded
 names above that have one (`run_analysis` has none), less whatever else
@@ -2851,9 +2861,10 @@ Available skills:
 
 ## How to re-derive this document
 
-**Generated and gated** are three blocks: `tool-lists` (section 1) and `tool-surfaces`
-(section 3) here, plus `tool-surfaces-spec` in `docs/project-spec.md`.
-`scripts/gen-doc-blocks.py` writes them from the sibling `tools/definitions.py`, parsed with
+**Generated and gated** are `tool-lists` (section 1), `mcp-exclusions` (section 2b) and
+`tool-surfaces` (section 3) here, plus `tool-surfaces-spec` in `docs/project-spec.md`.
+`mcp-exclusions` is read off the `_mcp_disabled` literal in the sibling `mcp_server.py`; the
+others `scripts/gen-doc-blocks.py` writes from the sibling `tools/definitions.py`, parsed with
 `ast` (never imported, so no mcp-server venv is needed) and resolved by `resolve_tools`' own
 rules — mirrored there, with that function's body pinned against a literal, module-level
 mutation of the four definition lists rejected, and the derived code surface cross-checked
@@ -2863,7 +2874,8 @@ generator rather than quietly changing these tables. `scripts/build-all.sh` runs
 regenerate by hand with `scripts/gen-doc-blocks.py [--mcp-src DIR]`.
 
 **Everything else is hand-derived**, so re-derive it rather than trusting it: sections 2a, 2b
-and 2c (how each surface is assembled, and the handler and effective `/mcp` counts in them),
+(outside its exclusion block) and 2c (how each surface is assembled, and the handler and
+effective `/mcp` counts in them),
 section 3's profile-coercion table and the `KNOWN_TOOL_PROFILES` set quoted beside it,
 section 4a (the system prompt and its fragments), and section 8 (the catalogue itself —
 its headings carry no counts and its entries no line numbers). Sections 4a and 8 are rendered,
