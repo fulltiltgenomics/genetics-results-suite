@@ -46,10 +46,9 @@ read. It is **not** an access control and must not be cited as one.
 
 ## 1. Why in-process execution is unacceptable
 
-chat-backend once carried a second execution path: a subagent tool that ran `python3`,
-`Rscript` or `bash` as a subprocess of the chat-backend process. It has been deleted — there is
-no in-process interpreter and no flag that restores one. What follows is why it could not be
-made safe, and it is the requirements list for everything below.
+chat-backend has no in-process execution path: no tool runs `python3`, `Rscript` or `bash` as
+a subprocess of the chat-backend process, and no flag provides one. What follows is why such a
+path cannot be made safe, and it is the requirements list for everything below.
 
 **chat-backend runs as root** with the `chat-data` PVC mounted at `/data`. That PVC holds
 `chat_history.db` (every conversation in the deployment, all users) and `llm_config.db`

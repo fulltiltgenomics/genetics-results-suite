@@ -100,7 +100,9 @@ different times: `DEFAULT_TOOL_PROFILE` is rendered into chat-backend by `deploy
 `SHOW_TOOLS_CONTROL=false` (the Tools row in the chat options) and `SHOW_TOOLS_BUTTON=false` (the
 Tools button in the chat header) are baked into the frontend image by `build.sh`/`build-all.sh`
 (`--build-arg SHOW_TOOLS_CONTROL` / `SHOW_TOOLS_BUTTON`), so they need a build, not only a
-deploy. All three are documented per deployment in `docs/environments.md`.
+deploy. All three are documented per deployment in `docs/environments.md`. Tools are also
+withdrawn per deployment by flags that are not `.env` lines; `docs/chat-tool-reference.md`
+§2a tables them with what each removes.
 
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own

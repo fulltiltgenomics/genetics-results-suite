@@ -40,9 +40,10 @@ own rules. `scripts/build-all.sh` runs `gen-doc-blocks.py --check` fatally, and 
 two blocks against the mcp-server branch it clones rather than a local checkout. **Know what that
 gate does not cover:** `scripts/check-doc-drift.sh` reads `git diff --cached` in *this* repo
 only, so a tool added or a `sdk_replaceable` flipped in genetics-mcp-server produces no
-warning here at commit time — the staleness surfaces at the next build (or at the next
-`gen-doc-blocks.py --check`) in whichever repo runs it, and nothing at all if the suite is
-never built. A cross-repo commit hook is the thing that would close it; there is none.
+warning here at commit time — the staleness surfaces at the next suite build (or the next
+`gen-doc-blocks.py --check` run in this repo, the only one that has the generator), and
+nothing at all if the suite is never built. A cross-repo commit hook is the thing that would
+close it; there is none.
 
 ## What this document does NOT duplicate
 
@@ -147,7 +148,7 @@ existing `disabled_tools` refusal — is refused as a `ToolNotAvailable` `tool_r
 model reads, and the check reads the resolved set rather than re-deriving anything from
 `tool_profile`.
 
-`settings.disabled_tools` (`config/settings.py`) is a *property* derived from six inputs:
+`settings.disabled_tools` (`config/settings.py`) is a *property* derived from these inputs:
 
 | flag / env var | default | removes, when it is off (or, for the key, unset) |
 |---|---|---|
@@ -172,15 +173,15 @@ on with a key present, the rest at their defaults — so **in the deployed confi
 `launch_subagents`**, plus `get_cell_type_expression` on a deployment with no release pointer
 (production daly), which is also what `genetics-mcp-server/tests/golden/tool_surface.json`
 records under `chat_backend.disabled_tools`. The resolved sets are frozen there too
-(`chat_backend.profiles.<value>.local`): 69 local tools on the no-code surface,
-22 on `code`. Read the counts from that file rather than from a number written by hand
-here.
+(`chat_backend.profiles.<value>.local`, each with its `count`). Read the counts from that
+file rather than from a number written by hand here.
 
 ### 2b. The MCP surface (`_mcp_disabled` in `mcp_server.py`; `register_mcp_tools` in `tools/definitions.py`)
 
 `register_mcp_tools()` — in `tools/definitions.py` beside the definitions it
-registers, and imported by `mcp_server.py` — contains **71** handlers, every one decorated
-`@_tool()`. That decorator is `_gate(mcp, disabled_tools, code_execution)`: it decides on the
+registers, and imported by `mcp_server.py` — contains a handler for every definition but the
+two named below, every one decorated `@_tool()`. That decorator is
+`_gate(mcp, disabled_tools, code_execution)`: it decides on the
 handler's own `__name__`, returns a withheld handler undecorated so FastMCP never learns of
 it, and takes a `code_execution` argument that subtracts a
 surface by the same rule `resolve_tools` applies to a chat request. The deployed server
@@ -191,7 +192,7 @@ and are therefore unreachable over `/mcp` by construction:
 
 - `launch_subagents` — never had one.
 - `run_analysis` — deliberately omitted; the comment standing in its place in
-  `register_mcp_tools` says a missing block is a control `disabled_tools` cannot undo, since
+  `register_mcp_tools` says a missing handler is a control `disabled_tools` cannot undo, since
   that set can only subtract.
 
 **This surface's bounds are not the `parameters` bounds.** FastMCP derives each MCP schema
@@ -231,12 +232,11 @@ the source comment as a **security control**, not a product decision. `list_capa
 is deliberately **not** in the set — the comment beside its absence says padding the set with
 non-controls would stop the next reader telling which entries are load-bearing.
 
-**Effective `/mcp` tool count with the deployed flags: 55.** `k8s/deployments/mcp-server.yaml`
-sets only `ENABLE_SUBAGENTS`, so on that pod `settings.disabled_tools` already holds
-`run_analysis` and the two AlphaGenome tools alongside `get_credible_sets_stats` and
-`launch_subagents`. 71 handlers − 15 of the hardcoded names that have handlers
-(`run_analysis` has none) − `get_credible_sets_stats` = 55. With `ENABLE_CREDIBLE_SETS_STATS`
-on it would be 56. The count is now pinned:
+**The effective `/mcp` tool set with the deployed flags** is the handlers, less the hardcoded
+names above that have one (`run_analysis` has none), less whatever else
+`settings.disabled_tools` holds on that pod — `k8s/deployments/mcp-server.yaml` leaves most
+flags unset, so `run_analysis` and the two AlphaGenome tools are already there alongside
+`get_credible_sets_stats` and `launch_subagents`. The set and its count are pinned:
 `tests/golden/tool_surface.json` records the registered set under
 `mcp_server.registered_tools` and `tests/test_tool_surface_golden.py` fails when it moves;
 `tests/test_mcp_server.py` additionally pins the control itself

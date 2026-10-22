@@ -605,7 +605,6 @@ def block_phenotype_join_views():
     return "\n".join(f"- `{name}`" for name in odd)
 
 
-
 # ---------------------------------------------------------------------------------------
 # the two tool surfaces, read out of genetics-mcp-server by AST
 # ---------------------------------------------------------------------------------------
@@ -656,7 +655,6 @@ else:
 if disabled:
     tools = [t for t in tools if t['name'] not in disabled]
 return tools"""
-
 
 
 def _load_gen_sandbox_docs():
@@ -916,6 +914,7 @@ def block_tool_surfaces():
         f"The code surface, in definition order: {_names(execs)}, then the data tools the "
         f"SDK cannot stand in for — {_names(kept)}.",
     ])
+
 
 SECURITY = "docs/code-execution-security.md"
 SPEC = "docs/project-spec.md"
