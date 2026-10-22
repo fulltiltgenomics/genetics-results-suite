@@ -466,6 +466,7 @@ LAYOUT = {
     "scripts/test-monitor-cellxgene.py": "offline: the monitor's CELLxGENE release check, its "
                                          "not-yet-live switch and deployment gate, and the "
                                          "matching log ignore pattern",
+    "scripts/test-monitor.py": "offline: the monitor's report delivery and alert dedup",
     "scripts/test-network-policies.py": "the namespace's policies as a whole: offline by "
                                         "default, plus an opt-in diff against a live cluster",
     "scripts/stage-gene-sets.py": "gene-set bundle staging: fetch and verify the pinned "
