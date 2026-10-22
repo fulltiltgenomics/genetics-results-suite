@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline assertions about the monitor's report delivery, alert dedup and view derivation.
+"""Offline assertions about the monitor's report delivery, alert dedup, view derivation and dataset listing checks.
 
 Run: python3 scripts/test-monitor.py   (needs PyYAML and requests; no network, no GCP)
 Exit 0 = pass, 1 = a property is broken, 2 = the harness could not run.
@@ -66,7 +66,7 @@ def _stub_google():
 
 
 _stub_google()
-from monitor import alerter, bq_summary, main, views  # noqa: E402
+from monitor import alerter, bq_summary, health, main, views  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -167,7 +167,57 @@ def test_views(tmp):
           len(out) == 1 and "no monitored views" in (out[0]["error"] or ""), str(out))
 
 
+def run_datasets(profile, listings):
+    """check_datasets against the real datasets.yaml, results-api answering `listings`
+    ({path: [dataset_id, ...]}; a path absent from it answers HTTP 404)."""
+    c = health.HealthChecker(
+        config_profile=profile, datasets_config_path=os.path.join(ROOT, "configs", "datasets.yaml")
+    )
+    calls = []
+
+    def get(service, check_name, url, auth=False):
+        path = "/" + url.split("/", 3)[3].split("?")[0]
+        calls.append(path)
+        if path not in listings:
+            return health.CheckResult(service=service, check=check_name, status="fail", error="HTTP 404")
+        r = health.CheckResult(service=service, check=check_name, status="ok")
+        r.details["response_json"] = [{"dataset_id": d} for d in listings[path]]
+        return r
+
+    c._http_get = get
+    res = c.check_datasets()
+    return {r.check: r for r in res}, calls
+
+
+def test_on_request_datasets():
+    with open(os.path.join(ROOT, "configs", "datasets.yaml")) as fh:
+        config = yaml.safe_load(fh)
+    for profile in ("finngen", "daly"):
+        c = health.HealthChecker(config_profile=profile)
+        expected = c._extract_expected_datasets(config)
+        flagged = sorted(k for k, v in expected.items() if v.get("on_request") is True)
+        ordinary = sorted(k for k in expected if k not in flagged)
+        listings = {"/api/v1/datasets": ordinary, "/api/v1/datasets/on_request": flagged}
+        res, calls = run_datasets(profile, listings)
+        bad = sorted(k for k, r in res.items() if r.status != "ok")
+        check(f"{profile}: every dataset found where results-api lists it", bad == [], str(bad))
+        check(f"{profile}: on_request listing queried only when the profile has flagged datasets",
+              ("/api/v1/datasets/on_request" in calls) == bool(flagged), str(calls))
+        if flagged:
+            res, _ = run_datasets(profile, {"/api/v1/datasets": ordinary, "/api/v1/datasets/on_request": []})
+            bad = sorted(k for k, r in res.items() if r.status == "fail")
+            check(f"{profile}: an on_request dataset results-api stops serving still fails",
+                  bad == [f"dataset:{d}" for d in flagged], str(bad))
+            res, _ = run_datasets(profile, {"/api/v1/datasets": ordinary})
+            check(f"{profile}: an unavailable on_request listing fails its datasets, not the others",
+                  sorted(k for k, r in res.items() if r.status == "fail")
+                  == sorted(["on_request_datasets_endpoint"] + [f"dataset:{d}" for d in flagged]))
+    check("finngen profile carries on_request datasets (else the cases above prove nothing)",
+          any(v.get("on_request") for v in config["profiles"]["finngen"]["datasets"].values()))
+
+
 def main_():
+    test_on_request_datasets()
     with tempfile.TemporaryDirectory() as tmp:
         test_views(tmp)
         test_check_is_read_only(tmp)

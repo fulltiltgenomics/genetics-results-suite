@@ -2,7 +2,7 @@
 Health checker for genetics-results-suite cluster services.
 
 Verifies service liveness via health endpoints and dataset accessibility
-via the results-api /api/v1/datasets endpoint.
+via the results-api dataset listings.
 """
 
 import json
@@ -204,8 +204,8 @@ class HealthChecker:
         return results
 
     def check_datasets(self) -> list[CheckResult]:
-        """Load datasets.yaml, then verify each API-served dataset is
-        accessible via results-api /api/v1/datasets."""
+        """Load datasets.yaml, then verify each API-served dataset is listed by
+        results-api: /api/v1/datasets, or /api/v1/datasets/on_request for `on_request` ones."""
         results: list[CheckResult] = []
 
         datasets_config = self._load_datasets_config()
@@ -228,53 +228,63 @@ class HealthChecker:
             ))
             return results
 
-        # fetch actual dataset list from results-api (without stats to keep it fast)
+        # an `on_request` dataset (a sandbox custom GWAS release) is left out of /datasets by
+        # design and listed only by /datasets/on_request, so each group is checked against
+        # the endpoint that is supposed to list it
+        on_request = {k: v for k, v in expected_datasets.items() if v.get("on_request") is True}
+        ordinary = {k: v for k, v in expected_datasets.items() if k not in on_request}
+        for check_name, path, group in (
+            ("datasets_endpoint", "/api/v1/datasets", ordinary),
+            ("on_request_datasets_endpoint", "/api/v1/datasets/on_request", on_request),
+        ):
+            if group:
+                results.extend(self._check_listed(check_name, path, group))
+        return results
+
+    def _check_listed(self, check_name: str, path: str, expected: dict[str, dict]) -> list[CheckResult]:
+        """Fetch one dataset listing (without stats, to keep it fast) and check each expected
+        dataset appears in it."""
         api_result = self._http_get(
             "results-api",
-            "datasets_endpoint",
-            f"{self.results_api_url}/api/v1/datasets?include_stats=false",
+            check_name,
+            f"{self.results_api_url}{path}?include_stats=false",
             auth=True,
         )
-        results.append(api_result)
+        results = [api_result]
 
         if api_result.status == "fail":
             # can't verify individual datasets if the endpoint is down
-            for ds_id in sorted(expected_datasets):
+            for ds_id in sorted(expected):
                 results.append(CheckResult(
                     service="results-api",
                     check=f"dataset:{ds_id}",
                     status="fail",
-                    error="datasets endpoint unavailable",
+                    error=f"{path} unavailable",
                 ))
             return results
 
-        # parse response to get set of served dataset IDs
         served_ids: set[str] = set()
         try:
-            api_datasets = api_result.details.get("response_json", [])
-            for ds in api_datasets:
+            for ds in api_result.details.get("response_json", []):
                 ds_id = ds.get("dataset_id")
                 if ds_id:
                     served_ids.add(ds_id)
         except Exception as exc:
-            logger.warning("failed to parse datasets response: %s", exc)
+            logger.warning("failed to parse %s response: %s", path, exc)
 
-        # compare expected vs actual
-        for ds_id in sorted(expected_datasets):
+        for ds_id in sorted(expected):
+            details = {"resource": expected[ds_id].get("resource")}
             if ds_id in served_ids:
                 results.append(CheckResult(
-                    service="results-api",
-                    check=f"dataset:{ds_id}",
-                    status="ok",
-                    details={"resource": expected_datasets[ds_id].get("resource")},
+                    service="results-api", check=f"dataset:{ds_id}", status="ok", details=details,
                 ))
             else:
                 results.append(CheckResult(
                     service="results-api",
                     check=f"dataset:{ds_id}",
                     status="fail",
-                    error="dataset not found in API response",
-                    details={"resource": expected_datasets[ds_id].get("resource")},
+                    error=f"dataset not found in {path} response",
+                    details=details,
                 ))
 
         return results
