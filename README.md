@@ -873,7 +873,7 @@ baseline" in `docs/project-spec.md`.
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
 | bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
-| auth-gateway | — | nginx:1.27-alpine | 8080 | Auth gateway (oauth2-proxy + routing) |
+| auth-gateway | — | nginx@sha256:65645c7b… (a 1.27-alpine build, pinned) | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
 | keycloak-postgres | — | postgres:16-alpine | 5432 | Keycloak database (PVC + daily `pg_dump` CronJob to GCS) |
