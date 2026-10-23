@@ -641,16 +641,21 @@ cloud and is truncated positionally: measured at `12:49272869:C:T`, a ±250 kb r
 with 3000 entries stopping 19 kb short of the window's right edge, leaving 97 panel variants
 unanswered and that edge of the plot grey with nothing to say why. Above the floor the same
 locus returns 17 entries across ±500 kb. Grey therefore means "no r² worth colouring", which is
-what it already meant for a variant the panel does not carry. **And LD is asked for over more
-than the plotted span** — up to the LD server's own ceiling on the window, past which the
-figure's legend says how far from the lead its colours reach — so a correlated partner just
-outside the window is named — in the
-returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
-same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
-it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
-signal. The note fires only above a reporting floor, because what it asks of the reader is a
-redraw at a wider window and that is worth doing where the omitted partner would have carried
-colour worth acting on, not for every partner the search span reaches. **And the gene track draws one transcript per gene, not all of them.** results-api serves
+what it already meant for a variant the panel does not carry, and the legend's grey row says
+so, with the lowest coloured bin starting at that floor so the two rows do not overlap. **And LD
+is asked for over more than the plotted span** — up to the LD server's own ceiling on the
+window, past which the figure's legend says how far from the lead its colours reach — so a
+correlated partner just outside the window is seen, and the window widened to take it in: the
+region is grown exactly to the partner, the summary statistics fetched again and the lead chosen
+afresh, up to twice in one call, so the model never spends a second tool call redrawing. At
+the same locus the strongest variant in the region, r²=0.78 with the lead and more significant
+than it, sits 42 kb past the default window's edge, and a plot that drops it reads as an
+isolated signal. Widening fires only above a reporting floor, where the omitted partner would
+have carried colour worth acting on, not for every partner the search span reaches; where it
+cannot run — a frame passed in, `widen=False`, or the budget spent — the partners are named in
+the returned `ld_partners_outside_window` and on the figure rather than silently omitted. The
+title and the returned `region_width_bp` state how wide the plotted window is, and
+`widened_from` the window that was asked for. **And the gene track draws one transcript per gene, not all of them.** results-api serves
 the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
 gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
 of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
