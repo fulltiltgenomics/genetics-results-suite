@@ -28,10 +28,11 @@ them to what the daly deployments answer: the url-fetcher's host allow-list (the
 `DEFAULT_ALLOWED_HOSTS` in this repo's `url-fetcher/guard.py`, since
 `k8s/deployments/url-fetcher.yaml` leaves `URL_FETCHER_ALLOWED_HOSTS` unset), which the
 code-surface prompt names; and results-api's on-request datasets, which a daly results-api
-answers with none — so the users'-own-custom-GWAS prompt section and the per-tool
-custom-GWAS hints (`_CUSTOM_GWAS_HINTS`, `tools/definitions.py`) are absent from everything
-quoted here. A FinnGen deployment, whose results-api names its sandbox custom GWAS releases,
-gets both.
+answers with none — so the users'-own-custom-GWAS and the FinnGen-R12-sex-specific-and-
+recessive prompt sections and the per-tool hints (`_CUSTOM_GWAS_HINTS`, `_R12_MODEL_HINTS`,
+`tools/definitions.py`) are absent from everything quoted here. A FinnGen deployment, whose
+results-api names its sandbox custom GWAS releases and the two R12 model-specific releases,
+gets all of them.
 
 The exception is the `<!-- BEGIN GENERATED -->` blocks in sections 1, 2b and 3: those are
 rewritten by `scripts/gen-doc-blocks.py`, which parses the sibling `tools/definitions.py`
@@ -112,11 +113,15 @@ parameter declares a `pattern`
 regex matching the validator would reject inputs the server handles.
 
 Before converting, both `get_anthropic_tools()` and `all_anthropic_tools()` pass the
-definitions through `_with_custom_gwas_hints`, which appends text naming this deployment's
-sandbox custom GWAS releases to the entries of `_CUSTOM_GWAS_HINTS` — `search_phenotypes`'
-own description and the `resource` parameter of the credible-set-by-phenotype/by-id,
-summary-stats, `list_datasets` and `get_hla_by_phenotype` tools — and changes nothing where
-results-api names no such release, which is every daly deployment.
+definitions through `_with_on_request_hints`, which appends text naming this deployment's
+on-request resources: the sandbox custom GWAS releases to the entries of
+`_CUSTOM_GWAS_HINTS` — `search_phenotypes`' own description and the `resource` parameter of
+the credible-set-by-phenotype/by-id, summary-stats, `list_datasets` and
+`get_hla_by_phenotype` tools — and the FinnGen R12 sex-specific and recessive GWAS to those
+of `_R12_MODEL_HINTS` (`search_phenotypes`, `list_datasets`, and both `resource` and
+`data_type` of the two summary-stats tools). The two kinds are told apart by the
+`data_type` results-api's answer carries. It changes nothing where results-api names no
+such release, which is every daly deployment.
 
 `get_anthropic_tools(custom_descriptions=...)` can override any description, but
 **chat-backend never passes it**: `chat_api.stream_chat` calls
@@ -500,8 +505,9 @@ fragments name the passes); Tool Usage Guidelines; Choosing How to Get Data; The
 Data Sources and Resource Names (with Pseudo Credible Sets and Credible Set Membership — the
 latter emitted twice unfiltered, once in each per-surface wording); Data Domains and Outside
 Resources (Variant Annotation Sources; Functional / Regulatory Readouts; AlphaGenome variant
-predictions (opt-in); Users' own custom GWAS (sandbox userresults) — rendered only where
-results-api names on-request releases, so never on daly; HLA / the MHC region; Dosage
+predictions (opt-in); Users' own custom GWAS (sandbox userresults) and FinnGen R12
+sex-specific and recessive GWAS — each rendered only where results-api names on-request
+releases of its kind, so never on daly; HLA / the MHC region; Dosage
 sensitivity / rare CNVs; Protein Annotation (UniProt); Drug and Target Evidence (ChEMBL); Mouse
 Model Evidence (search_mgi)); Subagent
 Orchestration; Response Style; Handling Uncertainty; Out of Scope and Limitations;

@@ -432,28 +432,35 @@ the sub-studies no `datasets_v` rows: they are not `dataset` values of any resul
 
 ### Field details for `on_request`
 
-Set on a dataset that must never reach an answer nobody asked for: users' own sandbox
-custom GWAS runs, which are unreviewed analyses standing next to release results. The
-data endpoints already require the resource in the path, so the flag governs the two
-surfaces that do not: results-api leaves the dataset out of `/datasets` unless the
+Set on a dataset that must never reach an answer nobody asked for. Two kinds carry it:
+users' own sandbox custom GWAS runs, which are unreviewed analyses standing next to
+release results, and the FinnGen R12 sex-specific and recessive GWAS, which answer a
+question about a model the user has to have asked for — a disease or variant question is
+answered from the core release. The data endpoints already require the resource in the
+path, so the flag governs the two surfaces that do not: results-api leaves the dataset out of `/datasets` unless the
 request filters on its resource, and keeps its phenotypes out of `/search` unless the
 request's `resources` parameter names the resource. The flag gates a whole resource —
 results-api refuses to start on a resource mixing flagged and unflagged datasets, since a
 half-hidden resource would surface through the other half.
 
-Two more consumers honour the flag. The BigQuery datasets loader
-(genetics-results-db `scripts/build_phenotypes.py`) emits no row for a flagged entry, so
-`datasets_v` — the catalogue every SQL caller reads — never lists it. The chat backend
-learns which flagged resources a deployment serves by asking results-api
-(`GET /datasets/on_request`) and renders its custom-GWAS prompt section and the tool
-description hints that name those resources from that answer alone: a deployment whose
-profile carries no flagged dataset never mentions them.
+Two more consumers honour the flag. The BigQuery loader (genetics-results-db
+`scripts/build_phenotypes.py`) emits no `datasets_v` and no `phenotypes_v` row for a
+flagged entry — the two catalogues every SQL caller reads. A flagged dataset has no
+results view either: SQL has no resource gate, so a table would reach an answer nobody
+asked for. The chat backend learns which flagged resources a deployment serves by
+asking results-api (`GET /datasets/on_request`), tells the two kinds apart by
+`data_type` (`gwas_sex_specific` / `gwas_recessive` are the model-specific releases,
+anything else a custom GWAS release), and renders each kind's prompt section and tool
+description hints from that answer alone: a deployment whose profile carries no flagged
+dataset never mentions them.
 
 ### `data_type` enum
 
 | Value | Description |
 |-------|-------------|
 | `gwas` | Genome-wide association study |
+| `gwas_sex_specific` | GWAS run in females and males separately and meta-analysed: per-sex effects, the combined effect and a heterogeneity p-value per variant. Its own type because it says what a row carries, and because the chat backend tells the on-request kinds apart by type (see `on_request`) |
+| `gwas_recessive` | GWAS under a recessive genotype model, served beside the additive test of the same variant. Its own type for the same reasons |
 | `eqtl` | Expression QTL |
 | `pqtl` | Protein QTL |
 | `sqtl` | Splicing QTL |

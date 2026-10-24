@@ -50,6 +50,23 @@ resources:
       credible sets where the user ran fine-mapping (no HLA run in R12)
     aliases: ["custom gwas r12", "user results r12"]
 
+  finngen_sex_specific:
+    label: "FinnGen R12 sex-specific GWAS"
+    description: >-
+      FinnGen R12 endpoints run with REGENIE in females and males separately and
+      combined by inverse-variance meta-analysis, with a heterogeneity test for the
+      difference between the sexes. Served on request only, straight from the green
+      library; no R13 or R14 run exists
+    aliases: ["sex-specific gwas", "sex specific", "sex-stratified gwas", "sex difference", "female male gwas", "sex heterogeneity"]
+
+  finngen_recessive:
+    label: "FinnGen R12 recessive GWAS"
+    description: >-
+      FinnGen R12 endpoints run with REGENIE under a recessive genotype model, served
+      beside the additive test of the same variant. Served on request only, straight
+      from the green library; no R13 or R14 run exists
+    aliases: ["recessive gwas", "recessive model", "recessive", "non-additive gwas"]
+
   open_targets:
     label: "Open Targets Genetics"
     description: "Open Targets GWAS summary statistics and fine-mapping, and QTL fine-mapping (GTEx v10, IBDverse)"
@@ -3103,6 +3120,7 @@ dataset_to_resource_rules:
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v", "peak_to_gene_v"]
     comment: "all other FinnGen datasets (peak_to_gene is FinnGen ATAC-seq only)"
 
+
   - pattern: "nmr_ukbb_est"
     resource: "nmr_ukbb_est"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
@@ -3705,6 +3723,65 @@ profiles:
         data_type: gwas
         cohorts: [finngen]
         trait_type: binary
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      # --- R12 model-specific GWAS, on request only ---
+      # sex-specific and recessive runs exist at release level for R12 only; R13 and R14
+      # ship neither, so like finngen_drugs these are R12 products beside the R14 core.
+      # results-api serves both straight from the green library, so the endpoint codes
+      # are R12's. Served the way the sandbox custom GWAS are: only when a request names
+      # the resource, never in the default catalogue or phenotype search, so a question
+      # about a disease or a variant is answered from the core release unless the user
+      # asks for the sex-specific or recessive model. on_request gates a whole resource,
+      # so each has one of its own rather than sitting under finngen. The data types are
+      # their own as well: a sex-specific row carries female_*, male_*, the combined
+      # effect and het_p, a recessive row the recessive test beside additive_*
+      finngen_sex_specific_r12:
+        on_request: true
+        resource: finngen_sex_specific
+        dataset: FinnGen_R12_sex_specific
+        version: "R12"
+        description: >-
+          FinnGen R12 sex-specific GWAS: 2,207 core R12 endpoints run with REGENIE in
+          females and males separately, then combined by inverse-variance meta-analysis.
+          Every row carries the female effect, the male effect, the combined effect
+          (equivalent to the core R12 GWAS) and a heterogeneity p-value for the
+          difference between the sexes. 262 endpoints are absent (216 female-only, 35
+          male-only, 11 with fewer than 10 male cases). Summary statistics by variant and
+          region through results-api (data_type gwas_sex_specific); nothing in BigQuery and
+          no fine-mapping. On request only: used when the user asks about a sex-specific
+          or sex-differential effect.
+        author: "FinnGen Consortium"
+        publication_date: "2024-05-06"
+        data_type: gwas_sex_specific
+        cohorts: [finngen]
+        trait_type: mixed
+        n_phenotypes: 2207
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_sex_specific_pheno.json"
+        metadata_harmonizer: finngen_r13
+
+      finngen_recessive_r12:
+        on_request: true
+        resource: finngen_recessive
+        dataset: FinnGen_R12_recessive
+        version: "R12"
+        description: >-
+          FinnGen R12 recessive-model GWAS: all 2,469 core R12 endpoints re-run with
+          REGENIE under a recessive genotype model, served beside the additive test of the
+          same variant (additive_* columns). The tested effect allele is the minor allele:
+          where the alternative allele frequency exceeded 0.5 the reference allele was
+          tested (flipped = True), so on those rows the recessive beta is on the opposite
+          allele from the additive beta. Chromosome X was run in females only. Summary
+          statistics by variant and region through results-api (data_type
+          gwas_recessive); nothing in BigQuery and no fine-mapping. On request only: used
+          when the user asks about a recessive or non-additive model.
+        author: "FinnGen Consortium"
+        publication_date: "2024-06-19"
+        data_type: gwas_recessive
+        cohorts: [finngen]
+        trait_type: mixed
+        n_phenotypes: 2469
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
 

@@ -520,6 +520,69 @@ PGC schizophrenia additionally has **published** fine-mapping served alongside i
 The EstBB-UKBB NMR metabolic trait fine-mapping is the other published-credible-set dataset, and the first `metaboQTL` rows in `credible_sets_v`: resource, dataset and `dataset` column value all `nmr_ukbb_est`, from Tambets et al. 2026 (`gs://<bucket>/credible_sets/nmr_ukbb_est/2026/nmr_ukbb_est_credible_sets.tsv.gz`, munged by `genetics-results-munge/scripts/munge_nmr_meta.sh`). 249 Nightingale NMR biomarkers, `cell_type` `plasma`, trait codes resolved through `phenotypes_v` from a 249-row metadata JSON whose names are matched against the authors' own GWAS Catalog registrations rather than hand-written. The GWAS is a 619,372-individual meta-analysis but the fine-mapping is the UKBB_EUR subset alone (413,897), which is the sample size the registry records. Two properties a consumer cannot see in a `SELECT *` and which `genetics-results-munge/docs/nmr-metabolic-trait-finemapping.md` derives in full: the source's `z` is signed on the **reference** allele, so `beta` is its negation (established against the companion lead-variant record, whose `Z` is the exact negative on all 48,742 shared rows); and `beta`/`se`/`mlog10p` are the authors' published values on the 49,815 lead-variant rows, derived from `z` elsewhere with a per-trait scale calibrated against those same published standard errors, and NULL on 5,004 rows whose `z` overflowed in the source. Those 5,004 are why `credible_sets.beta` is nullable. An exact-match `nmr_ukbb_est` rule maps the dataset to the resource of the same name; the value deliberately does not start with `UKB`, which the `UKB%` rule would claim for the `ukbb` resource. Registered in both profiles but staged and loaded only in daly — `finngen-commons` is not writable from the machine this landed on, so the finngen profile has the registry entry, no `credible_sets.py` product entry (`startup_checks` would fail its startup on a missing `all_cs_file`) and a `build_phenotypes.ABSENT_FROM_RESULTS` entry scoped to that profile.
 
 
+### Sex-specific and recessive GWAS (FinnGen R12), on request only
+
+FinnGen ran two model-specific GWAS over the whole endpoint set once, in release 12:
+every endpoint in females and males separately with a female-male meta-analysis, and
+every endpoint under a recessive genotype model. R13 and R14 ship neither (checked
+against the green library's analysis folders and the per-release working buckets), so
+these are R12 products beside the R14 core. They are served the way the sandbox custom
+GWAS are — **on request only, and in the finngen deployment only**: a question about a
+disease, a variant or a locus is answered from the core release, and the model-specific
+runs are reached when the user asks for a sex-specific, sex-differential or recessive
+result. Two resources of their own, `finngen_sex_specific` and `finngen_recessive`, each
+with one registry entry carrying `on_request: true` (`finngen_sex_specific_r12`, label
+`FinnGen_R12_sex_specific`, 2,207 endpoints, `data_type: gwas_sex_specific`;
+`finngen_recessive_r12`, `FinnGen_R12_recessive`, 2,469 endpoints, `data_type:
+gwas_recessive`; both `trait_type: mixed`). The daly profile has no entry, so a daly
+results-api answers nothing for them and the daly agent never hears of them.
+
+**Why their own resources, and their own data types.** `on_request` gates a whole
+resource (results-api refuses a resource mixing flagged and unflagged datasets), so they
+could not sit under `finngen`. The data types are what tell the agent what a row carries
+— a sex-specific row has `female_*`, `male_*`, the combined `beta`/`pval` and `het_p`; a
+recessive row the recessive `beta`/`pval` beside `additive_*`, `effect_allele` and
+`flipped` — and what tells the chat backend which kind of on-request dataset it is
+looking at: results-api's `GET /datasets/on_request` answers `(resource, data_type)`
+pairs and nothing else, and genetics-mcp-server's `prompt_blocks.r12_model_datasets()`
+takes the pairs with these two types as the model-specific releases and
+`custom_gwas_resources()` the rest. Both types are in the registry enum
+(`docs/datasets-yaml-schema.md`).
+
+**What the agent sees.** Like the custom GWAS section, a prompt section ("FinnGen R12
+sex-specific and recessive GWAS") and hints on `search_phenotypes`, `list_datasets`,
+`get_summary_stats` and `get_summary_stats_by_region` are rendered from results-api's
+answer, one line per served `(resource, data_type)`, so nothing static names a resource
+and a deployment without them emits nothing. results-api keeps both out of `/datasets`
+and `/search` unless the request names the resource; a summary-statistics dataset now
+backs its resource's phenotype metadata (`config_util.get_metadata_dataset_ids_for_resource`),
+since a resource serving nothing but summary statistics had no other source for its
+phenotype list — readers dedupe by file, so the HLA product sharing the core R14 file
+adds nothing to `finngen`. The browser has no change: nothing in it reaches an on-request
+dataset.
+
+**Served in place.** results-api reads both straight from the green library — the
+per-endpoint sex-specific meta files (`sex_difference/meta_analysis/meta_summary_stats/`)
+and the recessive `summary_stats_recessive/results/` files — by variant and by region,
+with the column mappings in `app/config/profiles/r12_model_columns.py`. Nothing is
+copied: the two products are ~7 TiB together, and their tabix indexes are ~2 MiB each.
+The per-sex REGENIE files are not registered, since the meta file carries both sexes and
+the heterogeneity test. Neither release has fine-mapping, so nothing of theirs enters
+`credible_sets_v` or colocalization.
+
+**Nothing in BigQuery.** The sex-specific release ships a cross-endpoint aggregate (the
+genome-wide significant tail of every endpoint), but SQL has no resource gate: a table of
+it would answer a locus question from the sandbox with nobody having asked for the
+sex-specific model, and on request could reach it only as prose. So neither release has a
+table or a view, nothing of theirs enters `datasets_v` or `phenotypes_v` (the loader gives
+an `on_request` entry no row in either), and a cross-endpoint sex-difference question is
+answered from the per-endpoint files. `genetics-results-munge`'s
+`scripts/munge_sex_specific.{py,sh}` writes only the sex-specific dataset's phenotype
+metadata JSON (the 2,207 analysed endpoints, from the release's own sample-count table);
+the recessive release reuses the core R12 file. The recessive-beats-additive lead tables
+exist only in the R12 working bucket, not the library, and are deliberately not carried.
+Decisions are recorded in `genetics-results-munge/docs/sex-specific-recessive-gwas.md`.
+
 ### Sandbox custom GWAS, served from the userresults bucket
 
 FinnGen sandbox users' own GWAS runs are queryable through results-api and the agent with
@@ -1459,8 +1522,11 @@ A report Slack did not accept is the monitor failing, so it exits 1: `send_slack
 The views it queries, and where each one's expected resources come from. The list is not kept
 anywhere: `scripts/monitor/views.py` takes every `tables` entry in the mounted `datasets.yaml`
 that some `dataset_to_resource_rules` entry names in `applies_to`, so a view is monitored from
-the moment a rule covers it. Only the choice of the results-api's coloc pairs over the rules
-(`API_VIEWS`) is held in the monitor, since `datasets.yaml` has no field for it:
+the moment a rule covers it, and a table gated with `profiles: [...]` is monitored only on the
+profiles it lists — the same gate db-api's `load_views` applies, since the rule naming such a
+view is shared across profiles while the view exists only where it was loaded. Only the choice
+of the results-api's coloc pairs over the rules (`API_VIEWS`) is held in the monitor, since
+`datasets.yaml` has no field for it:
 
 <!-- BEGIN GENERATED: monitored-views -->
 

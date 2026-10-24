@@ -1055,6 +1055,58 @@ in `docs/project-spec.md`). What this shape needs that the others do not:
    the pointer's age and that BigQuery serves the release it names (`scripts/monitor/health.py`,
    `check_cellxgene_release`).
 
+## 21. Worked example: a second model of an existing GWAS, served on request (FinnGen R12 sex-specific and recessive)
+
+Context: the same endpoints and the same phenotype codes as a GWAS already served, run under
+a different model — sex-stratified with a female-male meta-analysis, and recessive. The
+summary statistics live in the green library and are read in place. The ask was that neither reach
+an answer nobody asked for: a question about a disease is answered from the core release,
+the model-specific run only when the user asks for it — the `on_request` shape of §16, for
+a second reason. What is specific to this shape:
+
+1. **A resource per release, because `on_request` gates a whole resource.** results-api
+   refuses a resource mixing flagged and unflagged datasets, so the runs could not sit under
+   `finngen` however natural that looked: `finngen_sex_specific` and `finngen_recessive`
+   each carry one flagged entry. The data types are their own as well (`gwas_sex_specific`,
+   `gwas_recessive`, added to the enum in `datasets-yaml-schema.md`): they say what a row
+   carries, and they are what the chat backend keys on to tell this kind of on-request
+   dataset from a sandbox custom GWAS release — results-api's `GET /datasets/on_request`
+   answers `(resource, data_type)` and nothing else.
+2. **The prompt and the hints render from the answer, per kind.** genetics-mcp-server's
+   `prompt_blocks` splits the probe's pairs by type (`r12_model_datasets()` /
+   `custom_gwas_resources()`), each kind has its own prompt section and hint list
+   (`definitions._R12_MODEL_HINTS`), and the section describes one line per served pair, so
+   a deployment serving one model describes one. Nothing static names a resource; the daly
+   deployment, whose profile has no entry, emits nothing. The condensed prompt's section
+   must not name `get_summary_stats`: on the code surface the SDK stands in for it, and the
+   text-derived name gate would drop the whole section there.
+3. **A summary-statistics-only resource needs a metadata source.** results-api built a
+   resource's phenotype metadata and search entries from its credible-set, exome and
+   gene-based products only, so a resource serving nothing but summary statistics had no
+   `/resource_metadata` and nothing in `/search` even when named. Summary-statistics
+   datasets now back it too (`config_util.get_metadata_dataset_ids_for_resource`); the
+   readers dedupe by file, so `finngen_hla` sharing the R14 core file changed nothing for
+   `finngen`.
+4. **Column mappings that keep the model readable.** The recessive files carry the recessive
+   test under FinnGen's native names and the additive one as `*_add`; the mapping
+   (`app/config/profiles/r12_model_columns.py`) leaves the unsuffixed statistics recessive
+   and prefixes the additive ones `additive_`. The JSON typing of a summary-stat response is
+   inferred from the output column *name* (`routers/summary_stats.py`), so `ac_het`,
+   `ac_hom`, `mlog10p_diff` and the `_af_cases`/`_af_controls` suffixes were added there, and
+   `tests/test_summary_stats.py::TestR12ModelSpecific` asserts the types and the gate.
+5. **Nothing in BigQuery.** The sex-specific release ships a cross-endpoint aggregate, but
+   SQL has no resource gate: a table would answer a locus question from the sandbox with
+   nobody having asked for the model, and the on-request rule could reach it only as
+   prose. So no table, no view, no `dataset_to_resource_rules` entry, and the loader gives
+   an on-request entry no `datasets_v` and no `phenotypes_v` row.
+6. **Phenotype metadata for a subset.** The sex-specific release analysed 2,207 of the 2,469
+   endpoints; a metadata file listing all 2,469 would offer 262 traits with no data. The
+   munge writes a 2,207-entry file from the release's own sample-count table; the recessive
+   release covers the core set and reuses the core file.
+7. **Load only what the library holds.** The recessive release's clumped lead tables exist
+   in the R12 working bucket only; they were left out rather than published from a
+   non-release location (`genetics-results-munge/docs/sex-specific-recessive-gwas.md`).
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
