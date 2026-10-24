@@ -194,6 +194,14 @@ resources:
     description: "GP2 (Global Parkinson's Genetics Program) European ancestry GWAS"
     aliases: ["GP2", "Parkinsons", "Parkinson's disease"]
 
+  huerta_chagoya_t2d:
+    label: "Huerta-Chagoya 2024 T2D"
+    description: >-
+      Huerta-Chagoya et al. 2024 (Nature Genetics) type 2 diabetes GWAS meta-analysis of
+      TOPMed-imputed and whole-genome-sequenced UK Biobank, MGB, GERA and All of Us samples,
+      the rare-variant T2D study behind GWAS Catalog GCST90444202; summary statistics only
+    aliases: ["Huerta-Chagoya", "TOPMed T2D", "T2D rare variant GWAS", "GCST90444202", "Mercader T2D"]
+
   decode:
     label: "deCODE"
     description: "deCODE Genetics — plasma proteomics pQTL (Ferkingstad et al. 2021, SomaScan) and allele-specific methylation QTL (ASM-QTL) results"
@@ -4557,6 +4565,43 @@ profiles:
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
 
+      huerta_chagoya_t2d:
+        resource: huerta_chagoya_t2d
+        dataset: Huerta_Chagoya_T2D_2024
+        version: "2024"
+        description: >-
+          Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2
+          diabetes GWAS meta-analysis of TOPMed-imputed UK Biobank, Mass General Brigham
+          Biobank and GERA with All of Us whole-genome sequencing: 51,256 cases and 370,487
+          controls, multi-ancestry, variants down to MAF 5e-5, GRCh38. REGENIE logistic
+          regression adjusted for age, sex, BMI and 10 PCs, so the effect sizes are
+          BMI-adjusted. Summary statistics only: the study published no fine-mapping and no
+          pseudo credible sets are built for it. Munged from the file submitted to the GWAS
+          Catalog as GCST90444202 rather than the Catalog's harmonised copy, which is
+          autosomes only and lacks the 9.8M variants its reference VCF does not carry; all
+          146.2M submitted variants including chromosome X are served, each oriented to the
+          reference genome with gnomAD deciding the insertion-or-deletion ambiguity, rsids
+          from gnomAD where it has the variant. The 9.8M autosomal variants the harmoniser
+          left out have noisier allele frequencies than the rest (mostly repeat-region
+          indels); they are served as submitted.
+        author: "Huerta-Chagoya et al. (Broad Institute / MGH)"
+        publication_date: "2024-10-08"
+        data_type: gwas
+        cohorts: [ukb, mgb, gera, aou]
+        trait_type: binary
+        n_samples: 421743
+        n_cases: 51256
+        n_controls: 370487
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "T2D"
+            phenotype_string: "Type 2 diabetes"
+            n_cases: 51256
+            n_controls: 370487
+            n_samples: 421743
+
       nmr_ukbb_est:
         resource: nmr_ukbb_est
         dataset: nmr_ukbb_est
@@ -5746,6 +5791,43 @@ profiles:
         metadata_file: "gs://daly-genetics-results/mapping_files/covid_hgi_pheno.json"
         metadata_harmonizer: finngen_r13
         pseudo_credible_sets: true
+
+      huerta_chagoya_t2d:
+        resource: huerta_chagoya_t2d
+        dataset: Huerta_Chagoya_T2D_2024
+        version: "2024"
+        description: >-
+          Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2
+          diabetes GWAS meta-analysis of TOPMed-imputed UK Biobank, Mass General Brigham
+          Biobank and GERA with All of Us whole-genome sequencing: 51,256 cases and 370,487
+          controls, multi-ancestry, variants down to MAF 5e-5, GRCh38. REGENIE logistic
+          regression adjusted for age, sex, BMI and 10 PCs, so the effect sizes are
+          BMI-adjusted. Summary statistics only: the study published no fine-mapping and no
+          pseudo credible sets are built for it. Munged from the file submitted to the GWAS
+          Catalog as GCST90444202 rather than the Catalog's harmonised copy, which is
+          autosomes only and lacks the 9.8M variants its reference VCF does not carry; all
+          146.2M submitted variants including chromosome X are served, each oriented to the
+          reference genome with gnomAD deciding the insertion-or-deletion ambiguity, rsids
+          from gnomAD where it has the variant. The 9.8M autosomal variants the harmoniser
+          left out have noisier allele frequencies than the rest (mostly repeat-region
+          indels); they are served as submitted.
+        author: "Huerta-Chagoya et al. (Broad Institute / MGH)"
+        publication_date: "2024-10-08"
+        data_type: gwas
+        cohorts: [ukb, mgb, gera, aou]
+        trait_type: binary
+        n_samples: 421743
+        n_cases: 51256
+        n_controls: 370487
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "T2D"
+            phenotype_string: "Type 2 diabetes"
+            n_cases: 51256
+            n_controls: 370487
+            n_samples: 421743
 
       nmr_ukbb_est:
         resource: nmr_ukbb_est

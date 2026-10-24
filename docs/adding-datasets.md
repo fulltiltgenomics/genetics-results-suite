@@ -1107,6 +1107,53 @@ a second reason. What is specific to this shape:
    in the R12 working bucket only; they were left out rather than published from a
    non-release location (`genetics-results-munge/docs/sex-specific-recessive-gwas.md`).
 
+## 22. Worked example: a GWAS Catalog study served as summary statistics only
+
+Context: the Huerta-Chagoya et al. 2024 T2D meta-analysis (GCST90444202) is not in Open
+Targets, published no fine-mapping, and the decision was to serve its summary statistics
+without building pseudo credible sets (see `docs/project-spec.md` for why). The smallest
+possible external GWAS: one file, one phenotype, no BigQuery footprint.
+
+1. `genetics-results-munge`: read the harmoniser's `running.log` next to a Catalog file
+   before trusting its coverage. For this study the harmonised file is autosomes only and
+   130.3M of the 146.2M submitted variants, the harmoniser having dropped chromosome X and
+   the 9.8M variants its reference VCF does not carry, so the product is munged from the
+   **submitted** file with `scripts/munge_gwas_catalog_submitted.py`. Its four subcommands
+   each stream or sort externally, because 146M rows do not fit a 15 GB machine as a
+   DataFrame: `normalize` trims padded alleles and sorts; `lookup` joins the rows to the
+   gnomAD annotation table in BigQuery through a GCS external table (the local gnomAD
+   streaming join the other munges use needs the sites file on disk, which this machine
+   does not have); `orient` takes the allele matching the reference fasta as `ref` and lets
+   gnomAD's frequency decide the insertion-or-deletion ambiguities, flipping `beta` and EAF
+   where the effect allele was the reference; `compare` checks the result against the munge
+   of the Catalog's harmonised file (`scripts/munge_gwas_catalog.py`, which trusts the
+   harmoniser's orientation), the independent harmonisation that validates the
+   self-oriented one. `scripts/check_sumstat_vs_gnomad.py` is the sample-based gnomAD check
+   (random windows: exact matches, ref/alt-swapped rows, AF correlation and plot) that
+   replaces the inline AF-AF plot of the DataFrame munges. `orient --stage
+   gs://daly-genetics-results/sumstats/HUERTA_CHAGOYA_T2D/` uploads the full and the
+   `mlog10p > 4` file with their indexes.
+2. `datasets.yaml`: a new resource and a dataset of the same id, `huerta_chagoya_t2d`, in
+   both profiles with `metadata_file: null` and the one phenotype inline (`T2D`), the
+   `pgc_bip`/`gp2_pd` shape. `cohorts: [ukb, mgb, gera, aou]` because the entry states its
+   cohorts and two of them overlap the R14 meta-analysis. No `pseudo_credible_sets` flag and
+   no `dataset_to_resource_rules` entry: nothing of it is loaded into BigQuery, so there is
+   no `dataset` column value to attribute.
+3. `genetics-results-api` (both profiles): one `summary_stats.py` entry with `"file"`,
+   `"phenotype": "T2D"` and the nine-column mapping. The finngen entry points at the
+   `results_api_data/sumstats/` mirror of the same path; the file reaches that bucket only
+   when the finngen side copies it (this machine cannot write there), and until then the
+   API logs the file as not found and skips it.
+4. `genetics-results-db`: nothing. An inline phenotype list does not reach `phenotypes_v`
+   (`build_phenotypes.py` reads only `metadata_file`), which is the existing state of
+   `pgc_bip` and `gp2_pd` too.
+
+Result: `dataset_products("huerta_chagoya_t2d")` reports `summary_stats: true` and nothing
+else; `/summary_stats/huerta_chagoya_t2d/gwas` serves it; the agent reaches it through the
+summary-statistics tools and the resource aliases (`Huerta-Chagoya`, `TOPMed T2D`,
+`GCST90444202`). The browser's `HIDDEN_RESOURCES` set was left alone: it hides the pseudo-CS
+resources from credible-set views, which this dataset never appears in.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
