@@ -244,7 +244,7 @@ deployment's `progressDeadlineSeconds` (600).
 
 ### Uploaded data files: a reference in the conversation, the bytes only in the sandbox
 
-A data file (TSV, CSV, Excel) attached in chat is uploaded to chat-backend's attachment store
+A data file (TSV, CSV, TXT, Excel) attached in chat is uploaded to chat-backend's attachment store
 and never enters the conversation whole: the user turn carries a `[File: <name>]
 attachment_id=<id> …` block with a short preview, built by genetics-results-browser's
 `fileReference.ts`, and the model reads the file by passing that id in `run_analysis` `inputs`.
