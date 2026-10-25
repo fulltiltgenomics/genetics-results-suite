@@ -32,11 +32,12 @@
       "enabled": true,
       "trustEmail": true,
       "config": {
+        "guiOrder": "1",
         "clientId": "${GOOGLE_CLIENT_ID}",
         "clientSecret": "${GOOGLE_CLIENT_SECRET}",
         "defaultScope": "openid email profile",
         "syncMode": "IMPORT"
       }
-    }${APPLE_IDP_ENTRY}
+    }${APPLE_IDP_ENTRY}${MICROSOFT_IDP_ENTRY}
   ]
 }

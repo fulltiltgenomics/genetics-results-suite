@@ -34,8 +34,8 @@ RAG_SERVICE_BRANCH="${RAG_SERVICE_BRANCH:-deploy_jk}"
 # manifest, the network policies, the layout. FATAL rather than warn-only, and here rather
 # than in the sandbox branch below: they are offline, they cost milliseconds, and a security
 # document whose limits table no longer matches the code is the failure the generator exists
-# to prevent. The tool-surface blocks need genetics-mcp-server, so they are checked after the
-# clone below, against the branch this build ships.
+# to prevent. The blocks read from sibling repos are checked after the clone below, against
+# the branches this build ships.
 echo "--- Checking the generated tables that need no sibling checkout"
 python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check --skip-tool-blocks
 
@@ -92,16 +92,17 @@ git clone --depth 1 --branch "${RAG_SERVICE_BRANCH}" "${RAG_SERVICE_ORG}/genetic
 
 MCP_DIR="${WORK_DIR}/genetics-mcp-server"
 
-# the rest of the generated blocks: the tool surfaces, read out of the mcp-server branch being
-# built rather than whatever checkout happens to sit next to this repo. Fatal when they are
+# the rest of the generated blocks, read out of the mcp-server and browser branches being
+# built rather than whatever checkouts happen to sit next to this repo. Fatal when they are
 # stale, like the check above; a branch with no tools/definitions.py is still buildable, so
 # that degrades in the same shape as the sandbox skips below.
 if [ -f "${MCP_DIR}/src/genetics_mcp_server/tools/definitions.py" ]; then
-  echo "--- Checking the generated tool-surface tables against ${MCP_SERVER_BRANCH}"
-  python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check --mcp-src "${MCP_DIR}"
+  echo "--- Checking the sibling-derived tables against ${MCP_SERVER_BRANCH} and ${FRONTEND_BRANCH}"
+  python3 "${SCRIPT_DIR}/gen-doc-blocks.py" --check --mcp-src "${MCP_DIR}" \
+    --browser-src "${WORK_DIR}/genetics-results-browser"
 else
   echo ""
-  echo "!!! SKIPPING the generated tool-surface tables: ${MCP_SERVER_BRANCH} of"
+  echo "!!! SKIPPING the sibling-derived tables: ${MCP_SERVER_BRANCH} of"
   echo "!!! genetics-mcp-server has no src/genetics_mcp_server/tools/definitions.py to"
   echo "!!! derive them from. Every other generated block was checked above."
 fi

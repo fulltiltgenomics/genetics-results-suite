@@ -45,3 +45,7 @@ __pycache__/
 
 # research notes for in-progress work; kept locally, not versioned
 docs/research/mendelian-randomization/
+
+# the issue tracker lives in the private Dolt remote; its export carries internal detail and is not published
+.beads/issues.jsonl
+.beads/.auto-import-issues.jsonl

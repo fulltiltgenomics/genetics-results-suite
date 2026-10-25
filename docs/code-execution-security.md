@@ -46,10 +46,9 @@ read. It is **not** an access control and must not be cited as one.
 
 ## 1. Why in-process execution is unacceptable
 
-chat-backend once carried a second execution path: a subagent tool that ran `python3`,
-`Rscript` or `bash` as a subprocess of the chat-backend process. It has been deleted — there is
-no in-process interpreter and no flag that restores one. What follows is why it could not be
-made safe, and it is the requirements list for everything below.
+chat-backend has no in-process execution path: no tool runs `python3`, `Rscript` or `bash` as
+a subprocess of the chat-backend process, and no flag provides one. What follows is why such a
+path cannot be made safe, and it is the requirements list for everything below.
 
 **chat-backend runs as root** with the `chat-data` PVC mounted at `/data`. That PVC holds
 `chat_history.db` (every conversation in the deployment, all users) and `llm_config.db`
@@ -642,16 +641,21 @@ cloud and is truncated positionally: measured at `12:49272869:C:T`, a ±250 kb r
 with 3000 entries stopping 19 kb short of the window's right edge, leaving 97 panel variants
 unanswered and that edge of the plot grey with nothing to say why. Above the floor the same
 locus returns 17 entries across ±500 kb. Grey therefore means "no r² worth colouring", which is
-what it already meant for a variant the panel does not carry. **And LD is asked for over more
-than the plotted span** — up to the LD server's own ceiling on the window, past which the
-figure's legend says how far from the lead its colours reach — so a correlated partner just
-outside the window is named — in the
-returned `ld_partners_outside_window` and on the figure — rather than silently omitted. At the
-same locus the strongest variant in the region, r²=0.78 with the lead and more significant than
-it, sits 42 kb past the default window's edge, and a plot that drops it reads as an isolated
-signal. The note fires only above a reporting floor, because what it asks of the reader is a
-redraw at a wider window and that is worth doing where the omitted partner would have carried
-colour worth acting on, not for every partner the search span reaches. **And the gene track draws one transcript per gene, not all of them.** results-api serves
+what it already meant for a variant the panel does not carry, and the legend's grey row says
+so, with the lowest coloured bin starting at that floor so the two rows do not overlap. **And LD
+is asked for over more than the plotted span** — up to the LD server's own ceiling on the
+window, past which the figure's legend says how far from the lead its colours reach — so a
+correlated partner just outside the window is seen, and the window widened to take it in: the
+region is grown exactly to the partner, the summary statistics fetched again and the lead chosen
+afresh, up to twice in one call, so the model never spends a second tool call redrawing. At
+the same locus the strongest variant in the region, r²=0.78 with the lead and more significant
+than it, sits 42 kb past the default window's edge, and a plot that drops it reads as an
+isolated signal. Widening fires only above a reporting floor, where the omitted partner would
+have carried colour worth acting on, not for every partner the search span reaches; where it
+cannot run — a frame passed in, `widen=False`, or the budget spent — the partners are named in
+the returned `ld_partners_outside_window` and on the figure rather than silently omitted. The
+title and the returned `region_width_bp` state how wide the plotted window is, and
+`widened_from` the window that was asked for. **And the gene track draws one transcript per gene, not all of them.** results-api serves
 the exons of each gene's GENCODE Ensembl-canonical transcript, so a locus draws one model per
 gene rather than one per transcript — measured at `12:49150000-49650000`, twelve models instead
 of the 177 transcripts v49 holds for those same twelve genes, which is legible instead of a
@@ -1589,7 +1593,7 @@ Stated plainly. This design contains code execution; it does not make it safe in
 | `scripts/test-network-policies.py` | the egress and ingress allow-lists, **layer 2** of the MCP exclusion — layers 1 and 3 are asserted in genetics-mcp-server's `tests/test_mcp_server.py`, which reads the registered tool list and the import graph and so cannot be checked from a manifest — the `SANDBOX_ENABLED` pairing, the label contract — all of the *committed* union. It covers **both** pods whose NetworkPolicy is the reason they are safe: for the URL fetcher, that only chat-backend may reach it and the **sandbox may not** (a sandbox that can call the fetcher has internet egress through a proxy), that its egress is 443 with every one of the five `except` blocks present, that its KSA carries no Workload Identity annotation and mounts no token, that no credential reaches its environment in any form, and that it is distroless, non-root and read-only | the manifests and `url-fetcher/Dockerfile`; one live cluster call for the sandbox probe |
 | `LIVE_POLICY_CHECK=true scripts/test-network-policies.py` | that a cluster is enforcing that union — per policy, and reporting all of them rather than the first | read-only `kubectl get` against the cluster `KUBE_CONTEXT` names |
 | `scripts/test-sandbox-docs.py` | the shipped schema docs and stubs cover every view and the SDK's exported surface exactly, every default a stub signature names is defined in the same file, no placeholder survives, and the profile filter leaves no file naming a view gated away from that profile | a genetics-mcp-server checkout |
-| `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the tool-surface blocks, which need a genetics-mcp-server checkout (`--skip-tool-blocks` leaves those alone) |
+| `scripts/gen-doc-blocks.py --check` | the generated blocks of this document, `docs/project-spec.md`, `docs/chat-tool-reference.md` and `docs/adding-datasets.md` still match the code | nothing, except for the blocks read from sibling checkouts — genetics-mcp-server, and genetics-results-browser for the chat-memory piece table (`--skip-tool-blocks` leaves those alone) |
 | `scripts/test-e2e-local.py` | `run_analysis` end to end against the local stack, including what an execution leaves behind | the local stack |
 | `scripts/external-inputs-proving-ground.py` | that a file the suite does not host reaches an execution: the fetcher returns the bytes, refuses the address classes a dev loopback allowance must never unlock, and the bytes arrive in a per-execution directory that does not outlive the run, as files a plain overwrite refuses — the mode is not a boundary, since the child shares the supervisor's uid and can chmod a file it owns. It is the feature's acceptance test, written before the code rather than after it, so it could say what "working" meant while that was still negotiable | a loopback origin it starts itself, the local sandbox container, a signing key |
 | `scripts/test-url-fetcher.py` | the guard and the fetch core, adversarially and with no network: the address classes refused before a socket opens, userinfo and the metadata endpoint by name, a leading-dot allow-list entry matching only at a label boundary, re-validation at every redirect hop, the connect-to-the-validated-IP pinning, and the byte/time/redirect caps, and that the health route's `allowed_hosts` is the guard's own list rather than a second copy of it. Every control is also **driven as the failure** against an in-process mutant of the module source, and a mutation anchor that stops matching exits 2 rather than passing quietly | nothing: a loopback origin, a stubbed resolver, and a `create_connection` that refuses every other destination |

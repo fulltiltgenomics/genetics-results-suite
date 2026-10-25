@@ -52,6 +52,7 @@ def locuszoom(
     region: str | None = None,
     variant: str | None = None,
     flank: int = 250000,
+    widen: bool = True,
     resource: str = 'finngen',
     data_type: str = 'gwas',
     lead: str | None = None,
@@ -89,15 +90,20 @@ def locuszoom(
     THE DEFAULT WINDOW IS THE RIGHT ONE UNLESS THE QUESTION IS ABOUT THE WINDOW. `flank` is
     250 kb either side, i.e. a 500 kb plot; pass `variant=` and leave it alone. Widening it as
     a matter of course spreads the signal over a picture that is mostly empty, and a locus
-    that genuinely needs more says so — `ld_partners_outside_window` names the correlated
-    variants the window excluded, and that is the signal to redraw wider.
+    that genuinely needs more is widened here, in the same call: LD is looked up past both
+    edges, and when a variant at r² ≥ 0.6 with the lead lies outside the window the region is
+    grown to take it in and the summary statistics fetched again, up to twice. There is no
+    need to redraw. `widen=False` keeps the window exactly as given. Whatever was drawn,
+    `region` in the returned dict is the window actually plotted and `region_width_bp` its
+    width; ALWAYS tell the user how wide the plotted region is, and that it was widened
+    (`widened_from` names the window asked for) when it was.
 
     Colour is LD and shape is consequence, so a coding variant in high LD reads as both at
     once: a square sits in a coding sequence or changes the protein, a circle does not, and
     the lead takes whichever shape its own consequence gives it. Grey means "no r² to show" —
     either the LD panel does not carry the variant or its r² is below the floor these plots
-    colour at. Only the correlated variants are coloured, so the ramp reads at a glance
-    instead of painting the whole cloud navy.
+    colour at — and the legend says so. Only the correlated variants are coloured, so the
+    ramp reads at a glance instead of painting the whole cloud navy.
 
     The gene track draws one model per gene: a hairline over the transcript, a bar per exon
     of it, and a thicker bar over the part of each exon that is translated, so an
@@ -108,8 +114,8 @@ def locuszoom(
     when the API served no exon structure, in which case the track is gene bodies only.
 
     Returns a dict describing what was drawn: `path`, `lead`, `lead_mlog10p`, `region`,
-    `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus the ones below, worth reading every
-    time.
+    `region_width_bp`, `widened_from`, `phenotype`, `n_variants`, `n_genes`, `n_exons`, plus
+    the ones below, worth reading every time.
 
     `ld_joined` is False when there is no r² to colour by — a plot with grey points rather
     than an error, because a locuszoom without LD is still the right picture of the locus.
@@ -124,11 +130,12 @@ def locuszoom(
     "unavailable" — the LD server failed, the one case worth retrying later;
     "off" — `ld=False`.
 
-    `ld_partners_outside_window` lists the variants correlated with the lead that fall
-    outside the window, strongest first, as {variant, pos, r2}. It is non-empty when the
-    window is too narrow for the locus — the signal has support the plot does not show — and
-    the fix is to redraw with a larger `flank` or an explicit `region`. The figure carries
-    the same warning so a reader who never sees this dict is not misled.
+    `ld_partners_outside_window` lists the variants correlated with the lead that still fall
+    outside the plotted window, strongest first, as {variant, pos, r2}. It is normally empty,
+    because the window is widened to take them in; it is non-empty only when that could not
+    happen — `data=` was given, `widen=False`, or the partners kept appearing further out
+    than two widenings reach — and then the figure carries the same warning so a reader who
+    never sees this dict is not misled. Say so rather than redrawing.
 
     `coding_marked` is False when the consequence lookup did not answer, in which case every
     point is a circle and shape means nothing; set `coding=False` to skip that fetch outright.

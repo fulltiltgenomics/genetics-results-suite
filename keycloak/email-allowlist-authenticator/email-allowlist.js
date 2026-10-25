@@ -1,6 +1,6 @@
 // Keycloak "scripts" authenticator for the first-broker-login flow.
 //
-// Allows the brokered (Google/Apple) login to proceed only when the user's email matches the
+// Allows the brokered (Google/Apple/Microsoft) login to proceed only when the user's email matches the
 // realm allow-list, BEFORE any Keycloak account is created. Non-allowlisted users get a clean
 // Forbidden page instead of an account + a downstream oauth2-proxy 403. The allow-list mirrors
 // oauth2-proxy and is read from realm attributes (set by deploy.sh / keycloak-bind-allowlist.sh):

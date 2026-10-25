@@ -24,7 +24,7 @@ spec:
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.14.3
         args:
         # provider is profile-driven (env OAUTH2_PROXY_PROVIDER below): "google" (direct, e.g.
-        # finngen) or "oidc" against the Keycloak broker for Google+Apple (e.g. daly).
+        # finngen) or "oidc" against the Keycloak broker for Google/Apple/Microsoft (e.g. daly).
         # email domains come from OAUTH2_PROXY_EMAIL_DOMAINS (env, comma-separated) so several
         # domains can be allowed; specific extra addresses go in the authenticated-emails file.
         - --authenticated-emails-file=/etc/oauth2-proxy/allowed-emails.txt

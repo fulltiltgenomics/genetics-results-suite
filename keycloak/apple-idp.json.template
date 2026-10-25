@@ -1,9 +1,12 @@
 {
   "alias": "apple",
   "providerId": "apple",
+  "displayName": "Apple",
   "enabled": true,
   "trustEmail": true,
   "config": {
+    "displayName": "Apple",
+    "guiOrder": "2",
     "clientId": "${APPLE_SERVICES_ID}",
     "teamId": "${APPLE_TEAM_ID}",
     "keyId": "${APPLE_KEY_ID}",

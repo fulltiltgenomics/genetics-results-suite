@@ -184,10 +184,10 @@ def _run_bq_summary() -> list[dict]:
     return summary.run()
 
 
-def _run_alerts() -> list:
+def _run_alerts():
     from monitor.alerter import LogAlerter
     alerter = LogAlerter()
-    return alerter.check()
+    return alerter, alerter.check()
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +213,7 @@ def main() -> int:
     health_results = None
     bq_results = None
     alert_results = None
+    alerter = None
 
     if run_all or args.health:
         logger.info("running health checks")
@@ -224,7 +225,7 @@ def main() -> int:
 
     if run_all or args.alerts:
         logger.info("running log alerter")
-        alert_results = _run_alerts()
+        alerter, alert_results = _run_alerts()
 
     # stdout output
     if health_results is not None:
@@ -262,28 +263,28 @@ def main() -> int:
                 "text": {"type": "mrkdwn", "text": f"{mentions} issues detected"},
             })
 
-    # send to Slack if webhook is configured
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    delivered = True
     if webhook_url and slack_blocks:
         logger.info("sending results to slack")
-        send_slack_message(webhook_url, slack_blocks)
+        delivered = send_slack_message(webhook_url, slack_blocks)
     elif not webhook_url:
         logger.info("SLACK_WEBHOOK_URL not set, skipping slack notification")
 
+    if not delivered:
+        # the dedup keys stay uncommitted, so the Job's retry re-sends the same alerts
+        # rather than reporting "No new alerts"
+        logger.error("slack delivery failed; the report was not delivered")
+        return 1
+
+    if alerter is not None:
+        alerter.mark_seen(alert_results)
+
     # Exit status reports whether this run worked, not what it found. Alerts and failed
-    # health checks are an ordinary outcome already carried by the Slack report and by
-    # stdout; returning 1 for them marked the Job Failed on any day with findings and
-    # spent the retry budget re-running the whole report, whose second pass then
-    # contradicted the first with "No new alerts" — its own findings were by then inside
-    # the dedup TTL. A genuine crash still propagates out of main() and exits non-zero,
-    # so the retry stays available for the case it is meant for.
-    #
-    # Note this does not yet cover a failed Slack delivery: send_slack_message swallows
-    # its errors and returns a bool, and the dedup key of every alert is committed by
-    # LogAlerter._is_new at read time, before any send. Retrying a failed delivery would
-    # therefore re-post health and BQ but report "No new alerts", which is a false
-    # all-clear. Making delivery failure retryable needs the dedup write deferred until
-    # after a successful post.
+    # health checks are an ordinary outcome carried by the report; returning 1 for them
+    # would mark the Job Failed on any day with findings and spend the backoffLimit retry
+    # re-running a report that was already delivered. An undelivered report (above) and a
+    # crash are the monitor itself failing, which is what the retry is for.
     return 0
 
 

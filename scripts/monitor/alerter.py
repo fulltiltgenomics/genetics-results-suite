@@ -20,6 +20,7 @@ class AlertEntry:
     severity: str
     count: int
     first_seen: str
+    dedup_key: str = ""
 
 
 @dataclass
@@ -205,18 +206,30 @@ class LogAlerter:
         conn.close()
 
     def _is_new(self, key: str) -> bool:
+        """Read-only: the key is committed by mark_seen, and only once the report is out."""
         conn = sqlite3.connect(self.db_path)
         row = conn.execute(
             "SELECT 1 FROM seen_alerts WHERE dedup_key = ?", (key,)
         ).fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO seen_alerts (dedup_key, first_seen) VALUES (?, ?)",
-                (key, time.time()),
-            )
-            conn.commit()
         conn.close()
         return row is None
+
+    def mark_seen(self, results: list[ServiceAlerts]) -> None:
+        """Commit the dedup keys of alerts that have been delivered.
+
+        Called by the sender after a successful post, never at read time: a key committed
+        before the send turns a failed delivery into a retry that reports "No new alerts".
+        """
+        now = time.time()
+        rows = [(a.dedup_key, now) for sa in results for a in sa.alerts if a.dedup_key]
+        if not rows:
+            return
+        conn = sqlite3.connect(self.db_path)
+        conn.executemany(
+            "INSERT OR IGNORE INTO seen_alerts (dedup_key, first_seen) VALUES (?, ?)", rows
+        )
+        conn.commit()
+        conn.close()
 
     def _query_logs(self) -> list[dict]:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
@@ -286,7 +299,10 @@ class LogAlerter:
         return entries
 
     def check(self) -> list[ServiceAlerts]:
-        """Query logs, deduplicate, group by service, and return new alerts."""
+        """Query logs, deduplicate, group by service, and return new alerts.
+
+        Nothing is marked seen here; the caller does that with mark_seen once delivered.
+        """
         self._cleanup_expired()
 
         raw_entries = self._query_logs()
@@ -324,6 +340,7 @@ class LogAlerter:
                             severity=info["severity"],
                             count=info["count"],
                             first_seen=info["first_seen"],
+                            dedup_key=info["dedup_key"],
                         )
                     )
             if service_alerts.alerts:

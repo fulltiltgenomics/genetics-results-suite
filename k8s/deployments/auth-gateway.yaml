@@ -341,24 +341,17 @@ spec:
       # re-test) — a name left out of the placeholder render turns the "which half is broken"
       # diagnostic into a lie, because the two runs would no longer render the same template.
       - name: render-config
-        # TAG, NOT A DIGEST, deliberately — but the tested digest is recorded because a moving tag
-        # is now load-bearing in a way it was not before readOnlyRootFilesystem. The image's
-        # docker-entrypoint.sh runs under `set -e`, so a future 1.27-alpine push adding a
-        # /docker-entrypoint.d script without a read-only guard crash-loops the internet-facing
-        # gateway instead of merely writing a stray file. All four current scripts were read out
-        # of the image and are safe (10-listen-on-ipv6 exit-0s on its own touch failure,
-        # 15-local-resolvers only reads /etc/resolv.conf, 20-envsubst and 30-tune return early).
-        # TESTED AND LIVE, same image both ways:
-        #   nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
-        #   (built 2025-04-16; confirmed identical to the digest the running pod reports)
-        # Not pinned because a pin here would be permanent: nothing in this repo bumps image
-        # references (no renovate/dependabot, no .github at all), every other image in k8s/ is a
-        # tag, and freezing an internet-facing HTTP parser at a fixed build means it never picks
-        # up an nginx or musl CVE fix. Note the tag buys less than it looks like: with the default
-        # IfNotPresent, a cached node keeps whatever it already pulled, so the tag is only
-        # re-resolved when the pod lands on a node without the image. If the entrypoint ever does
-        # change, diff against the digest above before assuming a7n's findings still hold.
-        image: nginx:1.27-alpine
+        # pinned by digest so the image the gateway runs is the one that was tested, and
+        # changes only on a commit. A floating tag would not pick up fixes anyway: with the
+        # default IfNotPresent a node keeps whatever it already pulled, so the freeze existed
+        # either way, only tied to node lifecycle instead of to a decision. Bumping it is a
+        # deliberate step: this image's docker-entrypoint.sh runs under `set -e` and the root
+        # filesystem is read-only, so any new /docker-entrypoint.d script without a read-only
+        # guard crash-loops the internet-facing gateway. Read the scripts out of the new image
+        # before moving the pin (the four in this one are safe: 10-listen-on-ipv6 exit-0s on
+        # its own touch failure, 15-local-resolvers only reads /etc/resolv.conf, 20-envsubst
+        # and 30-tune return early). Nothing in this repo bumps image references for you.
+        image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -464,8 +457,8 @@ spec:
             memory: "32Mi"
       containers:
       - name: nginx
-        # keep in step with the initContainer's image, and see the tag-vs-digest note there
-        image: nginx:1.27-alpine
+        # keep in step with the initContainer's image, and see the digest note there
+        image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
         ports:
         - containerPort: 8080
         volumeMounts:

@@ -1,0 +1,20 @@
+# body of the e-mail chat-backend sends when an admin grants runtime access (access_grants.py
+# in genetics-mcp-server). Plain text; `{email}` is replaced with the granted address. Edit and
+# re-apply — chat-backend reads the file on every send, and the mount is a whole directory, so
+# no restart is needed. Subject and From come from .env (ACCESS_GRANT_EMAIL_*).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: access-grant-email
+  namespace: genetics
+data:
+  email.txt: |
+    Hi,
+
+    You now have access to GeneGenie at genegenie.broadinstitute.org for the duration of ASHG.
+
+    Sign in with Google, Apple or Microsoft using this e-mail address ({email}).
+
+    Please note that not all data in GeneGenie are public yet. If you find the tool helpful for your research, please reach out to me or Mark Daly (mjdaly@broadinstitute.org) before using its output. Feel free to be in touch if you have any questions, and please remember to send feedback either directly in the tool or by replying to this e-mail.
+
+    Enjoy the rest of the conference!

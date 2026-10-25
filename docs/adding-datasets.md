@@ -97,7 +97,9 @@ In `genetics-results-suite/configs/datasets.yaml`:
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
    `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped),
    `cohorts: [token, ...]` (the sample collections that contributed, for the MR sample-overlap
-   statement; leave it out when the entry does not state its provenance),
+   statement; leave it out when the entry does not state its provenance, and do not read a
+   missing token as evidence that a cohort is absent — see `docs/datasets-yaml-schema.md`,
+   "Field details for `cohorts`"),
    `collection: true` + `subdataset_id_field` (for large sub-study collections),
    `substudy_metadata: true` (a metadata file of sub-studies that feeds only the dataset's
    sample-size stats).
@@ -268,15 +270,15 @@ recorded beside it — so the question a new view raises, dataset-discriminated 
 registry-authoritative vs single-source constant, is answered in `configs/datasets.yaml` and
 nowhere else, and a view added without an answer fails loudly.
 
-`scripts/monitor/bq_summary.py`'s `VIEWS` is narrower still: it compares per-resource coverage
-of *result* views against `dataset_to_resource_rules`, which is meaningless for a table whose
-rows are the registry itself and for a single-source table whose `resource` is a constant, and
-it also leaves out some views that do have a generated `CASE`. Re-derive both rather than
-trusting this paragraph — from this repo's root:
+The monitor (`scripts/monitor/views.py`) checks per-resource coverage of every view some
+`dataset_to_resource_rules` entry names in `applies_to`: a view no rule covers takes its
+`resource` from the registry, a constant or a base table it regroups, and has no expected set
+to compare against. Adding a
+rule with a new view in `applies_to` therefore adds that view to the daily BigQuery check.
+Re-derive the modes rather than trusting this paragraph — from this repo's root:
 
 ```bash
 python3 -c "import yaml;t=yaml.safe_load(open('configs/datasets.yaml'))['tables'];print('\n'.join(f\"{i['resource_derivation']['mode']:<10} {n}\" for n,i in t.items()))"
-sed -n '/^VIEWS = \[/,/^]/p' scripts/monitor/bq_summary.py
 ```
 
 Apply the schema/view changes to BigQuery with `scripts/setup_bigquery.sh` (creates tables
@@ -576,8 +578,8 @@ Changes made (existing resource `finngen`, new `data_type: hla`, new API vertica
    `SCHEMAS["hla_associations"]`.
 5. `genetics-mcp-server`: `get_hla_by_phenotype` (results-api) and `get_hla_by_allele`
    (BigQuery), plus an HLA section in the chat system prompt.
-6. `genetics-results-suite`: `hla_associations_v` added to the monitor's `VIEWS` and
-   `_CONFIG_VIEWS` in `scripts/monitor/bq_summary.py`.
+6. `genetics-results-suite`: no monitor change; `hla_associations_v` is monitored because
+   a `dataset_to_resource_rules` entry names it in `applies_to` (`scripts/monitor/views.py`).
 
 Two points of interest. First, **a new data type is not automatically a new storage layout**:
 the files are shaped exactly like summary stats and reuse that machinery, so only the ordering
@@ -625,9 +627,9 @@ no results-api product config):
    the `collins_rcnv_2022` entry's `dataset` field names `Collins_rCNV_2022`,
    so `scripts/load_phenotypes.sh` fails the whole profile's registry cross-check until at
    least one results table carrying that `dataset` value is loaded.
-5. `genetics-results-suite`: the three association views added to the monitor's `VIEWS` and `_CONFIG_VIEWS`
-   (`scripts/monitor/bq_summary.py`); the sandbox schema docs and SDK stubs regenerate from
-   `datasets.yaml` (`scripts/gen-sandbox-docs.py`).
+5. `genetics-results-suite`: no monitor change; the three association views are monitored
+   because rules name them in `applies_to` (`scripts/monitor/views.py`). The sandbox schema docs
+   and SDK stubs regenerate from `datasets.yaml` (`scripts/gen-sandbox-docs.py`).
 6. `genetics-mcp-server`: `get_dosage_sensitivity` and `get_rcnv_associations`, plus the SDK's
    `genetics.dosage_sensitivity()` / `genetics.rcnv()` on the code surface.
 7. `genetics-results-api`: **nothing**. The registry entry alone makes the dataset appear in
@@ -941,8 +943,9 @@ Changes made (new resource `asc2`, datasets `asc_gene_based` + `asc_exome` shari
    deletes `dataset = 'ASC2'` from each and appends, so it is idempotent and independent of
    the Genebass truncate. The entry is in both profiles' registries and both deployments
    are loaded, so `ABSENT_FROM_RESULTS` carries no `ASC2` entry.
-4. `genetics-results-suite`: the three views on the monitor's `VIEWS`/`_CONFIG_VIEWS`; the
-   sandbox schema docs regenerate from `datasets.yaml`.
+4. `genetics-results-suite`: no monitor change; the three views are monitored because rules
+   name them in `applies_to` (`scripts/monitor/views.py`). The sandbox schema docs regenerate
+   from `datasets.yaml`.
 5. `genetics-mcp-server`: no tool. The "what is in the database" paragraph of both system
    prompts names the three views; `get_database_schema` lists them because its table
    enumeration is derived from the schema docs.
@@ -1000,7 +1003,7 @@ it. Two levels carry that, and they must not be conflated:
 
 - **Registry, dataset level:** `cohorts: [finngen, mvp, ukb, aou]`, the union of sample collections.
 - **Per phenotype:** `contributing_cohorts` (`ARRAY<STRING>`, e.g. `fg`, `aou_eur`,
-  `mvp_afr`), a `phenotypes_v` column added when the R14 phenotypes are loaded. It comes from the metadata JSON that `scripts/r14_meta_phenotypes.py` in
+  `mvp_afr`), a `phenotypes_v` column populated by the R14 phenotype load. It comes from the metadata JSON that `scripts/r14_meta_phenotypes.py` in
   `genetics-results-munge` writes, alongside `cohort_families` and `n_by_cohort`.
 
 Steps specific to this shape: the `FinnGen%MVP_UKBB_AOU%` rule in `dataset_to_resource_rules` must
@@ -1052,6 +1055,105 @@ in `docs/project-spec.md`). What this shape needs that the others do not:
    the pointer's age and that BigQuery serves the release it names (`scripts/monitor/health.py`,
    `check_cellxgene_release`).
 
+## 21. Worked example: a second model of an existing GWAS, served on request (FinnGen R12 sex-specific and recessive)
+
+Context: the same endpoints and the same phenotype codes as a GWAS already served, run under
+a different model — sex-stratified with a female-male meta-analysis, and recessive. The
+summary statistics live in the green library and are read in place. The ask was that neither reach
+an answer nobody asked for: a question about a disease is answered from the core release,
+the model-specific run only when the user asks for it — the `on_request` shape of §16, for
+a second reason. What is specific to this shape:
+
+1. **A resource per release, because `on_request` gates a whole resource.** results-api
+   refuses a resource mixing flagged and unflagged datasets, so the runs could not sit under
+   `finngen` however natural that looked: `finngen_sex_specific` and `finngen_recessive`
+   each carry one flagged entry. The data types are their own as well (`gwas_sex_specific`,
+   `gwas_recessive`, added to the enum in `datasets-yaml-schema.md`): they say what a row
+   carries, and they are what the chat backend keys on to tell this kind of on-request
+   dataset from a sandbox custom GWAS release — results-api's `GET /datasets/on_request`
+   answers `(resource, data_type)` and nothing else.
+2. **The prompt and the hints render from the answer, per kind.** genetics-mcp-server's
+   `prompt_blocks` splits the probe's pairs by type (`r12_model_datasets()` /
+   `custom_gwas_resources()`), each kind has its own prompt section and hint list
+   (`definitions._R12_MODEL_HINTS`), and the section describes one line per served pair, so
+   a deployment serving one model describes one. Nothing static names a resource; the daly
+   deployment, whose profile has no entry, emits nothing. The condensed prompt's section
+   must not name `get_summary_stats`: on the code surface the SDK stands in for it, and the
+   text-derived name gate would drop the whole section there.
+3. **A summary-statistics-only resource needs a metadata source.** results-api built a
+   resource's phenotype metadata and search entries from its credible-set, exome and
+   gene-based products only, so a resource serving nothing but summary statistics had no
+   `/resource_metadata` and nothing in `/search` even when named. Summary-statistics
+   datasets now back it too (`config_util.get_metadata_dataset_ids_for_resource`); the
+   readers dedupe by file, so `finngen_hla` sharing the R14 core file changed nothing for
+   `finngen`.
+4. **Column mappings that keep the model readable.** The recessive files carry the recessive
+   test under FinnGen's native names and the additive one as `*_add`; the mapping
+   (`app/config/profiles/r12_model_columns.py`) leaves the unsuffixed statistics recessive
+   and prefixes the additive ones `additive_`. The JSON typing of a summary-stat response is
+   inferred from the output column *name* (`routers/summary_stats.py`), so `ac_het`,
+   `ac_hom`, `mlog10p_diff` and the `_af_cases`/`_af_controls` suffixes were added there, and
+   `tests/test_summary_stats.py::TestR12ModelSpecific` asserts the types and the gate.
+5. **Nothing in BigQuery.** The sex-specific release ships a cross-endpoint aggregate, but
+   SQL has no resource gate: a table would answer a locus question from the sandbox with
+   nobody having asked for the model, and the on-request rule could reach it only as
+   prose. So no table, no view, no `dataset_to_resource_rules` entry, and the loader gives
+   an on-request entry no `datasets_v` and no `phenotypes_v` row.
+6. **Phenotype metadata for a subset.** The sex-specific release analysed 2,207 of the 2,469
+   endpoints; a metadata file listing all 2,469 would offer 262 traits with no data. The
+   munge writes a 2,207-entry file from the release's own sample-count table; the recessive
+   release covers the core set and reuses the core file.
+7. **Load only what the library holds.** The recessive release's clumped lead tables exist
+   in the R12 working bucket only; they were left out rather than published from a
+   non-release location (`genetics-results-munge/docs/sex-specific-recessive-gwas.md`).
+
+## 22. Worked example: a GWAS Catalog study served as summary statistics only
+
+Context: the Huerta-Chagoya et al. 2024 T2D meta-analysis (GCST90444202) is not in Open
+Targets, published no fine-mapping, and the decision was to serve its summary statistics
+without building pseudo credible sets (see `docs/project-spec.md` for why). The smallest
+possible external GWAS: one file, one phenotype, no BigQuery footprint.
+
+1. `genetics-results-munge`: read the harmoniser's `running.log` next to a Catalog file
+   before trusting its coverage. For this study the harmonised file is autosomes only and
+   130.3M of the 146.2M submitted variants, the harmoniser having dropped chromosome X and
+   the 9.8M variants its reference VCF does not carry, so the product is munged from the
+   **submitted** file with `scripts/munge_gwas_catalog_submitted.py`. Its four subcommands
+   each stream or sort externally, because 146M rows do not fit a 15 GB machine as a
+   DataFrame: `normalize` trims padded alleles and sorts; `lookup` joins the rows to the
+   gnomAD annotation table in BigQuery through a GCS external table (the local gnomAD
+   streaming join the other munges use needs the sites file on disk, which this machine
+   does not have); `orient` takes the allele matching the reference fasta as `ref` and lets
+   gnomAD's frequency decide the insertion-or-deletion ambiguities, flipping `beta` and EAF
+   where the effect allele was the reference; `compare` checks the result against the munge
+   of the Catalog's harmonised file (`scripts/munge_gwas_catalog.py`, which trusts the
+   harmoniser's orientation), the independent harmonisation that validates the
+   self-oriented one. `scripts/check_sumstat_vs_gnomad.py` is the sample-based gnomAD check
+   (random windows: exact matches, ref/alt-swapped rows, AF correlation and plot) that
+   replaces the inline AF-AF plot of the DataFrame munges. `orient --stage
+   gs://daly-genetics-results/sumstats/HUERTA_CHAGOYA_T2D/` uploads the full and the
+   `mlog10p > 4` file with their indexes.
+2. `datasets.yaml`: a new resource and a dataset of the same id, `huerta_chagoya_t2d`, in
+   both profiles with `metadata_file: null` and the one phenotype inline (`T2D`), the
+   `pgc_bip`/`gp2_pd` shape. `cohorts: [ukb, mgb, gera, aou]` because the entry states its
+   cohorts and two of them overlap the R14 meta-analysis. No `pseudo_credible_sets` flag and
+   no `dataset_to_resource_rules` entry: nothing of it is loaded into BigQuery, so there is
+   no `dataset` column value to attribute.
+3. `genetics-results-api` (both profiles): one `summary_stats.py` entry with `"file"`,
+   `"phenotype": "T2D"` and the nine-column mapping. The finngen entry points at the
+   `results_api_data/sumstats/` mirror of the same path; the file reaches that bucket only
+   when the finngen side copies it (this machine cannot write there), and until then the
+   API logs the file as not found and skips it.
+4. `genetics-results-db`: nothing. An inline phenotype list does not reach `phenotypes_v`
+   (`build_phenotypes.py` reads only `metadata_file`), which is the existing state of
+   `pgc_bip` and `gp2_pd` too.
+
+Result: `dataset_products("huerta_chagoya_t2d")` reports `summary_stats: true` and nothing
+else; `/summary_stats/huerta_chagoya_t2d/gwas` serves it; the agent reaches it through the
+summary-statistics tools and the resource aliases (`Huerta-Chagoya`, `TOPMed T2D`,
+`GCST90444202`). The browser's `HIDDEN_RESOURCES` set was left alone: it hides the pseudo-CS
+resources from credible-set views, which this dataset never appears in.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)
@@ -1090,10 +1192,9 @@ in `docs/project-spec.md`). What this shape needs that the others do not:
       - `dataset_cross_check.excluded_reason` — **only** if the view contributes no `dataset`
         values to the registry cross-check, and then only with the reason. Omitting it for a
         view with no `dataset` column fails `load_phenotypes.sh` loudly, which is the point.
-      - the monitor's `VIEWS`/`_CONFIG_VIEWS` (`scripts/monitor/bq_summary.py`, this repo) —
-        only for *result* views whose per-resource coverage is meaningful to compare against
-        `dataset_to_resource_rules`; omit it and the view is simply unmonitored. Exposing a
-        view also brings its `dataset` values under the registry cross-check (next item).
+      - nothing for the monitor: it checks every view a `dataset_to_resource_rules` entry
+        names in `applies_to` (`scripts/monitor/views.py`). Exposing a view also brings its
+        `dataset` values under the registry cross-check (next item).
 - [ ] genetics-results-db: re-run `scripts/load_phenotypes.sh`. Exposing the view
       automatically brings its `dataset` values under the registry cross-check, so the
       loader will fail until an entry's `dataset` field covers them. Skipping this leaves the dataset invisible in
