@@ -23,6 +23,7 @@ set -euo pipefail
 #                           entry syntax in docs/chat-tool-reference.md § 6)
 #   C3PO_MCP_OAUTH        - JSON from genetics-mcp-server's mcp_oauth_login for C3PO (optional; the
 #                           refresh token chat-backend mints C3PO access tokens from)
+#   DEPMAP_MCP_OAUTH      - the same for DepMap (optional; daly only, one login per cluster)
 #   ADMIN_USERS           - comma-separated admin email addresses (optional)
 #   INTERNAL_API_SECRET   - shared secret for internal service-to-service auth (reused from the existing secret if not set, generated on first install)
 #   SANDBOX_TOKEN_SIGNING_KEY  - signing key for per-execution sandbox tokens (reused if not set, generated on first install; see docs/code-execution-security.md §4)
@@ -275,7 +276,7 @@ secret_key() {
 # sandbox-token-signing-key, gateway-identity-secret, mcp-api-key — and, further down and
 # outside this Secret, oauth2-proxy's cookie-secret and keycloak's db-password/admin-password):
 # a random value for a third-party API key would look valid and fail only at call time, and
-# admin-users / external-mcp-servers / c3po-mcp-oauth have no meaningful random value at all.
+# admin-users / external-mcp-servers / *-mcp-oauth have no meaningful random value at all.
 reuse_optional() {
   local var="$1" key="$2" val
   [ -z "${!var:-}" ] || return 0
@@ -291,6 +292,7 @@ reuse_optional ALPHAGENOME_API_KEY alphagenome-api-key
 reuse_optional COHERE_API_KEY       cohere-api-key
 reuse_optional EXTERNAL_MCP_SERVERS external-mcp-servers
 reuse_optional C3PO_MCP_OAUTH       c3po-mcp-oauth
+reuse_optional DEPMAP_MCP_OAUTH     depmap-mcp-oauth
 reuse_optional ADMIN_USERS          admin-users
 reuse_optional SLACK_WEBHOOK_URL    slack-webhook-url
 reuse_optional SMTP_PASSWORD        smtp-password
@@ -353,6 +355,7 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic genetics-secrets \
   --from-literal=cohere-api-key="${COHERE_API_KEY:-}" \
   --from-literal=external-mcp-servers="${EXTERNAL_MCP_SERVERS:-}" \
   --from-literal=c3po-mcp-oauth="${C3PO_MCP_OAUTH:-}" \
+  --from-literal=depmap-mcp-oauth="${DEPMAP_MCP_OAUTH:-}" \
   --from-literal=admin-users="${ADMIN_USERS:-}" \
   --from-literal=internal-api-secret="${INTERNAL_API_SECRET}" \
   --from-literal=sandbox-token-signing-key="${SANDBOX_TOKEN_SIGNING_KEY}" \

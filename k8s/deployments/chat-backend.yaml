@@ -180,13 +180,21 @@ spec:
               optional: true
         - name: EXTERNAL_MCP_EXCLUDE_TOOLS
           value: "aou_gene_burden_phewas,aou_phenotype_top_genes,aou_phenotype_top_variants,aou_search_phenotypes,aou_variant_phewas"
-        # the device-code login for C3PO (docs/chat-tool-reference.md § 6); read by the
+        # the operator's browser login for C3PO (docs/chat-tool-reference.md § 6); read by the
         # `oauth=C3PO_MCP_OAUTH` option of the C3PO entry in EXTERNAL_MCP_SERVERS
         - name: C3PO_MCP_OAUTH
           valueFrom:
             secretKeyRef:
               name: genetics-secrets
               key: c3po-mcp-oauth
+              optional: true
+        # the same for DepMap; the entry exists in both daly clusters' EXTERNAL_MCP_SERVERS,
+        # each from its own login, and the key is empty in finngen
+        - name: DEPMAP_MCP_OAUTH
+          valueFrom:
+            secretKeyRef:
+              name: genetics-secrets
+              key: depmap-mcp-oauth
               optional: true
         # rotated OAuth refresh tokens land here; on the PVC, because the issuer retires a
         # refresh token once it is used and a restart that re-read the seed would be locked out
