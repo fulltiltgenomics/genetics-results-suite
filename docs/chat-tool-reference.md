@@ -1185,15 +1185,21 @@ because the server is behind the operator's login that only chat-backend holds. 
 browser side (`genetics-results-browser/src/features/chat/mcpApps/`) the marker renders as a
 frame holding `public/mcp-app-sandbox.html`, a proxy page with its own CSP from
 `nginx.prod.conf` and no origin (sandboxed without `allow-same-origin`), which writes the view
-into an inner frame under a policy built from what the server declared — scripts inline,
-`connect-src 'none'` unless the view named domains — and relays JSON-RPC between the view and
-the chat page. What a view can do is what the host answers: its own server's app-visible
+into an inner frame under a policy built from what the server declared — scripts inline and
+eval allowed (DepMap's view refuses to draw without eval, and inside a frame with no origin
+it adds nothing the inline script could not already do), `connect-src 'none'` unless the
+view named domains — and relays JSON-RPC between the view and the chat page. What a view can do is what the host answers: its own server's app-visible
 tools, through the call route, under the deployment's operator identity like every other
 DepMap call; opening http(s) links in a new tab; asking for height. Everything else gets a
 JSON-RPC error. The spec's double-frame design is followed, with the opaque origin standing in
 for the second hostname it assumes; measured in headless Chromium under the production
-headers: the view runs its inline script, sees `origin null`, is refused `document.cookie`,
-and a fetch to an undeclared host is blocked by its CSP. DepMap restricts access to Broad accounts, so every chat user — FinnGen and
+headers: a test view runs its inline script, sees `origin null`, is refused
+`document.cookie`, and a fetch to an undeclared host is blocked by its CSP; DepMap's real
+view then drew a TP53 Chronos density plot from live data relayed through staging's
+chat-backend. Two things the real view taught the host: its SDK validates
+`hostContext.toolInfo.tool` as a whole tool definition, so the view route returns the
+upstream definition beside the HTML, and the proxy page must announce itself until answered,
+because it can finish loading before the chat page listens. DepMap restricts access to Broad accounts, so every chat user — FinnGen and
 conference users included — acts as the operator's Broad identity. That was accepted for daly
 on 2026-10-27, with the conference window closing days later, and it is why the entry exists
 in `.env.daly` and `.env.daly-staging` — each with its own login — and the `depmap-mcp-oauth`
