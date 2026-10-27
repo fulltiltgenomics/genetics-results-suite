@@ -1060,7 +1060,7 @@ Two env vars, both read by `mcp_proxy.initialize_external_servers()`, plus the e
 
 | env var | role | in which profiles |
 |---|---|---|
-| `EXTERNAL_MCP_SERVERS` | comma-separated entries for the always-on servers (gnomAD, Open Targets, C3PO); entry syntax below | every profile |
+| `EXTERNAL_MCP_SERVERS` | comma-separated entries for the always-on servers (gnomAD and Open Targets everywhere; C3PO on daly staging; DepMap on daly production and staging); entry syntax below | every profile |
 | `RAG_MCP_SERVER` | the RAG server, registered into its own registry by `_initialize_rag_server`; same entry syntax | every profile |
 | `EXTERNAL_MCP_EXCLUDE_TOOLS` | comma-separated tool names dropped at registration | applies to `EXTERNAL_MCP_SERVERS` and to the RAG server |
 | `EXTERNAL_MCP_STATE_DIR` | where a rotated OAuth refresh token is persisted (`/data/mcp-oauth` on the `chat-data` PVC in the cluster); unset, a rotation dies with the process and the next start is locked out | servers with an `oauth=` option |
@@ -1074,7 +1074,7 @@ original `URL|TOKEN` form, so a token containing `=` still parses. The keys:
 | `path` | the JSON-RPC endpoint under the URL; `/` for a server that answers at its root | `/mcp` |
 | `timeout` | per-request httpx timeout in seconds | `60` (`180` for `RAG_MCP_SERVER`) |
 | `token` | an explicit static bearer token | none |
-| `oauth` | the env var holding the JSON a device-code login produced; the entry then authenticates with access tokens minted from that refresh token, and never with a static token | none |
+| `oauth` | the env var holding the JSON the operator's browser login (`mcp_oauth_login`) produced; the entry then authenticates with access tokens minted from that refresh token, and never with a static token | none |
 | `tools` | a `+`-separated allow-list of upstream tool names (`,` already separates entries); `EXTERNAL_MCP_EXCLUDE_TOOLS` still subtracts from it | everything |
 | `prefix` | registers each tool as `<prefix>_<name>` and strips it again at dispatch, keeping the server's names out of the flat space the local tools share | none |
 
@@ -1084,7 +1084,10 @@ and it sits behind OAuth 2.1 (WorkOS AuthKit) whose authorization server adverti
 authorization-code, device-code and refresh-token grants but **no client-credentials grant**,
 so a service cannot log itself in — and the device-code grant, though advertised, is refused
 for a dynamically registered client ("Activation denied" on the activation page, measured
-2026-09-27), which leaves the authorization-code flow. The deployment's entry is
+2026-09-27), which leaves the authorization-code flow. Daly staging's entry is below; daly
+production dropped it on 2026-10-27, keeping `C3PO_MCP_OAUTH` in `.env.daly` and the secret so
+restoring the entry is the whole re-enable — though whether C3PO retires an idle refresh
+token is unmeasured, so that may turn out to need a fresh login.
 
 ```
 https://mcp.c3po.bio|path=/|timeout=120|oauth=C3PO_MCP_OAUTH|prefix=c3po|tools=list_clusters+get_cluster+list_datasets+get_dataset+get_dataset_tree+get_dataset_assets+query_kb+get_kb_query_result+get_node+get_node_assets+list_pipeline_executions+get_pipeline_execution+get_pipeline_execution_status+get_pipeline_execution_history+list_programs+get_program
@@ -1126,6 +1129,42 @@ refresh token surfaces as `OAuth token refresh for C3PO_MCP_OAUTH failed: HTTP 4
 {"error":"invalid_grant"...}` in the startup log, with C3PO registering zero tools and the other
 servers unaffected; the fix is to run the login again and re-run `create-secrets.sh`.
 
+**DepMap** (`https://mcp.depmap.org`, **daly production and staging, never finngen**) is the
+second OAuth entry, and it differs
+from C3PO in three ways the login helper had to learn. Its authorization server is the MCP
+server itself, fronting Google sign-in, and it advertises only the authorization-code and
+refresh-token grants — again no client-credentials grant. It publishes its protected-resource
+metadata only at the RFC 9728 path-suffixed location
+(`/.well-known/oauth-protected-resource/mcp`; the root form 404s), which the helper finds
+through the `resource_metadata` hint in the endpoint's 401 before trying either form. And it
+refuses scopes it does not advertise — `offline_access` is `invalid_scope` — so the login runs
+with its own two scopes, and a refresh token is issued regardless:
+
+```
+cd genetics-mcp-server
+uv run python -m genetics_mcp_server.scripts.mcp_oauth_login https://mcp.depmap.org --scope "openid https://www.googleapis.com/auth/userinfo.email" --out depmap.json
+```
+
+The refresh token rotates on use (`EXTERNAL_MCP_STATE_DIR/DEPMAP_MCP_OAUTH.json` appeared on
+the first refresh), so the one-chain-per-cluster rule above applies unchanged. The deployed
+entry is
+
+```
+https://mcp.depmap.org|timeout=120|oauth=DEPMAP_MCP_OAUTH|prefix=depmap|tools=query_depmap_data+get_all_available_data_types+get_all_available_dimension_types+get_available_metadata_cols_for_dimension_type+get_unique_values_from_metadata_column+get_associations_for_entity+get_info_about_all_gene_indexed_datasets+get_info_about_datasets+perform_two_class_comparison_for_context+get_context_examples+metadata_label_search+analyze_gene_set+describe_data+submit_sql_query
+```
+
+Measured 2026-10-27: DepMap MCP Server 3.2.3 advertises 20 tools, of which the entry admits 14.
+Withheld: the Data Explorer plot trio (`get_data_explorer_plot_instructions`,
+`show_data_explorer_plot`, `get_plot_data`), which renders in DepMap's own chat view and
+nowhere here; `generate_data_download_link`, a link minted under the shared account; and the
+two diagnostics (`health_check`, `test_error_reporting`). `submit_sql_query` is admitted as
+DepMap's general query path; whether its breadbox endpoint accepts anything but a `SELECT` was
+not measured. DepMap restricts access to Broad accounts, so every chat user — FinnGen and
+conference users included — acts as the operator's Broad identity. That was accepted for daly
+on 2026-10-27, with the conference window closing days later, and it is why the entry exists
+in `.env.daly` and `.env.daly-staging` — each with its own login — and the `depmap-mcp-oauth`
+key is empty in finngen.
+
 Values in this repo:
 
 - Local dev: `scripts/dev-stack.sh` defaults `EXTERNAL_MCP_SERVERS` to
@@ -1142,18 +1181,20 @@ Values in this repo:
   repository** — read it off the pod, and read the whole value: a `grep -o` on the name alone
   prints an empty-looking match and was misread as "unset" once. Measured 2026-10-06
   (`kubectl -n genetics exec deploy/chat-backend -- env | grep '^EXTERNAL_MCP_SERVERS='`, the
-  entries' URLs only): production and staging each carry three entries — the gnomAD MCP Cloud
+  entries' URLs only): production and staging each carried three entries — the gnomAD MCP Cloud
   Run service, `https://mcp.platform.opentargets.org` and the C3PO entry above — seeded from
-  `.env.daly` / `.env.daly-staging` by `create-secrets.sh`. Both pods' startup logs record
+  `.env.daly` / `.env.daly-staging` by `create-secrets.sh`, and both pods' startup logs recorded
   **15 tools registered from gnomAD (5 AoU tools excluded), 5 from Open Targets and 16 from
-  C3PO (10 outside its `tools=` allow-list), 36 in all**. The tool names an external server
+  C3PO (10 outside its `tools=` allow-list), 36 in all**. Since 2026-10-27 production carries
+  gnomAD, Open Targets and DepMap (**15 + 5 + 14, 34 in all**; DepMap excludes 6) and staging
+  carries all four (**50 in all**). The tool names an external server
   advertises cannot be derived from code here — they are fetched at startup over the wire,
   and the startup log line `Registered N tools from <url> (excluded M)` is where to read the
   count. The gnomAD tool table under "gnomAD MCP" in
   `genetics-mcp-server/docs/project-spec.md` is a hand-maintained snapshot, not a derivation.
 
 **Namespacing.** `MCPProxyClient.get_prefixed_name()` returns `f"{prefix}_{name}"` when the
-entry sets `prefix=` and the bare name otherwise. Only the C3PO entry sets one, so **the gnomAD
+entry sets `prefix=` and the bare name otherwise. Only the C3PO and DepMap entries set one, so **the gnomAD
 and Open Targets tools arrive unnamespaced, in the same flat name space as the local tools**,
 and a collision there is resolved by whatever the Anthropic API does with a duplicate name.
 `get_external_anthropic_tools()` passes the upstream `description` and `inputSchema` through
