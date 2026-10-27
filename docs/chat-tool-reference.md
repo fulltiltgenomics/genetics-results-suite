@@ -1146,7 +1146,17 @@ uv run python -m genetics_mcp_server.scripts.mcp_oauth_login https://mcp.depmap.
 ```
 
 The refresh token rotates on use (`EXTERNAL_MCP_STATE_DIR/DEPMAP_MCP_OAUTH.json` appeared on
-the first refresh), so the one-chain-per-cluster rule above applies unchanged. The deployed
+the first refresh), so the one-chain-per-cluster rule above applies unchanged. **A DepMap
+client registration is not durable.** Both clusters' clients, registered on the morning of
+2026-10-27 and refreshing fine at 17:14 UTC, answered `invalid_client` ("Invalid client_id")
+by 17:56 UTC — presumably a DepMap server redeploy with in-memory registrations — and a
+refresh token is bound to its client, so the whole chain dies with it. The startup log then
+reads `OAuth token refresh for DEPMAP_MCP_OAUTH failed: HTTP 401 {"error":"invalid_client"...}`
+with DepMap registering zero tools, and a running pod's next DepMap call fails the same way
+once its hour-long access token expires. The only repair is the login above, once per
+cluster, and `create-secrets.sh`; a cheap check that does not touch the chain is a `POST
+/token` with the cluster's `client_id` and a junk `refresh_token`, which answers
+`invalid_client` for a forgotten client and `invalid_grant` for a live one. The deployed
 entry is
 
 ```
