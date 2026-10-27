@@ -1150,16 +1150,40 @@ the first refresh), so the one-chain-per-cluster rule above applies unchanged. T
 entry is
 
 ```
-https://mcp.depmap.org|timeout=120|oauth=DEPMAP_MCP_OAUTH|prefix=depmap|tools=query_depmap_data+get_all_available_data_types+get_all_available_dimension_types+get_available_metadata_cols_for_dimension_type+get_unique_values_from_metadata_column+get_associations_for_entity+get_info_about_all_gene_indexed_datasets+get_info_about_datasets+perform_two_class_comparison_for_context+get_context_examples+metadata_label_search+analyze_gene_set+describe_data+submit_sql_query
+https://mcp.depmap.org|timeout=120|oauth=DEPMAP_MCP_OAUTH|prefix=depmap|tools=query_depmap_data+get_all_available_data_types+get_all_available_dimension_types+get_available_metadata_cols_for_dimension_type+get_unique_values_from_metadata_column+get_associations_for_entity+get_info_about_all_gene_indexed_datasets+get_info_about_datasets+perform_two_class_comparison_for_context+get_context_examples+metadata_label_search+analyze_gene_set+describe_data+submit_sql_query+get_data_explorer_plot_instructions+show_data_explorer_plot
 ```
 
-Measured 2026-10-27: DepMap MCP Server 3.2.3 advertises 20 tools, of which the entry admits 14.
-Withheld: the Data Explorer plot trio (`get_data_explorer_plot_instructions`,
-`show_data_explorer_plot`, `get_plot_data`), which renders in DepMap's own chat view and
-nowhere here; `generate_data_download_link`, a link minted under the shared account; and the
-two diagnostics (`health_check`, `test_error_reporting`). `submit_sql_query` is admitted as
-DepMap's general query path; whether its breadbox endpoint accepts anything but a `SELECT` was
-not measured. DepMap restricts access to Broad accounts, so every chat user — FinnGen and
+Measured 2026-10-27: DepMap MCP Server 3.2.3 advertises 20 tools, of which the entry admits 16
+(the two Data Explorer plot tools joined it on the day the chat learned to render their view;
+production's entry still lacks them until it is redeployed). Withheld:
+`generate_data_download_link`, a link minted under the shared account, and the two
+diagnostics (`health_check`, `test_error_reporting`). `get_plot_data` is neither admitted nor
+withheld: it is the plot view's own data loader, marked app-only, and the proxy keeps such a
+tool from the model whatever the allow-list says (next paragraph). `submit_sql_query` is
+admitted as DepMap's general query path; whether its breadbox endpoint accepts anything but a
+`SELECT` was not measured.
+
+**MCP App views.** `show_data_explorer_plot` is an MCP App (the `io.modelcontextprotocol/ui`
+extension): its result is text plus a plot configuration, and the server also serves
+`ui://plot/view.html`, a 2.4 MB React + Plotly page that draws the plot and loads its points by
+calling `get_plot_data` back through its host. The chat hosts it. On the server side
+(`genetics-mcp-server/docs/project-spec.md`, "MCP App views") the proxy honours
+`_meta.ui.visibility`, keeps the whole CallToolResult beside the model's text, streams it as
+an `mcp_app` event, persists it as a `[MCPAPP:…]` marker in the message, and exposes two
+logged-in routes, `GET /chat/v1/mcp-apps/{tool}/view` and `POST /chat/v1/mcp-apps/{tool}/call`,
+because the server is behind the operator's login that only chat-backend holds. On the
+browser side (`genetics-results-browser/src/features/chat/mcpApps/`) the marker renders as a
+frame holding `public/mcp-app-sandbox.html`, a proxy page with its own CSP from
+`nginx.prod.conf` and no origin (sandboxed without `allow-same-origin`), which writes the view
+into an inner frame under a policy built from what the server declared — scripts inline,
+`connect-src 'none'` unless the view named domains — and relays JSON-RPC between the view and
+the chat page. What a view can do is what the host answers: its own server's app-visible
+tools, through the call route, under the deployment's operator identity like every other
+DepMap call; opening http(s) links in a new tab; asking for height. Everything else gets a
+JSON-RPC error. The spec's double-frame design is followed, with the opaque origin standing in
+for the second hostname it assumes; measured in headless Chromium under the production
+headers: the view runs its inline script, sees `origin null`, is refused `document.cookie`,
+and a fetch to an undeclared host is blocked by its CSP. DepMap restricts access to Broad accounts, so every chat user — FinnGen and
 conference users included — acts as the operator's Broad identity. That was accepted for daly
 on 2026-10-27, with the conference window closing days later, and it is why the entry exists
 in `.env.daly` and `.env.daly-staging` — each with its own login — and the `depmap-mcp-oauth`
@@ -1187,7 +1211,8 @@ Values in this repo:
   **15 tools registered from gnomAD (5 AoU tools excluded), 5 from Open Targets and 16 from
   C3PO (10 outside its `tools=` allow-list), 36 in all**. Since 2026-10-27 production carries
   gnomAD, Open Targets and DepMap (**15 + 5 + 14, 34 in all**; DepMap excludes 6) and staging
-  carries all four (**50 in all**). The tool names an external server
+  carries all four, with DepMap's two plot tools admitted (**15 + 5 + 16 + 16, 52 in all**;
+  DepMap excludes 4, one of them the app-only `get_plot_data`). The tool names an external server
   advertises cannot be derived from code here — they are fetched at startup over the wire,
   and the startup log line `Registered N tools from <url> (excluded M)` is where to read the
   count. The gnomAD tool table under "gnomAD MCP" in
