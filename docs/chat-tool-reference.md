@@ -1165,7 +1165,7 @@ https://mcp.depmap.org|timeout=120|oauth=DEPMAP_MCP_OAUTH|prefix=depmap|tools=qu
 
 Measured 2026-10-27: DepMap MCP Server 3.2.3 advertises 20 tools, of which the entry admits 16
 (the two Data Explorer plot tools joined it on the day the chat learned to render their view;
-production's entry still lacks them until it is redeployed). Withheld:
+production's entry followed on 2026-10-28). Withheld:
 `generate_data_download_link`, a link minted under the shared account, and the two
 diagnostics (`health_check`, `test_error_reporting`). `get_plot_data` is neither admitted nor
 withheld: it is the plot view's own data loader, marked app-only, and the proxy keeps such a
@@ -1226,9 +1226,9 @@ Values in this repo:
   `.env.daly` / `.env.daly-staging` by `create-secrets.sh`, and both pods' startup logs recorded
   **15 tools registered from gnomAD (5 AoU tools excluded), 5 from Open Targets and 16 from
   C3PO (10 outside its `tools=` allow-list), 36 in all**. Since 2026-10-27 production carries
-  gnomAD, Open Targets and DepMap (**15 + 5 + 14, 34 in all**; DepMap excludes 6) and staging
-  carries all four, with DepMap's two plot tools admitted (**15 + 5 + 16 + 16, 52 in all**;
-  DepMap excludes 4, one of them the app-only `get_plot_data`). The tool names an external server
+  gnomAD, Open Targets and DepMap and staging carries all four; since 2026-10-28 both admit
+  DepMap's two plot tools (production **15 + 5 + 16, 36 in all**, staging **15 + 5 + 16 + 16,
+  52 in all**; DepMap excludes 4, one of them the app-only `get_plot_data`). The tool names an external server
   advertises cannot be derived from code here — they are fetched at startup over the wire,
   and the startup log line `Registered N tools from <url> (excluded M)` is where to read the
   count. The gnomAD tool table under "gnomAD MCP" in
