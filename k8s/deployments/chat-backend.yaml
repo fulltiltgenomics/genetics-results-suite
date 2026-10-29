@@ -230,6 +230,13 @@ spec:
           value: "oauth2-allowed-emails"
         - name: KEYCLOAK_ADMIN_URL
           value: "http://keycloak.genetics.svc.cluster.local:8080"
+        # POST /provision/{alias}: the partner clients that may create and link their users for
+        # the jwt-bearer grant (deploy.sh derives the list from the configured partner STS), and
+        # the realm issuer their client-credentials tokens must carry
+        - name: BROKER_PROVISIONING_CLIENTS
+          value: "${BROKER_PROVISIONING_CLIENTS}"
+        - name: OAUTH_ISSUER
+          value: "${OAUTH_ISSUER}"
         - name: KEYCLOAK_ACCESS_GRANTS_CLIENT_SECRET
           valueFrom:
             secretKeyRef:

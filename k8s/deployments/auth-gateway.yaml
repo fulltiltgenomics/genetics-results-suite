@@ -137,6 +137,18 @@ data:
           chunked_transfer_encoding off;
         }
 
+        # partner user provisioning for the jwt-bearer grant — no oauth2 session; chat-backend
+        # requires a client-credentials token of the partner's own Keycloak client. Prefix match:
+        # the partner's client id is the last path segment
+        location /provision/ {
+          proxy_pass http://chat-backend.genetics.svc.cluster.local:8000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          client_max_body_size 16k;
+        }
+
         # MCP OAuth protected-resource metadata (RFC 9728) — served UNAUTHENTICATED so MCP
         # clients can auto-discover the authorization server before they hold a token. Only the
         # protected-RESOURCE metadata is proxied here; the authorization-server metadata
@@ -548,9 +560,10 @@ spec:
       #     the token — @api_bearer proxies straight to results-api, so the body is on disk before
       #     any upstream gets the chance to reject it.
       #     The auth_request-free locations, machine-derived from the RENDERED config rather than
-      #     read off this file (13 locations; 9 of them carry no `auth_request /oauth2/auth`):
+      #     read off this file (14 locations; 10 of them carry no `auth_request /oauth2/auth`):
       #       = /healthz and @oauth2_login          `return`, no proxy_pass, no body read
       #       = /oauth2/auth                        internal, proxy_pass_request_body off
+      #       /provision/                           proxy_pass, but its own client_max_body_size 16k
       #       /oauth2/, = /mcp, @api_bearer,
       #       = /.well-known/oauth-protected-resource,
       #       = /.well-known/oauth-protected-resource/mcp,

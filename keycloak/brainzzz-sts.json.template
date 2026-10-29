@@ -1,0 +1,48 @@
+{
+  "identityProvider": {
+    "alias": "brainzzz",
+    "providerId": "jwt-authorization-grant",
+    "displayName": "brainzzz STS",
+    "enabled": true,
+    "trustEmail": false,
+    "hideOnLogin": true,
+    "config": {
+      "issuer": "${BRAINZZZ_STS_ISSUER}",
+      "useJwksUrl": "${BRAINZZZ_STS_USE_JWKS}",
+      "jwksUrl": "${BRAINZZZ_STS_JWKS_URL}",
+      "publicKeySignatureVerifier": "${BRAINZZZ_STS_PUBLIC_KEY}",
+      "jwtAuthorizationGrantEnabled": "true",
+      "jwtAuthorizationGrantAssertionReuseAllowed": "false",
+      "jwtAuthorizationGrantMaxAllowedAssertionExpiration": "300",
+      "jwtAuthorizationGrantAssertionSignatureAlg": "RS256",
+      "jwtAuthorizationGrantAllowedClockSkew": "30",
+      "jwtAuthorizationGrantLimitAccessTokenExp": "false"
+    }
+  },
+  "clientProfile": {
+    "name": "brainzzz-assertion",
+    "description": "Claims a brainzzz STS assertion must carry before it is exchanged for a token",
+    "executors": [
+      {
+        "executor": "jwt-claim-enforcer",
+        "configuration": { "claim-name": "sub", "allowed-value": "${BRAINZZZ_SUB_REGEX}" }
+      },
+      {
+        "executor": "jwt-claim-enforcer",
+        "configuration": { "claim-name": "act", "allowed-value": "" }
+      }
+    ]
+  },
+  "clientPolicy": {
+    "name": "brainzzz-assertion",
+    "description": "Apply the brainzzz-assertion profile to every grant that names the brainzzz identity provider",
+    "enabled": true,
+    "conditions": [
+      {
+        "condition": "identity-provider-alias",
+        "configuration": { "identity_provider_aliases": ["brainzzz"], "is-negative-logic": false }
+      }
+    ],
+    "profiles": ["brainzzz-assertion"]
+  }
+}

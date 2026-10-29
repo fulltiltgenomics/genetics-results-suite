@@ -10,6 +10,7 @@ SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 
 # resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
 . "${SCRIPT_DIR}/lib/env.sh"
+. "${SCRIPT_DIR}/lib/keycloak-brainzzz.sh"
 resolve_deploy_env
 load_deploy_env
 
@@ -658,15 +659,28 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
     BRAINZZZ_CLIENT_ENTRY=",${BRAINZZZ_JSON}"
   fi
   export BRAINZZZ_CLIENT_ENTRY
+  # brainzzz's STS as an identity provider plus the client policy on its assertions — the RFC 7523
+  # jwt-bearer grant brainzzz users reach /mcp through without a GeneGenie login. Injected once
+  # BRAINZZZ_STS_ISSUER is set (scripts/lib/keycloak-brainzzz.sh); same fresh-DB caveat, same
+  # live path. The grant attributes on the client template are unconditional: without this
+  # provider they are inert.
+  BRAINZZZ_IDP_ENTRY="" BRAINZZZ_CLIENT_PROFILE_ENTRY="" BRAINZZZ_CLIENT_POLICY_ENTRY=""
+  if brainzzz_sts_enabled; then
+    BRAINZZZ_STS_JSON="$(render_brainzzz_sts "${ROOT_DIR}/keycloak/brainzzz-sts.json.template")"
+    BRAINZZZ_IDP_ENTRY=",$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["identityProvider"]))' <<< "${BRAINZZZ_STS_JSON}")"
+    BRAINZZZ_CLIENT_PROFILE_ENTRY="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientProfile"]))' <<< "${BRAINZZZ_STS_JSON}")"
+    BRAINZZZ_CLIENT_POLICY_ENTRY="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientPolicy"]))' <<< "${BRAINZZZ_STS_JSON}")"
+  fi
+  export BRAINZZZ_IDP_ENTRY BRAINZZZ_CLIENT_PROFILE_ENTRY BRAINZZZ_CLIENT_POLICY_ENTRY
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY} ${BRAINZZZ_IDP_ENTRY} ${BRAINZZZ_CLIENT_PROFILE_ENTRY} ${BRAINZZZ_CLIENT_POLICY_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \
     -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-  echo "keycloak-realm rendered (IdPs: google${APPLE_SERVICES_ID:+ apple}${MICROSOFT_CLIENT_ID:+ microsoft})"
+  echo "keycloak-realm rendered (IdPs: google${APPLE_SERVICES_ID:+ apple}${MICROSOFT_CLIENT_ID:+ microsoft}${BRAINZZZ_STS_ISSUER:+ brainzzz})"
 elif [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   echo "Skipping keycloak-realm render (GOOGLE_CLIENT_ID not set in .env)"
 fi
@@ -781,6 +795,15 @@ kubectl apply -f network-policies/
 kubectl apply -f disruption-budgets/
 
 # deployments (substitute variables and image tags)
+# chat-backend's POST /provision/{alias}: the partner clients allowed to create and link their
+# own users for the jwt-bearer grant. Derived from the one partner STS knob rather than a second
+# knob to keep in step with it; an explicit BROKER_PROVISIONING_CLIENTS in .env still wins
+if [ -z "${BROKER_PROVISIONING_CLIENTS+x}" ]; then
+  BROKER_PROVISIONING_CLIENTS=""
+  brainzzz_sts_enabled && BROKER_PROVISIONING_CLIENTS="brainzzz"
+fi
+export BROKER_PROVISIONING_CLIENTS
+
 for f in deployments/*.yaml; do
   base="$(basename "$f")"
   if [ "${ENABLE_RAG}" != "true" ] && [ "${base}" = "rag-service.yaml" ]; then
@@ -816,7 +839,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER} ${CELL_TYPE_EXPRESSION_ENABLED} ${ACCESS_GRANT_BUTTON_LABEL} ${ACCESS_GRANT_EXPIRES_AT} ${SMTP_HOST} ${SMTP_PORT} ${SMTP_USERNAME} ${ACCESS_GRANT_EMAIL_FROM} ${ACCESS_GRANT_EMAIL_REPLY_TO} ${ACCESS_GRANT_EMAIL_SUBJECT}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER} ${CELL_TYPE_EXPRESSION_ENABLED} ${ACCESS_GRANT_BUTTON_LABEL} ${ACCESS_GRANT_EXPIRES_AT} ${SMTP_HOST} ${SMTP_PORT} ${SMTP_USERNAME} ${ACCESS_GRANT_EMAIL_FROM} ${ACCESS_GRANT_EMAIL_REPLY_TO} ${ACCESS_GRANT_EMAIL_SUBJECT} ${BROKER_PROVISIONING_CLIENTS}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

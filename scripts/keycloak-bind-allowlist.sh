@@ -30,7 +30,9 @@ POD="$(kubectl get pods -n "${NAMESPACE}" -l app=keycloak -o jsonpath='{.items[0
 AU="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 -d)"
 AP="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-password}' | base64 -d)"
 
-kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@"; }
+# the pod's root filesystem is read-only, so kcadm's config file has to go under /tmp
+KC_CONFIG="--config /tmp/kcadm-allowlist.config"
+kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@" ${KC_CONFIG}; }
 
 echo "Authenticating kcadm against ${POD}..."
 kc config credentials --server http://localhost:8080 --realm master --user "${AU}" --password "${AP}" >/dev/null
@@ -101,6 +103,71 @@ if [ -n "${REVIEW_ID}" ]; then
   echo "Disabled 'Review Profile' in '${FLOW}'."
 fi
 
+# 3c) an existing account with the same e-mail is linked automatically instead of asking the
+# person to prove it. The built-in "Handle Existing Account" subflow confirms by e-mail (the realm
+# has no SMTP) or by password (the realm has none), so a user created before their first login —
+# chat-backend's POST /provision/{alias} and keycloak-link-brainzzz-users.sh --create both do that
+# — would be stuck at that page. Every brokered IdP here is trust-email, which is the condition
+# Keycloak's own docs put on "Automatically set existing user".
+EXECS="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}")"
+# the copy prefixed every subflow's alias (and so its displayName) with the new flow's name
+HANDLE_ID="$(printf '%s' "${EXECS}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("displayName","").endswith("Handle Existing Account") and e.get("authenticationFlow"): print(e["id"]); break')"
+if [ -n "${HANDLE_ID}" ]; then
+  kc update "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" \
+    -b "{\"id\":\"${HANDLE_ID}\",\"requirement\":\"DISABLED\"}"
+  echo "Disabled 'Handle Existing Account' in '${FLOW}'."
+fi
+if ! printf '%s' "${EXECS}" | python3 -c '
+import json,sys; sys.exit(0 if any(e.get("providerId")=="idp-auto-link" for e in json.load(sys.stdin)) else 1)'; then
+  # the execution goes into the "User creation or linking" subflow, after "Create User If Unique"
+  # (both ALTERNATIVE: the first one defers to the next when the e-mail already exists); a
+  # subflow is addressed by its alias, which for a subflow is what the executions list shows as
+  # its displayName
+  SUBFLOW_ALIAS="$(printf '%s' "${EXECS}" | python3 -c '
+import json,sys,urllib.parse
+for e in json.load(sys.stdin):
+    if e.get("displayName","").endswith("User creation or linking") and e.get("authenticationFlow"): print(urllib.parse.quote(e["displayName"])); break')"
+  [ -n "${SUBFLOW_ALIAS}" ] || { echo "ERROR: no 'User creation or linking' subflow in '${FLOW}'" >&2; exit 1; }
+  kc create "authentication/flows/${SUBFLOW_ALIAS}/executions/execution" -r "${REALM}" -b '{"provider":"idp-auto-link"}' >/dev/null
+  AUTO_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("providerId")=="idp-auto-link": print(e["id"]); break')"
+  kc update "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" \
+    -b "{\"id\":\"${AUTO_ID}\",\"requirement\":\"ALTERNATIVE\"}"
+  echo "Added 'Automatically set existing user' to '${FLOW}'."
+else
+  echo "'Automatically set existing user' already in '${FLOW}'."
+fi
+# order inside the subflow decides everything: auto-link only has a user to link once "Create
+# User If Unique" has run and recorded the duplicate, and run first it fails the login with
+# "Invalid username or password" (measured). Keycloak gave the new execution a lower index than
+# the existing one, so push it down until it is after
+order() {
+  kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+ix={e.get("providerId"): e["index"] for e in json.load(sys.stdin) if e.get("providerId") in ("idp-auto-link","idp-create-user-if-unique")}
+print(ix.get("idp-auto-link",-1), ix.get("idp-create-user-if-unique",-1))'
+}
+AUTO_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("providerId")=="idp-auto-link": print(e["id"]); break')"
+for _ in 1 2 3 4; do
+  read -r AUTO_IX CREATE_IX <<< "$(order)"
+  [ "${AUTO_IX}" -gt "${CREATE_IX}" ] && break
+  kc create "authentication/executions/${AUTO_ID}/lower-priority" -r "${REALM}" >/dev/null
+done
+read -r AUTO_IX CREATE_IX <<< "$(order)"
+if [ "${AUTO_IX}" -gt "${CREATE_IX}" ]; then
+  echo "'Automatically set existing user' runs after 'Create User If Unique'."
+else
+  echo "ERROR: could not order 'Automatically set existing user' after 'Create User If Unique'" >&2; exit 1
+fi
+
 # 4) point the brokered IdPs at the custom flow
 for idp in ${IDPS}; do
   if kc get "identity-provider/instances/${idp}" -r "${REALM}" >/dev/null 2>&1; then
@@ -121,7 +188,7 @@ print(json.dumps(p))')"
 if [ -n "${NEW_PROFILE}" ]; then
   B64="$(printf '%s' "${NEW_PROFILE}" | base64 | tr -d '\n')"
   kubectl exec -n "${NAMESPACE}" "${POD}" -- bash -c \
-    "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json && rm -f /tmp/kc-userprofile.json"
+    "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json ${KC_CONFIG} && rm -f /tmp/kc-userprofile.json"
   echo "Made firstName/lastName optional in the user profile."
 fi
 

@@ -6,7 +6,7 @@
   "publicClient": false,
   "standardFlowEnabled": true,
   "directAccessGrantsEnabled": false,
-  "serviceAccountsEnabled": false,
+  "serviceAccountsEnabled": true,
   "secret": "${BRAINZZZ_CLIENT_SECRET}",
   "redirectUris": [
     "http://localhost:3000/api/auth/genegenie/callback",
@@ -22,6 +22,8 @@
   ],
   "attributes": {
     "pkce.code.challenge.method": "S256",
+    "oauth2.jwt.authorization.grant.enabled": "true",
+    "oauth2.jwt.authorization.grant.idp": "brainzzz",
     "post.logout.redirect.uris": "https://brainzzz-dev.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-staging.dsp-eng-tools.broadinstitute.org/*##https://brainzzz-prod.dsp-eng-tools.broadinstitute.org/*"
   },
   "defaultClientScopes": ["openid", "email", "profile"],

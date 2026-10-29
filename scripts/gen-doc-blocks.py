@@ -400,7 +400,7 @@ LAYOUT = {
     "sandbox": "sandbox image build context for model-authored Python; the SDK is "
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
-    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder",
+    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS template renderer deploy.sh and the register script share",
     "scripts/cellxgene": "the CELLxGENE proving-ground Batch job spec; the pipeline itself "
                          "lives in genetics-results-munge",
     "scripts/monitor": "the monitoring CronJob's Python package",
@@ -432,7 +432,14 @@ LAYOUT = {
                                              "numbers; cleanup reports DONE or FAILED",
     "scripts/keycloak-register-client.sh": "register or update an MCP OAuth client in the live "
                                            "realm",
-    "scripts/keycloak-register-brainzzz.sh": "the brainzzz client specifically",
+    "scripts/keycloak-register-brainzzz.sh": "the brainzzz client, its STS identity provider "
+                                            "for the jwt-bearer grant and the client policy "
+                                            "on its assertions, from the keycloak/ templates",
+    "scripts/keycloak-link-brainzzz-users.sh": "link realm users to the brainzzz provider so "
+                                              "its assertions resolve them; --unlink revokes",
+    "scripts/brainzzz-grant-proving-ground.py": "mint brainzzz-shaped assertions with the "
+                                                "staging test key and measure the grant end "
+                                                "to end, token endpoint through /mcp",
     "scripts/keycloak-bind-allowlist.sh": "bind the email allow-list authenticator and realm "
                                           "attributes",
     "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
