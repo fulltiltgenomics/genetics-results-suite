@@ -4567,7 +4567,6 @@ profiles:
 
       huerta_chagoya_t2d:
         resource: huerta_chagoya_t2d
-        dataset: Huerta_Chagoya_T2D_2024
         version: "2024"
         description: >-
           Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2
@@ -5794,7 +5793,6 @@ profiles:
 
       huerta_chagoya_t2d:
         resource: huerta_chagoya_t2d
-        dataset: Huerta_Chagoya_T2D_2024
         version: "2024"
         description: >-
           Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2
