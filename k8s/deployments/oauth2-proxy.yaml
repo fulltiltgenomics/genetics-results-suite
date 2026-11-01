@@ -23,8 +23,8 @@ spec:
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.14.3
         args:
-        # provider is profile-driven (env OAUTH2_PROXY_PROVIDER below): "google" (direct, e.g.
-        # finngen) or "oidc" against the Keycloak broker for Google/Apple/Microsoft (e.g. daly).
+        # provider is set by deploy.sh (env OAUTH2_PROXY_PROVIDER below): "oidc" against the
+        # Keycloak broker, or "google" directly when the broker is disabled.
         # email domains come from OAUTH2_PROXY_EMAIL_DOMAINS (env, comma-separated) so several
         # domains can be allowed; specific extra addresses go in the authenticated-emails file.
         - --authenticated-emails-file=/etc/oauth2-proxy/allowed-emails.txt
@@ -48,6 +48,10 @@ spec:
         - --cookie-expire=168h
         - --upstream=static://200
         - --skip-provider-button=true
+        # the realm's PKCE enforcer refuses an authorize request that carries no code challenge,
+        # and oauth2-proxy sends none by default. So this must be rolled out BEFORE that policy
+        # is applied on any cluster, or every browser login fails.
+        - --code-challenge-method=S256
         ports:
         - containerPort: 4180
         env:

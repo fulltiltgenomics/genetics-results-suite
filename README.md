@@ -11,7 +11,8 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
            └── /*  → auth-gateway (nginx, port 8080)
                      ├── /oauth2/*  → oauth2-proxy (OIDC/Google login, port 4180)
                      ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — only where the
-                     │                 identity broker is enabled (see docs/keycloak-apple-signin.md)
+                     │                 identity broker is enabled (see docs/keycloak-apple-signin.md),
+                     │                 plus its RFC 8414 path-insertion metadata under /.well-known/
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
                      │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:

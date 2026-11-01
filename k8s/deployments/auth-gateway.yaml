@@ -151,8 +151,9 @@ data:
 
         # MCP OAuth protected-resource metadata (RFC 9728) — served UNAUTHENTICATED so MCP
         # clients can auto-discover the authorization server before they hold a token. Only the
-        # protected-RESOURCE metadata is proxied here; the authorization-server metadata
-        # (/.well-known/oauth-authorization-server) is served by Keycloak at its path-based issuer.
+        # protected-RESOURCE metadata is proxied here; the authorization-server metadata is served
+        # by Keycloak at its path-based issuer, and its RFC 8414 path-insertion form by the
+        # injected Keycloak locations where the broker is enabled.
         location = /.well-known/oauth-protected-resource {
           proxy_pass http://mcp-server.genetics.svc.cluster.local:8080/.well-known/oauth-protected-resource;
           proxy_set_header Host $host;
@@ -560,14 +561,15 @@ spec:
       #     the token — @api_bearer proxies straight to results-api, so the body is on disk before
       #     any upstream gets the chance to reject it.
       #     The auth_request-free locations, machine-derived from the RENDERED config rather than
-      #     read off this file (14 locations; 10 of them carry no `auth_request /oauth2/auth`):
+      #     read off this file:
       #       = /healthz and @oauth2_login          `return`, no proxy_pass, no body read
       #       = /oauth2/auth                        internal, proxy_pass_request_body off
       #       /provision/                           proxy_pass, but its own client_max_body_size 16k
       #       /oauth2/, = /mcp, @api_bearer,
       #       = /.well-known/oauth-protected-resource,
       #       = /.well-known/oauth-protected-resource/mcp,
-      #       and the injected Keycloak login location where enabled
+      #       and the injected Keycloak locations where enabled (the login prefix and
+      #       the two exact path-insertion discovery documents)
       #                                             proxy_pass with request buffering on -> SPOOL
       #     The four that DO carry auth_request are /api/, = /status, /chat/v1/ and /. Re-derive
       #     this list rather than trusting it; @api_bearer was missed once already, and it is the
