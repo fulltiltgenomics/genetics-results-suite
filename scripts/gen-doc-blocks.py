@@ -447,6 +447,9 @@ LAYOUT = {
     "scripts/keycloak-sync-dcr-policy.sh": "set the live realm's anonymous client-registration "
                                           "policies, mcp-pkce and the basic scope's /mcp "
                                           "audience from keycloak/mcp-dcr.json.template",
+    "scripts/keycloak-prune-dcr-clients.sh": "list the live realm's anonymously registered "
+                                             "clients and the Max Clients headroom; --delete "
+                                             "prunes old ones with no sessions",
     "scripts/keycloak-register-microsoft-idp.sh": "add or update the Microsoft IdP in the live "
                                                   "realm from MICROSOFT_* in .env",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
