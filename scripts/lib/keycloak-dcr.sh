@@ -12,6 +12,14 @@
 #                         Anonymous registrants may attach no protocol mappers: MCP clients need
 #                         none, and Keycloak's default list lets one map username into the email
 #                         claim, which the mcp-server would trust. An empty list refuses every type.
+#                         The gateway exposes only the OIDC registration endpoint, but Keycloak's
+#                         native one (/realms/genetics/clients-registrations/default) stays reachable
+#                         unauthenticated from inside the cluster and honours a caller-chosen
+#                         clientId, service accounts and arbitrary attributes. What keeps that
+#                         harmless is the mcp-server accepting only the email claim and this policy
+#                         set allowing no mappers, not the gateway; a Keycloak ingress network policy
+#                         admitting only the gateway, oauth2-proxy and chat-backend would make the
+#                         gateway rule the only path for everyone else.
 #   clientProfile/Policy  mcp-pkce: PKCE S256 enforced on every client, registered or not
 #   audienceMapper        aud = OAUTH_RESOURCE_URL on the built-in basic scope, so a registered
 #                         client's tokens pass the mcp-server's audience check. Not in the realm
