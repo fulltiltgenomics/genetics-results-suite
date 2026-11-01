@@ -9,6 +9,9 @@
 #                         Keycloak's default minus Trusted Hosts, which is what refused every
 #                         anonymous registration. "openid" is not a Keycloak client scope, but MCP
 #                         clients request it and the policy refuses any name it does not list.
+#                         Anonymous registrants may attach no protocol mappers: MCP clients need
+#                         none, and Keycloak's default list lets one map username into the email
+#                         claim, which the mcp-server would trust. An empty list refuses every type.
 #   clientProfile/Policy  mcp-pkce: PKCE S256 enforced on every client, registered or not
 #   audienceMapper        aud = OAUTH_RESOURCE_URL on the built-in basic scope, so a registered
 #                         client's tokens pass the mcp-server's audience check. Not in the realm

@@ -15,18 +15,7 @@
       "providerId": "allowed-protocol-mappers",
       "subType": "anonymous",
       "subComponents": {},
-      "config": {
-        "allowed-protocol-mapper-types": [
-          "saml-user-attribute-mapper",
-          "saml-user-property-mapper",
-          "oidc-address-mapper",
-          "oidc-usermodel-attribute-mapper",
-          "oidc-full-name-mapper",
-          "saml-role-list-mapper",
-          "oidc-usermodel-property-mapper",
-          "oidc-sha256-pairwise-sub-mapper"
-        ]
-      }
+      "config": { "allowed-protocol-mapper-types": [] }
     },
     {
       "name": "Allowed Registration Web Origins",
