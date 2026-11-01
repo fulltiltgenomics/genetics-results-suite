@@ -275,9 +275,12 @@ data:
           chunked_transfer_encoding off;
         }
 
-        # Keycloak identity broker login path (e.g. /auth/), injected by deploy.sh only when
-        # the broker is enabled (daly); empty otherwise. Served WITHOUT oauth2-proxy auth — it
-        # is the auth endpoint itself. Placed before "location /" so the prefix matches first.
+        # Keycloak identity broker locations, injected by deploy.sh only when the broker is
+        # enabled (daly); empty otherwise: the login path (e.g. /auth/), the realm's RFC 8414
+        # path-insertion discovery documents, and of Keycloak's client-registration endpoints
+        # only the OIDC one, every other clients-registrations/ path answering 404 (deploy.sh
+        # says why). Served WITHOUT oauth2-proxy auth — they are the auth endpoints themselves.
+        # Placed before "location /" so the prefixes match first.
         ${KEYCLOAK_SERVER}
 
         # frontend

@@ -11,6 +11,7 @@ SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
 # resolve which deployment this is (DEPLOY_ENV) and load its gitignored .env
 . "${SCRIPT_DIR}/lib/env.sh"
 . "${SCRIPT_DIR}/lib/keycloak-brainzzz.sh"
+. "${SCRIPT_DIR}/lib/keycloak-dcr.sh"
 resolve_deploy_env
 load_deploy_env
 
@@ -501,7 +502,17 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   # issuer-appended form, so without them the request falls through to "location /" and 302s
   # to the login page, which MCP clients that try this form first cannot parse. They force
   # X-Forwarded-Proto https like the login location, or Keycloak reports an http issuer.
-  printf -v KEYCLOAK_SERVER 'location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          # TLS terminates at the ingress and this hop is plain http, so $scheme is http here.\n          # Tell Keycloak the public scheme is https (the /auth path is only reached via the\n          # https ingress) so it treats the request as a secure context and sets Secure;\n          # SameSite=None cookies itself (needed for the Apple cross-site form_post callback).\n          proxy_set_header X-Forwarded-Proto https;\n          # Belt-and-suspenders for the Apple form_post: force the login cookies SameSite=None;\n          # Secure even if Keycloak ever decides otherwise (default Lax is dropped on the\n          # cross-site POST, giving "Restart login cookie not found").\n          proxy_cookie_flags ~ secure samesite=none;\n        }\n\n        location = /.well-known/oauth-authorization-server%s/realms/genetics {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/.well-known/oauth-authorization-server;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto https;\n        }\n\n        location = /.well-known/openid-configuration%s/realms/genetics {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/.well-known/openid-configuration;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto https;\n        }' "${KEYCLOAK_PATH}" "${KEYCLOAK_PATH}" "${KEYCLOAK_PATH}"
+  # of Keycloak's client-registration endpoints only the OIDC one (RFC 7591, what MCP clients
+  # use) is proxied; the regex location 404s every other path containing clients-registrations.
+  # The native "default" endpoint lets the caller choose the clientId, and with it the
+  # service-account username (service-account-<clientId>); the OIDC endpoint generates a UUID.
+  # Closing it does not stop an anonymous client from getting a no-login client_credentials
+  # token carrying the /mcp audience: only the mcp-server's allow-list on the email claim refuses
+  # those. nginx picks the exact match first, and a matching regex beats the plain /auth/ prefix;
+  # a regex rather than a ^~ prefix so matrix segments (";x") and other realm names cannot route
+  # around it. The 404 also refuses registration-management calls (openid-connect/<client_id>
+  # with the registration access token).
+  printf -v KEYCLOAK_SERVER 'location = %s/realms/genetics/clients-registrations/openid-connect {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/clients-registrations/openid-connect;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto https;\n          proxy_cookie_flags ~ secure samesite=none;\n        }\n\n        location ~ clients-registrations {\n          return 404;\n        }\n\n        location %s/ {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          # TLS terminates at the ingress and this hop is plain http, so $scheme is http here.\n          # Tell Keycloak the public scheme is https (the /auth path is only reached via the\n          # https ingress) so it treats the request as a secure context and sets Secure;\n          # SameSite=None cookies itself (needed for the Apple cross-site form_post callback).\n          proxy_set_header X-Forwarded-Proto https;\n          # Belt-and-suspenders for the Apple form_post: force the login cookies SameSite=None;\n          # Secure even if Keycloak ever decides otherwise (default Lax is dropped on the\n          # cross-site POST, giving "Restart login cookie not found").\n          proxy_cookie_flags ~ secure samesite=none;\n        }\n\n        location = /.well-known/oauth-authorization-server%s/realms/genetics {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/.well-known/oauth-authorization-server;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto https;\n        }\n\n        location = /.well-known/openid-configuration%s/realms/genetics {\n          proxy_pass http://keycloak.genetics.svc.cluster.local:8080/realms/genetics/.well-known/openid-configuration;\n          proxy_set_header Host $host;\n          proxy_set_header X-Real-IP $remote_addr;\n          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n          proxy_set_header X-Forwarded-Proto https;\n        }' "${KEYCLOAK_PATH}" "${KEYCLOAK_PATH}" "${KEYCLOAK_PATH}" "${KEYCLOAK_PATH}"
   echo "Keycloak broker enabled (login URL: https://${KEYCLOAK_HOST})"
 else
   export OAUTH2_PROVIDER="google"
@@ -673,14 +684,24 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   if brainzzz_sts_enabled; then
     BRAINZZZ_STS_JSON="$(render_brainzzz_sts "${ROOT_DIR}/keycloak/brainzzz-sts.json.template")"
     BRAINZZZ_IDP_ENTRY=",$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["identityProvider"]))' <<< "${BRAINZZZ_STS_JSON}")"
-    BRAINZZZ_CLIENT_PROFILE_ENTRY="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientProfile"]))' <<< "${BRAINZZZ_STS_JSON}")"
-    BRAINZZZ_CLIENT_POLICY_ENTRY="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientPolicy"]))' <<< "${BRAINZZZ_STS_JSON}")"
+    BRAINZZZ_CLIENT_PROFILE_ENTRY=",$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientProfile"]))' <<< "${BRAINZZZ_STS_JSON}")"
+    BRAINZZZ_CLIENT_POLICY_ENTRY=",$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["clientPolicy"]))' <<< "${BRAINZZZ_STS_JSON}")"
   fi
   export BRAINZZZ_IDP_ENTRY BRAINZZZ_CLIENT_PROFILE_ENTRY BRAINZZZ_CLIENT_POLICY_ENTRY
+  # anonymous Dynamic Client Registration for MCP clients: the registration policies and the
+  # PKCE policy (scripts/lib/keycloak-dcr.sh). Unconditional, so these entries come first in the
+  # shared arrays and the brainzzz ones above carry the leading comma. Same fresh-DB caveat; the
+  # live realm, and the audience mapper the import cannot carry, go through
+  # scripts/keycloak-sync-dcr-policy.sh.
+  MCP_DCR_JSON="$(render_mcp_dcr "${ROOT_DIR}/keycloak/mcp-dcr.json.template")"
+  MCP_DCR_REGISTRATION_POLICIES="$(mcp_dcr_registration_policies <<< "${MCP_DCR_JSON}")"
+  MCP_DCR_CLIENT_PROFILE_ENTRY="$(mcp_dcr_client_profile <<< "${MCP_DCR_JSON}")"
+  MCP_DCR_CLIENT_POLICY_ENTRY="$(mcp_dcr_client_policy <<< "${MCP_DCR_JSON}")"
+  export MCP_DCR_REGISTRATION_POLICIES MCP_DCR_CLIENT_PROFILE_ENTRY MCP_DCR_CLIENT_POLICY_ENTRY
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY} ${BRAINZZZ_IDP_ENTRY} ${BRAINZZZ_CLIENT_PROFILE_ENTRY} ${BRAINZZZ_CLIENT_POLICY_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY} ${BRAINZZZ_IDP_ENTRY} ${BRAINZZZ_CLIENT_PROFILE_ENTRY} ${BRAINZZZ_CLIENT_POLICY_ENTRY} ${MCP_DCR_REGISTRATION_POLICIES} ${MCP_DCR_CLIENT_PROFILE_ENTRY} ${MCP_DCR_CLIENT_POLICY_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \

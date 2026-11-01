@@ -396,11 +396,11 @@ LAYOUT = {
     "k8s/disruption-budgets": "PodDisruptionBudgets",
     "k8s/network-policies": "network isolation rules, including the sandbox's",
     "k8s/volumes": "PersistentVolumeClaims",
-    "keycloak": "Keycloak image build context, realm/client/IdP templates and the login theme",
+    "keycloak": "Keycloak image build context, realm/client/IdP/registration-policy templates and the login theme",
     "sandbox": "sandbox image build context for model-authored Python; the SDK is "
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
-    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS template renderer deploy.sh and the register script share",
+    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS and MCP client-registration template renderers deploy.sh and the live-realm scripts share",
     "scripts/cellxgene": "the CELLxGENE proving-ground Batch job spec; the pipeline itself "
                          "lives in genetics-results-munge",
     "scripts/monitor": "the monitoring CronJob's Python package",
@@ -444,6 +444,9 @@ LAYOUT = {
                                           "attributes",
     "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
                                              "the template and the default IdP redirect",
+    "scripts/keycloak-sync-dcr-policy.sh": "set the live realm's anonymous client-registration "
+                                          "policies, mcp-pkce and the basic scope's /mcp "
+                                          "audience from keycloak/mcp-dcr.json.template",
     "scripts/keycloak-register-microsoft-idp.sh": "add or update the Microsoft IdP in the live "
                                                   "realm from MICROSOFT_* in .env",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",

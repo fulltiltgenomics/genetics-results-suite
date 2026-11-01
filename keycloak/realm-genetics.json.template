@@ -40,6 +40,9 @@
       }
     }${APPLE_IDP_ENTRY}${MICROSOFT_IDP_ENTRY}${BRAINZZZ_IDP_ENTRY}
   ],
-  "clientProfiles": { "profiles": [${BRAINZZZ_CLIENT_PROFILE_ENTRY}] },
-  "clientPolicies": { "policies": [${BRAINZZZ_CLIENT_POLICY_ENTRY}] }
+  "components": {
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": ${MCP_DCR_REGISTRATION_POLICIES}
+  },
+  "clientProfiles": { "profiles": [${MCP_DCR_CLIENT_PROFILE_ENTRY}${BRAINZZZ_CLIENT_PROFILE_ENTRY}] },
+  "clientPolicies": { "policies": [${MCP_DCR_CLIENT_POLICY_ENTRY}${BRAINZZZ_CLIENT_POLICY_ENTRY}] }
 }
