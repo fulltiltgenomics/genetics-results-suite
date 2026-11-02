@@ -73,8 +73,8 @@ spec:
         - name: LOG_LEVEL
           value: "INFO"
         # Keycloak OAuth resource-server. Optional PUBLIC values
-        # injected per profile by deploy.sh: set for the Keycloak-enabled profile (daly/GeneGenie),
-        # empty for profiles with the broker off (finngen) so the OAuth path stays inert. JWKS is
+        # injected by deploy.sh: set when the Keycloak broker is enabled (the default), empty
+        # with ENABLE_KEYCLOAK=false so the OAuth path stays inert. JWKS is
         # derived by the server from OAUTH_ISSUER, so OAUTH_JWKS_URI is intentionally left unset.
         - name: OAUTH_ISSUER
           value: "${OAUTH_ISSUER}"

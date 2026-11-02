@@ -275,12 +275,13 @@ data:
           chunked_transfer_encoding off;
         }
 
-        # Keycloak identity broker locations, injected by deploy.sh only when the broker is
-        # enabled (daly); empty otherwise: the login path (e.g. /auth/), the realm's RFC 8414
-        # path-insertion discovery documents, and of Keycloak's client-registration endpoints
-        # only the OIDC one, every other clients-registrations/ path answering 404 (deploy.sh
-        # says why). Served WITHOUT oauth2-proxy auth — they are the auth endpoints themselves.
-        # Placed before "location /" so the prefixes match first.
+        # Keycloak identity broker locations, injected by deploy.sh when the broker is enabled;
+        # empty otherwise: the /auth/ login prefix, the realm's RFC 8414 path-insertion
+        # discovery documents, and of Keycloak's client-registration endpoints only the OIDC
+        # one, every other path containing clients-registrations answering 404 (deploy.sh says
+        # why). Served WITHOUT oauth2-proxy auth — they are the auth endpoints themselves.
+        # nginx picks an exact `=` match first, then the longest prefix (a `^~` prefix stops there), otherwise the
+        # first matching regex in file order; this fragment has no `^~` and one regex, so its position is irrelevant.
         ${KEYCLOAK_SERVER}
 
         # frontend
@@ -571,8 +572,9 @@ spec:
       #       /oauth2/, = /mcp, @api_bearer,
       #       = /.well-known/oauth-protected-resource,
       #       = /.well-known/oauth-protected-resource/mcp,
-      #       and the injected Keycloak locations where enabled (the login prefix and
-      #       the two exact path-insertion discovery documents)
+      #       and the injected Keycloak locations where enabled (the login prefix, the
+      #       two exact path-insertion discovery documents and the exact OIDC
+      #       client-registration endpoint; the clients-registrations regex only returns 404)
       #                                             proxy_pass with request buffering on -> SPOOL
       #     The four that DO carry auth_request are /api/, = /status, /chat/v1/ and /. Re-derive
       #     this list rather than trusting it; @api_bearer was missed once already, and it is the

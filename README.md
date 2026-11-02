@@ -297,17 +297,23 @@ cd ..
 
 ### 2. Set up OAuth credentials
 
-Create Google OAuth credentials for oauth2-proxy:
+Create Google OAuth credentials for the Keycloak broker, which is on by default (oauth2-proxy
+talks to Keycloak, and the Google client belongs to Keycloak):
 
 1. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials?project=$GCP_PROJECT)
 2. Create an **OAuth client ID** (Web application)
 3. Add authorized JavaScript origin(s): `https://your-domain.example.com`
-4. Add authorized redirect URI(s): `https://your-domain.example.com/oauth2/callback`
+4. Add authorized redirect URI(s): `https://your-domain.example.com/auth/realms/genetics/broker/google/endpoint`
 
-> With the Keycloak identity broker enabled, oauth2-proxy talks to Keycloak instead and the Google
-> client belongs to Keycloak — its redirect URI is
-> `https://your-domain.example.com/auth/realms/genetics/broker/google/endpoint`. See
-> [docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
+Put its id and secret in `.env` as `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; `deploy.sh` renders
+them into the realm import. Under the `ENABLE_KEYCLOAK=false` rollback oauth2-proxy uses the Google
+client directly, and the redirect URI is `https://your-domain.example.com/oauth2/callback`. See
+[docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
+
+MCP clients (Claude Code, claude.ai, Cursor) need no client set up here: they discover Keycloak
+from `/mcp` and register themselves anonymously; how that is bounded is in
+[docs/project-spec.md](docs/project-spec.md) ("MCP OAuth"), and confidential apps are
+registered by hand ([docs/mcp-oauth-onboarding.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/mcp-oauth-onboarding.md)).
 
 ### 3. Create secrets
 
@@ -344,10 +350,12 @@ export DEPMAP_MCP_OAUTH='{"token_endpoint":...}'  # optional, the same for DepMa
 # refuses to start without one) is auto-generated too if not set; export it yourself
 # (comma-separated for multiple keys) to pin a specific value instead
 
-# oauth2-proxy credentials (YOUR_CLIENT_ID/SECRET from the OAuth client created in step 2).
-# only needed on first install — afterwards they're reused from the cluster if unset.
-export OAUTH2_PROXY_CLIENT_ID='YOUR_CLIENT_ID'
-export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
+# oauth2-proxy credentials: with the broker on, the realm's client and a secret you generate
+# once (e.g. openssl rand -base64 32) and also keep in .env, which deploy.sh renders into the
+# realm; under ENABLE_KEYCLOAK=false, the Google client from step 2. Only needed on first
+# install — afterwards they're reused from the cluster if unset.
+export OAUTH2_PROXY_CLIENT_ID='oauth2-proxy'
+export OAUTH2_PROXY_CLIENT_SECRET='YOUR_GENERATED_SECRET'   # the value in .env
 # OAUTH2_PROXY_COOKIE_SECRET is generated on first install and reused thereafter (never rotated).
 
 ./scripts/create-secrets.sh

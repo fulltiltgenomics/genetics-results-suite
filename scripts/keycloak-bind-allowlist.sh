@@ -14,8 +14,9 @@ set -euo pipefail
 # them that exist in the realm) at the copy.
 #
 # Allow-list source (same as deploy.sh / oauth2-proxy):
-#   OAUTH_EMAIL_DOMAIN    comma/space separated domains   (e.g. "broadinstitute.org")
-#   OAUTH_ALLOWED_EMAILS  comma/space separated addresses (e.g. Apple privaterelay aliases)
+#   OAUTH_EMAIL_DOMAIN    domains (e.g. "broadinstitute.org"); the authenticator splits on commas,
+#                         semicolons and whitespace, the login helper line takes the text before the first comma
+#   OAUTH_ALLOWED_EMAILS  addresses, split the same way (e.g. Apple privaterelay aliases)
 
 NAMESPACE="${NAMESPACE:-genetics}"
 REALM="${KC_REALM:-genetics}"

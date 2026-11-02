@@ -14,8 +14,8 @@ set -euo pipefail
 #
 # Keycloak records no creation time on a client, so age is measured from the first run that saw
 # it: a write mode stamps the attribute suite.first-seen (ISO 8601 UTC) on each DCR client lacking
-# it. --delete then removes a DCR client only when that stamp is older than --older-than days AND
-# it has no active and no offline session — a client whose refresh token is still in use keeps an
+# it. --delete then removes a DCR client only when that stamp is at least --older-than full days
+# old AND it has no active and no offline session — a client whose refresh token is still in use keeps an
 # offline session, so a connector someone is using survives regardless of age.
 #
 # Usage: DEPLOY_ENV=<env> scripts/keycloak-prune-dcr-clients.sh [--delete [--older-than DAYS]]
