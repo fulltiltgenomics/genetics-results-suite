@@ -4,6 +4,9 @@
   "displayNameHtml": "${APP_NAME}",
   "enabled": true,
   "loginTheme": "genetics",
+  "localizationTexts": {
+    "en": { "identity-provider-login-label": "Sign in with your ${GOOGLE_LOGIN_DOMAIN} Google account" }
+  },
   "ssoSessionIdleTimeout": 604800,
   "ssoSessionMaxLifespan": 5184000,
   "attributes": {

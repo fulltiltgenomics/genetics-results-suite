@@ -26,6 +26,15 @@ BUILTIN_ENC="${BUILTIN_FLOW// /%20}"
 PROVIDER="script-email-allowlist.js"
 IDPS="${IDPS:-google apple microsoft}"
 
+# an empty value would write empty allowedEmailDomains/allowedEmails, after which the allow-list
+# denies every first broker login while this script reports success. OAUTH_ALLOWED_EMAILS may be
+# empty: a deployment can have no extra addresses.
+if [ -z "${OAUTH_EMAIL_DOMAIN:-}" ]; then
+  echo "ERROR: OAUTH_EMAIL_DOMAIN is empty or unset; refusing to write an empty allow-list." >&2
+  echo "Usage: OAUTH_EMAIL_DOMAIN=<domains> [OAUTH_ALLOWED_EMAILS=...] IDPS=... scripts/keycloak-bind-allowlist.sh" >&2
+  exit 1
+fi
+
 POD="$(kubectl get pods -n "${NAMESPACE}" -l app=keycloak -o jsonpath='{.items[0].metadata.name}')"
 AU="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 -d)"
 AP="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-password}' | base64 -d)"
@@ -37,9 +46,9 @@ kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@
 echo "Authenticating kcadm against ${POD}..."
 kc config credentials --server http://localhost:8080 --realm master --user "${AU}" --password "${AP}" >/dev/null
 
-echo "Syncing allow-list realm attributes (domains='${OAUTH_EMAIL_DOMAIN:-}', emails='${OAUTH_ALLOWED_EMAILS:-}')..."
+echo "Syncing allow-list realm attributes (domains='${OAUTH_EMAIL_DOMAIN}', emails='${OAUTH_ALLOWED_EMAILS:-}')..."
 kc update "realms/${REALM}" \
-  -s "attributes.allowedEmailDomains=${OAUTH_EMAIL_DOMAIN:-}" \
+  -s "attributes.allowedEmailDomains=${OAUTH_EMAIL_DOMAIN}" \
   -s "attributes.allowedEmails=${OAUTH_ALLOWED_EMAILS:-}"
 
 # 1) custom flow = copy of the built-in (built-in flows are not editable)
@@ -190,6 +199,23 @@ if [ -n "${NEW_PROFILE}" ]; then
   kubectl exec -n "${NAMESPACE}" "${POD}" -- bash -c \
     "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json ${KC_CONFIG} && rm -f /tmp/kc-userprofile.json"
   echo "Made firstName/lastName optional in the user profile."
+fi
+
+# 6) the helper line above the IdP buttons names the primary domain only, because the allow-list
+# may hold several. A realm localization override, since the theme bundle ships in the one image.
+# Last, so a failure here cannot skip binding the IdPs or the profile change; same derivation as
+# deploy.sh so a fresh import and a reconciled realm render the same sentence. kcadm can read the
+# key only through the whole map: the single-key GET answers text/plain, which kcadm refuses.
+LABEL_KEY="identity-provider-login-label"
+LABEL="Sign in with your ${OAUTH_EMAIL_DOMAIN%%,*} Google account"
+CURRENT_LABEL="$(kc get "realms/${REALM}/localization/en" | python3 -c '
+import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "${LABEL_KEY}")"
+if [ "${CURRENT_LABEL}" = "${LABEL}" ]; then
+  echo "Localization override en/${LABEL_KEY} already '${LABEL}'."
+else
+  kc create "realms/${REALM}/localization/en" \
+    -b "$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "${LABEL_KEY}" "${LABEL}")"
+  echo "Localization override en/${LABEL_KEY} -> '${LABEL}'."
 fi
 
 echo "Done."

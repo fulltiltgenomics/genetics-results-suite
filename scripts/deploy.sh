@@ -436,6 +436,8 @@ TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
+# the login page's helper line names the primary domain only, because the allow-list may hold several
+export GOOGLE_LOGIN_DOMAIN="${OAUTH_EMAIL_DOMAIN%%,*}"
 TF_OAUTH_ALLOWED_EMAILS=$(terraform output -raw oauth_allowed_emails 2>/dev/null || true)
 export OAUTH_ALLOWED_EMAILS="${OAUTH_ALLOWED_EMAILS:-${TF_OAUTH_ALLOWED_EMAILS}}"
 # audience accepted on Google Identity Tokens — a deprecated access path; per-user API keys are the
@@ -701,7 +703,7 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # the oauth2-proxy callback lives on the canonical web host (redirect_to_host when migrating,
   # else the primary domain) — NOT a legacy host that 301-redirects away.
   REALM_DOMAIN="${REDIRECT_TO_HOST:-${DOMAIN}}"
-  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY} ${BRAINZZZ_IDP_ENTRY} ${BRAINZZZ_CLIENT_PROFILE_ENTRY} ${BRAINZZZ_CLIENT_POLICY_ENTRY} ${MCP_DCR_REGISTRATION_POLICIES} ${MCP_DCR_CLIENT_PROFILE_ENTRY} ${MCP_DCR_CLIENT_POLICY_ENTRY}' \
+  REALM_RENDERED="$(DOMAIN="${REALM_DOMAIN}" envsubst '${DOMAIN} ${APP_NAME} ${OAUTH_EMAIL_DOMAIN} ${GOOGLE_LOGIN_DOMAIN} ${OAUTH_ALLOWED_EMAILS} ${OAUTH2_PROXY_CLIENT_SECRET} ${GOOGLE_CLIENT_ID} ${GOOGLE_CLIENT_SECRET} ${APPLE_IDP_ENTRY} ${MICROSOFT_IDP_ENTRY} ${BRAINZZZ_CLIENT_ENTRY} ${BRAINZZZ_IDP_ENTRY} ${BRAINZZZ_CLIENT_PROFILE_ENTRY} ${BRAINZZZ_CLIENT_POLICY_ENTRY} ${MCP_DCR_REGISTRATION_POLICIES} ${MCP_DCR_CLIENT_PROFILE_ENTRY} ${MCP_DCR_CLIENT_POLICY_ENTRY}' \
     < "${ROOT_DIR}/keycloak/realm-genetics.json.template")"
   kubectl create secret generic keycloak-realm \
     --from-literal=realm.json="${REALM_RENDERED}" \
