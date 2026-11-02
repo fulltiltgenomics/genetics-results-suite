@@ -10,8 +10,8 @@ Runbooks that name projects, hosts and users are kept out of this public reposit
 Internet → GKE Ingress (HTTPS, Google-managed certs)
            └── /*  → auth-gateway (nginx, port 8080)
                      ├── /oauth2/*  → oauth2-proxy (OIDC/Google login, port 4180)
-                     ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — only where the
-                     │                 identity broker is enabled (see docs/keycloak-apple-signin.md),
+                     ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — on by default,
+                     │                 ENABLE_KEYCLOAK=false turns it off (see docs/keycloak-apple-signin.md),
                      │                 plus its RFC 8414 path-insertion metadata under /.well-known/
                      │                 and, of its client-registration endpoints, only the OIDC one
                      │                 (any other path containing clients-registrations → 404)
@@ -313,8 +313,10 @@ Create Google OAuth credentials for oauth2-proxy:
 
 `create-secrets.sh` creates `genetics-secrets` (chat-backend API keys) and
 `oauth2-proxy-secrets` (the OAuth client creds + session cookie secret), plus `keycloak-secrets`
-(DB + bootstrap admin passwords, generated) where the identity broker is enabled. Set the relevant
-env vars, then run it once:
+(DB + bootstrap admin passwords, generated) unless `ENABLE_KEYCLOAK=false`. With the broker on,
+`OAUTH2_PROXY_CLIENT_ID` is the realm's `oauth2-proxy` client and `OAUTH2_PROXY_CLIENT_SECRET` a
+value you generate; `deploy.sh` renders the same secret into the realm import and refuses to run
+if `.env` lacks it. Set the relevant env vars, then run it once:
 ```bash
 export DEPLOY_ENV=daly-staging            # which deployment. Selects terraform.tfvars.<env>,
                                           # .env.<env>, and the only kubectl context this
@@ -395,11 +397,9 @@ kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   
 ./scripts/create-secrets.sh --context <the-cluster-you-mean>                    # deliberate
 ```
 
-> **Run it from the main checkout.** It derives the config profile (which decides whether
-> `keycloak-secrets` is written) from the tfvars `DEPLOY_ENV` selects, and those are gitignored
-> and live only there. From a git worktree `resolve_deploy_env` refuses with exit 1 rather than
-> guessing, and `CONFIG_PROFILE` does **not** rescue it — that variable overrides the profile
-> *read from* the file, it does not stand in for a missing one.
+> **Run it from the main checkout.** Its context guard compares against the `kube_context` in
+> the tfvars `DEPLOY_ENV` selects, and those are gitignored and live only there. From a git
+> worktree `resolve_deploy_env` refuses with exit 1 rather than guessing.
 
 ### 4. Build and push Docker images
 

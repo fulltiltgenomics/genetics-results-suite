@@ -476,10 +476,25 @@ else
 fi
 export LEGACY_REDIRECT
 
-# Keycloak identity broker — enabled per profile (default: on for daly). When enabled,
-# oauth2-proxy uses OIDC against Keycloak (Google + Apple) and the auth-gateway serves the
-# login endpoint; otherwise oauth2-proxy talks to Google directly and no broker is deployed.
-ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${CONFIG_PROFILE}" = "daly" ] && echo true || echo false)}"
+# Keycloak identity broker — on by default for every profile; ENABLE_KEYCLOAK=false is the
+# rollback lever (together with a create-secrets.sh re-run against the Google client). When
+# enabled, oauth2-proxy uses OIDC against Keycloak and the auth-gateway serves the login
+# endpoint; otherwise oauth2-proxy talks to Google directly and no broker is deployed.
+ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-true}"
+# the realm import renders from these and runs only against an empty database, so a deploy that
+# skipped the render would leave a first-start Keycloak with no realm, and a realm whose
+# oauth2-proxy client secret rendered empty is a broker no browser login can pass. Refuse here
+# rather than skip: nothing has been applied yet.
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  for var in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET OAUTH2_PROXY_CLIENT_SECRET; do
+    if [ -z "${!var:-}" ]; then
+      echo "ERROR: ${var} is not set in .env but the Keycloak broker is on (ENABLE_KEYCLOAK=true)."
+      echo "       The keycloak-realm import renders from it. Set it, or export ENABLE_KEYCLOAK=false"
+      echo "       to deploy without the broker (then re-run create-secrets.sh with the Google client)."
+      exit 1
+    fi
+  done
+fi
 # Keycloak is exposed under a PATH on the primary domain (https://<domain>/auth) so it reuses
 # the existing DNS record, managed cert and ingress — no dedicated auth.<domain> subdomain (and
 # its DNS/cert provisioning) required. Keycloak keeps its default "/" relative path and merely
@@ -527,8 +542,8 @@ export OAUTH2_PROVIDER OIDC_ISSUER_URL OIDC_BACKEND_LOGOUT_URL KEYCLOAK_SERVER
 
 # MCP OAuth resource-server env. Non-secret PUBLIC values rendered
 # into the mcp-server Deployment via envsubst; the mcp-server treats them as optional and the
-# whole OAuth path stays inert when they are empty — so profiles without the Keycloak broker
-# (finngen) get no resource-server behaviour. OAUTH_ISSUER reuses OIDC_ISSUER_URL so it exactly
+# whole OAuth path stays inert when they are empty — so a deployment run with
+# ENABLE_KEYCLOAK=false gets no resource-server behaviour. OAUTH_ISSUER reuses OIDC_ISSUER_URL so it exactly
 # matches the `iss` Keycloak advertises (KC_HOSTNAME/realms/genetics); OAUTH_RESOURCE_URL is the
 # MCP canonical URL / expected token audience on the canonical web host. JWKS is left to the
 # mcp-server (derives <issuer>/protocol/openid-connect/certs).
@@ -555,6 +570,27 @@ kubectl get secret genetics-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
   echo "ERROR: genetics-secrets not found. Run create-secrets.sh first."
   exit 1
 }
+
+# the broker's own secrets. keycloak.yaml mounts keycloak-secrets, and oauth2-proxy with the oidc
+# provider presents oauth2-proxy-secrets' client-id to the realm, whose client is literally
+# "oauth2-proxy" (keycloak/realm-genetics.json.template). Neither failure fails this script on its
+# own: a missing keycloak-secrets is CreateContainerConfigError behind the "rollout status ||
+# true" below, and a client-id still set to the Google client is a refused login at Keycloak.
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
+  kubectl get secret keycloak-secrets -n "${NAMESPACE}" > /dev/null 2>&1 || {
+    echo "ERROR: keycloak-secrets not found but the Keycloak broker is on (ENABLE_KEYCLOAK=true)."
+    echo "       Run create-secrets.sh first, or export ENABLE_KEYCLOAK=false for both scripts."
+    exit 1
+  }
+  O2P_CLIENT_ID="$(kubectl get secret oauth2-proxy-secrets -n "${NAMESPACE}" \
+    -o jsonpath='{.data.client-id}' 2>/dev/null | base64 -d || true)"
+  if [ "${O2P_CLIENT_ID}" != "oauth2-proxy" ]; then
+    echo "ERROR: oauth2-proxy-secrets client-id is '${O2P_CLIENT_ID:-<missing>}', not the realm's 'oauth2-proxy' client."
+    echo "       With the broker on, oauth2-proxy authenticates to Keycloak with the realm's client, not Google's:"
+    echo "       set OAUTH2_PROXY_CLIENT_ID=oauth2-proxy and OAUTH2_PROXY_CLIENT_SECRET in .env, re-run create-secrets.sh."
+    exit 1
+  fi
+fi
 
 # Every deployment below mounts sandbox-token-signing-key. Missing, the pods stay in
 # CreateContainerConfigError rather than starting degraded, so catch it here instead: an older
@@ -646,8 +682,9 @@ kubectl create configmap oauth2-allowed-emails \
 # MICROSOFT_CLIENT_ID are set in .env (register the app with the provider first); until then
 # the realm is Google-only. On an already-imported realm use the admin console or
 # scripts/keycloak-register-microsoft-idp.sh instead.
-# Skipped when the broker is disabled, or if GOOGLE_CLIENT_ID isn't set.
-if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
+# Skipped only when the broker is disabled; the variables it renders were checked where
+# ENABLE_KEYCLOAK is derived.
+if [ "${ENABLE_KEYCLOAK}" = "true" ]; then
   APPLE_IDP_ENTRY=""
   if [ -n "${APPLE_SERVICES_ID:-}" ]; then
     APPLE_JSON="$(envsubst '${APPLE_SERVICES_ID} ${APPLE_TEAM_ID} ${APPLE_KEY_ID} ${APPLE_P8_KEY}' \
@@ -709,8 +746,6 @@ if [ "${ENABLE_KEYCLOAK}" = "true" ] && [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
     --from-literal=realm.json="${REALM_RENDERED}" \
     -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   echo "keycloak-realm rendered (IdPs: google${APPLE_SERVICES_ID:+ apple}${MICROSOFT_CLIENT_ID:+ microsoft}${BRAINZZZ_STS_ISSUER:+ brainzzz})"
-elif [ "${ENABLE_KEYCLOAK}" = "true" ]; then
-  echo "Skipping keycloak-realm render (GOOGLE_CLIENT_ID not set in .env)"
 fi
 
 # keycloak login theme CSS: mounted into the keycloak pod from this ConfigMap so visual tweaks

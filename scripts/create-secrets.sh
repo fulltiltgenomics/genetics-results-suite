@@ -34,7 +34,7 @@ set -euo pipefail
 #                           set, generated on first install — it's a secret this deployment mints
 #                           for itself, not a third-party credential, so a generated value is valid.
 #   SLACK_WEBHOOK_URL     - Slack webhook URL for alerting (optional)
-#   OAUTH2_PROXY_CLIENT_ID     - oauth2-proxy OAuth client id (Google client id on finngen; Keycloak OIDC client id on daly). reused from the cluster if not set; required on first install
+#   OAUTH2_PROXY_CLIENT_ID     - oauth2-proxy OAuth client id: the realm's `oauth2-proxy` client with the broker on, else the Google client id. reused from the cluster if not set; required on first install
 #   OAUTH2_PROXY_CLIENT_SECRET - matching OAuth client secret (reused if not set; required on first install)
 #   OAUTH2_PROXY_COOKIE_SECRET - oauth2-proxy session cookie secret (reused from the cluster if not set, generated on first install — never rotated on re-run, so sessions survive)
 
@@ -197,29 +197,10 @@ if [ "${_post_env_context}" != "${ACTING_CONTEXT}" ]; then
 fi
 unset _post_env_context
 
-# the keycloak broker (and its secrets) is per-profile: on for daly, off otherwise.
-# derive from the tfvars resolve_deploy_env picked (it has already refused if that file is
-# missing, so the "profile is unknowable" case cannot reach here); override with
-# ENABLE_KEYCLOAK, or CONFIG_PROFILE to name the profile outright.
-PROFILE="${CONFIG_PROFILE:-$(tfvar config_profile)}"
-
-# enforce the "(daly|finngen)" the message below advertises. Anything else — a typo, a case
-# slip, or a tfvars with no config_profile line (tfvar yields empty rather than aborting) —
-# would otherwise fall straight through to ENABLE_KEYCLOAK=false and skip keycloak-secrets
-# silently, leaving a daly deploy with a keycloak pod that cannot start.
-# Same allowed set terraform/variables.tf validates.
-case "${PROFILE}" in
-  daly|finngen) ;;
-  *)
-    echo "ERROR: unrecognised config profile: ${PROFILE:-<empty>}"
-    echo "Expected one of: daly, finngen."
-    echo "An unrecognised profile would silently skip keycloak-secrets, which only daly needs,"
-    echo "and the deploy would then start keycloak with no secret to mount."
-    echo "Set CONFIG_PROFILE (daly|finngen), or fix config_profile in: ${TFVARS}"
-    exit 1
-    ;;
-esac
-ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-$([ "${PROFILE}" = "daly" ] && echo true || echo false)}"
+# the keycloak broker is on by default on every profile. ENABLE_KEYCLOAK=false is the rollback
+# lever, and deploy.sh needs the same value: it refuses when the broker is on and
+# keycloak-secrets is missing or the oauth2-proxy client-id is not the realm's.
+ENABLE_KEYCLOAK="${ENABLE_KEYCLOAK:-true}"
 
 echo "Creating genetics-secrets in namespace ${NAMESPACE} (env: ${DEPLOY_ENV:-default})..."
 
@@ -368,8 +349,8 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic genetics-secrets \
 echo "genetics-secrets created/updated."
 
 # oauth2-proxy-secrets: OAuth client creds + session cookie secret, consumed only by the
-# oauth2-proxy deployment (both profiles). client-id/client-secret are the Google OAuth client
-# on finngen, or the Keycloak OIDC client on daly. As with the other secrets, an explicit env
+# oauth2-proxy deployment (both profiles). client-id/client-secret are the realm's oauth2-proxy
+# client where the broker is on, else the Google OAuth client. As with the other secrets, an explicit env
 # value wins, else we reuse what's already in the cluster. The cookie-secret is reused-or-
 # generated (NEVER regenerated on a re-run) — rotating it would invalidate every active session.
 reuse_o2p() { secret_key oauth2-proxy-secrets "$1"; }
@@ -389,8 +370,8 @@ kubectl --context "${ACTING_CONTEXT}" create secret generic oauth2-proxy-secrets
 
 echo "oauth2-proxy-secrets created/updated."
 
-# keycloak-secrets: Postgres + Keycloak bootstrap admin credentials. Only for deployments
-# that run the broker (daly). Passwords are reused from the cluster if already present (so the
+# keycloak-secrets: Postgres + Keycloak bootstrap admin credentials, skipped only with
+# ENABLE_KEYCLOAK=false. Passwords are reused from the cluster if already present (so the
 # existing DB keeps working), else generated. The usernames are reused too, falling back to the
 # literal defaults rather than to empty: overwriting a non-default db-user with `keycloak` while
 # faithfully reusing db-password would leave Keycloak unable to authenticate to Postgres.
