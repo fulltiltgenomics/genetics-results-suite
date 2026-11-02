@@ -564,7 +564,8 @@ kubectl describe managedcertificate managed-cert -n genetics
 ```
 
 To 301-redirect an old hostname to a new one (keeping the old one in `domains` so its cert stays
-valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migration.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/genegenie-migration.md).
+valid), set `redirect_from_host`/`redirect_to_host`. `/mcp` is exempt and stays served on the old
+host too: MCP clients POST it with a bearer token and cannot follow a 301. See [docs/genegenie-migration.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/genegenie-migration.md).
 
 ## Updating Services
 

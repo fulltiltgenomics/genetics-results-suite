@@ -468,9 +468,14 @@ REDIRECT_TO_HOST="${REDIRECT_TO_HOST:-${TF_REDIRECT_TO_HOST}}"
 # build the auth-gateway legacy-redirect nginx snippet (empty when not configured).
 # indentation in the continuation lines matches the surrounding server { } block.
 if [ -n "${REDIRECT_FROM_HOST}" ] && [ -n "${REDIRECT_TO_HOST}" ]; then
-  printf -v LEGACY_REDIRECT '# 301 the old hostname to the new one, preserving path + query\n        if ($host = %s) {\n          return 301 https://%s$request_uri;\n        }' \
+  # /mcp is exempt from the 301: MCP clients POST it with a bearer token, and a 301 is not
+  # followable for them (the method turns into GET and the Authorization header is dropped on
+  # the host change), so the legacy host keeps serving the endpoint itself. Measured on finngen,
+  # 2026-11-02: ~1000 bearer calls a day from 13 addresses on the legacy host, every one answered
+  # 301 for twenty minutes. Server-level ifs run in order, so the /mcp line overrides the host one.
+  printf -v LEGACY_REDIRECT '# 301 the old hostname to the new one, preserving path + query; /mcp stays served here\n        set $legacy_redirect "";\n        if ($host = %s) {\n          set $legacy_redirect 1;\n        }\n        if ($uri = /mcp) {\n          set $legacy_redirect "";\n        }\n        if ($legacy_redirect = 1) {\n          return 301 https://%s$request_uri;\n        }' \
     "${REDIRECT_FROM_HOST}" "${REDIRECT_TO_HOST}"
-  echo "Legacy redirect: ${REDIRECT_FROM_HOST} -> ${REDIRECT_TO_HOST}"
+  echo "Legacy redirect: ${REDIRECT_FROM_HOST} -> ${REDIRECT_TO_HOST} (except /mcp)"
 else
   LEGACY_REDIRECT=""
 fi
