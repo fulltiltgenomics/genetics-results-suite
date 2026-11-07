@@ -1,0 +1,11 @@
+{
+  "profiles": [
+    "daly",
+    "finngen"
+  ],
+  "functions": {
+    "cell_type_expression": [
+      "daly"
+    ]
+  }
+}

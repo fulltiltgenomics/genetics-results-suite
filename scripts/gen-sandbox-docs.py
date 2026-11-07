@@ -7,8 +7,9 @@ schemas. It has to learn the BigQuery views and the SDK's
 signatures the way a developer does — by reading documentation when a question needs it —
 because there is no spare prompt-cache breakpoint to front-load a schema block into
 (genetics-mcp-server/docs/project-spec.md:420). The image ships them as /genetics/schema
-(GENETICS_SCHEMA_DIR), filtered for the deployment's profile by --emit-filtered, and
-/genetics/sdk (GENETICS_STUBS_DIR), verbatim.
+(GENETICS_SCHEMA_DIR) and /genetics/sdk (GENETICS_STUBS_DIR), both filtered for the
+deployment's profile by --emit-filtered: a view gated off the profile loses its file, and a
+function the SDK binds only on some profiles (sdk/__init__.py's _PROFILE_GATED) loses its def.
 
 WHY IT GENERATES RATHER THAN TRANSCRIBES. Everything below is derived at run time from
 configs/datasets.yaml (this repo's canonical copy) and from the SDK's own source. Not one
@@ -35,16 +36,17 @@ importing the SDK would execute genetics_mcp_server.config.settings.
 
 Usage:
     scripts/gen-sandbox-docs.py [--sdk-src DIR] [--check]
-    scripts/gen-sandbox-docs.py --emit-filtered PROFILE OUTDIR
+    scripts/gen-sandbox-docs.py --emit-filtered PROFILE SCHEMA_OUTDIR STUBS_OUTDIR
 
     --sdk-src   a genetics-mcp-server checkout. Defaults to GENETICS_SDK_SRC, then
                 MCP_SERVER_DIR, then the LIVE sibling checkout — never to the staged
                 sandbox/.sdk-src; see resolve_sdk_src.
     --check     generate into memory and diff against what is on disk; exit 1 on any
                 difference. This is what keeps the committed copies from rotting.
-    --emit-filtered  copy sandbox/schema as PROFILE may see it (filter_schema_docs) into
-                OUTDIR; the build scripts stage the sandbox image's /genetics/schema this
-                way. An unknown PROFILE exits 1.
+    --emit-filtered  copy sandbox/schema and sandbox/stubs as PROFILE may see them
+                (filter_schema_docs, filter_stubs) into the two OUTDIRs; the build scripts
+                stage the sandbox image's /genetics/schema and /genetics/sdk this way. An
+                unknown PROFILE exits 1.
 
 Exit 0 = written (or up to date under --check), 1 = out of date / a rule is missing,
 2 = the generator could not run.
@@ -88,7 +90,9 @@ def prompt_schema_dir_for(sdk_src):
     return os.path.join(sdk_src, "src", "genetics_mcp_server", "schema_docs")
 
 # which views each profile may see. Deliberately not a .md: the .md files are what a reader
-# is shown, and this is what a consumer reads to decide which of them to show
+# is shown, and this is what a consumer reads to decide which of them to show. The stubs
+# carry one of the same name, keyed `functions`, for the SDK functions bound only on some
+# profiles
 AVAILABILITY = "_availability.json"
 
 BANNER = (
@@ -307,6 +311,11 @@ def render_availability(config):
     return json.dumps({"profiles": known, "views": views}, indent=2, sort_keys=True) + "\n"
 
 
+def known_profiles(datasets_yaml_path):
+    with open(datasets_yaml_path) as fh:
+        return sorted(yaml.safe_load(fh).get("profiles") or {})
+
+
 def render_schema_docs(datasets_yaml_path):
     with open(datasets_yaml_path) as fh:
         config = yaml.safe_load(fh)
@@ -339,30 +348,47 @@ def profile_error(availability, profile):
     )
 
 
-def emit_filtered(profile, out_dir):
-    """Write the on-disk sandbox/schema as `profile` may see it into `out_dir`, for the image.
-
-    Reads the generated tree rather than re-rendering, so the image ships the files the
-    build just generated and tested (or, for run-sandbox-local.sh, what is committed).
-    """
+def _read_tree(directory):
     files = {}
-    for name in sorted(os.listdir(SCHEMA_DIR)):
-        path = os.path.join(SCHEMA_DIR, name)
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
         if os.path.isfile(path):
             with open(path) as fh:
                 files[name] = fh.read()
-    if AVAILABILITY in files:
-        error = profile_error(json.loads(files[AVAILABILITY]), profile)
-        if error:
-            print(f"cannot filter the schema docs: {error}", file=sys.stderr)
-            return 1
-    shown = filter_schema_docs(files, profile)
+    return files
+
+
+def _write_tree(out_dir, files):
     shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir)
-    for name, content in shown.items():
+    for name, content in files.items():
         with open(os.path.join(out_dir, name), "w") as fh:
             fh.write(content)
-    print(f"schema docs for profile {profile}: {len(shown)} of {len(files)} files in {out_dir}")
+
+
+def emit_filtered(profile, schema_out, stubs_out):
+    """Write the on-disk sandbox/schema and sandbox/stubs as `profile` may see them into the
+    two directories, for the image.
+
+    Reads the generated trees rather than re-rendering, so the image ships the files the
+    build just generated and tested (or, for run-sandbox-local.sh, what is committed).
+    """
+    schema = _read_tree(SCHEMA_DIR)
+    stubs = _read_tree(STUBS_DIR)
+    for what, files in (("schema docs", schema), ("stubs", stubs)):
+        if AVAILABILITY in files:
+            error = profile_error(json.loads(files[AVAILABILITY]), profile)
+            if error:
+                print(f"cannot filter the {what}: {error}", file=sys.stderr)
+                return 1
+    shown_schema = filter_schema_docs(schema, profile)
+    shown_stubs = filter_stubs(stubs, profile)
+    _write_tree(schema_out, shown_schema)
+    _write_tree(stubs_out, shown_stubs)
+    print(
+        f"profile {profile}: {len(shown_schema)} of {len(schema)} schema files in {schema_out}, "
+        f"{len(shown_stubs)} of {len(stubs)} stub files in {stubs_out}"
+    )
     return 0
 
 
@@ -395,6 +421,63 @@ def filter_schema_docs(files, profile):
             )
         out[name] = content
     return out
+
+
+def hidden_functions(availability, profile):
+    """The SDK functions `profile` may not see: those gated to a set it is not in. Fails
+    closed like hidden_views — an unset or unknown profile sees no gated function."""
+    known = profile in (availability.get("profiles") or [])
+    gated = availability.get("functions") or {}
+    return sorted(name for name, allowed in gated.items() if not known or profile not in allowed)
+
+
+def filter_stubs(files, profile):
+    """The stub tree as `profile` may see it: a gated-off function loses its def in
+    genetics.pyi and its method in client.pyi, its name is dropped from the comma-separated
+    lists the module docstring keeps, and `_availability.json` itself is dropped because it
+    names the gated functions. Everything else is byte-identical.
+
+    The table comes from the SDK (`_PROFILE_GATED` in sdk/__init__.py, copied into the json at
+    generation), which decides at import what it binds under CONFIG_PROFILE; this is the
+    same decision applied to the one description of the SDK the model reads, so the stub
+    cannot name a function the sandbox's `genetics` has not bound.
+    """
+    if AVAILABILITY not in files:
+        raise SystemExit(
+            f"no {AVAILABILITY} among the stub files: without it there is no record of which "
+            "functions are gated, so nothing can be filtered safely. Regenerate with "
+            "scripts/gen-sandbox-docs.py."
+        )
+    hidden = hidden_functions(json.loads(files[AVAILABILITY]), profile)
+    out = {}
+    for name, content in files.items():
+        if name == AVAILABILITY:
+            continue
+        if hidden and name in ("genetics.pyi", "client.pyi"):
+            content = _drop_defs(content, hidden)
+        out[name] = content
+    return out
+
+
+def _drop_defs(source, names):
+    """Remove every def of `names`, top level or inside a class, by its source line range
+    (plus the blank line that follows it), then the name from any `a, b, c` list in prose.
+    Line ranges rather than ast.unparse so the rest of the file stays byte-identical."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    drop = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
+            end = node.end_lineno
+            if end < len(lines) and not lines[end].strip():
+                end += 1
+            drop.update(range(start, end))
+    kept = "".join(line for i, line in enumerate(lines) if i not in drop)
+    for name in names:
+        kept = re.sub(rf"\b{re.escape(name)}, ", "", kept)
+        kept = re.sub(rf", {re.escape(name)}\b", "", kept)
+    return kept
 
 
 # ------------------------------------------------------------------------ pyi stubs
@@ -737,7 +820,27 @@ def _init_exports(init_tree):
     raise SystemExit("sdk/__init__.py has no __all__ to read the helper surface from")
 
 
-def render_stubs(sdk_dir):
+def _profile_gated(init_tree):
+    """`_PROFILE_GATED` in sdk/__init__.py: the functions the package binds only under some
+    CONFIG_PROFILE values, and which. Required even when empty — a stub filtered against a
+    table that silently went missing would ship every function to every profile."""
+    for node in init_tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_PROFILE_GATED" for t in node.targets
+        ):
+            table = ast.literal_eval(node.value)
+            return {name: sorted(profiles) for name, profiles in table.items()}
+    raise SystemExit("sdk/__init__.py has no _PROFILE_GATED table to filter the stubs by")
+
+
+def render_stub_availability(profiles, gated):
+    return json.dumps({"profiles": sorted(profiles), "functions": gated}, indent=2) + "\n"
+
+
+def render_stubs(sdk_dir, profiles):
+    """The stub files, plus `_availability.json` naming the profile-gated functions against
+    the known `profiles` (configs/datasets.yaml's), so filter_stubs fails closed on a profile
+    nobody defined, the way filter_schema_docs does."""
     init_tree = _module(os.path.join(sdk_dir, "__init__.py"))
     client_tree = _module(os.path.join(sdk_dir, "client.py"))
     errors_tree = _module(os.path.join(sdk_dir, "errors.py"))
@@ -757,6 +860,13 @@ def render_stubs(sdk_dir):
     missing = [name for name in exported if name not in methods]
     if missing:
         raise SystemExit(f"exported by sdk/__init__.py but absent from GeneticsClient: {missing}")
+    gated = _profile_gated(init_tree)
+    unknown = sorted(set(gated) - set(exported))
+    if unknown:
+        raise SystemExit(f"_PROFILE_GATED names functions sdk/__init__.py does not export: {unknown}")
+    unknown = sorted({p for ps in gated.values() for p in ps} - set(profiles))
+    if unknown:
+        raise SystemExit(f"_PROFILE_GATED names profiles configs/datasets.yaml does not define: {unknown}")
 
     files = {}
     package_root = os.path.dirname(sdk_dir)
@@ -800,6 +910,7 @@ def render_stubs(sdk_dir):
     constants = _render_constants(_default_names(rendered), client_constants, package_root)
     lines = header + (constants + [""] if constants else []) + body
     files["genetics.pyi"] = "\n".join(lines).rstrip() + "\n"
+    files[AVAILABILITY] = render_stub_availability(profiles, gated)
 
     # client.pyi — the awaitable form, for a script that already has an event loop.
     header = [
@@ -1021,8 +1132,9 @@ def main(argv=None):
     parser.add_argument("--sdk-src", default=None)
     parser.add_argument("--check", action="store_true")
     parser.add_argument(
-        "--emit-filtered", nargs=2, metavar=("PROFILE", "OUTDIR"),
-        help="write sandbox/schema filtered for PROFILE into OUTDIR (the image's copy) and exit",
+        "--emit-filtered", nargs=3, metavar=("PROFILE", "SCHEMA_OUTDIR", "STUBS_OUTDIR"),
+        help="write sandbox/schema and sandbox/stubs filtered for PROFILE into the two "
+        "directories (the image's copies) and exit",
     )
     args = parser.parse_args(argv)
     if args.emit_filtered:
@@ -1039,11 +1151,11 @@ def main(argv=None):
         print(f"SDK source: {sdk_src}", file=sys.stderr)
 
     schema_files = render_schema_docs(DATASETS_YAML)
-    stub_files = render_stubs(sdk_dir)
+    stub_files = render_stubs(sdk_dir, known_profiles(DATASETS_YAML))
 
     schema_suffixes = (".md", AVAILABILITY)
     schema_changed, schema_stale = _sync(SCHEMA_DIR, schema_files, schema_suffixes, args.check)
-    stub_changed, stub_stale = _sync(STUBS_DIR, stub_files, (".pyi",), args.check)
+    stub_changed, stub_stale = _sync(STUBS_DIR, stub_files, (".pyi", AVAILABILITY), args.check)
     prompt_dir = prompt_schema_dir_for(sdk_src)
     prompt_changed, prompt_stale = _sync(prompt_dir, schema_files, schema_suffixes, args.check)
 

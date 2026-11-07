@@ -422,6 +422,7 @@ side of Python 3.11 a conditional requirement falls on.
 
 The final stage's environment, all of it:
 
+- `CONFIG_PROFILE=${GENESETS_PROFILE}`
 - `GCE_METADATA_HOST=169.254.169.254`
 - `GENETICS_GENESETS_DIR=/genetics/genesets`
 - `GENETICS_MPLCACHE=/genetics/mplcache`
@@ -503,13 +504,27 @@ listed. The generator's `filter_schema_docs(files, profile)` is the reference re
 drops a gated-off view's file and its README row, drops the json itself (because it names the
 gated views), and fails closed: an unset or unknown profile sees no gated view.
 `scripts/test-sandbox-docs.py` asserts that no file left after filtering, README and the
-unfiltered stubs included, names a hidden view or its base-table stem, for every profile.
+stubs included, names a hidden view or its base-table stem, for every profile.
 
-The sandbox's copy is filtered at build time, because its root filesystem is read-only at run
+The stub tree carries one too, keyed `functions`: the SDK functions `sdk/__init__.py` binds only
+under some `CONFIG_PROFILE` values, copied out of its `_PROFILE_GATED` literal at generation
+(today `cell_type_expression`, daly only). The package reads that table at import and fails
+closed the same way — no profile, no gated function bound or listed — so the stub is held to the
+import surface rather than the other way round. `filter_stubs(files, profile)` drops a gated-off
+function's def from `genetics.pyi`, its method from `client.pyi`, its name from the lists the
+module docstring keeps, and the json; the harness asserts no surviving stub names a hidden
+function and that every visible function's def survives, on the real table and on a mutant
+that gates one more.
+
+The sandbox's copies are filtered at build time, because its root filesystem is read-only at run
 time. `stage_gene_sets` (`scripts/lib/env.sh`) runs `gen-sandbox-docs.py --emit-filtered
 <config_profile>`, with the profile it also passes as `GENESETS_PROFILE`, into
-`sandbox/.schema-profile/`, and the Dockerfile copies that tree rather than `schema/`. So
-`/genetics/schema` holds no gated-off view's file or README row and no `_availability.json`.
+`sandbox/.schema-profile/` and `sandbox/.stubs-profile/`, and the Dockerfile copies those trees
+rather than `schema/` and `stubs/`. So `/genetics/schema` holds no gated-off view's file or
+README row and `/genetics/sdk` no gated-off function's def, and neither holds an
+`_availability.json`. The final stage also sets `CONFIG_PROFILE` from the same build arg, which
+the sandbox child inherits, so the `genetics` a script imports binds exactly what its stub
+describes; `sandbox/build-checks.py` asserts that line is present.
 mcp-server's copy keeps the json and filters at import, and db-api refuses a gated-off view;
 both read `CONFIG_PROFILE`, which `k8s/deployments/` gives db-api, chat-backend and mcp-server.
 
