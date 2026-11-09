@@ -1365,7 +1365,7 @@ count of their own.
 Description as sent to the model:
 
 ```text
-Look up phenotypes. Use when you need to find if there is a phenotype for a disease/trait name or the exact phenotype code for a disease/trait name. Do NOT use this to find disease associations - use get_credible_sets_by_gene instead.
+Look up phenotypes. Use when you need to find if there is a phenotype for a disease/trait name or the exact phenotype code for a disease/trait name. Each row names its resource, data_type and version (the release label, e.g. R14), and a code present in several releases of one resource is one row per release. Do NOT use this to find disease associations - use get_credible_sets_by_gene instead.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2181,12 +2181,12 @@ Get the GENES an Open4Gene chromatin peak is linked to, with the cell type each 
 Description as sent to the model:
 
 ```text
-Get the Open4Gene chromatin PEAKS linked to a gene, per cell type — the inverse of get_peak_to_genes. Answers 'which regulatory regions act on this gene, and in which cell types'. Distinct from get_open_chromatin_by_gene, which returns measured accessibility near the gene by coordinate overlap with no link evidence. Rows are capped at 500 inline; `truncated` says whether more exist.
+Get the Open4Gene chromatin PEAKS linked to a gene, per cell type — the inverse of get_peak_to_genes. Answers 'which regulatory regions act on this gene, and in which cell types'. The links come from FinnGen PBMC single-cell multiome data over predicted immune cell types, and only significant links are published: an empty result for a known gene means no significant link in any PBMC cell type (a gene not expressed in PBMC cell types has none), not that the gene is unknown — an unknown gene is an error. Distinct from get_open_chromatin_by_gene, which returns measured accessibility near the gene by coordinate overlap with no link evidence. Rows are capped at 500 inline; `truncated` says whether more exist.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `gene` | `string` | yes | — | — | Gene symbol or ENSG ID (e.g. 'PCSK9', 'ENSG00000169174') |
+| `gene` | `string` | yes | — | — | Gene symbol or ENSG ID (e.g. 'IL7R', 'ENSG00000168685') |
 | `resources` | `string` | no | — | — | Comma-separated resources. Omit to use all. |
 | `gencode_version` | `string` | no | — | — | GENCODE version for the gene's coordinates. Omit for the latest available. |
 
@@ -2453,7 +2453,7 @@ Get the complete, unfiltered gene burden test results for one phenotype: every g
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'brava', 'schema2', 'bipex2', 'ibd_exome_2026') |
-| `phenotype` | `string` | yes | — | — | Phenotype or study code (e.g. 'categorical_41210_both_sexes_S068_', 'schizophrenia', 'bipolar_disorder', 'inflammatory_bowel_disease', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results, which for IBD spell the disease out rather than using the IBD/UC/CD codes the exome variant results use, and which for BRaVa address an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
+| `phenotype` | `string` | yes | — | — | Phenotype or study code as search_phenotypes returns it (e.g. 'categorical_41210_both_sexes_S068_', 'SCZ', 'BIP', 'IBD', 'UC', 'CD', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results; BRaVa addresses an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
 
 `required`: ['resource', 'phenotype']
 

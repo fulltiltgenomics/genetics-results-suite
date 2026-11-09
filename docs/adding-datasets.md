@@ -151,7 +151,13 @@ the API-side resource grouping.
   from. For genebass the combined file holds the mlog10p_burden > 4 hits only. The files
   have no `resource` column; `/gene_based/{gene}` appends one from the data file's
   `"resource"`, so a new entry's `"resource"` is what the SDK's `gene_burden(gene=...)`
-  frame shows.
+  frame shows. A per-trait file is named by its rows' `trait_original`, and that string is
+  the phenotype code the registry advertises (inline `phenotype_code` or the metadata
+  file's phenocode), because `/gene_based_results_by_phenotype` resolves a code to
+  `prefix`+code+`suffix` and nothing translates. results-api's startup check HEADs every
+  inline code's file; a munge that writes another spelling fails startup rather than
+  serving 404s (`genetics-results-munge/scripts/relabel_traits.py` rewrites an existing
+  file's trait columns when the raw inputs are gone).
 - **Expression / coloc / chromatin** → the correspondingly named module.
 - **Gene-disease** → `gene_disease.py`. Not a list of products but one block per source,
   each with a `"file"` and a `"columns"` map from the endpoint's `output_columns` to that
