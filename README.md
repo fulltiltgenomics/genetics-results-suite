@@ -900,7 +900,7 @@ baseline" in `docs/project-spec.md`.
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
 | url-fetcher | url-fetcher/ (local context; pure standard library) | url-fetcher | 8090 | Fetches a URL on chat-backend's behalf so the pod holding the secrets never dials an address a model chose: own KSA with no GCP identity, no mounted token, no secret, no volume, and the namespace's second egress policy (443 to public addresses only) |
 | monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
-| analyze-conversations | genetics-mcp-server | genetics-mcp-server | — | CronJob (daily, 02:30 UTC): nightly conversation analysis into the chat-data SQLite cache |
+| analyze-conversations | genetics-mcp-server | genetics-mcp-server | — | CronJob (daily, 02:30 UTC): nightly conversation analysis written into `chat_history.db` on the chat-data PVC |
 
 `build.sh url-fetcher` and `build-all.sh` both run `assert_fetcher_dockerfile_gated`
 (`scripts/lib/env.sh`) before `docker build`. The image's own assertions
