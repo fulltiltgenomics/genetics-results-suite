@@ -769,8 +769,10 @@ the same query.
   [docs/adding-datasets.md](adding-datasets.md) lists them — so their join is
   `p.dataset = h.dataset AND p.trait_original = h.phenotype`. Coverage is partial by design —
   QTL datasets have no rows because their traits are genes, proteins and peaks (resolved via
-  `gene_annotations_v` and `peak_to_gene_v`), and datasets whose codes are already readable
-  (PGC, GP2, BipEx2, SCHEMA2, IBD_exome, ASC2) have none either. `BRaVa` does have rows, one per
+  `gene_annotations_v` and `peak_to_gene_v`). A dataset with no metadata file gets its rows
+  from the inline `phenotypes` list of its registry entry, so the single-disease studies
+  resolve like any other; where two products of one dataset list the same phenotypes, the
+  first entry in registry order supplies the row. `BRaVa` has rows, one per
   `trait_original` — so one per ancestry stratum as well as one for the cross-ancestry meta,
   and a row count for that dataset counts strata rather than phenotypes. Use a `LEFT JOIN`
   when the dataset is not known in advance.
@@ -784,7 +786,8 @@ ranked index, and search is the entry point of most conversations; these tables 
 resolution and SQL-expressible filtering only.
 
 Both are rebuilt in full by `genetics-results-db`'s `scripts/load_phenotypes.sh` from
-`configs/datasets.yaml` and the `metadata_file` sources it references — see
+`configs/datasets.yaml` (its inline `phenotypes` lists included) and the `metadata_file`
+sources it references — see
 [adding-datasets.md](adding-datasets.md) for the registry-key → `dataset`-value map that the
 builder owns and that a new dataset must be added to.
 

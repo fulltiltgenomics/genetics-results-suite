@@ -342,7 +342,7 @@ profiles:
         description: >-
           BipEx2 gene-level burden test results. Rare variant association testing
           for bipolar disorder from exome sequencing.
-        author: "Bipolar Exomes"
+        author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary

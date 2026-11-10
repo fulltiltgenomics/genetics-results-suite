@@ -527,9 +527,8 @@ def phenotypes(
 
     `category` is the source's own grouping — a FinnGen ICD chapter, Kanta's
     Quantitative/Binary, an Open Targets project id, a Genebass trait type — not one
-    harmonised across resources. Coverage is partial by design: QTL datasets and those
-    whose codes are already readable have no rows, so LEFT JOIN when the dataset is not
-    known in advance.
+    harmonised across resources. Coverage is partial by design: QTL datasets have no
+    rows, so LEFT JOIN when the dataset is not known in advance.
     """
     ...
 

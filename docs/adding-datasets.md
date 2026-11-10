@@ -91,7 +91,8 @@ In `genetics-results-suite/configs/datasets.yaml`:
    (and `metadata_harmonizer`) `null`, with a comment saying why: `build_phenotypes.py`
    opens every non-null `metadata_file` before it looks at the harmonizer, so a path that
    does not exist yet fails `load_phenotypes.sh` for that whole profile. The cost of the
-   null is that the dataset's trait codes stay unresolved in `phenotypes_v` there.
+   null is that the dataset's trait codes stay unresolved in `phenotypes_v` there, unless
+   the entry also lists its phenotypes inline: the builder falls back to that list.
    Required fields: `resource`, `version`, `description`, `author`, `publication_date`,
    `data_type`, `trait_type`. Optional: `n_samples`/`n_cases`/`n_controls`/`n_phenotypes`,
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
@@ -1150,9 +1151,9 @@ possible external GWAS: one file, one phenotype, no BigQuery footprint.
    `results_api_data/sumstats/` mirror of the same path; the file reaches that bucket only
    when the finngen side copies it (this machine cannot write there), and until then the
    API logs the file as not found and skips it.
-4. `genetics-results-db`: nothing. An inline phenotype list does not reach `phenotypes_v`
-   (`build_phenotypes.py` reads only `metadata_file`), which is the existing state of
-   `pgc_bip` and `gp2_pd` too.
+4. `genetics-results-db`: nothing. `build_phenotypes.py` emits an inline phenotype list
+   under the entry's `dataset` value, and this entry has none, so `T2D` gets no
+   `phenotypes_v` row: there is no results view it could join.
 
 Result: `dataset_products("huerta_chagoya_t2d")` reports `summary_stats: true` and nothing
 else; `/summary_stats/huerta_chagoya_t2d/gwas` serves it; the agent reaches it through the
