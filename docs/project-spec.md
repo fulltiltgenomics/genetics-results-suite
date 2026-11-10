@@ -20,6 +20,8 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 (FastAPI, port 4000) directly. /api/v1/ld instead proxies out
                      │                 to the external LD API (see "Frontend CSP and the LD proxy")
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
+                     ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session;
+                     │                 see "brainzzz without a GeneGenie login")
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth;
                      │                 /.well-known/oauth-protected-resource[/mcp] served unauthenticated
                      └── /*         → frontend      (nginx, port 3000)
@@ -35,13 +37,16 @@ on `/chat/v1/` is idle-based and is kept at or above this value so the LB is nev
 shorter cap. Any turn expected to run longer than this needs both raised together.
 
 Internal only (ClusterIP + NetworkPolicy):
-  ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server
+  ├── db-api            (BigQuery proxy, port 8080) — accessible from chat-backend + mcp-server + sandbox
   ├── rag-service       (RAG retrieval, port 8000)  — only accessible from chat-backend + mcp-server
   ├── keycloak          (identity broker, port 8080) — reached via the /auth path on the primary domain
   ├── keycloak-postgres (Keycloak DB, port 5432)     — backed up daily to GCS
-  └── sandbox           (code execution, port 8080)  — reachable from chat-backend ONLY; egress
-                                                       limited to db-api + results-api; not applied
-                                                       unless ENABLE_SANDBOX=true
+  ├── sandbox           (code execution, port 8080)  — reachable from chat-backend ONLY; egress
+  │                                                    limited to db-api + results-api; the Deployment
+  │                                                    is not applied unless ENABLE_SANDBOX=true (its
+  │                                                    NetworkPolicies always are, inert with no pod)
+  └── url-fetcher       (URL fetch, port 8090)       — reachable from chat-backend ONLY; egress 443 to
+                                                       public addresses only (see "The URL fetcher")
 ```
 
 ## Services
@@ -665,8 +670,8 @@ In BigQuery the products land in the `open_chromatin` and `variant_effect` table
 `PROJECT_ID`/`DATASET_ID`/`GCS_BUCKET`/`GCS_PREFIX` per profile — the daly bucket has no prefix,
 finngen uses `results_api_data/`).
 
-The agent reaches both products through five MCP tools: `get_open_chromatin_by_{variant,region,gene}`
-and `get_variant_effect_by_{variant,gene}`. The three position-based tools go through results-api;
+The agent reaches both products through six MCP tools: `get_open_chromatin_by_{variant,region,peak,gene}`
+and `get_variant_effect_by_{variant,gene}`. The three position-based tools and the by-peak one go through results-api;
 the two **gene-based** tools resolve gene → coordinates via BigQuery (`gene_annotations_v`) because
 results-api has no by-gene open-chromatin endpoint, so they work only where the caller can reach
 db-api — both chat-backend and the standalone mcp-server (mcp-server sets `BIGQUERY_API_URL`
@@ -922,7 +927,9 @@ rule instead and inflated every peak by 20m / 32 Mi; it has been reverted.
 RAG is **not** profile-derived: `scripts/deploy.sh` sets `ENABLE_RAG="${ENABLE_RAG:-false}"`
 unconditionally, so rag-service is off on *every* profile unless the operator exports it.
 Keycloak is on by default on every profile (`ENABLE_KEYCLOAK=false` turns it off). A default
-deploy is therefore **10** deployments, not 11.
+deploy is therefore **10** deployments, not 11, in the figures below — **11** once the
+always-applied `url-fetcher` the figures leave out is counted (likewise 12 with RAG, 9 with the
+broker off).
 
 | | CPU | Memory |
 |---|---|---|
@@ -1592,8 +1599,8 @@ of the results-api's coloc pairs over the rules (`API_VIEWS`) is held in the mon
 | `CELLXGENE_LIVE` | CronJob manifest (literal) | `false` | Whether the CELLxGENE release is expected to exist; see the CELLxGENE check above |
 | `CELLXGENE_MAX_AGE_DAYS` | — | `10` | Age of `written_at` past which the release alerts |
 | `CELLXGENE_BUCKET` / `CELLXGENE_ROOT` | — | `daly-expression-data` / `cellxgene` | Where `releases/CURRENT` lives |
-| `MONITOR_DB_PATH` | CronJob manifest | `/data/monitor.db` | SQLite dedup database path (on PVC) |
-| `RESULTS_API_URL` | — | `http://results-api....:4000` | Override results-api URL |
+| `MONITOR_DB_PATH` | CronJob manifest | `/tmp/monitor.db` (manifest sets `/data/monitor.db`) | SQLite dedup database path (on PVC) |
+| `RESULTS_API_URL` / `CHAT_BACKEND_URL` / `FRONTEND_URL` / `MCP_SERVER_URL` / `DB_API_URL` | — | the in-cluster Service URL (`http://<service>.genetics.svc.cluster.local:<port>`) | Override the URL a health check calls |
 | `ALERT_LOOKBACK_HOURS` | CronJob manifest | `24` | How far back to query logs. Must equal the schedule interval: shorter leaves a blind spot between runs, longer re-reports what the previous run covered |
 | `ALERT_DEDUP_TTL_HOURS` | CronJob manifest | `24` (manifest sets `23`) | How long to suppress duplicate alerts. Set just under the schedule interval so an ongoing problem re-alerts once per run; at exactly the interval, whether yesterday's dedup row has expired races cron start jitter |
 
@@ -2688,9 +2695,9 @@ the SDK:
 - **results-api** returns a **bare JSON array** of named row objects. An empty one is `[]`
   and carries no schema at all. `range_response` now advertises the file's own header line
   in an **`X-Columns` response header** (`genetics-results-api app/core/responses.py`),
-  which covers all 11 routers that serve JSON range responses in one place — credible sets,
-  colocalization, exome, expression, HLA, MPRA, open chromatin, chromatin peaks, summary
-  stats, variant annotation, variant effect. The names come from the TSV header, **not**
+  which covers all 13 routers that serve JSON range responses in one place — credible sets,
+  colocalization, exome, expression, cell-type expression, gene-based, HLA, MPRA, open
+  chromatin, chromatin peaks, summary stats, variant annotation, variant effect. The names come from the TSV header, **not**
   from the router's `header_schema`: that schema is a validating superset and would
   over-claim on files that carry fewer columns.
   The variant annotation routes also send **`X-Dataset-Version`**, the source's release from
