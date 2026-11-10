@@ -2798,7 +2798,7 @@ model's improvised SQL is only fixed by code 3/3.
 | state | view emits house names? | mcp-server SQL asks for house names? | result |
 |---|---|---|---|
 | neither applied (old) | no | no | works — the divergence described above, but functional |
-| **view only** | yes | no | **broken.** Every `get_hla_by_allele` call and every `hla(allele=)` script selects `mlogp`/`sebeta`/`af_alt` from a view that no longer has them → BigQuery `Unrecognized name` on every request. So does any hand-written `query_bigquery` SQL the model composed from the old schema doc |
+| **view only** | yes | no | **broken.** Every `get_hla_by_allele` call and every `hla(allele=)` script selects `mlogp`/`sebeta`/`af_alt` from a view that no longer has them → BigQuery `Unrecognized name` on every request. So does any hand-written `query_database` SQL the model composed from the old schema doc |
 | **code only** | no | yes | **broken, in mirror image.** The new SQL selects `mlog10p`/`se`/`af` from a view that still emits the native names → the same error on every request |
 | both applied | yes | yes | works, and the two `hla()` branches agree |
 
