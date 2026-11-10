@@ -222,8 +222,11 @@ genetics-mcp-server's `docs/project-spec.md`), leaving a one-line note that name
 tells the model to call it again; the stored transcript is untouched. The browser acts on the
 `usage` reading: past 50% of the window it advises a new chat and says why — a bigger context makes
 every answer slower, dearer and less accurate — and past 90% it refuses to send until one is
-started, which is the only hard stop. And every prompt-cache breakpoint asks for the 1-hour TTL,
-since cache writes were half of all model spend under the 5-minute one.
+started, which is the only hard stop. Cache writes are most of what a conversation costs, so
+chat-backend also sends zero-output requests between turns that keep the prompt cache readable:
+the shared tool list and system prompt for as long as the deployment is in use, each
+conversation for a while after its last turn (genetics-mcp-server's `docs/project-spec.md`,
+"Two cached system blocks").
 
 The browser reattaches on its own when a stream ends without `done`, `error` or `cancelled`:
 from the last sequence number seen, with waits of 0, 2, 5, 10, 20 and then 30 seconds three
@@ -3127,8 +3130,9 @@ cold at the start of most sessions: measured 2026-09-09 against production `chat
 (`scripts/memory_premise_stats.py` in `../genetics-mcp-server`, excluding `anonymous`/`mcp-tool`),
 inter-session gaps ran past the then 5-minute ephemeral cache TTL for about 93% of returns (median gap
 47.9h all-time, 61.5h over the last 90 days) — a cache design bought once per session, not once
-per turn, is what fits that distribution. Every breakpoint has since moved to the 1-hour TTL,
-which changes nothing about that conclusion: a 48-hour median gap is cold under either. The digest's own steady-state cost came out to roughly
+per turn, is what fits that distribution. The cache lifetimes have changed since (block 1 is
+kept readable for `CACHE_KEEPALIVE_MINUTES` after a turn), which changes nothing about that
+conclusion: a 48-hour median gap is cold under any of them. The digest's own steady-state cost came out to roughly
 $0.005/turn, well under the 10%-of-median-turn-cost bar set for reverting the feature on cost
 alone; that baseline came from the BigQuery log sink (`genetics_chat_logs.stdout`,
 `cluster_name='finngenie'`, `scripts/memory_premise_cost.sql`) rather than from

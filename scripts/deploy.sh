@@ -564,7 +564,7 @@ fi
 export SLACK_ALERT_USER_ID="${SLACK_ALERT_USER_ID:-}"
 
 # LLM model
-export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-1}"
+export DEFAULT_MODEL="${DEFAULT_MODEL:-claude-fable-5-2}"
 
 # apply kubernetes manifests
 echo "=== Applying Kubernetes manifests ==="
