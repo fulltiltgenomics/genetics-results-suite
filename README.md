@@ -21,6 +21,7 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 the BFF proxies it out to the external LD API (LD_API_URL),
                      │                 because the frontend CSP forbids off-origin fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
+                     ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session)
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
 
@@ -85,7 +86,7 @@ out of — which covers a kubeconfig **inherited from the environment**, not one
 > `terraform/terraform.tfvars*` has no `kube_context`, so a fresh checkout can neither roll out a
 > service nor write its Secrets until the line is added. Adding it, copied from
 > `kubectl config get-contexts -o name`, is the whole fix; `terraform/terraform.tfvars.example`
-> carries a commented template.
+> carries the line, with a comment, as a template.
 
 ## Deployment environments
 
@@ -344,6 +345,7 @@ export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers prox
 export C3PO_MCP_OAUTH='{"token_endpoint":...}'  # optional, the C3PO operator login's JSON
 export DEPMAP_MCP_OAUTH='{"token_endpoint":...}'  # optional, the same for DepMap (daly only)
 # INTERNAL_API_SECRET for results API is auto-generated if not set
+# SANDBOX_TOKEN_SIGNING_KEY (signs the per-execution sandbox tokens) is auto-generated too
 # GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
 # auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
 # MCP_API_KEY (bearer token mcp-server requires for its sse/streamable-http transports; it
@@ -888,7 +890,7 @@ baseline" in `docs/project-spec.md`.
 | bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx@sha256:65645c7b… (a 1.27-alpine build, pinned) | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
-| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
+| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; on by default, skipped when `ENABLE_KEYCLOAK=false` |
 | keycloak-postgres | — | postgres:16-alpine | 5432 | Keycloak database (PVC + daily `pg_dump` CronJob to GCS) |
 | results-api | genetics-results-api | genetics-results-api | 4000 | FastAPI |
 | chat-backend | genetics-mcp-server | genetics-mcp-server | 8000 | FastAPI, LLM chat with MCP tools |
@@ -897,6 +899,8 @@ baseline" in `docs/project-spec.md`.
 | sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
 | url-fetcher | url-fetcher/ (local context; pure standard library) | url-fetcher | 8090 | Fetches a URL on chat-backend's behalf so the pod holding the secrets never dials an address a model chose: own KSA with no GCP identity, no mounted token, no secret, no volume, and the namespace's second egress policy (443 to public addresses only) |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
+| analyze-conversations | genetics-mcp-server | genetics-mcp-server | — | CronJob (daily, 02:30 UTC): nightly conversation analysis written into `chat_history.db` on the chat-data PVC |
 
 `build.sh url-fetcher` and `build-all.sh` both run `assert_fetcher_dockerfile_gated`
 (`scripts/lib/env.sh`) before `docker build`. The image's own assertions
@@ -905,7 +909,6 @@ depends on — so a final stage that copies its modules straight from the contex
 assertion and still exits 0. The gate refuses that Dockerfile from outside the build, which is
 the only place it can be seen. It stays silent on a Dockerfile that is wired correctly, beyond
 one `ok` line.
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.

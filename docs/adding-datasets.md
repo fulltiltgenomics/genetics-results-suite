@@ -36,7 +36,7 @@ Consequences:
 - **genetics-results-api** — serves results from GCS files over HTTP. The agent's MCP
   credible-set / summary-stat / exome tools all call this API, so this is what makes a
   dataset **searchable and agent-reachable** for those tools. Holds the GCS paths.
-- **genetics-results-db** — db-api (BigQuery proxy for the agent's `query_bigquery` /
+- **genetics-results-db** — db-api (BigQuery proxy for the agent's `query_database` /
   schema tools) and the BQ view SQL (`schemas/*.sql`). Reads `datasets.yaml` at runtime
   for resource/table metadata; the `*_v` views map the `dataset` column → `resource`.
 - **genetics-mcp-server** — the agent/backend and standalone MCP server. Has **no
@@ -255,7 +255,7 @@ proxy") describes the route family.
 
 ## 6. BigQuery views (`genetics-results-db`)
 
-Only relevant if the data is loaded into BigQuery (for the agent's raw `query_bigquery`
+Only relevant if the data is loaded into BigQuery (for the agent's raw `query_database`
 and schema tools). The `*_v` views derive the `resource` column from the `dataset` column
 via the same `dataset_to_resource_rules` in `datasets.yaml`.
 
@@ -623,11 +623,12 @@ no results-api product config):
    `configs/rcnv_pheno.json` carries the 54 HPO groups with the meta-analysed sample sizes,
    summed from the supplement's Table S2 over only the cohorts that contributed >=300 cases —
    the paper's own inclusion rule. Taking the published `Total` instead overstates controls by
-   up to 7x. The command that regenerates it is in section 5 above. Only the daly profile
-   points `metadata_file` at the staged copy; the finngen entry is `metadata_file: null`
-   because the file was never staged into `finngen-commons`, so the 54 HPO codes resolve to
-   names in `phenotypes_v` on one profile and not the other. That asymmetry is a bucket-access
-   fact recorded at the entry, not a schema difference.
+   up to 7x. The command that regenerates it is in section 5 above. Each profile points
+   `metadata_file` at the copy staged into its own bucket (`finngen-commons` for finngen,
+   `daly-genetics-results` for daly), so a profile whose bucket lacks the file is set to
+   `metadata_file: null` until it is staged, and its 54 HPO codes stay unresolved in
+   `phenotypes_v` meanwhile — a bucket-access fact recorded at the entry, not a schema
+   difference.
 4. `genetics-results-db`: `schemas/{dosage_sensitivity,rcnv_gene_associations,rcnv_segments,
    rcnv_window_associations}{,_v}.sql` and a loader per table. **Load order matters**:
    the `collins_rcnv_2022` entry's `dataset` field names `Collins_rCNV_2022`,
@@ -690,6 +691,8 @@ Changes made:
 4. `datasets.yaml`: `version`, `publication_date` and `description` on the **daly** entries
    only — the finngen profile reads its own copies out of `finngen-commons`, which this
    refresh did not touch, and its entries would be wrong if they claimed the new release.
+   They followed once the same files were staged there: both profiles now read the same
+   dated exports and carry the same `uuid_from`.
 5. `genetics-mcp-server`: the `get_gene_disease_associations` description and the SDK's
    `gene_disease()` docstring; `docs/chat-tool-reference.md` here carries the tool description
    verbatim and is not generated, so it is edited by hand in the same commit.
@@ -727,9 +730,9 @@ Monarch-only column instead would have broken that shape and left every GenCC ro
 per-row id, so results-api composes one. Composed from subject, object and source it was
 unique in the old causal-only file and collides in the combined one, where the same gene,
 disease and source appear under two predicates. The key is now declared per profile
-(`uuid_from`), because the finngen profile still reads the old three-column-unique file and its
-bucket is not readable from here — a config key that says which columns *this file* needs is
-honest where a shared constant would have been a guess.
+(`uuid_from`), because a profile can lag behind on the old three-column-unique file while its
+bucket is not readable from here, as finngen's did — a config key that says which columns *this
+file* needs is honest where a shared constant would have been a guess.
 
 ## 14. Worked example: EstBB-UKBB NMR metabolic trait credible sets
 
@@ -747,11 +750,13 @@ value is also that string, no new view):
 2. `datasets.yaml`: the `nmr_ukbb_est` resource, the dataset in both profiles, and an exact-match
    `nmr_ukbb_est` rule. The value deliberately does not start with `UKB`: the `UKB%` rule would
    otherwise claim it for the `ukbb` resource, and the GWAS is an EstBB + UK Biobank meta-analysis.
-3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile only and a new
-   `quantitative_pheweb` metadata harmonizer; the entry's `dataset` field covers attribution.
+3. `genetics-results-api`: a `credible_sets.py` entry in the daly profile first (the finngen
+   one followed once its bucket was staged) and a new `quantitative_pheweb` metadata
+   harmonizer; the entry's `dataset` field covers attribution.
 4. `genetics-results-db`: the same new harmonizer in `build_phenotypes.py`, the file added to
-   `load_credsets_coloc.sh`, an `ABSENT_FROM_RESULTS` entry scoped to `finngen`, and
-   `credible_sets.beta` relaxed to nullable.
+   `load_credsets_coloc.sh`, an `ABSENT_FROM_RESULTS` entry scoped to `finngen` until the rows
+   were loaded there too (then removed, since `validate()` fails on a listed name that is
+   live), and `credible_sets.beta` relaxed to nullable.
 
 Five points of interest, all of which generalise.
 
@@ -781,11 +786,11 @@ overflowed. Relaxing a BigQuery column is one-way without a table rebuild, so it
 early whether a required column is genuinely required.
 
 **A profile you cannot stage into gets a registry entry and nothing else.** `finngen-commons` was
-not writable from where this landed, so the finngen profile has the `datasets.yaml` entry (which
-lists the dataset in `/datasets` with no products) but no `credible_sets.py` entry — pointing at
-an unstaged `all_cs_file` would fail that deployment's startup, since `startup_checks` tabix-header-checks
-every configured path. The same reasoning already governs `metadata_file` and
-`finngen/genes.py`'s `exon_file_by_version`.
+not writable from where this landed, so until it was staged the finngen profile had the
+`datasets.yaml` entry (which lists the dataset in `/datasets` with no products) but no
+`credible_sets.py` entry — pointing at an unstaged `all_cs_file` would fail that deployment's
+startup, since `startup_checks` tabix-header-checks every configured path. The same reasoning
+governs `metadata_file` and a profile's `genes.py` `exon_file_by_version`.
 
 ## 15. Worked example: BRaVa cross-ancestry exome gene burden
 
@@ -1142,9 +1147,10 @@ possible external GWAS: one file, one phenotype, no BigQuery footprint.
 2. `datasets.yaml`: a new resource and a dataset of the same id, `huerta_chagoya_t2d`, in
    both profiles with `metadata_file: null` and the one phenotype inline (`T2D`), the
    `pgc_bip`/`gp2_pd` shape. `cohorts: [ukb, mgb, gera, aou]` because the entry states its
-   cohorts and two of them overlap the R14 meta-analysis. No `pseudo_credible_sets` flag and
-   no `dataset_to_resource_rules` entry: nothing of it is loaded into BigQuery, so there is
-   no `dataset` column value to attribute.
+   cohorts and two of them overlap the R14 meta-analysis. No `pseudo_credible_sets` flag, no
+   `dataset` field and no `dataset_to_resource_rules` entry: nothing of it is loaded into
+   BigQuery, so there is no `dataset` column value to attribute, and a `dataset` value no
+   results view carries is a registry claim `build_phenotypes.py`'s cross-check refuses.
 3. `genetics-results-api` (both profiles): one `summary_stats.py` entry with `"file"`,
    `"phenotype": "T2D"` and the nine-column mapping. The finngen entry points at the
    `results_api_data/sumstats/` mirror of the same path; the file reaches that bucket only
@@ -1172,7 +1178,9 @@ resources from credible-set views, which this dataset never appears in.
       files carry in their `dataset` column (a list if it differs across views). It feeds
       results-api's per-row resource attribution — shared combined credible-set files, and
       exome/gene-based range queries that would otherwise drop rows whose value is unmapped —
-      the `dataset` key of `/v1/datasets`, and the registry cross-check below.
+      the `dataset` key of `/v1/datasets`, and the registry cross-check below. Leave it out
+      when the data has no `dataset` column anywhere (section 22): the cross-check fails on a
+      value no results view contains, as it does on a live value no entry names.
 - [ ] genetics-results-db: regenerate/verify `*_v.sql` (`generate_resource_sql.py lint`),
       apply views + load BQ rows if BQ-bound. For a **new** view, each list is a separate
       decision with a separate consequence:
@@ -1193,7 +1201,7 @@ resources from credible-set views, which this dataset never appears in.
       - `summary:` on the same block — **required**, a few words naming what the view holds.
         It is the view's row in the schema index (`sandbox/schema/README.md`), which is also
         a section of chat-backend's `code` system prompt, so it is what routes a reader to
-        this view among nineteen. `gen-sandbox-docs.py` refuses to render a view without
+        this view among all the others. `gen-sandbox-docs.py` refuses to render a view without
         one rather than emitting a blank cell.
       - `dataset_cross_check.excluded_reason` — **only** if the view contributes no `dataset`
         values to the registry cross-check, and then only with the reason. Omitting it for a
