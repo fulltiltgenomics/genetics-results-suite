@@ -648,7 +648,7 @@ that tool):
 ```text
 - Three or more variants in one request go to analyze_variant_list, not to repeated per-variant calls
 - **Investigating a gene means both lines of evidence**: GWAS (get_credible_sets_by_gene) and rare-variant burden (get_gene_based_results, get_exome_results_by_gene). Burden is independent of GWAS and belongs in any gene-focused analysis
-- **A gene missing from get_gene_based_results is not a gene without a burden result** — those rows are cut at genebass and BRaVa p < 1e-4. For tested-and-null in a given trait use get_gene_based_results_by_phenotype (one trait, unfiltered) or `gene_burden_results_v`
+- **A gene missing from get_gene_based_results is not a gene without a burden result** — those rows are cut at genebass and BRaVa p < 1e-4. For tested-and-null in a given trait use get_gene_based_results_by_phenotype with `genes` (one trait, unfiltered) or `gene_burden_results_v`
 ```
 
 The truncation rule's remedy is four gated clauses, so the rendered bullet DIFFERS PER
@@ -2447,13 +2447,17 @@ Get gene-level burden test results from genebass, BRaVa, IBD, BipEx2, and SCHEMA
 Description as sent to the model:
 
 ```text
-Get the complete, unfiltered gene burden test results for one phenotype: every gene and annotation class tested in that trait, with no p-value cutoff. Use this to check whether a gene was tested in a trait and what the result was even when it is not significant, or to rank all genes within one trait. For a gene across many traits use get_gene_based_results instead.
+Get gene burden test results for one phenotype from the unfiltered per-trait table: every gene and annotation class tested in that trait, with no p-value cutoff. To check whether a gene was tested in a trait and what the result was even when it is not significant, pass `genes` — only those genes' rows come back, and `genes_not_found` lists any that have no row (not tested). Without `genes` the default is a summary: row and gene totals, per-annotation counts, the number of exome-wide significant genes and the strongest rows. With summarize=false rows are sorted by mlog10p_burden descending and capped at 500 inline; `truncated` says whether more exist, `total_count` how many matched, and the full table is at `_download_url`. For a gene across many traits use get_gene_based_results instead.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'brava', 'schema2', 'bipex2', 'ibd_exome_2026') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code as search_phenotypes returns it (e.g. 'categorical_41210_both_sexes_S068_', 'SCZ', 'BIP', 'IBD', 'UC', 'CD', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results; BRaVa addresses an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
+| `genes` | `string` | no | — | — | Gene symbol or comma-separated list of gene symbols or Ensembl gene IDs (e.g. 'SETD1A', 'SETD1A,CUL1'), matched case-insensitively. Returns only these genes' rows, significant or not; summarize is ignored |
+| `annotation` | `string` | no | — | — | Restrict to one annotation class (mask) exactly as the data spells it, e.g. 'PTV' or 'pLoF'. The summary's `by_annotation` lists the values a trait carries |
+| `min_mlog10p` | `number` | no | — | — | Minimum -log10 p-value of the burden test (mlog10p_burden) |
+| `summarize` | `boolean` | no | `true` | — | If true (default), return the summary instead of rows. Read its counts for any 'how many' question. If false, rows are capped at 500 and `truncated` says whether more exist. |
 
 `required`: ['resource', 'phenotype']
 
