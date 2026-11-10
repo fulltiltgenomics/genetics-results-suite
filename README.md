@@ -86,7 +86,7 @@ out of — which covers a kubeconfig **inherited from the environment**, not one
 > `terraform/terraform.tfvars*` has no `kube_context`, so a fresh checkout can neither roll out a
 > service nor write its Secrets until the line is added. Adding it, copied from
 > `kubectl config get-contexts -o name`, is the whole fix; `terraform/terraform.tfvars.example`
-> carries a commented template.
+> carries the line, with a comment, as a template.
 
 ## Deployment environments
 
@@ -345,6 +345,7 @@ export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers prox
 export C3PO_MCP_OAUTH='{"token_endpoint":...}'  # optional, the C3PO operator login's JSON
 export DEPMAP_MCP_OAUTH='{"token_endpoint":...}'  # optional, the same for DepMap (daly only)
 # INTERNAL_API_SECRET for results API is auto-generated if not set
+# SANDBOX_TOKEN_SIGNING_KEY (signs the per-execution sandbox tokens) is auto-generated too
 # GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
 # auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
 # MCP_API_KEY (bearer token mcp-server requires for its sse/streamable-http transports; it

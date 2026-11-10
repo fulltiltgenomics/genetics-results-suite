@@ -519,14 +519,14 @@ and last the generated `# BigQuery view reference` — one H2 per view, built fr
 What each surface actually gets, under the deployed flags (subagents off, sandbox on,
 AlphaGenome on — section 2a) — re-derive with
 `default_system_prompt("FinnGenie", tool_names=...)` rather than trusting these. The
-unfiltered text is 179,603 chars. Measured 2026-10-06, with the fetcher hosts and on-request
-datasets pinned as the header describes:
+unfiltered text is 184,596 chars. Measured 2026-11-10 at genetics-mcp-server `62fd72c`, with the
+fetcher hosts and on-request datasets pinned as the header describes:
 
 | profile | tools | prompt chars | dropped relative to the unfiltered text |
 |---|---|---|---|
-| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 68 | 29,558 | Subagent Orchestration, whose tool the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance and the view reference go with it |
-| `code` | 22 | 171,690 | the above except the script guidance, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "prefer the dedicated API tools" wording, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (138,699 chars of it, measured as `len(schema_docs.schema_reference())`) |
-| `code` with `SANDBOX_ENABLED=false` | 21 | 19,464 | also Choosing How to Get Data, The Database, Credible Set Membership, HLA / the MHC region and Dosage sensitivity — `genetics.sql` inside a script was this surface's only route to the database, so the database-routing blocks go with it |
+| `None` (default), `api`, `bigquery`, `rag`, `nocode` | 68 | 29,609 | Subagent Orchestration, whose tool the flags disable, and with them the `launch_subagents` wording of every clause that has a subagent-free twin. `run_analysis` is not on this surface either, so the script guidance and the view reference go with it |
+| `code` | 22 | 176,445 | the above except the script guidance, plus Variant Annotation Sources and every clause routing to a tool the SDK replaces — `get_credible_set_by_id`, `analyze_variant_list`, and the "prefer the dedicated API tools" wording, which the script wording replaces. Larger than the no-code prompt despite the drops because the BigQuery view reference is inlined on this surface only (143,403 chars of it, measured as `len(schema_docs.schema_reference())`) |
+| `code` with `SANDBOX_ENABLED=false` | 21 | 19,515 | also Choosing How to Get Data, The Database, Credible Set Membership, HLA / the MHC region and Dosage sensitivity — `genetics.sql` inside a script was this surface's only route to the database, so the database-routing blocks go with it |
 
 Since the collapse there is **one prompt for five of the six values**: the gate is keyed on
 tool names, those five resolve to the same 68 tools, and the five prompts are
@@ -1444,7 +1444,7 @@ List all datasets available in the API with descriptions, provenance (author, ve
 Description as sent to the model:
 
 ```text
-Get the harmonized per-trait metadata of one resource: every phenotype/study it serves with its trait name, sample sizes, author and date, and (for collections like eQTL Catalogue) the sub-studies. Use this after list_datasets when the question is about a resource's contents — which traits exist, how many, what a trait code means, or how large a study is. list_datasets gives dataset-level aggregates; this gives the per-trait rows behind them. For one named trait pass its code in `phenotypes`: a large resource is truncated by the row cap before an alphabetically late code.
+Get the harmonized per-trait metadata of one resource: every phenotype/study it serves with its trait name, sample sizes, author and date, and (for collections like eQTL Catalogue) the sub-studies. Use this after list_datasets when the question is about a resource's contents — which traits exist, how many, what a trait code means, or how large a study is. For a multi-cohort meta-analysis resource such as finngen_mvp_ukbb_aou each row also carries `contributing_cohorts` (the ancestry-split cohorts that went into that trait's result, e.g. fg, aou_eur, mvp_afr, ukbb_eur; it differs per trait, unlike the dataset-level `cohorts` of list_datasets), `cohort_families` (fg/aou/mvp/ukbb) and `n_by_cohort` ({cohort: {n_cases, n_controls}}; for a quantitative trait only n_cases is present and it is the whole sample size, not a case count). list_datasets gives dataset-level aggregates; this gives the per-trait rows behind them. For one named trait pass its code in `phenotypes`: a large resource is truncated by the row cap before an alphabetically late code.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2065,7 +2065,7 @@ A versioned Ensembl id (ENSG....14) is accepted; the version is dropped before t
 Description as sent to the model:
 
 ```text
-Get tissue-specific gene expression levels from bulk-tissue resources (e.g. GTEx). Returns expression data across tissues. Use this to understand where a gene is expressed. For single-cell, cell-type-resolved expression (which cell types within a tissue express the gene) use get_cell_type_expression where it is available.
+Get tissue-specific gene expression levels from bulk-tissue resources (e.g. GTEx). Returns expression data across tissues. Use this to understand where a gene is expressed.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2847,7 +2847,7 @@ Get schema for database tables. **Always call this before query_database** to di
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `table` | `string` | no | — | — | Optional: return schema for just this table (e.g. 'gene_burden_results_v'). Omit for all tables. Available: asm_qtl_v, coloc_credsets_v, colocalization_v, credible_sets_v, datasets_v, dosage_sensitivity_v, exome_gene_bayes_results_v, exome_gene_counts_v, exome_variant_counts_v, exome_variant_results_v, gene_annotations_v, gene_burden_results_v, gnomad_variant_annotation_v, hla_associations_v, mpra_v, open_chromatin_v, peak_to_gene_v, phenotypes_v, rcnv_gene_associations_v, rcnv_segments_v, rcnv_window_associations_v, variant_annotation_v, variant_effect_v |
+| `table` | `string` | no | — | — | Optional: return schema for just this table (e.g. 'gene_burden_results_v'). Omit for all tables. Available: asm_qtl_v, coloc_credsets_v, colocalization_v, credible_sets_v, datasets_v, decode_pqtl_signals_v, dosage_sensitivity_v, exome_gene_bayes_results_v, exome_gene_counts_v, exome_variant_counts_v, exome_variant_results_v, gene_annotations_v, gene_burden_results_v, gnomad_variant_annotation_v, hla_associations_v, mpra_v, open_chromatin_v, peak_to_gene_v, phenotypes_v, rcnv_gene_associations_v, rcnv_segments_v, rcnv_window_associations_v, variant_annotation_v, variant_effect_v |
 
 `required`: []
 
