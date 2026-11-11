@@ -82,6 +82,30 @@ data:
       access_log /dev/stdout redacted;
       resolver kube-dns.kube-system.svc.cluster.local valid=10s;
 
+      # per-caller throttle on the results API. Keyed on the oauth2-proxy identity for a
+      # cookie session and on the bearer token otherwise, so one person's script cannot
+      # hold results-api's single worker: a batch of region reads at 12 in flight and 60-70 a
+      # minute, each 5-15 s, starved /healthz and had the kubelet kill the process three
+      # times. Browser sessions measured at the load balancer peak at 22 requests in one
+      # second and 45 in a minute, all short, so the ceilings below never reach the UI.
+      # limit_conn and limit_req run in the preaccess phase, before auth_request has set
+      # $email, which is why /api/ hands the request on to @api_user with try_files and the
+      # limits sit there, after the internal redirect.
+      # limit_conn refuses a key over 255 bytes and a Keycloak JWT is longer; the signature
+      # tail is unique per token
+      map $http_authorization $bearer_key {
+        "~(?<tail>.{64})$" $tail;
+        default            $http_authorization;
+      }
+      map $email $api_client {
+        ""      $bearer_key;
+        default $email;
+      }
+      limit_conn_zone $api_client zone=api_conn:10m;
+      limit_req_zone  $api_client zone=api_rate:10m rate=120r/m;
+      limit_conn_status 429;
+      limit_req_status  429;
+
       server {
         listen 8080;
 
@@ -173,6 +197,8 @@ data:
         # results API — bearer token bypass (backend validates the token)
         location @api_bearer {
           internal;
+          limit_conn api_conn 4;
+          limit_req zone=api_rate burst=30 nodelay;
           proxy_set_header X-Goog-Authenticated-User-Email "";
           proxy_set_header X-Internal-MCP-Call "";
           proxy_pass http://results-api.genetics.svc.cluster.local:4000;
@@ -198,10 +224,18 @@ data:
 
           auth_request /oauth2/auth;
           auth_request_set $email $upstream_http_x_auth_request_email;
-          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
-          proxy_set_header X-Internal-MCP-Call "";
           error_page 401 = @oauth2_login;
 
+          # the file never exists; this is the internal redirect that lets the throttle in
+          # @api_user see $email (see the zones in the http block)
+          try_files /__api_user @api_user;
+        }
+
+        location @api_user {
+          limit_conn api_conn 4;
+          limit_req zone=api_rate burst=30 nodelay;
+          proxy_set_header X-Goog-Authenticated-User-Email "accounts.google.com:$email";
+          proxy_set_header X-Internal-MCP-Call "";
           proxy_pass http://bff.genetics.svc.cluster.local:5000;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
