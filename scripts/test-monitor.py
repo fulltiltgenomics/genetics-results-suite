@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline assertions about the monitor's report delivery, alert dedup, view derivation and dataset listing checks.
+"""Offline assertions about the monitor's report delivery, alert dedup, view derivation, dataset listing and nightly-analysis checks.
 
 Run: python3 scripts/test-monitor.py   (needs PyYAML and requests; no network, no GCP)
 Exit 0 = pass, 1 = a property is broken, 2 = the harness could not run.
@@ -166,6 +166,44 @@ def test_views(tmp):
           len(out) == 1 and "no monitored views" in (out[0]["error"] or ""), str(out))
 
 
+def test_conversation_analysis():
+    def run(outcome, hours=None):
+        c = health.HealthChecker(config_profile="daly")
+        if hours is not None:
+            c.analysis_max_age_hours = hours
+        asked = []
+
+        def completed(h):
+            asked.append(h)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        c._analysis_completed_within = completed
+        (r,) = c.check_conversation_analysis()
+        return r, asked
+
+    r, asked = run(True, hours=24)
+    check("a completed analysis run passes", r.status == "ok" and r.service == "analyze-conversations")
+    check("the window asked for is the configured interval", asked == [24], str(asked))
+    r, _ = run(False)
+    check("no completed run in the window fails", r.status == "fail" and "no run completed" in r.error, str(r))
+    r, _ = run(RuntimeError("403 denied"))
+    check("an unanswerable log query fails rather than passing", r.status == "fail" and "403 denied" in r.error, str(r))
+
+    for profile in ("daly", "finngen"):
+        c = health.HealthChecker(config_profile=profile)
+        c.check_service_health = c.check_datasets = c.check_cellxgene_release = lambda: []
+        c._analysis_completed_within = lambda h: False
+        got = [(x.service, x.status) for x in c.run_all()]
+        check(f"{profile}: run_all carries the analysis check", got == [("analyze-conversations", "fail")], str(got))
+
+    # what main does with it: the failure reaches the Slack report under its own service
+    blocks = main._format_health_blocks([run(False)[0]])
+    text = blocks[1]["text"]["text"]
+    check("a missed run is a red line in the report", ":red_circle: *analyze-conversations*" in text and "nightly_run" in text, text)
+
+
 def run_datasets(profile, listings):
     """check_datasets against the real datasets.yaml, results-api answering `listings`
     ({path: [dataset_id, ...]}; a path absent from it answers HTTP 404)."""
@@ -217,6 +255,7 @@ def test_on_request_datasets():
 
 def main_():
     test_on_request_datasets()
+    test_conversation_analysis()
     with tempfile.TemporaryDirectory() as tmp:
         test_views(tmp)
         test_check_is_read_only(tmp)

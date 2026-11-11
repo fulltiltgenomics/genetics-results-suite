@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -28,6 +28,12 @@ API_SERVED_DATA_TYPES = frozenset({
 # profile "daly" and share one bucket, but only daly's tfvars sets expression_data_enabled (the
 # flag creates the bucket, so staging must leave it off); the profile is what both pods agree on.
 CELLXGENE_PROFILES = frozenset({"daly"})
+
+ANALYSIS_CONTAINER = "analyze-conversations"
+# the analyzer's last log line, reached only once every analysis is persisted and the report
+# written. It is a string owned by genetics-mcp-server (scripts/analyze_conversations.py), so
+# a change there makes this check fail daily rather than pass quietly
+ANALYSIS_DONE_LINE = "INFO: Done!"
 
 
 @dataclass
@@ -90,6 +96,10 @@ class HealthChecker:
         self.cellxgene_max_age_days = float(os.environ.get("CELLXGENE_MAX_AGE_DAYS", "10"))
         self.bq_project = os.environ.get("GCP_PROJECT", "")
         self.bq_dataset = os.environ.get("BQ_DATASET", "genetics_results")
+        self.k8s_namespace = os.environ.get("K8S_NAMESPACE", "genetics")
+        self.k8s_cluster = os.environ.get("K8S_CLUSTER", "")
+        # the window a nightly run has to land in; the same interval the log alerter reads
+        self.analysis_max_age_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "24"))
 
     # ------------------------------------------------------------------
     # public API
@@ -102,7 +112,36 @@ class HealthChecker:
         results.extend(self.check_datasets())
         if self.config_profile in CELLXGENE_PROFILES:
             results.extend(self.check_cellxgene_release())
+        results.extend(self.check_conversation_analysis())
         return results
+
+    def check_conversation_analysis(self) -> list[CheckResult]:
+        """Whether an analyze-conversations run finished inside the last interval.
+
+        Asks for the outcome rather than for a failure, because the failures do not announce
+        themselves: a pod killed for memory logs nothing at all, and a job that is suspended,
+        unschedulable or cannot attach the chat-data volume never starts a container.
+        """
+        hours = self.analysis_max_age_hours
+        try:
+            completed = self._analysis_completed_within(hours)
+        except Exception as exc:
+            logger.error("conversation analysis: Cloud Logging query failed: %s", exc)
+            return [CheckResult(
+                ANALYSIS_CONTAINER, "nightly_run", "fail",
+                error=f"could not query Cloud Logging for a completed run: {exc}",
+            )]
+        if completed:
+            return [CheckResult(ANALYSIS_CONTAINER, "nightly_run", "ok")]
+        return [CheckResult(
+            ANALYSIS_CONTAINER, "nightly_run", "fail",
+            error=(
+                f"no run completed in the last {hours}h, so new conversations are not being "
+                f"evaluated. `kubectl -n {self.k8s_namespace} get jobs` shows whether it failed "
+                f"or never started; a run killed for memory leaves no container log, only an "
+                f"OOMKilling line in the node's k8s_node logs"
+            ),
+        )]
 
     def check_cellxgene_release(self, now: datetime | None = None) -> list[CheckResult]:
         """The CELLxGENE release pointer: present, recent, and agreeing with BigQuery."""
@@ -350,6 +389,26 @@ class HealthChecker:
                 response_time_ms=round(elapsed_ms, 1),
                 error=str(exc),
             )
+
+    def _analysis_completed_within(self, hours: int) -> bool:
+        """True when the analyzer logged its closing line in this cluster in the last `hours`."""
+        from google.cloud import logging as cloud_logging
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        # Cloud Logging is project-wide and two deployments can share a project and namespace
+        cluster_clause = (
+            f' AND resource.labels.cluster_name="{self.k8s_cluster}"' if self.k8s_cluster else ""
+        )
+        log_filter = (
+            f'resource.type="k8s_container"'
+            f' AND resource.labels.namespace_name="{self.k8s_namespace}"'
+            f'{cluster_clause}'
+            f' AND resource.labels.container_name="{ANALYSIS_CONTAINER}"'
+            f' AND textPayload:"{ANALYSIS_DONE_LINE}"'
+            f' AND timestamp >= "{cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")}"'
+        )
+        client = cloud_logging.Client(project=self.bq_project or None)
+        return any(True for _ in client.list_entries(filter_=log_filter, max_results=1))
 
     def _read_cellxgene_current(self) -> bytes | None:
         """The pointer's bytes, or None when the object does not exist."""
