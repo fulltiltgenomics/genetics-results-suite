@@ -323,7 +323,7 @@ profiles:
         resource: eqtl_catalogue
         version: "R8_pre"
         description: >-
-          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies
+          eQTL Catalogue R8 pre-release. A harmonized collection of eQTL / sQTL / pQTL studies
           across many tissues, cell types, and conditions.
         author: "eQTL Catalogue"
         publication_date: "2026-01-01"

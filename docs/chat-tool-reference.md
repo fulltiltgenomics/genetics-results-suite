@@ -995,7 +995,7 @@ is verbatim; the full descriptions are in section 8.
 - `get_credible_sets_by_region`: *"For a gene use get_credible_sets_by_gene (it applies the window for you) and for a single variant use get_credible_sets_by_variant."*
 - `get_credible_set_leads_by_phenotype`: *"get_credible_sets_by_phenotype returns all member variants of all sets, which is far larger; use that only when you need the members."*
 - `get_credible_sets_by_qtl_gene`: *"Different from get_credible_sets_by_gene which finds variants NEAR a gene."* … *"Do NOT fall back to matching peak coordinates against the gene's position — linked peaks sit up to ~1 Mb away and most peaks near a gene are not linked to it."*
-- `get_colocalization_by_credible_set`: *"get_colocalization takes a variant and returns everything colocalizing at the position, which mixes in other signals at the same locus."*
+- `get_colocalization_by_credible_set`: *"get_colocalization takes a variant and returns every pair with that variant in either credible set, which mixes in the other signals the variant belongs to."*
 - `get_exome_results_by_region` / `_by_variant`: each names `get_exome_results_by_gene` as the single-gene alternative.
 - `get_gene_based_results_by_phenotype`: *"For a gene across many traits use get_gene_based_results instead."*
 - `get_peak_to_genes`: *"distinct from get_open_chromatin_by_peak, which returns measured accessibility of the peak itself."*
@@ -2065,7 +2065,7 @@ A versioned Ensembl id (ENSG....14) is accepted; the version is dropped before t
 Description as sent to the model:
 
 ```text
-Get tissue-specific gene expression levels from bulk-tissue resources (e.g. GTEx). Returns expression data across tissues. Use this to understand where a gene is expressed.
+Get tissue-specific gene expression levels from bulk-tissue resources: GTEx RNA (median TPM per tissue) and Human Protein Atlas protein (IHC staining category per tissue and cell type; HPA covers only part of the genome). Use this to understand where a gene is expressed.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2336,7 +2336,7 @@ Get Mendelian/rare disease gene-disease relationships from GenCC curation submis
 Description as sent to the model:
 
 ```text
-Get colocalization results for a variant. Returns trait pairs that share the same causal signal at this locus. Use this to find traits that may share biological mechanisms.
+Get colocalization results for a variant. Returns the trait pairs where the variant is a member of the credible set of either trait; it need not be the lead variant. Use this to find traits that may share biological mechanisms.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
@@ -2351,7 +2351,7 @@ Get colocalization results for a variant. Returns trait pairs that share the sam
 Description as sent to the model:
 
 ```text
-Get the credible sets that colocalize with ONE specific credible set, identified by resource + phenotype + cs_id. Use this after get_credible_sets_by_gene/_by_variant/_by_region has given you a cs_id and you want that signal's colocalizations specifically — get_colocalization takes a variant and returns everything colocalizing at the position, which mixes in other signals at the same locus.
+Get the credible sets that colocalize with ONE specific credible set, identified by resource + phenotype + cs_id. Use this after get_credible_sets_by_gene/_by_variant/_by_region has given you a cs_id and you want that signal's colocalizations specifically — get_colocalization takes a variant and returns every pair with that variant in either credible set, which mixes in the other signals the variant belongs to.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
