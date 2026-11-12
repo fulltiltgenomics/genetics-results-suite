@@ -1210,7 +1210,7 @@ enabling deploy makes. Confirmed on the `daly-staging` bring-up: with the addres
 
 ### What the sandbox offers a script beyond the data
 
-Three things a `run_analysis` script gets without asking, all detailed in
+What a `run_analysis` script gets without asking, all detailed in
 `docs/code-execution-security.md` → "Render density, the opt-in style, and the standard
 plots":
 
@@ -1224,6 +1224,9 @@ plots":
   `.image` a PIL image, decoded by the Pillow matplotlib already brings). The delivery caps
   (limits table in `docs/code-execution-security.md`) apply first, so a PDF over them is
   refused before any extractor sees it.
+- **A spreadsheet is a real workbook.** `xlsxwriter` is in the image, so
+  `df.write_excel("name.xlsx")` and `xlsxwriter.Workbook` work; there is no xlsx *reader*, and
+  the artifact delivery caps apply.
 - **`genetics.plots` holds the standard figures**, a locuszoom, a phewas, an upset, a forest
   plot and a volcano today, as
   functions a script calls rather than conventions it rederives. Discoverable through

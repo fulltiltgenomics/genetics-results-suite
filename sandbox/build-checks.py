@@ -298,6 +298,7 @@ def _imports():
     missing genetics_mcp_server.sdk means the SDK install has not landed in the branch being
     built — the image is not shippable without it."""
     mods = ["numpy", "scipy.stats", "polars", "matplotlib.pyplot", "httpx", "pypdf",
+            "xlsxwriter",
             "PIL.Image", "genetics_mcp_server.sdk"]
     env = dict(PY_ENV, MPLBACKEND="Agg", MPLCONFIGDIR="/tmp/mplcheck")
     for m in mods:
