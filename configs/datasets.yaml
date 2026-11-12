@@ -4519,19 +4519,20 @@ profiles:
 
       hpa_expression:
         resource: hpa
-        dataset: HPA_24.1
-        version: "v24.1"
+        dataset: HPA_26.0
+        version: "v26.0"
         description: >-
-          Human Protein Atlas v24.1 protein levels from immunohistochemistry (IHC) staining
+          Human Protein Atlas v26.0 protein levels from immunohistochemistry (IHC) staining
           of normal tissue; this is protein, not RNA, and HPA's RNA data is not included.
-          Covers only the ~5,500 genes whose IHC reliability score is "Approved": genes
-          scored Enhanced, Supported or Uncertain have no rows at all. Levels are
-          categorical (High / Medium / Low / Not_detected) across 53 tissues, with
-          individual cell-type resolution encoded in the tissue_cell field as
-          tissue|subtissue|cell_type (includes immune tissues such as bone_marrow, spleen,
-          lymph_node, tonsil and thymus).
+          Covers the ~11,000 genes whose IHC reliability score is Enhanced, Supported or
+          Approved (NOT proteome-wide: genes scored Uncertain, and genes HPA has not
+          stained, have no rows at all). Levels are categorical (High / Medium / Low /
+          Not_detected, and for a few rows Ascending / Descending / Not_representative)
+          across 60 tissues, with individual cell-type resolution encoded in the
+          tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such as
+          bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
-        publication_date: "2024-11-18"
+        publication_date: "2026-11-11"
         data_type: expression
         trait_type: null
         metadata_file: null
