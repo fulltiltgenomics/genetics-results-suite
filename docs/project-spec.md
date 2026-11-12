@@ -394,6 +394,7 @@ scripts/                                     build, deploy and verification scri
   lint-staged.sh                             block a commit whose staged Python ruff rejects
   monitor/                                   the monitoring CronJob's Python package
   mr-proving-ground.py                       the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
+  protein-structure-proving-ground.py        the protein structure layer's rehearsal release root, rehearsal BigQuery dataset and worktrees, and its measurements
   rollout.sh                                 single-service image update
   run-sandbox-local.sh                       build and run the sandbox image in plain Docker
   stage-gene-sets.py                         gene-set bundle staging: fetch and verify the pinned release, then drop collections the profile's licence allowlist excludes

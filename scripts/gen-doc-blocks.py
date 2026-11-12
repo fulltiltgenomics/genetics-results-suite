@@ -426,6 +426,9 @@ LAYOUT = {
     "scripts/mr-proving-ground.py": "the genetics.mr stack preconditions, replication "
                                     "fixtures and kill-criterion measurements against the "
                                     "local stack (docs/local-dev-vm.md)",
+    "scripts/protein-structure-proving-ground.py": "the protein structure layer's rehearsal "
+                                                   "release root, rehearsal BigQuery dataset "
+                                                   "and worktrees, and its measurements",
     "scripts/chat-memory-proving-ground.py": "staging recipe and check runner for the "
                                              "per-project chat memory feature; `check all` "
                                              "or one numbered check, each PASS/FAIL with its "
