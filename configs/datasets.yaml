@@ -3476,6 +3476,102 @@ tables:
           WHERE chr = 11 AND gene_name = 'CD3E'
           GROUP BY gene_name
 
+  missense_residue_v:
+    exposed: true
+    profiles: [daly]
+    partition_column: chr
+    clustering_columns: [pos]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source release: the view has no `resource` column and no `dataset`
+        discriminator for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        variant-to-residue reference map, has no `dataset` column; what it holds is a
+        protein structure release named in its `release` column, not a registry entry
+    summary: "Possible missense variants mapped to the protein residue they change"
+    description: >-
+      Every possible missense single-nucleotide variant of the canonical UniProt isoform of
+      each protein with a structure model, mapped to the residue it changes: one row per
+      (variant, UniProt accession). It says WHERE in the protein a variant lands and which
+      structure model file holds that residue; it holds no association statistics, no allele
+      frequencies and no observed-variant information, so a row does not mean the variant has
+      been seen in anyone. A variant that falls on more than one protein has one row per
+      protein, so `variant` alone is not unique and a join on it can multiply rows.
+      ABSENCE: a variant with no row is not a missense change of the canonical UniProt
+      isoform under the map's annotation (VEP 115 / Ensembl 115). It means exactly that and
+      nothing stronger: not that the variant is non-coding, not that it is synonymous, and
+      not that it is missense in no transcript. For a variant's consequence read
+      variant_annotation_v or gnomad_variant_annotation_v. ALWAYS filter on chr, and on pos
+      whenever a position or region is known: the table is partitioned by chr and clustered
+      by pos. `variant` is a join key and an output column, not a cheap filter. The
+      results-api serves the same rows from the file this table is loaded from.
+
+    columns:
+      chr: "Chromosome number, X is 23. Partition column: always filter on it"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      variant: "Variant identifier as chr:pos:ref:alt. Same format as the variant column in the association views, so it joins directly"
+      accession: "UniProt accession of the protein whose canonical isoform the variant changes"
+      gene_id: "Ensembl gene ID without version: the accession's gene whose GENCODE v49 span contains pos; NULL when none or more than one does"
+      gene_name: "GENCODE v49 gene symbol of gene_id; NULL with it"
+      aa_pos: "Protein position of the changed residue (1-based, canonical UniProt isoform)"
+      aa_ref: "Reference amino acid, one-letter code"
+      aa_alt: "Alternative amino acid, one-letter code"
+      model_file_id: "Structure model file that holds aa_pos. A long protein is modelled as several overlapping files; this is the one that owns the residue"
+      file_position: "Position of the residue within model_file_id (1-based); equals aa_pos only when the file starts at the protein's first residue"
+      mu_snp: "Per-variant mutation rate; NULL where the source has none"
+      release: "Protein structure release the rows were loaded from; the same on every row"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      variant: STRING
+      accession: STRING
+      gene_id: STRING
+      gene_name: STRING
+      aa_pos: INT64
+      aa_ref: STRING
+      aa_alt: STRING
+      model_file_id: STRING
+      file_position: INT64
+      mu_snp: FLOAT64
+      release: STRING
+
+    examples:
+      - description: "Which residue a variant changes. Filter on chr and pos (partition and clustering key), then on the alleles. No row means only that the variant is not a missense change of the canonical UniProt isoform."
+        sql: |-
+          SELECT variant, gene_name, accession, aa_ref, aa_pos, aa_alt, model_file_id, file_position
+          FROM missense_residue_v
+          WHERE chr = 7 AND pos = 140753336 AND ref = 'A' AND alt = 'T'
+
+      - description: "Residues changed by fine-mapped variants on one chromosome. Give both sides a literal chr so both prune partitions; a variant on two proteins returns two rows."
+        sql: |-
+          WITH cs AS (
+            SELECT DISTINCT chr, pos, variant, trait_original, pip
+            FROM credible_sets_v
+            WHERE resource = 'finngen' AND data_type = 'GWAS' AND pip > 0.5 AND chr = 19
+          )
+          SELECT cs.trait_original, cs.variant, cs.pip, m.gene_name, m.accession,
+                 CONCAT(m.aa_ref, m.aa_pos, m.aa_alt) AS protein_change, m.model_file_id
+          FROM cs
+          JOIN missense_residue_v m
+            ON m.chr = cs.chr AND m.pos = cs.pos AND m.variant = cs.variant
+          WHERE m.chr = 19
+          ORDER BY cs.pip DESC
+
+      - description: "Possible missense variants per residue across a gene's span. Keep the chr and pos filters: gene_name alone prunes nothing."
+        sql: |-
+          SELECT accession, aa_pos, aa_ref, COUNT(*) AS n_possible_missense, SUM(mu_snp) AS mu
+          FROM missense_residue_v
+          WHERE chr = 7 AND pos BETWEEN 140719327 AND 140924929 AND gene_name = 'BRAF'
+          GROUP BY accession, aa_pos, aa_ref
+          ORDER BY aa_pos
+
 # ---------------------------------------------------------------------------
 # Dataset-to-resource mapping rules
 # Ordered list — first match wins. Used to generate SQL CASE/WHEN in BQ views

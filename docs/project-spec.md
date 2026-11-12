@@ -758,6 +758,32 @@ preflight aborts a deploy whose gated-in views have no tables.
 or stale pointer and on BigQuery serving a different release from the one CURRENT names; with
 `CELLXGENE_LIVE` off, the missing-release cases pass silently.
 
+### Missense variant to protein residue map (`missense_residue_v`)
+
+The protein structure release's `variants.tsv.gz` maps each possible missense variant to the
+residue it changes (the contract is genetics-results-munge `docs/protein-structure.md`).
+results-api serves that file; `missense_residue_v` is the same rows in BigQuery, there for
+one reason: a sandbox script can join it to the association views in SQL instead of fetching
+variants one request at a time. Columns, the worked examples and the absence rule are the
+`tables.missense_residue_v` block of `configs/datasets.yaml`; the table's layout is
+genetics-results-db `schemas/missense_residue.sql`.
+
+- **One file, two readers.** genetics-results-db `scripts/load_missense_residue.sh` loads the
+  object results-api serves, in place, and stores the release name on every row, so
+  `SELECT DISTINCT release FROM missense_residue` can be compared with the bucket's
+  `releases/CURRENT`. Nothing compares them yet: the monitor has no check for this view.
+- **Absence is narrow.** A variant with no row is not a missense change of the canonical
+  UniProt isoform under the map's annotation (VEP 115 / Ensembl 115), and nothing stronger.
+  The view's description says so because a script that reads "no row" as "not coding" would
+  be wrong silently.
+- **Gated to daly** with `tables.missense_residue_v.profiles`, as the `cellxgene_*_v` views
+  are. `deploy.sh`'s example-scan preflight needs the served dataset's `missense_residue` to
+  exist with the declared partitioning and clustering, and aborts a daly deploy otherwise. An
+  empty table satisfies it — `setup_bigquery.sh` creates one, and so does a first load whose
+  file is then refused — so the preflight says nothing about whether the data is there. The
+  rollout check for that is `SELECT DISTINCT release` and `COUNT(*)` on `missense_residue`
+  against the release's `manifest.json` (`release`, `counts.variants.variant_rows`).
+
 ### Phenotype and dataset metadata in BigQuery
 
 Trait/phenotype metadata and the dataset registry also exist as BigQuery tables, `phenotypes`
