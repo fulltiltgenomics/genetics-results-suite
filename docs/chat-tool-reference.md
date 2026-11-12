@@ -696,6 +696,7 @@ rule:
 ```text
 - **Write one script with run_analysis when an answer needs several retrievals combined.** One script queries, joins, filters and summarises in a single call, and its intermediate rows never enter this conversation — so prefer it for a chain (fetch, fetch again keyed on the first result, aggregate) or when the intermediate data is large and only the summary matters. Call list_capabilities first for the exact SDK signatures rather than guessing, and print a SUMMARY — counts, top rows, the statistic asked for — rather than raw rows.
 - **One script means one chain of work, not everything at once.** A run is bounded by its wall clock and returns NOTHING when it overruns, so a script bundling five independent sections loses all five to the slowest; independent retrievals go in separate calls. Your own reply is bounded too, and a script long enough to exhaust it is discarded before it ever runs. If you are writing numbered section headers into a script, split it.
+- **Calls issued together cannot see each other's results.** A script that needs an identifier another call is still looking up — a lead variant, a credible-set id, a region — belongs in the same script as the lookup or in the next round; never fill the gap with a variant id or coordinates from memory.
 - For a question a single tool answers, call the tool. A script is not cheaper than one call.
 - **`genetics.show(df)` is the route that prints a frame in full** — every column of every row, one row per line. polars' own repr is built for a terminal and silently drops columns and rows; do not try to widen it with `pl.Config`, use `show()`. If output still looks cut, that is the 64 KiB stdout window — print less.
 - **A multi-trait analysis (PheWAS matrix, clustering, factorization) is decided by its design, so settle the design before the first fetch.** When the user names a published method, reproduce its steps — feature selection, significance filter, pruning, algorithm — or say up front which step is a stand-in. Fix the trait panel a priori by domain; never select it by association with the loci under study (that writes the answer into the input) and never by what comes to mind first. Include the discovery trait as a positive control. Prune near-duplicate features (r > 0.85, parent and child endpoint codes) so one signal is not counted several times, and do not mix z-scores across sample sizes that differ by an order of magnitude without rescaling. Fetch the whole planned panel, across several calls if one will not hold it, rather than decomposing whatever a time guard left. Report what makes the result trustworthy — restarts and the K distribution, membership strength, cells clipped or imputed — and whether a visible pattern is in the data or in the plot: a heatmap sorted by dominant factor is block-diagonal by construction.
@@ -745,8 +746,8 @@ names `get_variant_annotations`, which the SDK replaces), verbatim:
 |--------|------|----------------------|
 | FinnGen | `get_variant_annotations` | FinnGen allele frequency, variant consequence, rsID, exome/genome enrichment |
 | gnomAD 4.1.1 | `get_variant_annotations` with `source='gnomad'`; `gnomad_variant_annotation_v` in the database for bulk questions and joins | Allele frequency overall and per genetic ancestry group, VEP consequence and gene, rsID, site filters |
-| gnomAD browser | gnomAD MCP tools | Live browser-level detail the view does not hold: gene constraint (pLI/LOEUF), coverage, structural variants |
-| myvariant.info | `get_myvariant_annotations` | Clinical significance (ClinVar), pathogenicity scores (CADD), functional predictions (SIFT, PolyPhen2), cancer (COSMIC, CIViC) |
+| gnomAD browser | gnomAD MCP tools | Live browser-level detail the view does not hold: gene constraint (pLI/LOEUF), coverage, structural variants, and CADD and other in-silico predictors for any variant, coding or not (`get_variant_details`) |
+| myvariant.info | `get_myvariant_annotations` | Clinical significance (ClinVar) for any variant; for protein-altering SNVs only, CADD and functional predictions (REVEL, AlphaMissense, SIFT, PolyPhen2) |
 | UniProt | `get_protein_annotations` / `map_protein_variants` / `search_uniprot` | Protein-level context: domains, active/binding sites, PTMs, isoforms, sequence, and protein-position ↔ genomic-coordinate mapping |
 
 Population frequencies come from gnomAD, never from `get_myvariant_annotations`: a handful of variants is a `source='gnomad'` lookup, a list of fine-mapped variants is a database join. A full characterization may need several of these sources.
@@ -1824,7 +1825,7 @@ SIDE BY SIDE WITH MEASURED DATA the labelling matters MORE, not less: label ever
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call, and one call per variant is the expensive mistake here. A variant the model cannot score comes back as its own failed row, leaving the rest of the batch intact. |
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 10 per call, and one call per variant is the expensive mistake here. A variant the model cannot score comes back as its own failed row, leaving the rest of the batch intact. A batch too large to return whole comes back with shorter track and gene lists and says so in `detail`; every variant keeps its strongest value and quantile per modality, and a single-variant call returns every track and gene. |
 | `cell_type` | `string` | no | — | — | Cell type or tissue to score in, matched against AlphaGenome's own biosample names (e.g. 'liver', 'K562'). Omit to take the strongest effect across all tracks. A request that matches nothing falls back to all tracks and says so in `cell_type_match`. |
 | `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to score. Omit for the default set, which is exactly the modalities calibrated against this suite's own measurements. Any modality NOT in that default is uncalibrated and has to be asked for by name; its result says so in `validation`. |
 
@@ -1870,7 +1871,7 @@ READ THE `validation` BLOCK BEFORE QUOTING A NUMBER. Every modality in the resul
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 25 per call. |
+| `variants` | `["string", "array"]` | yes | — | items: `{"type": "string"}` | GRCh38 variants as chr:pos:ref:alt, e.g. ['19:44908684:T:C']. A leading 'chr' is accepted and X may be spelled 23. Pass a list and batch them: at most 10 per call. |
 | `cell_type` | `string` | no | — | — | Cell type or tissue to compare in. It matches BOTH sides — AlphaGenome's biosample names and the measured assay's cell type or MPRA cell line (K562, HEPG2, SKNSH, HCT116, A549) — so passing it is what makes a matched comparison possible. Omit and every measurement comes back as `context_match: "not_requested"`. |
 | `modalities` | `array` | no | — | items: `{"type": "string", "enum": ["DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "CAGE", "PROCAP", "RNA_SEQ", "SPLICE_SITES", "SPLICE_SITE_USAGE", "SPLICE_JUNCTIONS", "POLYADENYLATION", "CONTACT_MAPS"]}` | Modalities to compare. Omit for the default set, which is exactly the modalities that HAVE a measured substrate here. A modality outside it has nothing to compare against and comes back saying so. |
 
@@ -2778,25 +2779,25 @@ Description as sent to the model:
 Get clinical and functional variant annotations from myvariant.info.
 
 Use this tool when:
-- The user asks about clinical significance or pathogenicity of a variant (ClinVar data)
-- The user wants deleteriousness or pathogenicity scores (CADD scores)
-- The user wants functional impact predictions (SIFT, PolyPhen2, MutationTaster, etc.)
-- The user asks about cancer relevance of a variant (COSMIC, CIViC data)
+- The user asks about clinical significance or pathogenicity of a variant (ClinVar data; any variant type)
+- The user wants pathogenicity scores or functional impact predictions for a PROTEIN-ALTERING SNV: CADD, REVEL, AlphaMissense, SIFT, PolyPhen2, ClinPred, PrimateAI, MutationTaster
 - The user asks "is this variant pathogenic?" or "what is the clinical interpretation?"
 
 Do NOT use this tool for:
 - Population allele frequencies → use get_variant_annotations with source='gnomad' (or the gnomad_variant_annotation_v view for a list of variants) instead
 - Gene constraint scores (pLI, LOEUF) → use gnomAD MCP get_gene instead
 - FinnGen-specific annotations (AF, consequence, enrichment) → use get_variant_annotations instead
+- CADD for a non-coding variant or an indel → use gnomAD MCP get_variant_details instead. The scores here come from dbNSFP, which covers only missense, nonsense and splice-site SNVs, so for anything else `cadd` and `functional_predictions` are simply absent — that is "not covered here", never "no score exists"
+- Cancer annotations (COSMIC, CIViC) → not available: this tool queries GRCh38, where myvariant.info does not index them
 
-Returns: ClinVar clinical significance and conditions, CADD phred score, functional predictions (SIFT, PolyPhen2, MutationTaster, etc.), COSMIC cancer data, CIViC clinical evidence, and rsID.
+Returns: ClinVar clinical significance and conditions and rsID for any variant it knows; for a protein-altering SNV also the gene, CADD phred and raw score, and `functional_predictions` keyed by predictor (score, prediction, rankscore; polyphen2 as `polyphen2_hdiv` and `polyphen2_hvar`). A value that differs between transcripts comes back as a list.
 ```
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
 | `variant` | `string` | no | — | — | Single variant in chr:pos:ref:alt format (e.g., '1:55051215:G:A'). Any separator (: - _ \|) accepted. |
 | `variants` | `array` | no | — | items: `{"type": "string"}` | List of variant IDs for batch lookup (e.g., ['1:55051215:G:A', '7:117559590:ATCT:A']). Max 1000. |
-| `fields` | `string` | no | `"clinvar,cadd,dbnsfp,cosmic,civic,dbsnp"` | — | Comma-separated annotation sources to query (default: clinvar,cadd,dbnsfp,cosmic,civic,dbsnp). Do not include gnomad_genome or gnomad_exome. |
+| `fields` | `string` | no | `"clinvar,dbnsfp,dbsnp"` | — | Comma-separated annotation sources to query (default: clinvar,dbnsfp,dbsnp — the sources the GRCh38 index holds that this tool reports). Leave it unset; cadd, cosmic and civic are not indexed on GRCh38 and return nothing. Do not include gnomad_genome or gnomad_exome. |
 
 `required`: []
 
@@ -2885,6 +2886,8 @@ SAVE FILES INTO THE ARTIFACTS DIRECTORY, NOT THE WORKING DIRECTORY. The script's
 Files in the artifacts directory are reported as a manifest of names and sizes. An IMAGE artifact is fetched and shown to the user automatically — save a figure and it appears, so do not also render the plot as text or emit a markdown image placeholder for it. Non-image artifacts are offered to the user as DOWNLOAD LINKS automatically: name them in your answer, but never paste their contents and never invent a URL. Any artifact can also be read back with read_artifact by name, for about 5 minutes after the run; printing what you need is still cheaper than reading a file back, so print anything small.
 
 DELIVERY LIMITS: an artifact over 512 KB is delivered nowhere — not shown, not offered, not readable — and at most 4 images and 4 other files are delivered per run, in name order. A heatmap with hundreds of rows at 130 dpi is over the cap: keep figures to 100 dpi and a few thousand pixels a side, and write one combined table rather than many. The result lists anything not delivered under artifacts_not_delivered with the reason; never describe a plot that was not shown or name a file the user was not offered.
+
+A spreadsheet is written with xlsxwriter — `df.write_excel(path)` on a polars frame, or `xlsxwriter.Workbook(path)` for several sheets, formats and hyperlinks. There is no openpyxl and no way to read an .xlsx back.
 
 CONCURRENCY: at most 4 data requests may be in flight at once from one script. Going over answers 429 and, under `asyncio.gather`, loses the results of the requests that did succeed — batch at 4 and pass `return_exceptions=True`.
 
