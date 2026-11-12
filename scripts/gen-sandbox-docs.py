@@ -74,7 +74,7 @@ from paths import DATASETS_YAML, ROOT, SCHEMA_DIR, STAGED_SDK_SRC, STUBS_DIR
 # the SDK submodules a script reaches as `genetics.<name>` that are not client wrappers;
 # each gets its own stub, read from the module's `__all__`. sdk/__init__.py resolves the
 # same names lazily and the executor's _SDK_MODULES catalogues them.
-SURFACE_MODULES = ("plots", "linemodels", "mr", "enrichment")
+SURFACE_MODULES = ("plots", "linemodels", "mr", "enrichment", "structure")
 
 
 def prompt_schema_dir_for(sdk_src):
@@ -435,7 +435,17 @@ def filter_stubs(files, profile):
     """The stub tree as `profile` may see it: a gated-off function loses its def in
     genetics.pyi and its method in client.pyi, its name is dropped from the comma-separated
     lists the module docstring keeps, and `_availability.json` itself is dropped because it
-    names the gated functions. Everything else is byte-identical.
+    names the gated functions. In the other stubs a top-level def whose own text (signature
+    or docstring) names a gated-off function is dropped whole. Everything else is
+    byte-identical.
+
+    What that guarantees is textual and nothing more: the name of a function `genetics` has
+    not bound appears in no file this returns, provided the only places it was written are
+    such defs — a module or class docstring naming one is not rewritten, and
+    scripts/test-sandbox-docs.py fails on it with the same matcher. It is not a statement
+    about what the profile can run: a dropped def's own name may still be mentioned in its
+    module's docstring, the defs that stay may be just as useless without the gated data,
+    and the surface modules' code ships on every profile whatever the stubs say.
 
     The table comes from the SDK (`_PROFILE_GATED` in sdk/__init__.py, copied into the json at
     generation), which decides at import what it binds under CONFIG_PROFILE; this is the
@@ -455,25 +465,43 @@ def filter_stubs(files, profile):
             continue
         if hidden and name in ("genetics.pyi", "client.pyi"):
             content = _drop_defs(content, hidden)
+        elif hidden and name.endswith(".pyi"):
+            content = _drop_defs_naming(content, hidden)
         out[name] = content
     return out
+
+
+def _drop_lines(lines, nodes):
+    """`lines` without the source range of each def in `nodes`, nor the blank line after it."""
+    drop = set()
+    for node in nodes:
+        start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
+        end = node.end_lineno
+        if end < len(lines) and not lines[end].strip():
+            end += 1
+        drop.update(range(start, end))
+    return "".join(line for i, line in enumerate(lines) if i not in drop)
+
+
+def _drop_defs_naming(source, names):
+    """Remove every top-level def whose signature or docstring names one of `names`."""
+    lines = source.splitlines(keepends=True)
+    pattern = re.compile("|".join(rf"\b{re.escape(n)}\b" for n in names))
+    return _drop_lines(lines, [
+        node for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and pattern.search("".join(lines[node.lineno - 1:node.end_lineno]))
+    ])
 
 
 def _drop_defs(source, names):
     """Remove every def of `names`, top level or inside a class, by its source line range
     (plus the blank line that follows it), then the name from any `a, b, c` list in prose.
     Line ranges rather than ast.unparse so the rest of the file stays byte-identical."""
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    drop = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
-            start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
-            end = node.end_lineno
-            if end < len(lines) and not lines[end].strip():
-                end += 1
-            drop.update(range(start, end))
-    kept = "".join(line for i, line in enumerate(lines) if i not in drop)
+    kept = _drop_lines(source.splitlines(keepends=True), [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+    ])
     for name in names:
         kept = re.sub(rf"\b{re.escape(name)}, ", "", kept)
         kept = re.sub(rf", {re.escape(name)}\b", "", kept)
@@ -638,6 +666,36 @@ def _default_names(funcs):
         for default in defaults:
             names.update(n.id for n in ast.walk(default) if isinstance(n, ast.Name))
     return names
+
+
+def _inline_module_defaults(funcs, tree, sdk_dir):
+    """Rewrite a default spelled `<alias>.<NAME>` to the literal behind it, in place, where
+    `<alias>` is a sibling module bound by `from genetics_mcp_server.sdk import <m> as <alias>`.
+
+    A stub can define a bare name beside the signature but not a dotted one, so the value is
+    written into the signature instead. A default this cannot resolve is left as it was, and
+    _render_constants then refuses it by the alias's name."""
+    aliases = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == _SDK_PACKAGE.rstrip(".")
+        for alias in node.names
+    }
+
+    def resolved(default):
+        if not (
+            isinstance(default, ast.Attribute)
+            and isinstance(default.value, ast.Name)
+            and default.value.id in aliases
+        ):
+            return default
+        path = os.path.join(sdk_dir, f"{aliases[default.value.id]}.py")
+        value = _module_assignments(_module(path)).get(default.attr) if os.path.isfile(path) else None
+        return value if isinstance(value, ast.Constant) else default
+
+    for func in funcs:
+        func.args.defaults = [resolved(d) for d in func.args.defaults]
+        func.args.kw_defaults = [d and resolved(d) for d in func.args.kw_defaults]
 
 
 def _render_constants(names, assignments, package_root):
@@ -954,7 +1012,7 @@ def render_stubs(sdk_dir, profiles):
         lines += ["    ...", ""]
     files["errors.pyi"] = "\n".join(lines).rstrip() + "\n"
 
-    # plots.pyi, linemodels.pyi and mr.pyi — the analysis surfaces. Separate stubs rather than more
+    # one stub per SURFACE_MODULES entry — the analysis surfaces. Separate stubs rather than more
     # entries in genetics.pyi: these are not client wrappers, they draw or fit rather than
     # fetch, and a script reaches them as `genetics.<module>.<name>`.
     for module in SURFACE_MODULES:
@@ -980,6 +1038,8 @@ def render_stubs(sdk_dir, profiles):
         for name in exported:
             node, origin = defs[name]
             by_tree.setdefault(id(origin), (origin, []))[1].append(node)
+        for origin, nodes in by_tree.values():
+            _inline_module_defaults([f for n in nodes for f in _surface_functions(n)], origin, sdk_dir)
         rendered = [
             _render_surface_class(defs[name][0])
             if isinstance(defs[name][0], ast.ClassDef)

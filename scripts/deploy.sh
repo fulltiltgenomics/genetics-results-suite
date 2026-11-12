@@ -432,8 +432,44 @@ else
 fi
 export CELL_TYPE_EXPRESSION_ENABLED
 echo "Cell-type expression release pointer: ${CELL_TYPE_EXPRESSION_RELEASE_POINTER:-<unset, feature off>}"
+# results-api's protein structure release pointer, the same shape: the pointer is the switch,
+# and the chat tools' flag is derived from it so the tools are offered exactly where the routes
+# are registered. results-api reads the pointer once at startup, so a later release needs a
+# restart, not a deploy.
+PROTEIN_STRUCTURE_RELEASE_POINTER="${PROTEIN_STRUCTURE_RELEASE_POINTER:-$(tfvar protein_structure_release_pointer)}"
+export PROTEIN_STRUCTURE_RELEASE_POINTER
+# Any non-empty value switches the feature on, and tfvar() hands back whatever sits between
+# the first and last quote of the line, or the whole line when nothing is quoted — so a
+# blank string, `"" # e.g. "gs://..."` and `null` all arrive here non-empty. Each would offer
+# the chat tools over a pointer results-api can never load, so the shape is checked.
+if [ -n "${PROTEIN_STRUCTURE_RELEASE_POINTER}" ] \
+  && ! [[ "${PROTEIN_STRUCTURE_RELEASE_POINTER}" =~ ^gs://[a-z0-9][a-z0-9._-]*/([A-Za-z0-9._-]+/)*releases/CURRENT$ ]]; then
+  echo "ERROR: protein_structure_release_pointer resolved to '${PROTEIN_STRUCTURE_RELEASE_POINTER}', which is not a"
+  echo "       gs://<bucket>/<path>/releases/CURRENT URI. Fix the line in ${TFVARS##*/} (or"
+  echo "       PROTEIN_STRUCTURE_RELEASE_POINTER); to leave the feature off, remove the line or set it to \"\"."
+  exit 1
+fi
+if [ -n "${PROTEIN_STRUCTURE_RELEASE_POINTER}" ]; then
+  PROTEIN_STRUCTURE_ENABLED="true"
+else
+  PROTEIN_STRUCTURE_ENABLED="false"
+fi
+export PROTEIN_STRUCTURE_ENABLED
+echo "Protein structure release pointer: ${PROTEIN_STRUCTURE_RELEASE_POINTER:-<unset, feature off>}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
+# The services already ignore the pointer off daly (results-api has no protein_structure
+# module in any other profile, mcp-server's PROTEIN_STRUCTURE_PROFILES names daly alone), so
+# a pointer set elsewhere would deploy cleanly and serve nothing. Refused instead: the release
+# holds AF3 models only daly has cleared the terms for, and a setting that silently does
+# nothing reads as one that worked. Goes false if another profile gains the layer.
+if [ -n "${PROTEIN_STRUCTURE_RELEASE_POINTER}" ] && [ "${CONFIG_PROFILE}" != "daly" ]; then
+  echo "ERROR: protein_structure_release_pointer is set (${PROTEIN_STRUCTURE_RELEASE_POINTER}) but this"
+  echo "       deployment's config_profile is '${CONFIG_PROFILE}'. The protein structure layer is"
+  echo "       served on the daly profile only; remove the line from ${TFVARS##*/} (or unset"
+  echo "       PROTEIN_STRUCTURE_RELEASE_POINTER)."
+  exit 1
+fi
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 # the login page's helper line names the primary domain only, because the allow-list may hold several
@@ -907,7 +943,7 @@ for f in deployments/*.yaml; do
       sed "s/:latest/:${TAG}/g" | kubectl apply -f -
     continue
   fi
-  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER} ${CELL_TYPE_EXPRESSION_ENABLED} ${ACCESS_GRANT_BUTTON_LABEL} ${ACCESS_GRANT_EXPIRES_AT} ${SMTP_HOST} ${SMTP_PORT} ${SMTP_USERNAME} ${ACCESS_GRANT_EMAIL_FROM} ${ACCESS_GRANT_EMAIL_REPLY_TO} ${ACCESS_GRANT_EMAIL_SUBJECT} ${BROKER_PROVISIONING_CLIENTS}' < "$f" | \
+  envsubst '${REGISTRY} ${GCP_PROJECT} ${BQ_DATASET} ${LOG_SOURCE} ${CONFIG_PROFILE} ${OAUTH_EMAIL_DOMAIN} ${KEYCLOAK_HOST} ${OAUTH2_PROVIDER} ${OIDC_ISSUER_URL} ${OIDC_BACKEND_LOGOUT_URL} ${KEYCLOAK_SERVER} ${DEFAULT_MODEL} ${APP_NAME} ${SLACK_ALERT_USER_ID} ${LEGACY_REDIRECT} ${OAUTH_ISSUER} ${OAUTH_RESOURCE_URL} ${CLUSTER_NAME} ${DEFAULT_TOOL_PROFILE} ${RESULTS_API_MEMORY_REQUEST} ${RESULTS_API_MEMORY_LIMIT} ${ALPHAGENOME_ENABLED} ${CELL_TYPE_EXPRESSION_RELEASE_POINTER} ${CELL_TYPE_EXPRESSION_ENABLED} ${PROTEIN_STRUCTURE_RELEASE_POINTER} ${PROTEIN_STRUCTURE_ENABLED} ${ACCESS_GRANT_BUTTON_LABEL} ${ACCESS_GRANT_EXPIRES_AT} ${SMTP_HOST} ${SMTP_PORT} ${SMTP_USERNAME} ${ACCESS_GRANT_EMAIL_FROM} ${ACCESS_GRANT_EMAIL_REPLY_TO} ${ACCESS_GRANT_EMAIL_SUBJECT} ${BROKER_PROVISIONING_CLIENTS}' < "$f" | \
     sed "s/:latest/:${TAG}/g" | kubectl apply -f -
 done
 

@@ -73,12 +73,12 @@ The four definition lists, generated from that file by `scripts/gen-doc-blocks.p
 
 | symbol | tools | contents |
 |---|---|---|
-| `TOOL_DEFINITIONS` | 68 | the data tools — `lookup` 22, `results` 46 |
+| `TOOL_DEFINITIONS` | 71 | the data tools — `lookup` 22, `results` 49 |
 | `CODE_EXECUTION_TOOL_DEFINITIONS` | 3 | `list_capabilities`, `run_analysis`, `read_artifact` — `analysis` 3 |
 | `BIGQUERY_TOOL_DEFINITIONS` | 2 | `query_database`, `get_database_schema` — `sql` 2 |
 | `SUBAGENT_TOOL_DEFINITIONS` | 1 | `launch_subagents` — `analysis` 1 |
 
-**74 tool definitions in total** across the four lists: `analysis` 4, `lookup` 22, `results` 46, `sql` 2.
+**77 tool definitions in total** across the four lists: `analysis` 4, `lookup` 22, `results` 49, `sql` 2.
 
 <!-- END GENERATED: tool-lists -->
 
@@ -163,6 +163,7 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 | `ENABLE_LITERATURE_SEARCH` | `true` | `search_scientific_literature` — and with it ~2.2 KB of citation, backend-naming and result-reading guidance, because the prompt gate keys on the name; the literature-grading rubric names no tool and stays (section 4a) |
 | `ALPHAGENOME_ENABLED` **and** `ALPHAGENOME_API_KEY` | `false` / unset | `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured` — either one missing withdraws both tools, and the opt-in prompt block with them |
 | `CELL_TYPE_EXPRESSION_ENABLED` **and** `CONFIG_PROFILE` | `false` / unset | `get_cell_type_expression` unless the flag is true and the profile is `daly` (`CELL_TYPE_EXPRESSION_PROFILES`). `deploy.sh` sets the flag exactly where the deployment gives results-api a release pointer; elsewhere results-api registers no such route, and the SDK binds and stubs `genetics.cell_type_expression` only where `CONFIG_PROFILE` is in that same set (`sdk/__init__.py`'s `_PROFILE_GATED`; the sandbox image carries the profile it was built for), so a finngen deployment lists it nowhere |
+| `PROTEIN_STRUCTURE_ENABLED` **and** `CONFIG_PROFILE` | `false` / unset | the protein structure tools (`PROTEIN_STRUCTURE_TOOLS` in `config/settings.py`) unless the flag is true and the profile is in `PROTEIN_STRUCTURE_PROFILES`, and with them the `protein` source of `get_variant_annotations`, which the executor answers "not available" for. `deploy.sh` derives the flag from the deployment's protein structure release pointer, as for the row above, and refuses a pointer on any profile but daly |
 | `SANDBOX_ENABLED` | `false` | `run_analysis` only; `list_capabilities` and `read_artifact` are inert without a sandbox rather than broken by it |
 
 `k8s/deployments/chat-backend.yaml` sets `ENABLE_SUBAGENTS: "false"` and
@@ -170,7 +171,8 @@ model reads, and the check reads the resolved set rather than re-deriving anythi
 (resolved by `deploy.sh` from the environment or the deployment's tfvars) with the key from the
 `alphagenome-api-key` secret entry (`optional: true`), takes `CONFIG_PROFILE` from
 `${CONFIG_PROFILE}` (`daly` on both daly clusters), takes `CELL_TYPE_EXPRESSION_ENABLED` from
-`deploy.sh` (true only where the deployment sets a cell-type expression release pointer), and
+`deploy.sh` (true only where the deployment sets a cell-type expression release pointer),
+takes `PROTEIN_STRUCTURE_ENABLED` from `deploy.sh` the same way (its own release pointer), and
 sets neither of the other two. Read
 off both daly clusters' chat-backend pods on 2026-10-06
 (`kubectl -n genetics exec deploy/chat-backend -- env`): subagents off, sandbox on, AlphaGenome
@@ -224,20 +226,28 @@ the blocks in sections 1 and 3:
 
 <!-- BEGIN GENERATED: mcp-exclusions -->
 
-`_mcp_disabled` = `_settings.disabled_tools | {` the following 16 names `}`:
+`_mcp_disabled` = `_settings.disabled_tools | {` the following 19 names `}`:
 
 ```text
 search_scientific_literature        web_search                          get_myvariant_annotations
 search_mgi                          search_cbioportal                   get_protein_annotations
 map_protein_variants                get_variant_protein_effect          search_uniprot
 get_drug_targets_for_gene           get_drug_profile                    get_target_bioactivity
-get_alphagenome_variant_predictions compare_alphagenome_with_measured
+get_alphagenome_variant_predictions compare_alphagenome_with_measured   get_protein_features_at_variant
+get_3d_distance_between_variants    get_3d_neighbourhood
 read_artifact                       run_analysis
 ```
 
-The 14 before the source's `SECURITY CONTROL` comment are product decisions; the 2 after it (`read_artifact`, `run_analysis`) are the security control.
+The 17 before the source's `SECURITY CONTROL` comment are product decisions; the 2 after it (`read_artifact`, `run_analysis`) are the security control.
 
 <!-- END GENERATED: mcp-exclusions -->
+
+**One exclusion is an argument, not a name, and the block above cannot show it.** With any
+protein structure tool in the set, `register_mcp_tools` also makes `/mcp`'s
+`get_variant_annotations` answer "not available" for `source="protein"`
+(`protein_structure_withheld` in `tools/definitions.py`): the tool stays registered and its
+other sources work. Without that, the residue map the three withheld tools read would be one
+free-string argument away.
 
 The product decisions: literature search needs the Perplexity API key; the UniProt and ChEMBL
 tools are chat-only by choice; AlphaGenome runs on a free non-commercial key with a per-minute
@@ -285,7 +295,7 @@ def resolve_tools(code_execution: bool, disabled: set[str] | None = None) -> lis
 
 | `code_execution` | local tools | membership |
 |---|---|---|
-| `False` — the no-code surface | 70 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
+| `False` — the no-code surface | 73 | every data tool: `TOOL_DEFINITIONS` + `BIGQUERY_TOOL_DEFINITIONS` |
 | `True` — the code surface | 22 | `CODE_EXECUTION_TOOL_DEFINITIONS` (3) + the 19 data tools whose `sdk_replaceable` is false |
 
 `SUBAGENT_TOOL_DEFINITIONS` (`launch_subagents`) reaches neither surface. `disabled` subtracts from either one afterwards and is a deployment's choice rather than a property of the definitions, so it is not in these counts.

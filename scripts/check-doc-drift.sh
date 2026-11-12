@@ -171,6 +171,10 @@ check '^scripts/(test-url-fetcher|external-inputs-proving-ground)\.py$' \
     '^docs/code-execution-security\.md$' \
     'scripts/test-url-fetcher.py + scripts/external-inputs-proving-ground.py -> docs/code-execution-security.md (the mutation anchors and the exit-2-when-an-anchor-stops-matching rule for test-url-fetcher.py; the 0/1/2 convention, the byte-identical-supervisor precondition, and which check groups run live vs. NOT MEASURED for the proving ground)'
 
+check '^scripts/protein-structure-proving-ground\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/protein-structure-proving-ground.py -> docs/project-spec.md ("Protein structure layer": the rehearsal ground and that it never touches production, the NOT MEASURED rule, the 0/1/2 exit-code convention)'
+
 # the generated trees above were mapped to code-execution-security.md while the GENERATOR
 # was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
 # the shipped schema docs with no warning at all. Named

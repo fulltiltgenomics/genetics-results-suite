@@ -1167,6 +1167,37 @@ summary-statistics tools and the resource aliases (`Huerta-Chagoya`, `TOPMed T2D
 `GCST90444202`). The browser's `HIDDEN_RESOURCES` set was left alone: it hides the pseudo-CS
 resources from credible-set views, which this dataset never appears in.
 
+## 23. Worked example: the protein structure layer, a release read once at startup
+
+Context: a release that is **built by hand and never refreshed in place**, served as
+results-api routes, one BigQuery view and SDK functions, on one brand. How it runs: "Protein
+structure layer" in `docs/project-spec.md`. It reuses the CELLxGENE shape (§20) — a
+`releases/CURRENT` pointer, a rehearsal root, a pointer tfvar that is also the switch, a
+profile gate — and differs where that shape assumed a schedule:
+
+1. **No refresh, so a restart.** results-api loads the release the pointer names at startup
+   and never swaps it. Moving the pointer changes nothing a running pod serves; the rollout
+   order in the project spec ends with a results-api restart for that reason.
+2. **No dataset entry.** The release is not a `datasets:` resource: nothing in it is keyed by
+   phenotype or dataset, so `configs/datasets.yaml` carries only the view block,
+   `tables.missense_residue_v` with `profiles: [daly]`, and results-api's own
+   `protein_structure` profile module names the feature.
+3. **The view is loaded outside the pipeline, after the pointer.** `load_missense_residue.sh`
+   reads the object results-api serves, by pointer or by release URI, into the dataset it is
+   told — there is no all-or-none transaction to order against, because it is one table. The
+   release name is stored on every row so the two sides can be compared; nothing compares
+   them automatically.
+4. **A contract copied into each reader, with a drift test.** results-api, the SDK and the
+   browser viewer each hold the slice of munge's `scripts/protein_structure_contract.py` they
+   read (`configs/twins.yaml` says why they are not one module). Each repo's test compares
+   its copy with the munge module when it can find one and **skips otherwise**:
+   `PROTEIN_STRUCTURE_MUNGE_CONTRACT=<path to that file>` makes it run. Changing the contract
+   means changing the munge module, each copy, and running those tests with the variable set.
+5. **Tools gated twice, and withheld from `/mcp`.** `PROTEIN_STRUCTURE_ENABLED` and the
+   profile gate the chat tools as in §20 item 5; the SDK's client functions are gated by
+   profile alone (`_PROFILE_GATED`), because the sandbox image carries no deployment flag and
+   results-api, which registers no route without a release, is the gate there.
+
 ## Checklist
 
 - [ ] Decide: new resource or reuse existing? (`resources:` + registry in `datasets.yaml`)

@@ -110,7 +110,7 @@ withdrawn per deployment by flags that are not `.env` lines; `docs/chat-tool-ref
 
 `daly` and `daly-staging` are separate clusters in the *same* GCP project, so project-scoped
 resource names carry `resource_suffix`, and which BigQuery dataset a cluster serves is its own
-tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor; `cell_type_expression_release_pointer`, default empty = cell-type expression off, into results-api and, as an on/off flag, chat-backend and mcp-server). The setup below describes a single deployment; see
+tfvars key (`bq_dataset`, default `genetics_results`, rendered into db-api and the monitor; `cell_type_expression_release_pointer`, default empty = cell-type expression off, into results-api and, as an on/off flag, chat-backend and mcp-server; `protein_structure_release_pointer`, the same shape for the protein structure layer, refused by `deploy.sh` on any profile but daly). The setup below describes a single deployment; see
 [docs/environments.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/environments.md) for the multi-environment rules, the guardrails
 against deploying across environments, and the staging bring-up runbook.
 
