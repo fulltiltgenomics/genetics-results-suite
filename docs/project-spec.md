@@ -777,6 +777,18 @@ source of `/api/v1/variant_annotation`; genetics-results-api's `docs/project-spe
 route table. `PROTEIN_STRUCTURE_PAE_CACHE_BYTES` is not declared in
 `k8s/deployments/results-api.yaml` and keeps its in-code default.
 
+**Predictor scores are an optional object of the release, filtered by licence per
+deployment.** A release may carry `scores.tsv.gz`, per-residue summaries of missense
+predictors, each row tagged with its source's licence (munge's `scores` stage; the summary
+and the drop rules are "Predictor scores" in that repo's `docs/protein-structure.md`).
+results-api serves it at `/api/v1/protein_structure/scores/{protein}`, and only the rows
+whose licence is in the profile's `served_score_licences`
+(`app/config/profiles/<profile>/protein_structure.py`) — a setting in results-api's code, so
+clearing another licence is a results-api change and build, not a tfvar. A release without
+the object loads and only that route has nothing to serve. The pointer must also name the
+release its URI ends in, or the load is refused (`parse_pointer` in
+`app/services/protein_structure.py`).
+
 **Nothing new is routed.** The routes sit under `/api/*`, so the browser reaches them through
 the bff's pass-through, a bearer caller directly, and a sandbox script through the egress to
 results-api it already has. There is no new Ingress path, Service or NetworkPolicy, and no
@@ -1482,9 +1494,10 @@ plots":
   neighbourhoods over the model files a protein is tiled into, held to the lab's own code on
   oracle fixtures, plus writers for the browser viewer's view-spec and a PyMOL script;
   `genetics.plots.protein_track` draws domains, pLDDT, scores and variants on one amino-acid
-  axis. The module is pure computation and ships on every profile; its data does not. The
-  `genetics.protein_*` client functions that fetch models, PAE, residues, features and the
-  variant map are bound only where `CONFIG_PROFILE` is in the SDK's `_PROFILE_GATED` entry
+  axis, and fetches the release's predictor scores for its predictor rows unless the script
+  passes them. The module is pure computation and ships on every profile; its data does not. The
+  `genetics.protein_*` client functions that fetch models, PAE, residues, features, predictor
+  scores and the variant map are bound only where `CONFIG_PROFILE` is in the SDK's `_PROFILE_GATED` entry
   for them, and the image's stubs are filtered by the same table: on another profile those
   functions lose their defs, and so does any analysis-surface function whose stub names one
   of them. What the module may read of the release contract is the slice copied into

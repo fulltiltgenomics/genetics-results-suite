@@ -115,7 +115,7 @@ check '^scripts/(test-supervisor\.py$|supervisor_tests/)' '^docs/code-execution-
     'scripts/test-supervisor.py, scripts/supervisor_tests/ -> docs/code-execution-security.md (the verification table: which check groups run in process vs against a container, what each needs, the 0/1/2 exit codes)'
 
 check '^(k8s/deployments/(chat-backend|mcp-server)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
-    'k8s/deployments/chat-backend.yaml, mcp-server.yaml, scripts/deploy.sh -> docs/environments.md (internal repo) (the per-deployment .env knobs the bring-up checklist enumerates: DEFAULT_TOOL_PROFILE, ALPHAGENOME_ENABLED, cell-type expression release, GENE_SETS_BUCKET; what an unset one defaults to)'
+    'k8s/deployments/chat-backend.yaml, mcp-server.yaml, scripts/deploy.sh -> docs/environments.md (internal repo) (the per-deployment .env knobs the bring-up checklist enumerates: DEFAULT_TOOL_PROFILE, ALPHAGENOME_ENABLED, cell-type expression release, protein structure release pointer, GENE_SETS_BUCKET; what an unset one defaults to)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'

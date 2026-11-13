@@ -1048,7 +1048,9 @@ def render_stubs(sdk_dir, profiles):
         ]
         aliases = _type_aliases(by_tree.values())
         typing_names = ["Any"] + (["Callable"] if any("Callable" in a for a in aliases) else [])
-        lines += ["import polars as pl", f"from typing import {', '.join(typing_names)}", ""]
+        # a stub that annotates with np.* names it, or the signature reads as an undefined name
+        numpy_import = ["import numpy as np"] if any(re.search(r"\bnp\.", r) for r in rendered) else []
+        lines += [*numpy_import, "import polars as pl", f"from typing import {', '.join(typing_names)}", ""]
         constants = []
         for origin, nodes in by_tree.values():
             for line in _render_constants(

@@ -56,6 +56,7 @@ result says so (`pae_filter_applied`). Treat those with care in a multi-file pro
 are predicted independently and low-confidence stretches pack into dense masses.
 """
 
+import numpy as np
 import polars as pl
 from typing import Any
 
