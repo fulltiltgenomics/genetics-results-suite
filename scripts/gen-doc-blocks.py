@@ -396,11 +396,11 @@ LAYOUT = {
     "k8s/disruption-budgets": "PodDisruptionBudgets",
     "k8s/network-policies": "network isolation rules, including the sandbox's",
     "k8s/volumes": "PersistentVolumeClaims",
-    "keycloak": "Keycloak image build context, realm/client/IdP templates and the login theme",
+    "keycloak": "Keycloak image build context, realm/client/IdP/registration-policy templates and the login theme",
     "sandbox": "sandbox image build context for model-authored Python; the SDK is "
                "pip-installed from genetics-mcp-server at build time",
     "scripts": "build, deploy and verification scripts",
-    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder",
+    "scripts/lib": "shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS and MCP client-registration template renderers deploy.sh and the live-realm scripts share",
     "scripts/cellxgene": "the CELLxGENE proving-ground Batch job spec; the pipeline itself "
                          "lives in genetics-results-munge",
     "scripts/monitor": "the monitoring CronJob's Python package",
@@ -432,11 +432,24 @@ LAYOUT = {
                                              "numbers; cleanup reports DONE or FAILED",
     "scripts/keycloak-register-client.sh": "register or update an MCP OAuth client in the live "
                                            "realm",
-    "scripts/keycloak-register-brainzzz.sh": "the brainzzz client specifically",
+    "scripts/keycloak-register-brainzzz.sh": "the brainzzz client, its STS identity provider "
+                                            "for the jwt-bearer grant and the client policy "
+                                            "on its assertions, from the keycloak/ templates",
+    "scripts/keycloak-link-brainzzz-users.sh": "link realm users to the brainzzz provider so "
+                                              "its assertions resolve them; --unlink revokes",
+    "scripts/brainzzz-grant-proving-ground.py": "mint brainzzz-shaped assertions with the "
+                                                "staging test key and measure the grant end "
+                                                "to end, token endpoint through /mcp",
     "scripts/keycloak-bind-allowlist.sh": "bind the email allow-list authenticator and realm "
                                           "attributes",
     "scripts/keycloak-sync-login-policy.sh": "set the live realm's SSO session lifespans from "
                                              "the template and the default IdP redirect",
+    "scripts/keycloak-sync-dcr-policy.sh": "set the live realm's anonymous client-registration "
+                                          "policies, mcp-pkce and the basic scope's /mcp "
+                                          "audience from keycloak/mcp-dcr.json.template",
+    "scripts/keycloak-prune-dcr-clients.sh": "list the live realm's anonymously registered "
+                                             "clients and the Max Clients headroom; --delete "
+                                             "prunes old ones with no sessions",
     "scripts/keycloak-register-microsoft-idp.sh": "add or update the Microsoft IdP in the live "
                                                   "realm from MICROSOFT_* in .env",
     "scripts/keycloak-get-token.sh": "browser auth-code+PKCE flow; prints an access token",
@@ -469,7 +482,7 @@ LAYOUT = {
     "scripts/test-monitor-cellxgene.py": "offline: the monitor's CELLxGENE release check, its "
                                          "not-yet-live switch and deployment gate, and the "
                                          "matching log ignore pattern",
-    "scripts/test-monitor.py": "offline: the monitor's report delivery and alert dedup",
+    "scripts/test-monitor.py": "offline: the monitor's report delivery, alert dedup and nightly-analysis check",
     "scripts/test-network-policies.py": "the namespace's policies as a whole: offline by "
                                         "default, plus an opt-in diff against a live cluster",
     "scripts/stage-gene-sets.py": "gene-set bundle staging: fetch and verify the pinned "

@@ -4,6 +4,9 @@
   "displayNameHtml": "${APP_NAME}",
   "enabled": true,
   "loginTheme": "genetics",
+  "localizationTexts": {
+    "en": { "identity-provider-login-label": "Sign in with your ${GOOGLE_LOGIN_DOMAIN} Google account" }
+  },
   "ssoSessionIdleTimeout": 604800,
   "ssoSessionMaxLifespan": 5184000,
   "attributes": {
@@ -38,6 +41,11 @@
         "defaultScope": "openid email profile",
         "syncMode": "IMPORT"
       }
-    }${APPLE_IDP_ENTRY}${MICROSOFT_IDP_ENTRY}
-  ]
+    }${APPLE_IDP_ENTRY}${MICROSOFT_IDP_ENTRY}${BRAINZZZ_IDP_ENTRY}
+  ],
+  "components": {
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": ${MCP_DCR_REGISTRATION_POLICIES}
+  },
+  "clientProfiles": { "profiles": [${MCP_DCR_CLIENT_PROFILE_ENTRY}${BRAINZZZ_CLIENT_PROFILE_ENTRY}] },
+  "clientPolicies": { "policies": [${MCP_DCR_CLIENT_POLICY_ENTRY}${BRAINZZZ_CLIENT_POLICY_ENTRY}] }
 }

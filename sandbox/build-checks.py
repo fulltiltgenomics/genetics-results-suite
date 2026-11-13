@@ -257,6 +257,24 @@ def _shipped_imports():
     )
 
 
+@check("the final stage states the profile the stubs were filtered for")
+def _profile_env():
+    """The stubs in /build/stubs are filtered for GENESETS_PROFILE, and the SDK in /opt/venv
+    binds its profile-gated functions by CONFIG_PROFILE at import. The two agree only if the
+    final stage sets CONFIG_PROFILE from that same build arg; a stub and an import surface
+    that disagree is the defect the filtering exists to prevent."""
+    lines = open(DOCKERFILE).read().splitlines()
+    last_from = max(i for i, l in enumerate(lines) if l.startswith("FROM "))
+    final = "\n".join(lines[last_from:])
+    assert re.search(r"^ARG GENESETS_PROFILE\s*$", final, re.M), (
+        "the final stage does not redeclare ARG GENESETS_PROFILE, so its ENV cannot read it"
+    )
+    assert re.search(r"^\s*(ENV\s+)?CONFIG_PROFILE=\$\{GENESETS_PROFILE\}", final, re.M), (
+        "the final stage does not set CONFIG_PROFILE=${GENESETS_PROFILE}"
+    )
+    assert os.environ.get("GENESETS_PROFILE"), "GENESETS_PROFILE is not set in the builder"
+
+
 @check("no placeholders in the staged schema and stubs")
 def _no_placeholders():
     """`schema/` and `stubs/` are the model's description of the data and of the SDK, and

@@ -2,10 +2,10 @@
 #
 # The build needs a staged genetics-mcp-server checkout at ./.sdk-src — the genetics SDK is
 # pip-installed from that repo and is not vendored here — and the staged gene-set bundle at
-# ./.genesets-src and ./.genesets-tools, and the schema docs filtered for the deployment's
-# profile at ./.schema-profile. scripts/build-all.sh, scripts/build.sh and
-# scripts/run-sandbox-local.sh (with a fixture bundle) stage all three;
-# a bare `docker build sandbox/` fails without them, by design.
+# ./.genesets-src and ./.genesets-tools, and the schema docs and SDK stubs filtered for the
+# deployment's profile at ./.schema-profile and ./.stubs-profile. scripts/build-all.sh,
+# scripts/build.sh and scripts/run-sandbox-local.sh (with a fixture bundle) stage all of
+# them; a bare `docker build sandbox/` fails without them, by design.
 
 FROM gcr.io/distroless/python3-debian12:nonroot AS distroless
 
@@ -92,15 +92,16 @@ RUN test -n "${GENESETS_PROFILE}" || { echo "build arg GENESETS_PROFILE is requi
 # be checked after it is assembled. /dl is the base rootfs verbatim, the Dockerfile is staged
 # so the checks can read the final stage's ENV, and schema/ and stubs/ for the placeholder gate.
 # The gene-set checks read GENESETS_* from the ARGs above.
-# The schema docs are .schema-profile/, not schema/: views gated off this deployment's profile
-# and their index rows are already removed, along with _availability.json, which names every
-# gated view (gen-sandbox-docs.py --emit-filtered, staged with the same profile as
-# GENESETS_PROFILE). The rootfs is read-only at run time, so build time is the only place the
-# sandbox's copy can be filtered.
+# The schema docs are .schema-profile/, not schema/, and the stubs .stubs-profile/, not stubs/:
+# views gated off this deployment's profile and their index rows are already removed, as are
+# the defs of SDK functions the package binds only on other profiles, along with each tree's
+# _availability.json, which names what was removed (gen-sandbox-docs.py --emit-filtered,
+# staged with the same profile as GENESETS_PROFILE). The rootfs is read-only at run time, so
+# build time is the only place the sandbox's copies can be filtered.
 COPY --from=distroless / /dl/
 # must have been staged for this build's GENESETS_PROFILE: stage_gene_sets guarantees it, a hand-run docker build over a leftover dir does not
 COPY .schema-profile/ /build/schema/
-COPY stubs/ /build/stubs/
+COPY .stubs-profile/ /build/stubs/
 COPY Dockerfile /build/Dockerfile
 COPY build-checks.py /build/build-checks.py
 RUN python3 /build/build-checks.py
@@ -115,6 +116,10 @@ LABEL com.fulltiltgenomics.genetics-mcp-server-ref="${SDK_REF}"
 # build-checks.py asserts the bundle in /genetics/genesets is this release
 ARG GENESETS_RELEASE=unknown
 LABEL com.fulltiltgenomics.gene-sets-release="${GENESETS_RELEASE}"
+# the SDK reads CONFIG_PROFILE at import to decide which profile-gated functions it binds
+# (sdk/__init__.py's _PROFILE_GATED), the same name the service processes carry; the sandbox
+# child inherits the container's environment, so the image states the profile it was built for
+ARG GENESETS_PROFILE
 
 COPY --from=builder /out/passwd /etc/passwd
 COPY --from=builder /out/group /etc/group
@@ -126,7 +131,7 @@ COPY --chown=65532:65532 prewarm.py /genetics/prewarm.py
 # lost its args a loud CrashLoopBackOff rather than a silently defaulted process.
 COPY --chown=65532:65532 supervisor.py /genetics/supervisor.py
 COPY --from=builder --chown=65532:65532 /build/schema/ /genetics/schema/
-COPY --chown=65532:65532 stubs/ /genetics/sdk/
+COPY --from=builder --chown=65532:65532 /build/stubs/ /genetics/sdk/
 # root-owned, world-readable: the sandbox uid reads the bundle and cannot rewrite it even
 # where the rootfs is writable (a local run)
 COPY --from=builder /out/genesets /genetics/genesets
@@ -173,6 +178,7 @@ ENV POLARS_MAX_THREADS=2 \
     GENETICS_STUBS_DIR=/genetics/sdk \
     GENETICS_GENESETS_DIR=/genetics/genesets \
     GENETICS_PREWARM=/genetics/prewarm.py \
+    CONFIG_PROFILE=${GENESETS_PROFILE} \
     SANDBOX_SUPERVISOR_UID=65532 \
     SANDBOX_CHILD_UID=65533 \
     SANDBOX_SHARED_GID=65532

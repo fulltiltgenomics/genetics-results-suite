@@ -10,14 +10,18 @@ Runbooks that name projects, hosts and users are kept out of this public reposit
 Internet → GKE Ingress (HTTPS, Google-managed certs)
            └── /*  → auth-gateway (nginx, port 8080)
                      ├── /oauth2/*  → oauth2-proxy (OIDC/Google login, port 4180)
-                     ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — only where the
-                     │                 identity broker is enabled (see docs/keycloak-apple-signin.md)
+                     ├── /auth/*    → keycloak      (login UI + OIDC, port 8080) — on by default,
+                     │                 ENABLE_KEYCLOAK=false turns it off (see docs/keycloak-apple-signin.md),
+                     │                 plus its RFC 8414 path-insertion metadata under /.well-known/
+                     │                 and, of its client-registration endpoints, only the OIDC one
+                     │                 (any other path containing clients-registrations → 404)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
                      │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
                      │                 the BFF proxies it out to the external LD API (LD_API_URL),
                      │                 because the frontend CSP forbids off-origin fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
+                     ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session)
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
                      └── /*         → frontend      (nginx, port 3000)
 
@@ -82,7 +86,7 @@ out of — which covers a kubeconfig **inherited from the environment**, not one
 > `terraform/terraform.tfvars*` has no `kube_context`, so a fresh checkout can neither roll out a
 > service nor write its Secrets until the line is added. Adding it, copied from
 > `kubectl config get-contexts -o name`, is the whole fix; `terraform/terraform.tfvars.example`
-> carries a commented template.
+> carries the line, with a comment, as a template.
 
 ## Deployment environments
 
@@ -294,24 +298,32 @@ cd ..
 
 ### 2. Set up OAuth credentials
 
-Create Google OAuth credentials for oauth2-proxy:
+Create Google OAuth credentials for the Keycloak broker, which is on by default (oauth2-proxy
+talks to Keycloak, and the Google client belongs to Keycloak):
 
 1. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials?project=$GCP_PROJECT)
 2. Create an **OAuth client ID** (Web application)
 3. Add authorized JavaScript origin(s): `https://your-domain.example.com`
-4. Add authorized redirect URI(s): `https://your-domain.example.com/oauth2/callback`
+4. Add authorized redirect URI(s): `https://your-domain.example.com/auth/realms/genetics/broker/google/endpoint`
 
-> With the Keycloak identity broker enabled, oauth2-proxy talks to Keycloak instead and the Google
-> client belongs to Keycloak — its redirect URI is
-> `https://your-domain.example.com/auth/realms/genetics/broker/google/endpoint`. See
-> [docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
+Put its id and secret in `.env` as `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; `deploy.sh` renders
+them into the realm import. Under the `ENABLE_KEYCLOAK=false` rollback oauth2-proxy uses the Google
+client directly, and the redirect URI is `https://your-domain.example.com/oauth2/callback`. See
+[docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
+
+MCP clients (Claude Code, claude.ai, Cursor) need no client set up here: they discover Keycloak
+from `/mcp` and register themselves anonymously; how that is bounded is in
+[docs/project-spec.md](docs/project-spec.md) ("MCP OAuth"), and confidential apps are
+registered by hand ([docs/mcp-oauth-onboarding.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/mcp-oauth-onboarding.md)).
 
 ### 3. Create secrets
 
 `create-secrets.sh` creates `genetics-secrets` (chat-backend API keys) and
 `oauth2-proxy-secrets` (the OAuth client creds + session cookie secret), plus `keycloak-secrets`
-(DB + bootstrap admin passwords, generated) where the identity broker is enabled. Set the relevant
-env vars, then run it once:
+(DB + bootstrap admin passwords, generated) unless `ENABLE_KEYCLOAK=false`. With the broker on,
+`OAUTH2_PROXY_CLIENT_ID` is the realm's `oauth2-proxy` client and `OAUTH2_PROXY_CLIENT_SECRET` a
+value you generate; `deploy.sh` renders the same secret into the realm import and refuses to run
+if `.env` lacks it. Set the relevant env vars, then run it once:
 ```bash
 export DEPLOY_ENV=daly-staging            # which deployment. Selects terraform.tfvars.<env>,
                                           # .env.<env>, and the only kubectl context this
@@ -333,16 +345,19 @@ export EXTERNAL_MCP_SERVERS="https://..."  # optional, external MCP servers prox
 export C3PO_MCP_OAUTH='{"token_endpoint":...}'  # optional, the C3PO operator login's JSON
 export DEPMAP_MCP_OAUTH='{"token_endpoint":...}'  # optional, the same for DepMap (daly only)
 # INTERNAL_API_SECRET for results API is auto-generated if not set
+# SANDBOX_TOKEN_SIGNING_KEY (signs the per-execution sandbox tokens) is auto-generated too
 # GATEWAY_IDENTITY_SECRET (auth-gateway -> chat-backend provenance, gates code execution) is
 # auto-generated too; it must stay DIFFERENT from INTERNAL_API_SECRET
 # MCP_API_KEY (bearer token mcp-server requires for its sse/streamable-http transports; it
 # refuses to start without one) is auto-generated too if not set; export it yourself
 # (comma-separated for multiple keys) to pin a specific value instead
 
-# oauth2-proxy credentials (YOUR_CLIENT_ID/SECRET from the OAuth client created in step 2).
-# only needed on first install — afterwards they're reused from the cluster if unset.
-export OAUTH2_PROXY_CLIENT_ID='YOUR_CLIENT_ID'
-export OAUTH2_PROXY_CLIENT_SECRET='YOUR_CLIENT_SECRET'
+# oauth2-proxy credentials: with the broker on, the realm's client and a secret you generate
+# once (e.g. openssl rand -base64 32) and also keep in .env, which deploy.sh renders into the
+# realm; under ENABLE_KEYCLOAK=false, the Google client from step 2. Only needed on first
+# install — afterwards they're reused from the cluster if unset.
+export OAUTH2_PROXY_CLIENT_ID='oauth2-proxy'
+export OAUTH2_PROXY_CLIENT_SECRET='YOUR_GENERATED_SECRET'   # the value in .env
 # OAUTH2_PROXY_COOKIE_SECRET is generated on first install and reused thereafter (never rotated).
 
 ./scripts/create-secrets.sh
@@ -392,11 +407,9 @@ kubectl config use-context gke_daly-finngenie_us-central1-a_finngenie-staging   
 ./scripts/create-secrets.sh --context <the-cluster-you-mean>                    # deliberate
 ```
 
-> **Run it from the main checkout.** It derives the config profile (which decides whether
-> `keycloak-secrets` is written) from the tfvars `DEPLOY_ENV` selects, and those are gitignored
-> and live only there. From a git worktree `resolve_deploy_env` refuses with exit 1 rather than
-> guessing, and `CONFIG_PROFILE` does **not** rescue it — that variable overrides the profile
-> *read from* the file, it does not stand in for a missing one.
+> **Run it from the main checkout.** Its context guard compares against the `kube_context` in
+> the tfvars `DEPLOY_ENV` selects, and those are gitignored and live only there. From a git
+> worktree `resolve_deploy_env` refuses with exit 1 rather than guessing.
 
 ### 4. Build and push Docker images
 
@@ -561,7 +574,8 @@ kubectl describe managedcertificate managed-cert -n genetics
 ```
 
 To 301-redirect an old hostname to a new one (keeping the old one in `domains` so its cert stays
-valid), set `redirect_from_host`/`redirect_to_host` — see [docs/genegenie-migration.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/genegenie-migration.md).
+valid), set `redirect_from_host`/`redirect_to_host`. `/mcp` is exempt and stays served on the old
+host too: MCP clients POST it with a bearer token and cannot follow a 301. See [docs/genegenie-migration.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/genegenie-migration.md).
 
 ## Updating Services
 
@@ -876,7 +890,7 @@ baseline" in `docs/project-spec.md`.
 | bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx@sha256:65645c7b… (a 1.27-alpine build, pinned) | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
-| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; only when `ENABLE_KEYCLOAK=true` |
+| keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; on by default, skipped when `ENABLE_KEYCLOAK=false` |
 | keycloak-postgres | — | postgres:16-alpine | 5432 | Keycloak database (PVC + daily `pg_dump` CronJob to GCS) |
 | results-api | genetics-results-api | genetics-results-api | 4000 | FastAPI |
 | chat-backend | genetics-mcp-server | genetics-mcp-server | 8000 | FastAPI, LLM chat with MCP tools |
@@ -885,6 +899,8 @@ baseline" in `docs/project-spec.md`.
 | sandbox | sandbox/ (local context; SDK from genetics-mcp-server) | sandbox | 8080 | Code-execution sandbox for model-authored Python: gVisor node pool, dedicated KSA with no GCP identity, one `emptyDir` and no other mount, reachable from chat-backend only. **Not applied unless `ENABLE_SANDBOX=true`**, which `deploy.sh` derives from `sandbox_pool_enabled` in `terraform.tfvars` (default false) |
 | rag-service | genetics-rag-service | genetics-rag-service | 8000 | RAG document retrieval (internal only; skipped unless `ENABLE_RAG=true`) |
 | url-fetcher | url-fetcher/ (local context; pure standard library) | url-fetcher | 8090 | Fetches a URL on chat-backend's behalf so the pod holding the secrets never dials an address a model chose: own KSA with no GCP identity, no mounted token, no secret, no volume, and the namespace's second egress policy (443 to public addresses only) |
+| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
+| analyze-conversations | genetics-mcp-server | genetics-mcp-server | — | CronJob (daily, 02:30 UTC): nightly conversation analysis written into `chat_history.db` on the chat-data PVC |
 
 `build.sh url-fetcher` and `build-all.sh` both run `assert_fetcher_dockerfile_gated`
 (`scripts/lib/env.sh`) before `docker build`. The image's own assertions
@@ -893,7 +909,6 @@ depends on — so a final stage that copies its modules straight from the contex
 assertion and still exits 0. The gate refuses that Dockerfile from outside the build, which is
 the only place it can be seen. It stays silent on a Dockerfile that is wired correctly, beyond
 one `ok` line.
-| monitor | — (scripts/monitor/) | monitor | — | CronJob (daily, 08:00 UTC): health checks, BQ coverage, log alerts → Slack |
 
 The chat-backend and mcp-server share the same Docker image but run different commands; the frontend
 and bff share the same source repo but build different Dockerfiles.
@@ -915,7 +930,7 @@ Where the Keycloak identity broker is enabled, oauth2-proxy uses its `oidc` prov
 [docs/keycloak-apple-signin.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/keycloak-apple-signin.md).
 
 - **Frontend, Chat backend**: Protected by oauth2-proxy. Unauthenticated users are redirected to the sign-in page (Google directly, or the Keycloak provider chooser).
-- **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens — the recommended path — Google Identity Tokens (deprecated) or internal shared secret).
+- **Results API**: Protected by oauth2-proxy for browser access, which routes through the BFF. Also supports `Authorization: Bearer` tokens for programmatic access — requests with a bearer token bypass both oauth2-proxy and the BFF and are validated directly by the backend (user-created tokens — the recommended path — Google Identity Tokens (deprecated) or internal shared secret). Both paths are throttled per caller at the gateway — per oauth2-proxy identity for a browser session, per token otherwise — with a concurrency cap and a per-minute rate set in `k8s/deployments/auth-gateway.yaml`; past either, nginx answers 429 before the request reaches the BFF or results-api. The ceilings sit well above what the browser UI issues and well below what a bulk script needs, so a region-by-region sweep has to serialise.
 - **MCP server**: Not behind oauth2-proxy. Uses bearer token auth via `MCP_API_KEY`, user-created tokens (recommended), Google Identity Tokens (deprecated), or — where the broker is enabled — Keycloak OAuth 2.1 access tokens.
 - **DB API**: Internal only (NetworkPolicy restricts access to chat-backend, mcp-server and — where it is deployed — the sandbox), and additionally requires the `INTERNAL_API_SECRET` bearer token on every endpoint except `/health` — the NetworkPolicy alone is not a sufficient boundary, since mcp-server is allowed through it and is itself reachable from outside.
 - **Internal service calls**: The chat-backend authenticates to results-api using a shared secret (`INTERNAL_API_SECRET`), auto-generated by `create-secrets.sh`.
@@ -956,7 +971,7 @@ deployment does not issue it and therefore cannot revoke it for one person; and 
 rests entirely on the email allow-list (`ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS` from the
 `bearer-auth-allowed` ConfigMap — see [Managing access](#managing-access) below). `GOOGLE_TOKEN_AUDIENCE`
 does **not** narrow that: its default includes the gcloud CLI's *public* OAuth client id (alongside
-brainzzz's own clients — see [docs/mcp-oauth-onboarding.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/mcp-oauth-onboarding.md)), which anyone's
+brainzzz's own clients, there until brainzzz's move to the Keycloak jwt-bearer grant is cut over — see [docs/mcp-oauth-onboarding.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/mcp-oauth-onboarding.md)), which anyone's
 `gcloud auth print-identity-token` mints, so it buys cross-*OAuth-client* replay protection and
 nothing more — it rejects a token minted for a different client id (ADC's `764086051850-…`, a
 project-owned client), but not one the same user handed to another service that documents this same

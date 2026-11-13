@@ -244,7 +244,7 @@ check '^scripts/gen-doc-blocks\.py$' \
 # FreeMarker override (`login.ftl`) or a script would go, and those stay covered.
 KEYCLOAK_BRANDING='^keycloak/themes/.*\.(css|properties|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot)$'
 
-check '^(keycloak/|scripts/keycloak-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
+check '^(keycloak/|scripts/keycloak-|scripts/brainzzz-)' '^docs/(keycloak-apple-signin|mcp-oauth-onboarding)\.md$' \
     'keycloak config/scripts -> docs/keycloak-apple-signin.md (internal repo) (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (internal repo) (onboarding commands, IdP list)' \
     "$KEYCLOAK_BRANDING"
 

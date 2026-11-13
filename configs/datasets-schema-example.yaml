@@ -323,7 +323,7 @@ profiles:
         resource: eqtl_catalogue
         version: "R8_pre"
         description: >-
-          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies
+          eQTL Catalogue R8 pre-release. A harmonized collection of eQTL / sQTL / pQTL studies
           across many tissues, cell types, and conditions.
         author: "eQTL Catalogue"
         publication_date: "2026-01-01"
@@ -342,7 +342,7 @@ profiles:
         description: >-
           BipEx2 gene-level burden test results. Rare variant association testing
           for bipolar disorder from exome sequencing.
-        author: "Bipolar Exomes"
+        author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary

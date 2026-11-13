@@ -166,7 +166,7 @@ resources:
 
   hpa:
     label: "Human Protein Atlas"
-    description: "Human Protein Atlas protein expression across tissues and cell types"
+    description: "Human Protein Atlas protein levels (immunohistochemistry staining) across tissues and cell types"
     aliases: ["HPA"]
 
   gencc:
@@ -2896,18 +2896,19 @@ tables:
       trait_original='continuous_30040_both_sexes__irnt', and QTL rows store a gene
       symbol in trait with the Ensembl id in trait_original. Joining on trait returns
       zero rows silently.
-      COVERAGE IS PARTIAL BY DESIGN. Only datasets that ship a phenotype metadata file
-      have rows: FinnGen R14/R12/Kanta/drugs, the FinnGen multi-cohort (UKBB, MVP, AoU)
-      meta-analyses, Open Targets GWAS, Genebass, BRaVa, COVID-19 HGI and IIBDGC. QTL datasets
+      COVERAGE IS PARTIAL BY DESIGN. Datasets whose traits are phenotypes have rows:
+      FinnGen R14/R12/Kanta/drugs, the FinnGen multi-cohort (UKBB, MVP, AoU)
+      meta-analyses, Open Targets GWAS, Genebass, BRaVa, COVID-19 HGI and IIBDGC, and the
+      single-disease studies (PGC, GP2, BipEx2, SCHEMA2, IBD_exome, ASC2), whose codes are
+      short disease abbreviations (SCZ, BIP, PD, IBD, UC, CD, ASD). QTL datasets
       (FinnGen_snRNAseq, FinnGen_ATACseq, FinnGen_Olink*, UKB_PPP, Open_Targets_QTL_*, every QTD*) have
       NO rows — their traits are genes, proteins and peaks, resolved through
-      gene_annotations_v and peak_to_gene_v instead. Datasets whose codes are already
-      readable (PGC, GP2, BipEx2, SCHEMA2, IBD_exome) have no rows either. Use a LEFT
+      gene_annotations_v and peak_to_gene_v instead. Use a LEFT
       JOIN when the dataset is not known in advance.
       Ranked fuzzy phenotype SEARCH is not here and cannot be — for "find me traits
       matching this free-text description" use the results-api search endpoint. This
       table serves exact resolution and SQL-expressible filtering.
-      Small table (~33k rows), so an unfiltered scan is cheap.
+      Small table (tens of thousands of rows), so an unfiltered scan is cheap.
 
     columns:
       dataset: "Source dataset identifier; joins the dataset column of every results view (dataset1/dataset2 in colocalization_v)"
@@ -3129,8 +3130,8 @@ tables:
       measured the gene: one row per (gene, rolled-up cell type, tissue_general), normal
       tissue only (disease PATO:0000461, tissue_type 'tissue', cell type 'unknown' left out;
       spatial assays are left out unless the release was built with summary_include_spatial,
-      off by default), and broad lineage labels such as 'leukocyte' or 'epithelial cell'
-      left out. Rank cell
+      off by default), and broad lineage labels such as 'leukocyte' or 'epithelial cell' and
+      datasets whose donors are all prenatal left out. Rank cell
       types by the PRIMARY metrics mean_log1p_cp10k and frac_expressing.
       donor_pseudobulk_mean_cp10k is SECONDARY: linear-scale CP10k, NULL when fewer than the
       release's min_pseudobulk_donors (default 3) donors have a nonzero library, and it does
@@ -4032,7 +4033,7 @@ profiles:
         resource: eqtl_catalogue
         version: "R8_pre"
         description: >-
-          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
+          eQTL Catalogue R8 pre-release. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
           identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
           results. Full summary stats are not available for the eQTL Catalogue.
@@ -4090,8 +4091,10 @@ profiles:
         version: "R12"
         description: >-
           FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
-          caQTL and eQTL, whose colocalizations have not yet been recomputed against the
-          current R14 release; R14 is the current release for all other analyses.
+          caQTL and per-cell-type eQTL, whose colocalizations have not been recomputed
+          against the current R14 release: R14 is colocalized with FinnGen eQTL only in
+          the rows whose cell type is PBMC, and not with caQTL. R14 is the current
+          release for all other analyses.
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
@@ -4165,9 +4168,10 @@ profiles:
         version: "R12"
         description: >-
           FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
-          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not yet
-          been recomputed against the current R14 Kanta release; R14 is the current Kanta release
-          for all other analyses.
+          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not
+          been recomputed against the current R14 Kanta release; R14 is the current Kanta
+          release for all other analyses. Its trait codes are bare OMOP ids, where the R14
+          Kanta release prefixes them.
         author: "FinnGen Consortium"
         publication_date: "2025-03-10"
         data_type: gwas
@@ -4300,7 +4304,7 @@ profiles:
           Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
           and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
           than genebass (p < 1e-4).
-        author: "IBD Exome Consortium"
+        author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: exome
         trait_type: binary
@@ -4355,7 +4359,7 @@ profiles:
           9,567 unaffected siblings + 23,749 controls. No p-values: the paper reports genes
           at FDR < 0.001 (253, exome-wide) and FDR < 0.05 (696), with four flagged genes
           excluded.
-        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        author: "Autism Sequencing Consortium"
         publication_date: "2026-08-26"
         data_type: gene_based
         trait_type: binary
@@ -4382,7 +4386,7 @@ profiles:
           class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
           probands and siblings, transmitted and untransmitted, cases and controls. Counts
           only; no per-variant test statistic exists in the release. No CNV rows.
-        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        author: "Autism Sequencing Consortium"
         publication_date: "2026-08-26"
         data_type: exome
         trait_type: binary
@@ -4425,7 +4429,7 @@ profiles:
         description: >-
           SCHEMA consortium gene-level burden test results. Rare variant association
           testing for schizophrenia from exome sequencing of 87,959 cases and 150,587 controls.
-        author: "SCHEMA Consortium"
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -4449,7 +4453,7 @@ profiles:
         description: >-
           BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
           testing for bipolar disorder from exome sequencing of 64,435 cases and 168,101 controls.
-        author: "Bipolar Exomes"
+        author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -4474,7 +4478,7 @@ profiles:
           2026 IBD exome analysis results. Gene-level burden test results. Rare variant
           association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
           and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
+        author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -4515,17 +4519,20 @@ profiles:
 
       hpa_expression:
         resource: hpa
-        dataset: HPA_24.1
-        version: "v24.1"
+        dataset: HPA_26.0
+        version: "v26.0"
         description: >-
-          Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
-          Covers only the ~5,500 genes with validated IHC antibodies (NOT proteome-wide;
-          many genes have no rows at all). Levels are categorical (High / Medium / Low /
-          Not_detected) across 53 tissues, with individual cell-type resolution encoded in
-          the tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such
-          as bone_marrow, spleen, lymph_node, tonsil and thymus).
+          Human Protein Atlas v26.0 protein levels from immunohistochemistry (IHC) staining
+          of normal tissue; this is protein, not RNA, and HPA's RNA data is not included.
+          Covers the ~11,000 genes whose IHC reliability score is Enhanced, Supported or
+          Approved (NOT proteome-wide: genes scored Uncertain, and genes HPA has not
+          stained, have no rows at all). Levels are categorical (High / Medium / Low /
+          Not_detected, and for a few rows Ascending / Descending / Not_representative)
+          across 60 tissues, with individual cell-type resolution encoded in the
+          tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such as
+          bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
-        publication_date: "2024-11-18"
+        publication_date: "2026-11-11"
         data_type: expression
         trait_type: null
         metadata_file: null
@@ -4858,7 +4865,7 @@ profiles:
           Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
           Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
           Bundled with other external GWAS in the shared ext/ collected file.
-        author: "GP2"
+        author: "Global Parkinson's Genetics Program"
         publication_date: "NA"
         data_type: gwas
         cohorts: [gp2]
@@ -4933,7 +4940,6 @@ profiles:
 
       huerta_chagoya_t2d:
         resource: huerta_chagoya_t2d
-        dataset: Huerta_Chagoya_T2D_2024
         version: "2024"
         description: >-
           Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2
@@ -5309,7 +5315,7 @@ profiles:
         resource: eqtl_catalogue
         version: "R8_pre"
         description: >-
-          eQTL Catalogue R8. A harmonized collection of eQTL / sQTL / pQTL studies across
+          eQTL Catalogue R8 pre-release. A harmonized collection of eQTL / sQTL / pQTL studies across
           many tissues, cell types, and conditions. Each sub-study is identified by a QTD
           identifier. eQTL results contain gene-level, transcript-level, exon-level and txrevise
           results. Full summary stats are not available for the eQTL Catalogue.
@@ -5367,8 +5373,10 @@ profiles:
         version: "R12"
         description: >-
           FinnGen R12 core GWAS. Retained as the colocalization partner for FinnGen
-          caQTL and eQTL, whose colocalizations have not yet been recomputed against the
-          current R14 release; R14 is the current release for all other analyses.
+          caQTL and per-cell-type eQTL, whose colocalizations have not been recomputed
+          against the current R14 release: R14 is colocalized with FinnGen eQTL only in
+          the rows whose cell type is PBMC, and not with caQTL. R14 is the current
+          release for all other analyses.
         author: "FinnGen Consortium"
         publication_date: "2024-05-24"
         data_type: gwas
@@ -5383,9 +5391,10 @@ profiles:
         version: "R12"
         description: >-
           FinnGen Kanta lab-value GWAS (R12 fine-mapping, 2025-03 release). Retained as the
-          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not yet
-          been recomputed against the current R14 Kanta release; R14 is the current Kanta release
-          for all other analyses.
+          colocalization partner for FinnGen caQTL and eQTL, whose colocalizations have not
+          been recomputed against the current R14 Kanta release; R14 is the current Kanta
+          release for all other analyses. Its trait codes are bare OMOP ids, where the R14
+          Kanta release prefixes them.
         author: "FinnGen Consortium"
         publication_date: "2025-03-10"
         data_type: gwas
@@ -5518,7 +5527,7 @@ profiles:
           Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
           and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
           than genebass (p < 1e-4).
-        author: "IBD Exome Consortium"
+        author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: exome
         trait_type: binary
@@ -5573,7 +5582,7 @@ profiles:
           9,567 unaffected siblings + 23,749 controls. No p-values: the paper reports genes
           at FDR < 0.001 (253, exome-wide) and FDR < 0.05 (696), with four flagged genes
           excluded.
-        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        author: "Autism Sequencing Consortium"
         publication_date: "2026-08-26"
         data_type: gene_based
         trait_type: binary
@@ -5600,7 +5609,7 @@ profiles:
           class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
           probands and siblings, transmitted and untransmitted, cases and controls. Counts
           only; no per-variant test statistic exists in the release. No CNV rows.
-        author: "Autism Sequencing Consortium (Satterstrom, Auwerx, Fu et al.)"
+        author: "Autism Sequencing Consortium"
         publication_date: "2026-08-26"
         data_type: exome
         trait_type: binary
@@ -5643,7 +5652,7 @@ profiles:
         description: >-
           SCHEMA consortium gene-level burden test results. Rare variant association
           testing for schizophrenia from exome sequencing of 87,959 cases and 150,587 controls.
-        author: "SCHEMA Consortium"
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -5667,7 +5676,7 @@ profiles:
         description: >-
           BipEx2 (Bipolar Exomes 2) gene-level burden test results. Rare variant association
           testing for bipolar disorder from exome sequencing of 64,435 cases and 168,101 controls.
-        author: "Bipolar Exomes"
+        author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -5692,7 +5701,7 @@ profiles:
           2026 IBD exome analysis results. Gene-level burden test results. Rare variant
           association testing for inflammatory bowel disease (IBD), ulcerative colitis (UC)
           and Crohn's disease (CD).
-        author: "IBD Exome Consortium"
+        author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: gene_based
         trait_type: binary
@@ -5733,17 +5742,20 @@ profiles:
 
       hpa_expression:
         resource: hpa
-        dataset: HPA_24.1
-        version: "v24.1"
+        dataset: HPA_26.0
+        version: "v26.0"
         description: >-
-          Human Protein Atlas v24.1 immunohistochemistry-based protein expression.
-          Covers only the ~5,500 genes with validated IHC antibodies (NOT proteome-wide;
-          many genes have no rows at all). Levels are categorical (High / Medium / Low /
-          Not_detected) across 53 tissues, with individual cell-type resolution encoded in
-          the tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such
-          as bone_marrow, spleen, lymph_node, tonsil and thymus).
+          Human Protein Atlas v26.0 protein levels from immunohistochemistry (IHC) staining
+          of normal tissue; this is protein, not RNA, and HPA's RNA data is not included.
+          Covers the ~11,000 genes whose IHC reliability score is Enhanced, Supported or
+          Approved (NOT proteome-wide: genes scored Uncertain, and genes HPA has not
+          stained, have no rows at all). Levels are categorical (High / Medium / Low /
+          Not_detected, and for a few rows Ascending / Descending / Not_representative)
+          across 60 tissues, with individual cell-type resolution encoded in the
+          tissue_cell field as tissue|subtissue|cell_type (includes immune tissues such as
+          bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
-        publication_date: "2024-11-18"
+        publication_date: "2026-11-11"
         data_type: expression
         trait_type: null
         metadata_file: null
@@ -6085,7 +6097,7 @@ profiles:
           Parkinson's disease. 63,555 cases, 17,700 proxy cases and 1,746,386 controls.
           Pseudo credible sets (mlog10p>=2, r2>=0.6); not formally fine-mapped.
           Bundled with other external GWAS in the shared ext/ collected file.
-        author: "GP2"
+        author: "Global Parkinson's Genetics Program"
         publication_date: "NA"
         data_type: gwas
         cohorts: [gp2]
@@ -6160,7 +6172,6 @@ profiles:
 
       huerta_chagoya_t2d:
         resource: huerta_chagoya_t2d
-        dataset: Huerta_Chagoya_T2D_2024
         version: "2024"
         description: >-
           Huerta-Chagoya et al. 2024 (Nature Genetics, doi:10.1038/s41588-024-01947-9) type 2

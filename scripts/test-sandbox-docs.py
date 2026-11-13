@@ -458,7 +458,7 @@ def main(argv=None):
 
     # rendered here rather than beside the stub cases: the leak scan below covers the stubs
     # too, since they ship unfiltered to every profile
-    stub_files = gen.render_stubs(sdk_dir)
+    stub_files = gen.render_stubs(sdk_dir, sorted(config.get("profiles") or {}))
 
     def _name_patterns(view):
         """The view's name and its base-table stem (`x_v` -> `x`), case-insensitively: prose
@@ -560,6 +560,85 @@ def main(argv=None):
             f"{view} is named in {referrers}, which stay visible when it is gated away, but "
             f"the leak scan reported only {sorted(reported)}"
         )
+
+    @case("the stubs' _availability.json is the SDK's own gating table")
+    def _stub_availability():
+        """The stub tree is filtered by the table sdk/__init__.py reads at import, copied
+        into the json at generation so the filter needs no SDK source. Every gated name
+        must be an exported function and every profile a known one, else the generator
+        refuses rather than filtering against a name nothing binds."""
+        init_tree = ast.parse(open(os.path.join(sdk_dir, "__init__.py")).read())
+        produced = json.loads(stub_files[gen.AVAILABILITY])
+        assert produced == {
+            "profiles": sorted(config.get("profiles") or {}),
+            "functions": gen._profile_gated(init_tree),
+        }, produced
+        assert set(produced["functions"]) <= set(gen._exported_functions(init_tree))
+
+    def _stub_defs(content):
+        return {
+            n.name for n in ast.walk(ast.parse(content))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def _stub_leaks(files):
+        """{(profile, hidden function): stub files that still name it}, over every known
+        profile plus None and an unknown name (which must fail closed). Also asserts the
+        filter keeps every visible function's def in both stubs, so dropping everything
+        fails, and that the json itself is dropped (it names the gated functions)."""
+        availability = json.loads(files[gen.AVAILABILITY])
+        init_tree = ast.parse(open(os.path.join(sdk_dir, "__init__.py")).read())
+        exported = set(gen._exported_functions(init_tree))
+        found = {}
+        for profile in [*availability["profiles"], None, "no-such-profile"]:
+            shown = gen.filter_stubs(files, profile)
+            assert gen.AVAILABILITY not in shown, f"profile {profile!r}: the json shipped"
+            hidden = set(gen.hidden_functions(availability, profile))
+            for name in sorted(hidden):
+                pattern = re.compile(rf"\b{re.escape(name)}\b")
+                named = sorted(n for n, c in shown.items() if pattern.search(c))
+                if named:
+                    found[(profile, name)] = named
+            for stub in ("genetics.pyi", "client.pyi"):
+                defs = _stub_defs(shown[stub])
+                missing = sorted((exported - hidden) - defs)
+                assert not missing, f"profile {profile!r}: {stub} lost visible functions {missing}"
+                assert not (defs & hidden), f"profile {profile!r}: {stub} still defines {defs & hidden}"
+            for stub in files:
+                if stub not in ("genetics.pyi", "client.pyi", gen.AVAILABILITY):
+                    assert shown[stub] == files[stub], f"profile {profile!r}: {stub} changed"
+        return found
+
+    @case("no stub a profile is shown names a function hidden from it")
+    def _filter_hides_gated_functions():
+        """Run on the real table and on a mutant gating one ungated exported function to
+        one profile, since a table that happens to be empty would prove nothing."""
+        leaks = _stub_leaks(stub_files)
+        assert not leaks, f"hidden functions still named: {leaks}"
+        availability = json.loads(stub_files[gen.AVAILABILITY])
+        init_tree = ast.parse(open(os.path.join(sdk_dir, "__init__.py")).read())
+        victim = next(
+            n for n in gen._exported_functions(init_tree)
+            if n not in availability["functions"]
+            and not any(
+                re.search(rf"\b{re.escape(n)}\b", c)
+                for f, c in stub_files.items()
+                if f not in ("genetics.pyi", "client.pyi", gen.AVAILABILITY)
+            )
+        )
+        mutated = dict(stub_files)
+        mutated[gen.AVAILABILITY] = gen.render_stub_availability(
+            availability["profiles"],
+            {**availability["functions"], victim: [availability["profiles"][0]]},
+        )
+        hidden_from = availability["profiles"][1:] + [None, "no-such-profile"]
+        shown = gen.filter_stubs(mutated, hidden_from[0])
+        assert victim not in _stub_defs(shown["genetics.pyi"]), f"{victim} survived the filter"
+        assert victim in _stub_defs(gen.filter_stubs(mutated, availability["profiles"][0])["genetics.pyi"])
+        # the victim's def is gone by construction, and other defs' docstrings may still cite
+        # it as an example — only the real table's run above holds prose mentions to zero
+        leaks = {k: v for k, v in _stub_leaks(mutated).items() if k[1] != victim}
+        assert not leaks, f"gating {victim} disturbed another function: {leaks}"
 
     @case("an unknown profile name or an empty profiles list is REFUSED")
     def _bad_profiles_refused():

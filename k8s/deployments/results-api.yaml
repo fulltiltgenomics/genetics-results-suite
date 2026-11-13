@@ -140,6 +140,10 @@ spec:
             path: /healthz
             port: 4000
           periodSeconds: 30
+          # a single uvicorn worker streaming several region sumstats at once answers
+          # /healthz late rather than not at all; the kubelet's 1 s default killed a
+          # busy process three times in one batch of region calls
+          timeoutSeconds: 5
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

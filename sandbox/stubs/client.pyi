@@ -353,7 +353,9 @@ class GeneticsClient:
         """Variant annotations (consequence, AF, gene) for one variant, a region, a gene or a batch.
 
         The columns depend on `source`: finngen rows carry AF, AC_Het/AC_Hom, rsid and the
-        exome/genome enrichment values; gnomad rows carry per-ancestry-group AF_* columns,
+        exome/genome enrichment values. AC_Het and AC_Hom count alt ALLELES, not people: a
+        homozygote adds 2 to AC_Hom, so homozygous individuals = AC_Hom / 2 and carriers =
+        AC_Het + AC_Hom / 2. gnomad rows carry per-ancestry-group AF_* columns,
         AN, filters, rsids and consequences, and no counts or enrichment. Every value is
         a string on both sources (pos, AF included), so cast before comparing or doing
         arithmetic. The gnomad `consequences` cell is a JSON string (`NA` when the variant
@@ -394,11 +396,12 @@ class GeneticsClient:
         `gene` is a symbol or Ensembl id (a `.N` version is dropped), or a comma-separated
         list. Units are log1p CP10K, not TPM. `mean_log1p_cp10k` and `frac_expressing` are
         the primary metrics; `donor_pseudobulk_mean_cp10k` (linear CP10K) is secondary.
-        level="summary" pools normal tissue across datasets per (cell type, tissue);
-        level="dataset" is sparse: a row per dataset group with at least one expressing cell,
-        so in a dataset with any `present` row, a missing group that passes the size
-        thresholds (50 cells and 3 donors) had zero expressing cells; a below-threshold group
-        never has a row, so its absence is unknown, not zero.
+        level="summary" pools normal tissue across datasets per (cell type, tissue), leaving
+        out datasets whose donors are all prenatal; level="dataset" is sparse: a row per
+        dataset group with at least one expressing cell, so in a dataset with any `present`
+        row, a missing group that passes the size thresholds (50 cells and 3 donors) had zero
+        expressing cells; a below-threshold group never has a row, so its absence is unknown,
+        not zero.
         One `status == "measured_no_row"` row per dataset means it measured the gene and no
         cell in its groups passing the size thresholds expressed it (a real zero). A dataset
         absent from the frame did not measure the gene, or had every group below the
@@ -422,6 +425,12 @@ class GeneticsClient:
         data_type: str = 'gwas',
     ) -> pl.DataFrame:
         """Summary statistics, for explicit variant-phenotype pairs or for a whole region.
+
+        Rows of data type `gwas_recessive` carry `ac_het` and `ac_hom`. They are the variant
+        annotation's counts, not the endpoint's: alt ALLELES across the whole genotyped
+        cohort, identical for every endpoint and not split by case status. A homozygote adds
+        2 to `ac_hom`, so homozygous individuals = `ac_hom` / 2, and they are homozygous for
+        the alt allele, which on a `flipped` row is not the allele the recessive test is on.
         """
         ...
 
@@ -536,9 +545,8 @@ class GeneticsClient:
 
         `category` is the source's own grouping — a FinnGen ICD chapter, Kanta's
         Quantitative/Binary, an Open Targets project id, a Genebass trait type — not one
-        harmonised across resources. Coverage is partial by design: QTL datasets and those
-        whose codes are already readable have no rows, so LEFT JOIN when the dataset is not
-        known in advance.
+        harmonised across resources. Coverage is partial by design: QTL datasets have no
+        rows, so LEFT JOIN when the dataset is not known in advance.
         """
         ...
 

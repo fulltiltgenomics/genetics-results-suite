@@ -410,7 +410,9 @@ profiles:
         substudy_metadata: boolean       # true: metadata_file lists the dataset's sub-studies
                                          # (one row per results file), not phenotypes; see below
         qtl_types: [string]              # QTL types in collection (e.g. ["eQTL", "sQTL"])
-        phenotypes:                      # inline phenotype list (small fixed-phenotype datasets)
+        phenotypes:                      # inline phenotype list (small fixed-phenotype datasets);
+                                         # the source of the dataset's phenotypes_v rows when
+                                         # it has no metadata_file
           - phenotype_code: string
             phenotype_string: string
             n_cases: integer
@@ -531,9 +533,9 @@ the rule is one-directional. A non-null `metadata_file` with a null `metadata_ha
 is the loud half: `genetics-results-db`'s `build_phenotypes.py` reads every non-null
 `metadata_file` before it checks the harmonizer, so a path that is not readable fails the
 phenotype load for the entire profile. A null `metadata_file` with a non-null
-`metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and the
-dataset's trait codes simply stay unresolved in `phenotypes_v` -- a silent no-op that looks
-configured.
+`metadata_harmonizer` is the quiet half: nothing reads it, the load succeeds, and unless
+the entry lists its `phenotypes` inline the dataset's trait codes simply stay unresolved in
+`phenotypes_v` -- a silent no-op that looks configured.
 
 The one deliberate both-null case is a dataset whose metadata is not a file at all: the
 sandbox custom GWAS datasets (`finngen_custom_*`) are served by results-api straight from
@@ -541,7 +543,8 @@ the userresults bucket, where every run carries its own `metadata.json`. results
 profile config names the release and its catalog reads those files, so the API shows
 stats, `/resource_metadata` rows and search entries for them with both fields null; db-api
 holds none of that data, so the nulls keep its phenotype load from ever opening a path.
-The rule stays: a null `metadata_file` means db-api resolves nothing for the dataset.
+The rule stays: with a null `metadata_file` db-api resolves only what the entry lists
+inline under `phenotypes`, and these entries list nothing.
 
 The harmonizer names are not enumerated here: each is implemented twice, in results-api's
 `metadata_harmonizer.py` and in `genetics-results-db`'s `build_phenotypes.py`

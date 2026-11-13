@@ -14,8 +14,9 @@ set -euo pipefail
 # them that exist in the realm) at the copy.
 #
 # Allow-list source (same as deploy.sh / oauth2-proxy):
-#   OAUTH_EMAIL_DOMAIN    comma/space separated domains   (e.g. "broadinstitute.org")
-#   OAUTH_ALLOWED_EMAILS  comma/space separated addresses (e.g. Apple privaterelay aliases)
+#   OAUTH_EMAIL_DOMAIN    domains (e.g. "broadinstitute.org"); the authenticator splits on commas,
+#                         semicolons and whitespace, the login helper line takes the text before the first comma
+#   OAUTH_ALLOWED_EMAILS  addresses, split the same way (e.g. Apple privaterelay aliases)
 
 NAMESPACE="${NAMESPACE:-genetics}"
 REALM="${KC_REALM:-genetics}"
@@ -26,18 +27,29 @@ BUILTIN_ENC="${BUILTIN_FLOW// /%20}"
 PROVIDER="script-email-allowlist.js"
 IDPS="${IDPS:-google apple microsoft}"
 
+# an empty value would write empty allowedEmailDomains/allowedEmails, after which the allow-list
+# denies every first broker login while this script reports success. OAUTH_ALLOWED_EMAILS may be
+# empty: a deployment can have no extra addresses.
+if [ -z "${OAUTH_EMAIL_DOMAIN:-}" ]; then
+  echo "ERROR: OAUTH_EMAIL_DOMAIN is empty or unset; refusing to write an empty allow-list." >&2
+  echo "Usage: OAUTH_EMAIL_DOMAIN=<domains> [OAUTH_ALLOWED_EMAILS=...] IDPS=... scripts/keycloak-bind-allowlist.sh" >&2
+  exit 1
+fi
+
 POD="$(kubectl get pods -n "${NAMESPACE}" -l app=keycloak -o jsonpath='{.items[0].metadata.name}')"
 AU="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 -d)"
 AP="$(kubectl get secret keycloak-secrets -n "${NAMESPACE}" -o jsonpath='{.data.admin-password}' | base64 -d)"
 
-kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@"; }
+# the pod's root filesystem is read-only, so kcadm's config file has to go under /tmp
+KC_CONFIG="--config /tmp/kcadm-allowlist.config"
+kc() { kubectl exec -n "${NAMESPACE}" "${POD}" -- /opt/keycloak/bin/kcadm.sh "$@" ${KC_CONFIG}; }
 
 echo "Authenticating kcadm against ${POD}..."
 kc config credentials --server http://localhost:8080 --realm master --user "${AU}" --password "${AP}" >/dev/null
 
-echo "Syncing allow-list realm attributes (domains='${OAUTH_EMAIL_DOMAIN:-}', emails='${OAUTH_ALLOWED_EMAILS:-}')..."
+echo "Syncing allow-list realm attributes (domains='${OAUTH_EMAIL_DOMAIN}', emails='${OAUTH_ALLOWED_EMAILS:-}')..."
 kc update "realms/${REALM}" \
-  -s "attributes.allowedEmailDomains=${OAUTH_EMAIL_DOMAIN:-}" \
+  -s "attributes.allowedEmailDomains=${OAUTH_EMAIL_DOMAIN}" \
   -s "attributes.allowedEmails=${OAUTH_ALLOWED_EMAILS:-}"
 
 # 1) custom flow = copy of the built-in (built-in flows are not editable)
@@ -101,6 +113,71 @@ if [ -n "${REVIEW_ID}" ]; then
   echo "Disabled 'Review Profile' in '${FLOW}'."
 fi
 
+# 3c) an existing account with the same e-mail is linked automatically instead of asking the
+# person to prove it. The built-in "Handle Existing Account" subflow confirms by e-mail (the realm
+# has no SMTP) or by password (the realm has none), so a user created before their first login —
+# chat-backend's POST /provision/{alias} and keycloak-link-brainzzz-users.sh --create both do that
+# — would be stuck at that page. Every brokered IdP here is trust-email, which is the condition
+# Keycloak's own docs put on "Automatically set existing user".
+EXECS="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}")"
+# the copy prefixed every subflow's alias (and so its displayName) with the new flow's name
+HANDLE_ID="$(printf '%s' "${EXECS}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("displayName","").endswith("Handle Existing Account") and e.get("authenticationFlow"): print(e["id"]); break')"
+if [ -n "${HANDLE_ID}" ]; then
+  kc update "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" \
+    -b "{\"id\":\"${HANDLE_ID}\",\"requirement\":\"DISABLED\"}"
+  echo "Disabled 'Handle Existing Account' in '${FLOW}'."
+fi
+if ! printf '%s' "${EXECS}" | python3 -c '
+import json,sys; sys.exit(0 if any(e.get("providerId")=="idp-auto-link" for e in json.load(sys.stdin)) else 1)'; then
+  # the execution goes into the "User creation or linking" subflow, after "Create User If Unique"
+  # (both ALTERNATIVE: the first one defers to the next when the e-mail already exists); a
+  # subflow is addressed by its alias, which for a subflow is what the executions list shows as
+  # its displayName
+  SUBFLOW_ALIAS="$(printf '%s' "${EXECS}" | python3 -c '
+import json,sys,urllib.parse
+for e in json.load(sys.stdin):
+    if e.get("displayName","").endswith("User creation or linking") and e.get("authenticationFlow"): print(urllib.parse.quote(e["displayName"])); break')"
+  [ -n "${SUBFLOW_ALIAS}" ] || { echo "ERROR: no 'User creation or linking' subflow in '${FLOW}'" >&2; exit 1; }
+  kc create "authentication/flows/${SUBFLOW_ALIAS}/executions/execution" -r "${REALM}" -b '{"provider":"idp-auto-link"}' >/dev/null
+  AUTO_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("providerId")=="idp-auto-link": print(e["id"]); break')"
+  kc update "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" \
+    -b "{\"id\":\"${AUTO_ID}\",\"requirement\":\"ALTERNATIVE\"}"
+  echo "Added 'Automatically set existing user' to '${FLOW}'."
+else
+  echo "'Automatically set existing user' already in '${FLOW}'."
+fi
+# order inside the subflow decides everything: auto-link only has a user to link once "Create
+# User If Unique" has run and recorded the duplicate, and run first it fails the login with
+# "Invalid username or password" (measured). Keycloak gave the new execution a lower index than
+# the existing one, so push it down until it is after
+order() {
+  kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+ix={e.get("providerId"): e["index"] for e in json.load(sys.stdin) if e.get("providerId") in ("idp-auto-link","idp-create-user-if-unique")}
+print(ix.get("idp-auto-link",-1), ix.get("idp-create-user-if-unique",-1))'
+}
+AUTO_ID="$(kc get "authentication/flows/${FLOW_ENC}/executions" -r "${REALM}" | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    if e.get("providerId")=="idp-auto-link": print(e["id"]); break')"
+for _ in 1 2 3 4; do
+  read -r AUTO_IX CREATE_IX <<< "$(order)"
+  [ "${AUTO_IX}" -gt "${CREATE_IX}" ] && break
+  kc create "authentication/executions/${AUTO_ID}/lower-priority" -r "${REALM}" >/dev/null
+done
+read -r AUTO_IX CREATE_IX <<< "$(order)"
+if [ "${AUTO_IX}" -gt "${CREATE_IX}" ]; then
+  echo "'Automatically set existing user' runs after 'Create User If Unique'."
+else
+  echo "ERROR: could not order 'Automatically set existing user' after 'Create User If Unique'" >&2; exit 1
+fi
+
 # 4) point the brokered IdPs at the custom flow
 for idp in ${IDPS}; do
   if kc get "identity-provider/instances/${idp}" -r "${REALM}" >/dev/null 2>&1; then
@@ -121,8 +198,25 @@ print(json.dumps(p))')"
 if [ -n "${NEW_PROFILE}" ]; then
   B64="$(printf '%s' "${NEW_PROFILE}" | base64 | tr -d '\n')"
   kubectl exec -n "${NAMESPACE}" "${POD}" -- bash -c \
-    "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json && rm -f /tmp/kc-userprofile.json"
+    "echo '${B64}' | base64 -d > /tmp/kc-userprofile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r ${REALM} -f /tmp/kc-userprofile.json ${KC_CONFIG} && rm -f /tmp/kc-userprofile.json"
   echo "Made firstName/lastName optional in the user profile."
+fi
+
+# 6) the helper line above the IdP buttons names the primary domain only, because the allow-list
+# may hold several. A realm localization override, since the theme bundle ships in the one image.
+# Last, so a failure here cannot skip binding the IdPs or the profile change; same derivation as
+# deploy.sh so a fresh import and a reconciled realm render the same sentence. kcadm can read the
+# key only through the whole map: the single-key GET answers text/plain, which kcadm refuses.
+LABEL_KEY="identity-provider-login-label"
+LABEL="Sign in with your ${OAUTH_EMAIL_DOMAIN%%,*} Google account"
+CURRENT_LABEL="$(kc get "realms/${REALM}/localization/en" | python3 -c '
+import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "${LABEL_KEY}")"
+if [ "${CURRENT_LABEL}" = "${LABEL}" ]; then
+  echo "Localization override en/${LABEL_KEY} already '${LABEL}'."
+else
+  kc create "realms/${REALM}/localization/en" \
+    -b "$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "${LABEL_KEY}" "${LABEL}")"
+  echo "Localization override en/${LABEL_KEY} -> '${LABEL}'."
 fi
 
 echo "Done."

@@ -52,6 +52,9 @@ DEFAULT_ALLOWED_HOSTS = (
     # leading dot: the apex and every subdomain. A host under it that redirects to a login
     # is still refused at that hop, since the identity provider is not listed
     ".finngen.fi",
+    # Finnish municipal statistics and reports, served as PDF; the apex only redirects to www
+    "kuntaliitto.fi",
+    "www.kuntaliitto.fi",
 )
 
 DEFAULT_ALLOWED_PORTS = (443,)
