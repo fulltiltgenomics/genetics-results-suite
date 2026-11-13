@@ -450,12 +450,14 @@ The final stage's environment, all of it:
 - `genetics_mcp_server/sdk/__init__.py`
 - `genetics_mcp_server/sdk/_mr_estimators.py`
 - `genetics_mcp_server/sdk/_runner.py`
+- `genetics_mcp_server/sdk/_structure_contract.py`
 - `genetics_mcp_server/sdk/client.py`
 - `genetics_mcp_server/sdk/enrichment.py`
 - `genetics_mcp_server/sdk/errors.py`
 - `genetics_mcp_server/sdk/linemodels.py`
 - `genetics_mcp_server/sdk/mr.py`
 - `genetics_mcp_server/sdk/plots.py`
+- `genetics_mcp_server/sdk/structure.py`
 - `genetics_mcp_server/tools/__init__.py`
 - `genetics_mcp_server/tools/chembl.py`
 - `genetics_mcp_server/tools/executor.py`
@@ -508,13 +510,23 @@ stubs included, names a hidden view or its base-table stem, for every profile.
 
 The stub tree carries one too, keyed `functions`: the SDK functions `sdk/__init__.py` binds only
 under some `CONFIG_PROFILE` values, copied out of its `_PROFILE_GATED` literal at generation
-(today `cell_type_expression`, daly only). The package reads that table at import and fails
+(`sandbox/stubs/_availability.json` is the list). The package reads that table at import and fails
 closed the same way — no profile, no gated function bound or listed — so the stub is held to the
 import surface rather than the other way round. `filter_stubs(files, profile)` drops a gated-off
 function's def from `genetics.pyi`, its method from `client.pyi`, its name from the lists the
-module docstring keeps, and the json; the harness asserts no surviving stub names a hidden
-function and that every visible function's def survives, on the real table and on a mutant
-that gates one more.
+module docstring keeps, and the json. In an analysis-surface stub, a top-level def whose own
+text names a hidden function is dropped whole and nothing else in the file changes. The
+guarantee is about names and is exactly this: **no profile-hidden function's name appears
+anywhere in the stubs that profile is shown.** It is not a guarantee about what the profile
+can run or read about. A dropped def may still be named in its module's docstring, which is
+not rewritten; the defs that stay in a surface stub may be of no use without the gated data;
+and the surface modules' code ships in the image on every profile whatever its stubs say. A
+module or class docstring that named a hidden function would break the guarantee rather than
+be filtered, and the harness is what catches that: it asserts, with the filter's own
+matcher, that no surviving stub names a hidden function, that every visible function's def
+survives in `genetics.pyi` and `client.pyi`, and that each surface stub is its unfiltered
+text minus exactly the top-level defs naming a hidden function — on the real table and on a
+mutant that gates one more.
 
 The sandbox's copies are filtered at build time, because its root filesystem is read-only at run
 time. `stage_gene_sets` (`scripts/lib/env.sh`) runs `gen-sandbox-docs.py --emit-filtered
@@ -618,7 +630,8 @@ never import matplotlib or numpy. That has one consequence worth stating:
 genetics-mcp-server's `tests/test_sdk_import_closure.py` measures the shipped set by
 importing the SDK, so it cannot see these files — `SHIPPED_OUTSIDE_CLOSURE` in that test is
 the second list that keeps them scanned, and it and `SDK_ALLOWLIST` have to agree by hand.
-`sdk/mr.py` imports `sdk/_mr_estimators.py`, so both files are on both lists.
+`sdk/mr.py` imports `sdk/_mr_estimators.py` and `sdk/structure.py` imports
+`sdk/_structure_contract.py`, so each pair is on both lists.
 Each module's stub (`sandbox/stubs/<module>.pyi`) is generated from its
 `__all__` and gated for equality against it by `scripts/test-sandbox-docs.py`, the same way
 the data surface is; the generator's `SURFACE_MODULES` is where they are named. An
@@ -627,9 +640,14 @@ methods) or a function re-exported from a sibling SDK module, read from that mod
 source; `mr.pyi` has both. It discloses nothing secret: the MR docstrings, the result
 classes' fields and the module constants used as signature defaults (a bootstrap seed, an iteration
 count, the frequency tolerance and the in-flight limit) — no endpoint, credential or service name.
+`structure.pyi` is the same: geometry docstrings, the two neighbourhood defaults and the
+view-spec's default colour mode. `Protein` is exported but built by `protein()`, so its stub
+is the class docstring alone — its attributes are assigned in `__init__` and the generator
+renders annotated class fields and public methods, of which it has none.
 
 The line-models port widens what the image can *do* by nothing: numpy and scipy were already
-pinned, and the module opens no socket and reads no file. The enrichment module is the same
+pinned, and the module opens no socket and reads no file. The structure module likewise: it
+computes on bytes the script fetched through the client and writes only artifact files. The enrichment module is the same
 apart from one read: the root-owned bundle under `GENETICS_GENESETS_DIR`. It was chosen over installing R in
 the image precisely on that ground — R runs without a shell (`bin/exec/R` with a hand-built
 environment), but it is a second runtime of ~140 MB with its own `system()` and download
@@ -637,7 +655,9 @@ paths to reason about, for a model whose core is a Cholesky and a rotation.
 
 A default written in the SDK as a bare name is resolved to its literal and that name
 defined at the top of the stub, so the file answers *what does this argument default to*
-on its own. The stub is not importable and the package it describes is in `/opt/venv`, so
+on its own. A default spelled as an attribute of a sibling SDK module imported under an alias
+(`contract.VIEW_DEFAULT_COLOUR_MODE`) cannot be defined that way, so its literal is written
+into the signature instead. The stub is not importable and the package it describes is in `/opt/venv`, so
 a name left unresolved would be a value the reader has no way to look up; the generator
 refuses to emit one it cannot resolve, and the harness re-checks the property over the
 shipped text. This is the one way a module-private name reaches the image — a private

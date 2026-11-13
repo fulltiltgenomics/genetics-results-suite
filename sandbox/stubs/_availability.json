@@ -6,6 +6,30 @@
   "functions": {
     "cell_type_expression": [
       "daly"
+    ],
+    "protein_models": [
+      "daly"
+    ],
+    "protein_residues": [
+      "daly"
+    ],
+    "protein_features": [
+      "daly"
+    ],
+    "protein_scores": [
+      "daly"
+    ],
+    "protein_variants": [
+      "daly"
+    ],
+    "protein_structure_file": [
+      "daly"
+    ],
+    "protein_pae": [
+      "daly"
+    ],
+    "protein_structure": [
+      "daly"
     ]
   }
 }

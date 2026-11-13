@@ -36,6 +36,10 @@ spec:
         # empty means the profile's own release pointer
         - name: CELL_TYPE_EXPRESSION_RELEASE_POINTER
           value: "${CELL_TYPE_EXPRESSION_RELEASE_POINTER}"
+        # empty means off: results-api reads an empty value as unset and registers no
+        # protein structure route. Read once at startup, so a new release needs a restart.
+        - name: PROTEIN_STRUCTURE_RELEASE_POINTER
+          value: "${PROTEIN_STRUCTURE_RELEASE_POINTER}"
         # match the CPU limit below: the decompress/filter process pool sizes off
         # os.cpu_count() (host cores, not the cgroup quota) unless told otherwise
         - name: TABIX_FILTER_WORKERS

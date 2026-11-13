@@ -65,13 +65,17 @@ SDK_ALLOWLIST = frozenset(
         # __getattr__ so the servers never import matplotlib or numpy — so they survive on
         # this list alone. These are the entries whose absence would be a missing FEATURE
         # rather than a broken import: without them `genetics.plots`, `genetics.linemodels`,
-        # `genetics.mr` or `genetics.enrichment` raises ModuleNotFoundError inside the child,
-        # where they are the point of shipping. sdk/_mr_estimators.py is imported by sdk/mr.py.
+        # `genetics.mr`, `genetics.enrichment` or `genetics.structure` raises
+        # ModuleNotFoundError inside the child, where they are the point of shipping.
+        # sdk/_mr_estimators.py is imported by sdk/mr.py, sdk/_structure_contract.py by
+        # sdk/structure.py.
         "sdk/plots.py",
         "sdk/linemodels.py",
         "sdk/mr.py",
         "sdk/_mr_estimators.py",
         "sdk/enrichment.py",
+        "sdk/structure.py",
+        "sdk/_structure_contract.py",
         "tools/__init__.py",
         "tools/executor.py",
         "tools/sql_safety.py",

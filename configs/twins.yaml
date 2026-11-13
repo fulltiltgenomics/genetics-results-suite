@@ -286,3 +286,87 @@ twins:
       the recorder is scripts/lib/checks.py; these two are what remains, and a third in-image
       check script would join this entry rather than open a new one.
     merge: never
+
+  - id: protein-structure-contract
+    sites:
+      - genetics-results-munge:scripts/protein_structure_contract.py
+      - genetics-results-api:app/config/protein_structure_contract.py
+      - genetics-mcp-server:src/genetics_mcp_server/sdk/_structure_contract.py
+    property: >-
+      Every public name in the results-api module and in the SDK module has the value the
+      munge module gives it: the contract version, the release's file names and column
+      lists, the PAE encoding, the window rules, the per-response byte limit and the
+      view-spec vocabulary and caps. The munge module is the definition and the other two
+      are slices of it; neither adds a name of its own.
+    reason: >-
+      The release is written by one repo and read by two others, and the SDK's reader runs
+      in the sandbox image. sandbox/prune_venv.py's prune_sdk() keeps only the
+      genetics_mcp_server files on SDK_ALLOWLIST and sandbox/build-checks.py asserts the
+      survivors equal that list, so a contract module installed from anywhere else is
+      either deleted from the image or ships outside the one directory those checks read -
+      the same mechanical prohibition sandbox-wire-contract records. results-api's copy is
+      the weaker leg: its image is built from its own repo alone and munge is a pipeline
+      repo that is not packaged, which is the suite's no-cross-repo-import rule rather than
+      something that breaks. One entry rather than one per reader because the readers
+      share names (CONTRACT_VERSION, MODEL_COLUMNS, the PAE constants), and a group with a
+      foot outside an entry stays counted. No `symbols`: each reader's file holds the copy
+      and nothing else, so the whole file is the twin - which goes false the day either
+      gains a name the munge module does not define, and each repo's drift test
+      (tests/test_protein_structure.py, tests/test_sdk_structure.py; they compare every
+      public name with the munge module when a checkout of it is found, and skip
+      otherwise) fails on exactly that.
+    merge: never
+
+  - id: protein-structure-view-spec
+    sites:
+      - genetics-results-munge:scripts/protein_structure_contract.py
+      - genetics-results-browser:src/features/structure/viewSpec.ts
+    symbols:
+      genetics-results-munge:scripts/protein_structure_contract.py:
+        - VIEW_SPEC_VERSION
+        - VIEW_ROLES
+        - VIEW_COLOUR_MODES
+        - VIEW_DEFAULT_COLOUR_MODE
+        - VIEW_NAME_SUFFIX
+        - VIEW_ROLE_COLOURS
+        - VIEW_SPHERE_COLOUR
+        - VIEW_COLOUR_RE
+        - VIEW_MAX_BYTES
+        - VIEW_MAX_RESIDUES
+        - VIEW_MAX_LABELS
+        - VIEW_MAX_TEXT_LENGTH
+        - VIEW_MAX_POSITION
+        - VIEW_MAX_SPHERE_RADIUS
+        - MODEL_FILE_ID_RE
+      genetics-results-browser:src/features/structure/viewSpec.ts:
+        - VIEW_SPEC_VERSION
+        - VIEW_ROLES
+        - VIEW_COLOUR_MODES
+        - VIEW_DEFAULT_COLOUR_MODE
+        - STRUCTURE_VIEW_SUFFIX
+        - ROLE_COLOURS
+        - NEIGHBOURHOOD_COLOUR
+        - HEX_COLOUR_RE
+        - MAX_SPEC_BYTES
+        - MAX_RESIDUES
+        - MAX_LABELS
+        - MAX_TEXT_LENGTH
+        - MAX_POSITION
+        - MAX_SPHERE_RADIUS
+        - MODEL_FILE_ID_RE
+    property: >-
+      The viewer accepts exactly the view-spec the SDK's `structure.view` may write: the
+      same version, roles, colour modes and default, file-name suffix, role and sphere
+      colours, colour and model-file-id patterns, and the same caps on bytes, residues,
+      labels, text length, position and sphere radius.
+    reason: >-
+      One side is Python and the other TypeScript compiled into the browser bundle, so
+      there is no module both could import; merging them means generating one from the
+      other, and the browser build reads no other repo. `symbols` pins both sites to the
+      view-spec constants because viewSpec.ts also holds the parser and the viewer's own
+      selection colour, and the munge module holds the whole release contract, which is
+      the entry above. check-duplication.py reads no TypeScript, so this entry nets out
+      nothing and is recorded for the reason, as browser-normalized-types is; what holds
+      the two together is viewSpec.test.ts, which compares these constants with the munge
+      module when PROTEIN_STRUCTURE_MUNGE_CONTRACT names it and skips otherwise.
+    merge: never

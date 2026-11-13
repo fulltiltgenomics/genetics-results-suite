@@ -394,6 +394,7 @@ scripts/                                     build, deploy and verification scri
   lint-staged.sh                             block a commit whose staged Python ruff rejects
   monitor/                                   the monitoring CronJob's Python package
   mr-proving-ground.py                       the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
+  protein-structure-proving-ground.py        the protein structure layer's rehearsal release root, rehearsal BigQuery dataset and worktrees, and its measurements
   rollout.sh                                 single-service image update
   run-sandbox-local.sh                       build and run the sandbox image in plain Docker
   stage-gene-sets.py                         gene-set bundle staging: fetch and verify the pinned release, then drop collections the profile's licence allowlist excludes
@@ -756,6 +757,136 @@ preflight aborts a deploy whose gated-in views have no tables.
 **Monitoring.** The monitor's CELLxGENE release check (Monitor CronJob, below) alerts on a missing
 or stale pointer and on BigQuery serving a different release from the one CURRENT names; with
 `CELLXGENE_LIVE` off, the missing-release cases pass silently.
+
+### Protein structure layer
+
+AlphaFold model files for a gene's protein, with per-residue annotation, PAE and a
+variant-to-residue map, so a variant can be placed on a residue and two variants compared in
+3D. It is served on the **daly brand only**, and there only on a deployment that sets its
+release pointer. A release is built and published by genetics-results-munge
+(`scripts/munge_protein_structure.py`); what a release holds, and what a reader must check
+before trusting one, is that repo's `docs/protein-structure.md`.
+
+**results-api reads one release, once.** It resolves the pointer at startup, checks the
+manifest against it and serves that release until the pod exits — a loaded release is never
+swapped, so **a new release reaches a deployment only through a results-api restart**
+(a failed first load is retried on a timer; `app/services/protein_structure.py`). This is the
+opposite of the cell-type expression release above, which is refreshed in place.
+The routes are under `/api/v1/protein_structure/` and the same release backs the `protein`
+source of `/api/v1/variant_annotation`; genetics-results-api's `docs/project-spec.md` has the
+route table. `PROTEIN_STRUCTURE_PAE_CACHE_BYTES` is not declared in
+`k8s/deployments/results-api.yaml` and keeps its in-code default.
+
+**Predictor scores are an optional object of the release, filtered by licence per
+deployment.** A release may carry `scores.tsv.gz`, per-residue summaries of missense
+predictors, each row tagged with its source's licence (munge's `scores` stage; the summary
+and the drop rules are "Predictor scores" in that repo's `docs/protein-structure.md`).
+results-api serves it at `/api/v1/protein_structure/scores/{protein}`, and only the rows
+whose licence is in the profile's `served_score_licences`
+(`app/config/profiles/<profile>/protein_structure.py`) — a setting in results-api's code, so
+clearing another licence is a results-api change and build, not a tfvar. A release without
+the object loads and only that route has nothing to serve. The pointer must also name the
+release its URI ends in, or the load is refused (`parse_pointer` in
+`app/services/protein_structure.py`).
+
+**Nothing new is routed.** The routes sit under `/api/*`, so the browser reaches them through
+the bff's pass-through, a bearer caller directly, and a sandbox script through the egress to
+results-api it already has. There is no new Ingress path, Service or NetworkPolicy, and no
+bucket grant: the release roots are prefixes of the bucket results-api already serves from,
+under the project-level `roles/storage.objectViewer` in `terraform/iam.tf` — unlike the
+expression bucket, which is a separate bucket with grants of its own.
+
+**The release pointer tfvar is the per-deployment switch**, wired as the cell-type expression
+one is. `protein_structure_release_pointer` names a `gs://…/releases/CURRENT` object;
+`deploy.sh` renders it into results-api's `PROTEIN_STRUCTURE_RELEASE_POINTER` and derives
+`PROTEIN_STRUCTURE_ENABLED` (chat-backend, mcp-server) from whether it is set, so the routes
+and the chat tools cannot disagree. Empty renders an empty value and `"false"`: results-api
+reads an empty pointer as unset and registers no route, and the tools are withdrawn.
+`deploy.sh` refuses a non-empty pointer that is not a `gs://<bucket>/<path>/releases/CURRENT`
+URI — any non-empty value would otherwise switch the tools on, a blank string or a stray
+comment included — and refuses a well-formed one on any profile but daly. The profile refusal is the third
+of three gates and the only one that speaks: results-api can switch the layer on only for a
+profile with a `protein_structure` config module, and genetics-mcp-server only for a profile
+in `PROTEIN_STRUCTURE_PROFILES`, so a pointer set on finngen would otherwise deploy cleanly
+and serve nothing.
+
+**What switches with it.** In chat: the protein structure tools and the `protein` source of
+`get_variant_annotations` (`docs/chat-tool-reference.md`); `/mcp` withholds the tools whatever
+the flag says. In the sandbox: "What the sandbox offers a script beyond the data", below. In
+the browser there is no build-time flag: the structure viewer that opens a chat artifact, and
+the gene page's protein section, ask the routes and hide or fail soft where they are absent.
+The BigQuery side is `missense_residue_v`, next section, which is gated by profile rather
+than by this switch.
+
+**Proving ground.** `scripts/protein-structure-proving-ground.py` measures the layer against
+a rehearsal ground that never touches production: the rehearsal release root beside the
+production one in the daly bucket, and a rehearsal BigQuery dataset holding only this
+feature's table. Its docstring names the check groups and what each needs; a group whose
+precondition is not there prints NOT MEASURED rather than passing, and the exit code follows
+the 0/1/2 convention the other proving grounds use.
+
+**Before the first build: the sibling branches.** `build-all.sh` and `build.sh` do not build
+the checkouts beside this repo; they clone each sibling from GitHub at the branch its
+variable names, `master` by default. This repo's generated docs and stubs describe the
+sibling code that carries the layer, so until that code is on GitHub and selected, a build
+from here stops: `build-all.sh` aborts at `gen-doc-blocks.py --check` because the tool blocks
+name tools the cloned genetics-mcp-server lacks, and the sandbox image is skipped by
+`build-all.sh` and refused by `build.sh sandbox` because the cloned SDK has no
+`sdk/structure.py` to generate `structure.pyi` from. So the feature branches of
+genetics-mcp-server, genetics-results-api and genetics-results-browser must be pushed, and a
+build must name them — `MCP_SERVER_BRANCH`, `RESULTS_API_BRANCH`, `FRONTEND_BRANCH` — until
+they are merged to `master`. Only the first is enforced by a gate; a build that leaves one
+of the other two on `master` succeeds and ships an image without its part of the layer.
+genetics-results-db's branch carries the table's schema and loader, which step 2 below runs
+from a checkout rather than from an image. `check-duplication.py` is separate and only warns: it
+reads the local main checkouts, where `configs/twins.yaml`'s protein structure entries name
+files that do not exist until the siblings merge, so it reports "could not count" until then.
+
+**Rolling it out to a deployment, in this order.** Each step is what makes the next one safe:
+
+1. **Publish a release and point the root at it** — munge's `munge_protein_structure.py
+   --upload --root <root>`, with `--move-pointer` when the root already names a release.
+   Staging reads the rehearsal root and production the production root, so a rehearsal never
+   moves what production serves.
+2. **Load `missense_residue` in the BigQuery dataset the deployment serves** —
+   genetics-results-db `scripts/load_missense_residue.sh --dataset <dataset> <pointer>` —
+   and compare `SELECT DISTINCT release` and `COUNT(*)` with the release's `manifest.json`.
+   The comparison is the check: the deploy's example-scan preflight passes on an empty table.
+3. **Set `protein_structure_release_pointer`** in the deployment's tfvars.
+4. **Build and deploy** (`build-all.sh`, then `deploy.sh`). Building first matters here as
+   everywhere: the manifests only switch on what the images already contain. It has to be
+   `deploy.sh`: `rollout.sh` sets a Deployment's image and nothing else, so it never applies
+   the pointer or the flag, and rolling new images onto manifests that predate the tfvar
+   leaves the layer off.
+5. **On every later release, restart results-api** (`kubectl -n genetics rollout restart
+   deploy/results-api`) after moving the pointer and reloading `missense_residue`. No deploy
+   is needed, and without the restart the pod keeps serving the release it loaded.
+
+### Missense variant to protein residue map (`missense_residue_v`)
+
+The protein structure release's `variants.tsv.gz` maps each possible missense variant to the
+residue it changes (the contract is genetics-results-munge `docs/protein-structure.md`).
+results-api serves that file; `missense_residue_v` is the same rows in BigQuery, there for
+one reason: a sandbox script can join it to the association views in SQL instead of fetching
+variants one request at a time. Columns, the worked examples and the absence rule are the
+`tables.missense_residue_v` block of `configs/datasets.yaml`; the table's layout is
+genetics-results-db `schemas/missense_residue.sql`.
+
+- **One file, two readers.** genetics-results-db `scripts/load_missense_residue.sh` loads the
+  object results-api serves, in place, and stores the release name on every row, so
+  `SELECT DISTINCT release FROM missense_residue` can be compared with the bucket's
+  `releases/CURRENT`. Nothing compares them yet: the monitor has no check for this view.
+- **Absence is narrow.** A variant with no row is not a missense change of the canonical
+  UniProt isoform under the map's annotation (VEP 115 / Ensembl 115), and nothing stronger.
+  The view's description says so because a script that reads "no row" as "not coding" would
+  be wrong silently.
+- **Gated to daly** with `tables.missense_residue_v.profiles`, as the `cellxgene_*_v` views
+  are. `deploy.sh`'s example-scan preflight needs the served dataset's `missense_residue` to
+  exist with the declared partitioning and clustering, and aborts a daly deploy otherwise. An
+  empty table satisfies it — `setup_bigquery.sh` creates one, and so does a first load whose
+  file is then refused — so the preflight says nothing about whether the data is there. The
+  rollout check for that is `SELECT DISTINCT release` and `COUNT(*)` on `missense_residue`
+  against the release's `manifest.json` (`release`, `counts.variants.variant_rows`).
 
 ### Phenotype and dataset metadata in BigQuery
 
@@ -1359,6 +1490,18 @@ plots":
   `genetics.enrichment.collections()` is how a script finds out. The build steps are under
   "Sandbox gene-set bundle" below; the licence reasoning and the assertions are in
   `docs/code-execution-security.md`.
+- **`genetics.structure` computes on protein models** — Cα distances, PAE and 3D
+  neighbourhoods over the model files a protein is tiled into, held to the lab's own code on
+  oracle fixtures, plus writers for the browser viewer's view-spec and a PyMOL script;
+  `genetics.plots.protein_track` draws domains, pLDDT, scores and variants on one amino-acid
+  axis, and fetches the release's predictor scores for its predictor rows unless the script
+  passes them. The module is pure computation and ships on every profile; its data does not. The
+  `genetics.protein_*` client functions that fetch models, PAE, residues, features, predictor
+  scores and the variant map are bound only where `CONFIG_PROFILE` is in the SDK's `_PROFILE_GATED` entry
+  for them, and the image's stubs are filtered by the same table: on another profile those
+  functions lose their defs, and so does any analysis-surface function whose stub names one
+  of them. What the module may read of the release contract is the slice copied into
+  `sdk/_structure_contract.py` (`configs/twins.yaml`, `protein-structure-contract`).
 - **LD is reachable, from the suite's own matrices or through a proxy.** `GET /api/v1/ld/{variant}`
   on results-api serves a panel the profile configures from tabix-indexed pair matrices on
   the suite's bucket (signed r included), and fronts the FinnGen LD server for any other panel
@@ -3325,7 +3468,7 @@ execution — and `launch_subagents` reaches neither surface. Generated from tho
 
 | surface | local tools |
 |---|---|
-| no-code (`code_execution=False`) | 70 — every data tool |
+| no-code (`code_execution=False`) | 73 — every data tool |
 | code (`code_execution=True`) | 22 — the 3 code-execution tools, plus the 19 data tools the SDK cannot stand in for |
 
 The code surface: `list_capabilities`, `run_analysis`, `read_artifact`, `search_phenotypes`, `search_genes`, `lookup_variants_by_rsid`, `list_datasets`, `get_resource_metadata`, `search_scientific_literature`, `web_search`, `search_mgi`, `search_cbioportal`, `get_protein_annotations`, `map_protein_variants`, `get_variant_protein_effect`, `search_uniprot`, `get_drug_targets_for_gene`, `get_drug_profile`, `get_target_bioactivity`, `get_alphagenome_variant_predictions`, `compare_alphagenome_with_measured`, `get_myvariant_annotations`.

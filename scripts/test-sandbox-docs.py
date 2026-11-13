@@ -585,7 +585,9 @@ def main(argv=None):
         """{(profile, hidden function): stub files that still name it}, over every known
         profile plus None and an unknown name (which must fail closed). Also asserts the
         filter keeps every visible function's def in both stubs, so dropping everything
-        fails, and that the json itself is dropped (it names the gated functions)."""
+        fails, that the json itself is dropped (it names the gated functions), and that an
+        analysis-surface stub is its unfiltered text minus exactly the top-level defs whose
+        own text names a hidden function — no other def and no other line."""
         availability = json.loads(files[gen.AVAILABILITY])
         init_tree = ast.parse(open(os.path.join(sdk_dir, "__init__.py")).read())
         exported = set(gen._exported_functions(init_tree))
@@ -605,8 +607,26 @@ def main(argv=None):
                 assert not missing, f"profile {profile!r}: {stub} lost visible functions {missing}"
                 assert not (defs & hidden), f"profile {profile!r}: {stub} still defines {defs & hidden}"
             for stub in files:
-                if stub not in ("genetics.pyi", "client.pyi", gen.AVAILABILITY):
-                    assert shown[stub] == files[stub], f"profile {profile!r}: {stub} changed"
+                if stub in ("genetics.pyi", "client.pyi", gen.AVAILABILITY):
+                    continue
+                lines = files[stub].splitlines(keepends=True)
+                cut = set()
+                for node in ast.parse(files[stub]).body:
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    own = "".join(lines[node.lineno - 1:node.end_lineno])
+                    if not any(re.search(rf"\b{re.escape(n)}\b", own) for n in hidden):
+                        continue
+                    end = node.end_lineno
+                    # the blank line that separated the def from the next goes with it
+                    if end < len(lines) and not lines[end].strip():
+                        end += 1
+                    cut.update(range(node.lineno - 1, end))
+                expected = "".join(line for i, line in enumerate(lines) if i not in cut)
+                assert shown[stub] == expected, (
+                    f"profile {profile!r}: {stub} is not its unfiltered text minus exactly "
+                    "the top-level defs that name a hidden function"
+                )
         return found
 
     @case("no stub a profile is shown names a function hidden from it")

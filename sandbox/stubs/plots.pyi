@@ -13,6 +13,7 @@
     genetics.plots.forest(frame, label="cohort", scale="log_ratio", pool="fixed")
     genetics.plots.volcano(frame, label="gene", significance="bonferroni")
     genetics.plots.mr(res)
+    genetics.plots.protein_track("SETD1A", scores="mu", rows={"missense": residue_rows})
 
 WHY THESE ARE FUNCTIONS AND NOT INSTRUCTIONS. A locuszoom has conventions a script rederives
 badly under time pressure: which axis is -log10 p, that the LD ramp is binned rather than
@@ -44,6 +45,7 @@ import polars as pl
 from typing import Any
 
 _MR_PANELS: tuple = ('scatter', 'forest', 'leave_one_out')
+_TRACK_FEATURE_TYPES: tuple = ('TED domain', 'Domain', 'Repeat', 'Zinc finger', 'Region')
 _UPSET_MAX_INTERSECTIONS: int = 30
 
 def locuszoom(
@@ -544,5 +546,133 @@ def mr(
     `forest()` returned for each, or None), `notes` and `size_in`. `path` may be relative, in
     which case it is written inside the execution's artifacts directory; the default is
     `mr.png` there.
+    """
+    ...
+
+def protein_track(
+    protein: str,
+    *,
+    residues: pl.DataFrame | None = None,
+    features: pl.DataFrame | None = None,
+    feature_types: Any = _TRACK_FEATURE_TYPES,
+    scores: Any = None,
+    predictors: Any = None,
+    predictor_scores: pl.DataFrame | None = None,
+    predictor_bin: str = 'mean',
+    rows: Any = None,
+    region: tuple[int, int] | None = None,
+    release: str | None = None,
+    path: str | None = None,
+    title: str | None = None,
+    ax: Any = None,
+) -> dict[str, Any]:
+    """Protein track: domains, pLDDT, per-residue scores, missense predictors and your own variant rows on one amino-acid axis.
+
+        genetics.plots.protein_track(
+            "SETD1A",
+            scores="mu",
+            predictors=True,
+            rows=[
+                {"name": "SCZ credible sets", "data": cs_residues, "weight": "pip"},
+                {"name": "burden variants", "data": genetics.protein_variants(ids)},
+                {"name": "3D neighbourhood", "data": [96, 97, 98, 130, 131], "kind": "span"},
+            ],
+        )
+
+    `protein` is a UniProt accession or a gene with one protein in the release. Its residues
+    and features are fetched (`genetics.protein_residues`, `genetics.protein_features`)
+    unless passed as `residues=` and `features=`, the frames those two return.
+    `features=None` means fetch: for no feature rows and no fetch pass `feature_types=[]`
+    or an empty frame. A protein modelled as overlapping windows repeats positions, and
+    only the `is_owner` row of each is drawn; residues that repeat positions WITHOUT an
+    `is_owner` column are refused, so keep that column when filtering the frame.
+
+    Rows, top to bottom, all on protein position (1-based):
+
+    - one row per feature type in `feature_types` that the protein has — by default TED
+      domains and UniProt domains, repeats, zinc fingers and regions; pass any
+      `feature_type` values the features frame holds. Features of a type that overlap are
+      stacked in lanes: taken in start order, each goes in the first lane that is free. A
+      box says its description when that fits inside it, else beside it. The fill is the
+      evidence tier: solid for experimental, tinted for curated, hollow for predicted (every
+      TED domain is), dotted grey for unknown.
+    - pLDDT in AlphaFold's four bands; grey where a position has no residue row.
+    - one heatmap row per entry of `scores` — a column of `residues`, a list of them,
+      `{label: column}`, or `{label: {"column": ..., "bin": "max" | "min" | "mean",
+      "higher_is": "dark" | "light"}}`. Each row runs light to dark over that column's own
+      range across the whole protein, printed at its right; to draw a score from elsewhere,
+      join it onto the residues frame by `protein_position`. HIGH values are dark unless
+      `"higher_is": "light"`, which is for a column where LOW is the finding (a
+      log-likelihood ratio, a constraint score): its low values are then the dark ones and
+      `bin` defaults to `"min"`.
+    - one heatmap row per missense predictor when `predictors=` asks: `True` for every
+      predictor served, or names (`"alphamissense"`, `["esm1b"]`). The rows are fetched
+      (`genetics.protein_scores`) unless passed as `predictor_scores=`, the frame that
+      returns; passing the frame alone draws every predictor in it. DIRECTION: a row is the
+      predictor's `percentile` ORIENTED so that dark always means more damaging — as it is
+      for a higher-is-more-damaging predictor (AlphaMissense), as `100 - percentile` for a
+      lower-is-more-damaging one (ESM1b). So read every predictor row the same way, and do
+      NOT flip the frame yourself before passing it: the row is the frame's
+      `damage_percentile` column when it has one, and a frame whose `percentile` and
+      `damage_percentile` disagree for the stated direction is refused, as is a predictor
+      whose rows state two directions or repeat a position (keep the `accession` column so
+      rows of another protein are left out, and reported, rather than merged). The row label is the predictor's name
+      and the note under the figure says the rows are turned and which predictor was drawn
+      as 100 - percentile; the scale is 0-100 for every predictor, and grey is a residue
+      with no score, never a low one. A predictor whose direction neither the frame's `direction` column nor the
+      SDK knows is not drawn, and the note says so.
+    - one row per entry of `rows` (a list), each a dict: `name`, `data` (a frame, or a list
+      of positions), and optionally `kind`, `weight`, `colour`, `position`. Positions are
+      read from `position=`, else `aa_pos` (what `genetics.protein_variants` returns), else
+      `protein_position` or `position`; a frame with `start` and `end` instead is spans.
+      `kind="tick"` is a mark at each position, `"lollipop"` a stem as tall as `weight`
+      (a column, e.g. a PIP; on a 0-1 scale when no weight exceeds 1; a row with no weight
+      is left out and counted), `"span"` shaded stretches — the frame's start/end, or runs
+      of consecutive positions. The default is span for start/end data, lollipop when
+      `weight` is given, else tick. `colour` is one colour or a column of them.
+      `rows={"name": data, ...}` is the short form.
+
+    `region=(start, end)` draws only that stretch. On a stretch with more residues than
+    the figure has pixels across, the strips are binned to one column per pixel, and
+    `bin_size` says how many residues a column holds. pLDDT shows the LOWEST band present
+    in a column, so a short low-confidence stretch stays visible and a column reads as
+    confident only if all of it is. A score shows its `bin`: `"max"` (the default) keeps
+    the highest value in a column and hides the low ones, which suits a score where high
+    is the finding; for one where LOW is the finding say `"higher_is": "light"` (or
+    `"bin": "min"`), or the damaging residues are exactly what the binning removes;
+    `"mean"` keeps neither extreme. A predictor row shows the MEAN oriented percentile of
+    the scored residues in a column (`predictor_bin="mean"`): a percentile row shows where
+    a protein is constrained on average, and the maximum of many ranks is near 100
+    everywhere, so to see single damaging residues zoom with `region=` until nothing is
+    binned; `predictor_bin="max"` keeps the most damaging residue of each column instead.
+    Variant rows are never binned.
+
+    Under the figure: that the structure is predicted and the model file id(s) the
+    residues came from; for predictor rows, what they show, which were turned, and each
+    predictor's licence tag; when `release=` or a `release` column in the frames names it,
+    the release the features were frozen at; why there are no feature rows, when features
+    were fetched and none could be drawn; and the binning rules when binning is in effect.
+
+    Returns a dict describing what was drawn: `path`, `protein`, `accession`, `gene`,
+    `length`, `region`, `feature_rows` (per feature type: `n`, `lanes` and `n_unlabelled`),
+    `features_dropped` (features of the requested types with a null extent or a start past
+    their end), `feature_note` (None, or why fetched features gave no rows),
+    `plddt_fractions` (share of the drawn residues in each band, per residue whatever the
+    binning), `scores` with each column's `range`, `bin` and `higher_is`, `predictors`,
+    `rows`, `models`, `bin_size` and `note`. Each of `predictors` has `name`, `label`,
+    `direction`, `licence`, `drawn`, `oriented` (dark is more damaging; true of every drawn
+    row), `flipped` (drawn as 100 - percentile), `bin`, `n` (score rows in view),
+    `n_no_score` (residues in view without a score), `n_outside` (rows at positions the
+    protein does not have), `n_no_position` (rows with a null position, left out),
+    `n_other_accession` (rows of another protein, left out) and `min_scored_fraction` (the
+    smallest share of scored residues among the drawn columns that hold a score: a binned
+    column's mean can rest on few residues, and the note says how many columns rest on
+    under half). Each of `rows` has `kind`, `n` marks drawn, `n_out_of_view` (on the protein
+    but outside `region`) and `n_outside` (not on the protein at all) — the three sum to
+    the row's marks with a position; a lollipop row also has `n_no_weight`, taken off first.
+
+    `path` may be relative, in which case it is written inside the execution's artifacts
+    directory and returned to the user automatically; that is also where the default goes.
+    Pass `ax` to draw into an existing axis instead, in which case nothing is saved.
     """
     ...

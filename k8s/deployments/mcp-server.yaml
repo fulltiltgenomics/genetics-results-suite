@@ -32,6 +32,10 @@ spec:
         # deployment sets a release pointer
         - name: CELL_TYPE_EXPRESSION_ENABLED
           value: "${CELL_TYPE_EXPRESSION_ENABLED}"
+        # see chat-backend.yaml. /mcp withholds the protein structure tools either way
+        # (mcp_server.py's _mcp_disabled); the flag is set so both pods agree on the deployment.
+        - name: PROTEIN_STRUCTURE_ENABLED
+          value: "${PROTEIN_STRUCTURE_ENABLED}"
         - name: GENETICS_API_URL
           value: "http://results-api.genetics.svc.cluster.local:4000/api"
         - name: BIGQUERY_API_URL

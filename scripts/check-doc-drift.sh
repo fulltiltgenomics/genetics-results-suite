@@ -115,7 +115,7 @@ check '^scripts/(test-supervisor\.py$|supervisor_tests/)' '^docs/code-execution-
     'scripts/test-supervisor.py, scripts/supervisor_tests/ -> docs/code-execution-security.md (the verification table: which check groups run in process vs against a container, what each needs, the 0/1/2 exit codes)'
 
 check '^(k8s/deployments/(chat-backend|mcp-server)\.yaml|scripts/deploy\.sh)$' '^docs/environments\.md$' \
-    'k8s/deployments/chat-backend.yaml, mcp-server.yaml, scripts/deploy.sh -> docs/environments.md (internal repo) (the per-deployment .env knobs the bring-up checklist enumerates: DEFAULT_TOOL_PROFILE, ALPHAGENOME_ENABLED, cell-type expression release, GENE_SETS_BUCKET; what an unset one defaults to)'
+    'k8s/deployments/chat-backend.yaml, mcp-server.yaml, scripts/deploy.sh -> docs/environments.md (internal repo) (the per-deployment .env knobs the bring-up checklist enumerates: DEFAULT_TOOL_PROFILE, ALPHAGENOME_ENABLED, cell-type expression release, protein structure release pointer, GENE_SETS_BUCKET; what an unset one defaults to)'
 
 check '^scripts/monitor/' '^docs/project-spec\.md$' \
     'scripts/monitor/ -> docs/project-spec.md (monitored VIEWS, alert ignore patterns)'
@@ -170,6 +170,10 @@ check '^k8s/(deployments/url-fetcher\.yaml|network-policies/url-fetcher-policy\.
 check '^scripts/(test-url-fetcher|external-inputs-proving-ground)\.py$' \
     '^docs/code-execution-security\.md$' \
     'scripts/test-url-fetcher.py + scripts/external-inputs-proving-ground.py -> docs/code-execution-security.md (the mutation anchors and the exit-2-when-an-anchor-stops-matching rule for test-url-fetcher.py; the 0/1/2 convention, the byte-identical-supervisor precondition, and which check groups run live vs. NOT MEASURED for the proving ground)'
+
+check '^scripts/protein-structure-proving-ground\.py$' \
+    '^docs/project-spec\.md$' \
+    'scripts/protein-structure-proving-ground.py -> docs/project-spec.md ("Protein structure layer": the rehearsal ground and that it never touches production, the NOT MEASURED rule, the 0/1/2 exit-code convention)'
 
 # the generated trees above were mapped to code-execution-security.md while the GENERATOR
 # was not, so a change to gen-sandbox-docs.py could falsify every claim that doc makes about
