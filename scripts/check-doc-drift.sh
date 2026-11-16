@@ -2,59 +2,10 @@
 # Warns when a commit changes something the docs describe but leaves the doc
 # untouched. Mappings mirror the "Documentation ownership" table in CLAUDE.md.
 #
-# This never blocks. A warning that is occasionally ignored beats a gate that
-# gets bypassed with --no-verify, because a bypassed gate is both absent and
-# assumed present.
+# The rules are this repo's own; `check` and the rest of the mechanism live in
+# scripts/doc-drift-lib.sh, which is the same file in every repo of the suite.
 
-set -u
-
-root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-cd "$root" || exit 0
-
-# only the *staged* tree is examined, because that is what the pre-commit hook is about
-# to turn into a commit. Run by hand with nothing staged this checks nothing, so say so
-# rather than exiting silently — silence here reads as a pass.
-staged=$(git diff --cached --name-only --diff-filter=ACMRD)
-if [ -z "$staged" ]; then
-    printf 'doc-drift: nothing staged, nothing checked.\n' >&2
-    exit 0
-fi
-
-hit() {
-    printf '%s\n' "$staged" | grep -qE "$1"
-}
-
-found=0
-# check <code paths> <doc paths> <message> [paths to ignore inside <code paths>]
-#
-# The 4th argument exists because a rule whose path pattern is broader than the doc
-# concern it names fires where it can never apply, and a warning that fires when it
-# cannot apply is how a warn-only check becomes wallpaper.
-# Use it only where the named doc demonstrably does not describe the excluded files, and
-# say which property of them makes that true — "generated" is not by itself such a
-# property, since a doc can and does reason about generated content.
-#
-# It is matched case-insensitively, and only it: an exclusion is a list of file
-# extensions, and `logo.PNG` is the same kind of file as `logo.png`, so a
-# case-sensitive exclusion warns about the one and not the other. The inclusion
-# pattern stays case-sensitive, so a file reaches this filter only after matching
-# its rule literally — widening the exclusion can therefore only drop warnings the
-# rule's own doc concern does not cover.
-check() {
-    matched=$(printf '%s\n' "$staged" | grep -E "$1")
-    [ -n "$matched" ] || return 0
-    if [ -n "${4:-}" ]; then
-        matched=$(printf '%s\n' "$matched" | grep -viE "$4")
-        [ -n "$matched" ] || return 0
-    fi
-    if ! hit "$2"; then
-        if [ "$found" -eq 0 ]; then
-            printf '\ndoc-drift warning — this commit changes code the docs describe:\n\n' >&2
-            found=1
-        fi
-        printf '  %s\n' "$3" >&2
-    fi
-}
+. "$(dirname "$0")/doc-drift-lib.sh"
 
 DOCS_SPEC='^(docs/project-spec\.md|README\.md)$'
 
@@ -76,6 +27,9 @@ check '^terraform/' "$DOCS_SPEC" \
 
 check '^scripts/((deploy|rollout|build|build-all|sync-datasets|install-git-hooks|check-worktree-paths|check-siblings)\.sh|check-duplication\.py|check-example-scans\.py|lib/)' "$DOCS_SPEC" \
     'deploy/rollout/build/preflight scripts, scripts/lib/ -> docs/project-spec.md + README.md (operational procedures, what the preflights check and when they stay silent)'
+
+check '^(configs/vendored\.yaml|scripts/vendor\.py|vendored/)' "$DOCS_SPEC" \
+    'vendoring (configs/vendored.yaml, scripts/vendor.py, vendored/) -> docs/project-spec.md + README.md (which files go to which repos, tracked copies netted out only while byte-identical, --check exit codes, warn-only in the build)'
 
 check '^(scripts/lint-staged\.sh|ruff\.toml)$' "$DOCS_SPEC" \
     'lint gate (scripts/lint-staged.sh, ruff.toml) -> docs/project-spec.md + README.md (which commits are blocked, the rule set and its exclusions, how ruff is resolved in a worktree)'
@@ -248,9 +202,4 @@ check '^(keycloak/|scripts/keycloak-|scripts/brainzzz-)' '^docs/(keycloak-apple-
     'keycloak config/scripts -> docs/keycloak-apple-signin.md (internal repo) (client setup, allowlist, backup paths) or docs/mcp-oauth-onboarding.md (internal repo) (onboarding commands, IdP list)' \
     "$KEYCLOAK_BRANDING"
 
-if [ "$found" -eq 1 ]; then
-    printf '\n  Update the doc in this commit, or note why it does not apply.\n' >&2
-    printf '  Not blocking. Mappings live in CLAUDE.md > Documentation ownership.\n\n' >&2
-fi
-
-exit 0
+doc_drift_finish

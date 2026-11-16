@@ -1,9 +1,9 @@
 {
-  "SNAPSHOT": "Measured on 2026-09-22, against commit 6933367a0d79 of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
-  "measured_date": "2026-09-22",
-  "measured_commit": "6933367a0d7974df6d05d2ab64a7624e13f2e86c",
+  "SNAPSHOT": "Measured on 2026-11-12, against commit 0ee22f4bc2df of genetics-results-suite plus uncommitted changes and whatever the sibling checkouts were at that moment. This is a DATED MEASUREMENT, not a claim about today: run scripts/check-duplication.py for current numbers. repo_commits below carries each scanned repo's own HEAD and dirty state, since a cross-repo count can move on a sibling's commit alone.",
+  "measured_date": "2026-11-12",
+  "measured_commit": "0ee22f4bc2df5e56ed1df56ca905f1261a16a2ad",
   "measured_tree_dirty": true,
-  "reason": "results-api's get_implementation_class and _warm consolidated into base_data_access (two seven-file near groups gone: 115 -> 113 intra-repo); no other movement",
+  "reason": "consolidation on the 2026-11-14 ruling: intra-repo copies merged in all six repos, hook tooling, the doc-block renderer and the results-api/db-api sandbox contract tests vendored through configs/vendored.yaml, and 24 twins declared for what is not mergeable code - kubernetes-manifest-shape, schema-example-registry-names, results-api-deployment-profiles, the test pins (skill-tools, mcp-app-wire-record, sdk-empty-result-schema, hla-legacy-columns, rcnv-columns, ld-entry-fields, fetcher-egress, sdk-surface-modules, sandbox-token-claims), the writer/reader layouts (r14-meta-cohorts, served-column-layouts, phenotype-record-columns, gene-set-bundle-checksum, hgnc-id-canonical-form, chromosome-codes), the runtime twins (google-id-token-request, structured-log-entry, service-error-carriers) and script-directory-idiom, asgi-send-collector, shell-problem-accumulator; sandbox-wire-contract and sandbox-token-and-budget each gained a site",
   "repos_present": [
     "genetics-mcp-server",
     "genetics-results-api",
@@ -14,27 +14,27 @@
   ],
   "repo_commits": {
     "genetics-mcp-server": {
-      "commit": "3984df0fb8f687435afed56e70477fbb648853e4",
-      "tree_dirty": false
+      "commit": "de848eda720c6d5242140196b61428384cef4ca2",
+      "tree_dirty": true
     },
     "genetics-results-api": {
-      "commit": "d97ad25e4a52be85091cb9afc6554b8ea01a7da9",
-      "tree_dirty": false
+      "commit": "a16a82b74c5dd7dfed6a48c2848da46e325403d0",
+      "tree_dirty": true
     },
     "genetics-results-browser": {
-      "commit": "e7f7d2d3c4f3f21aa199cf3c8d653623873cc956",
-      "tree_dirty": false
+      "commit": "2d532a215dd4156c42945fae61910caa3a81cb9d",
+      "tree_dirty": true
     },
     "genetics-results-db": {
-      "commit": "56b96604671d7714d28f4edfc37b6a7c170f89c5",
-      "tree_dirty": false
+      "commit": "e2b156a8b5a3c377d8b958b04ce31b5fcb2db534",
+      "tree_dirty": true
     },
     "genetics-results-munge": {
-      "commit": "b574e28c8e5fe7c0e3c642b531aabb9788aaeb9c",
+      "commit": "0ede2457d9e79878ea824af834d2432bed21d357",
       "tree_dirty": true
     },
     "genetics-results-suite": {
-      "commit": "6933367a0d7974df6d05d2ab64a7624e13f2e86c",
+      "commit": "0ee22f4bc2df5e56ed1df56ca905f1261a16a2ad",
       "tree_dirty": true
     }
   },
@@ -42,16 +42,16 @@
   "census": {
     "genetics-mcp-server": {
       ".sh": {
-        "read": 3,
-        "parsed": 3,
+        "read": 4,
+        "parsed": 4,
         "units": 3,
-        "on_disk": 3
+        "on_disk": 4
       },
       ".py": {
-        "read": 132,
-        "parsed": 132,
-        "units": 128,
-        "on_disk": 132
+        "read": 171,
+        "parsed": 171,
+        "units": 167,
+        "on_disk": 171
       },
       ".yaml": {
         "read": 0,
@@ -62,10 +62,10 @@
     },
     "genetics-results-api": {
       ".py": {
-        "read": 181,
-        "parsed": 181,
-        "units": 169,
-        "on_disk": 181
+        "read": 218,
+        "parsed": 218,
+        "units": 198,
+        "on_disk": 218
       },
       ".yaml": {
         "read": 1,
@@ -74,10 +74,10 @@
         "on_disk": 1
       },
       ".sh": {
-        "read": 6,
-        "parsed": 6,
+        "read": 7,
+        "parsed": 7,
         "units": 4,
-        "on_disk": 6
+        "on_disk": 7
       }
     },
     "genetics-results-browser": {
@@ -88,24 +88,24 @@
         "on_disk": 9
       },
       ".sh": {
-        "read": 5,
-        "parsed": 5,
+        "read": 6,
+        "parsed": 6,
         "units": 2,
-        "on_disk": 5
+        "on_disk": 6
       },
       ".py": {
-        "read": 8,
-        "parsed": 8,
-        "units": 8,
-        "on_disk": 8
+        "read": 9,
+        "parsed": 9,
+        "units": 9,
+        "on_disk": 9
       }
     },
     "genetics-results-db": {
       ".py": {
-        "read": 31,
-        "parsed": 31,
-        "units": 31,
-        "on_disk": 31
+        "read": 37,
+        "parsed": 37,
+        "units": 37,
+        "on_disk": 37
       },
       ".yaml": {
         "read": 1,
@@ -114,24 +114,24 @@
         "on_disk": 1
       },
       ".sh": {
-        "read": 25,
-        "parsed": 25,
-        "units": 6,
-        "on_disk": 25
+        "read": 29,
+        "parsed": 29,
+        "units": 7,
+        "on_disk": 29
       }
     },
     "genetics-results-munge": {
       ".sh": {
-        "read": 27,
-        "parsed": 27,
+        "read": 33,
+        "parsed": 33,
         "units": 1,
-        "on_disk": 27
+        "on_disk": 33
       },
       ".py": {
-        "read": 63,
-        "parsed": 63,
-        "units": 61,
-        "on_disk": 63
+        "read": 103,
+        "parsed": 103,
+        "units": 101,
+        "on_disk": 103
       },
       ".yaml": {
         "read": 0,
@@ -142,73 +142,107 @@
     },
     "genetics-results-suite": {
       ".py": {
-        "read": 53,
-        "parsed": 53,
-        "units": 50,
-        "on_disk": 53
+        "read": 65,
+        "parsed": 65,
+        "units": 62,
+        "on_disk": 67
       },
       ".yaml": {
-        "read": 34,
-        "parsed": 34,
-        "units": 33,
-        "on_disk": 35
+        "read": 36,
+        "parsed": 36,
+        "units": 35,
+        "on_disk": 37
       },
       ".sh": {
-        "read": 21,
-        "parsed": 21,
-        "units": 15,
-        "on_disk": 21
+        "read": 29,
+        "parsed": 29,
+        "units": 19,
+        "on_disk": 29
       }
     }
   },
   "intra": {
-    "groups": 113,
-    "files": 135,
-    "lockstep": 119,
+    "groups": 0,
+    "files": 0,
+    "lockstep": 0,
     "by_kind": {
-      "bodies-exact": 36,
-      "bodies-near": 35,
-      "enumerations": 42
+      "bodies-exact": 0,
+      "bodies-near": 0,
+      "enumerations": 0
     }
   },
   "cross": {
-    "groups": 43,
-    "files": 90,
-    "lockstep": 28,
+    "groups": 0,
+    "files": 0,
+    "lockstep": 0,
     "by_kind": {
-      "bodies-exact": 25,
-      "bodies-near": 6,
-      "enumerations": 12
+      "bodies-exact": 0,
+      "bodies-near": 0,
+      "enumerations": 0
     }
   },
   "declared": {
-    "groups": 7,
-    "files": 8,
-    "lockstep": 3,
+    "groups": 67,
+    "files": 121,
+    "lockstep": 29,
     "by_kind": {
-      "bodies-exact": 5,
-      "bodies-near": 0,
-      "enumerations": 2
+      "bodies-exact": 10,
+      "bodies-near": 10,
+      "enumerations": 47
     },
     "by_twin": {
-      "sandbox-wire-contract": 0,
+      "sandbox-wire-contract": 2,
       "browser-normalized-types": 0,
       "auth-allow-list-matcher": 0,
-      "exposed-views-pin": 1,
+      "exposed-views-pin": 0,
       "derived-view-lists-pin": 0,
-      "sandbox-token-and-budget": 4,
+      "sandbox-token-and-budget": 5,
       "schema-example-table-shape": 0,
-      "in-image-build-checks": 2
+      "in-image-build-checks": 2,
+      "kubernetes-manifest-shape": 15,
+      "schema-example-registry-names": 8,
+      "results-api-deployment-profiles": 8,
+      "skill-tools-pin": 1,
+      "mcp-app-wire-record-pin": 1,
+      "sdk-empty-result-schema-pin": 4,
+      "hla-legacy-columns-pin": 1,
+      "rcnv-columns-pin": 1,
+      "ld-entry-fields-pin": 1,
+      "fetcher-egress-pin": 1,
+      "sdk-surface-modules-pin": 1,
+      "sandbox-token-claims-pin": 1,
+      "r14-meta-cohorts": 2,
+      "served-column-layouts": 2,
+      "phenotype-record-columns": 1,
+      "gene-set-bundle-checksum": 1,
+      "hgnc-id-canonical-form": 1,
+      "google-id-token-request": 1,
+      "structured-log-entry": 1,
+      "service-error-carriers": 1,
+      "script-directory-idiom": 2,
+      "asgi-send-collector": 1,
+      "shell-problem-accumulator": 1,
+      "chromosome-codes": 1
     }
   },
   "generated": {
-    "groups": 48,
+    "groups": 91,
     "files": 3,
     "lockstep": 0,
     "by_kind": {
       "bodies-exact": 0,
       "bodies-near": 0,
-      "enumerations": 48
+      "enumerations": 91
+    }
+  },
+  "vendored": {
+    "groups": 36,
+    "files": 23,
+    "lockstep": 0,
+    "by_kind": {
+      "bodies-exact": 36,
+      "bodies-near": 0,
+      "enumerations": 0
     }
   }
 }

@@ -1,0 +1,79 @@
+# Files the suite keeps ONE copy of and writes, byte for byte, into the repos that need
+# them. scripts/vendor.py does the writing and `--check` fails when a copy has drifted;
+# scripts/check-duplication.py nets a copy out of its counts only while it is byte-identical
+# to its source here, so a hand edit in a sibling comes straight back as undeclared.
+#
+# The copies are TRACKED in their repos, unlike the scripts/sync-datasets.sh copies of
+# configs/datasets.yaml: a clone of a sibling has to carry its own hook tooling and its own
+# tests without a suite checkout next to it. That is also why this needs a list — git
+# cannot tell a tracked generated copy from a hand-kept one, and byte-identity alone is
+# what five hand-kept copies of install-git-hooks.sh already had.
+#
+# `source` is a path in this repo; `dest` defaults to the same path in each sibling.
+# Edit the source, run scripts/vendor.py, commit both sides.
+
+vendored:
+  - source: scripts/install-git-hooks.sh
+    repos:
+      - genetics-mcp-server
+      - genetics-results-api
+      - genetics-results-browser
+      - genetics-results-db
+    reason: >-
+      Wires core.hooksPath and repairs the hook blocks the same way in every clone. The
+      blocks it writes name scripts by path, never by repo, so nothing in it is per-repo.
+
+  - source: scripts/lint-staged.sh
+    repos:
+      - genetics-mcp-server
+      - genetics-results-api
+      - genetics-results-db
+    reason: >-
+      The blocking ruff gate. The one per-repo difference, whether formatting is gated too,
+      is carried by a tracked `.ruff-format-gate` marker in the repo rather than by a second
+      script. genetics-results-browser is absent on purpose: its lint-staged.sh runs the
+      JavaScript toolchain and shares nothing with this one.
+
+  - source: scripts/doc-drift-lib.sh
+    repos:
+      - genetics-mcp-server
+      - genetics-results-api
+      - genetics-results-browser
+      - genetics-results-db
+      - genetics-results-munge
+    reason: >-
+      The mechanism of the doc-drift warning. Each repo's scripts/check-doc-drift.sh sources
+      it and holds only that repo's rules, which mirror its own CLAUDE.md table and are
+      legitimately different everywhere. It sits beside the scripts rather than under scripts/lib
+      because three of the receiving repos gitignore `lib/`, and an ignored copy is one a
+      fresh clone does not have.
+
+  - source: vendored/tests/sandbox_contract.py
+    dest: tests/sandbox_contract.py
+    repos:
+      - genetics-results-api
+      - genetics-results-db
+    reason: >-
+      The sandbox token and per-execution budget contract the two validators implement in
+      separately maintained modules, as tests both must pass, with the ASGI driver and token
+      minter those tests need. It imports neither service: each repo's test module subclasses
+      the contract classes and supplies its budget module, its audience and the app under
+      test, and keeps the tests for what only it does.
+
+  - source: vendored/tests/checkout_guard.py
+    dest: tests/checkout_guard.py
+    repos:
+      - genetics-results-api
+      - genetics-results-db
+    reason: >-
+      The pytest_configure check that the service's namespace package does not span another
+      checkout. The package name and the one line of advice that differs are arguments, so
+      each conftest holds a single call.
+
+  - source: scripts/doc_blocks.py
+    repos:
+      - genetics-mcp-server
+    reason: >-
+      Finding the generated-block markers in a doc and refusing a doc whose markers and
+      blocks disagree. Both gen-doc-blocks.py generators import it and keep their own block
+      tables, which derive from different trees.

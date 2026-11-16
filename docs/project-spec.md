@@ -340,6 +340,7 @@ configs/                                     canonical dataset and resource defi
   rag/                                       RAG experiment configs (not k8s manifests)
   rcnv_pheno.json                            per-phenotype metadata for the rare-CNV association study
   twins.yaml                                 the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
+  vendored.yaml                              the files this repo keeps one copy of and vendor.py writes into the sibling repos
 docs/                                        everything below, and nothing else
   adding-datasets.md                         how to add a dataset across the repos and profiles
   chat-tool-reference.md                     verbatim transcription of what the LLM receives: tool names, descriptions and schemas, the profiles, the system prompt, and the chat surface versus /mcp
@@ -376,10 +377,12 @@ scripts/                                     build, deploy and verification scri
   create-secrets.sh                          create the k8s Secrets from environment variables
   deploy.sh                                  full deploy: terraform apply, then every manifest
   dev-stack.sh                               start/stop the local dev servers from one tree (docs/local-dev-vm.md)
+  doc-drift-lib.sh                           the mechanism check-doc-drift.sh sources; vendored to every sibling
+  doc_blocks.py                              the marked-block renderer gen-doc-blocks.py imports; vendored to genetics-mcp-server
   external-inputs-proving-ground.py          offline: a loopback origin serving the linemodels fixture, the fetcher's refusals, and delivery into a sandbox execution; the feature's acceptance test
   gen-doc-blocks.py                          generate the marked blocks in docs/*.md; `--check` is the build gate. genetics-mcp-server carries its own scripts/gen-doc-blocks.py for the blocks in its spec (routes, chat_turn_metrics columns, database env table, module tree), gated by that repo's tests/test_doc_blocks.py rather than by this build
   gen-sandbox-docs.py                        generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema markdown into genetics-mcp-server's prompt copy
-  install-git-hooks.sh                       wire core.hooksPath; run once per clone
+  install-git-hooks.sh                       wire core.hooksPath; run once per clone; vendored to the siblings that have hooks
   keycloak-bind-allowlist.sh                 bind the email allow-list authenticator and realm attributes
   keycloak-get-token.sh                      browser auth-code+PKCE flow; prints an access token
   keycloak-link-brainzzz-users.sh            link realm users to the brainzzz provider so its assertions resolve them; --unlink revokes
@@ -391,7 +394,7 @@ scripts/                                     build, deploy and verification scri
   keycloak-sync-dcr-policy.sh                set the live realm's anonymous client-registration policies, mcp-pkce and the basic scope's /mcp audience from keycloak/mcp-dcr.json.template
   keycloak-sync-login-policy.sh              set the live realm's SSO session lifespans from the template and the default IdP redirect
   lib/                                       shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS and MCP client-registration template renderers deploy.sh and the live-realm scripts share
-  lint-staged.sh                             block a commit whose staged Python ruff rejects
+  lint-staged.sh                             block a commit whose staged Python ruff rejects; vendored to the Python siblings
   monitor/                                   the monitoring CronJob's Python package
   mr-proving-ground.py                       the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
   rollout.sh                                 single-service image update
@@ -408,6 +411,7 @@ scripts/                                     build, deploy and verification scri
   test-stage-gene-sets.py                    offline: stage-gene-sets.py's refusals, licence drops and atomic output, against a fake bundle
   test-supervisor.py                         offline: the sandbox supervisor, in process or against a container
   test-url-fetcher.py                        offline: the url-fetcher's address-class guard and pinned fetch core, each control also driven as the failure
+  vendor.py                                  write the files in configs/vendored.yaml into the sibling repos; `--check` reports a copy that has drifted
 terraform/                                   infrastructure
   .terraform.lock.hcl                        provider versions, tracked so every checkout applies the same provider against the shared state
   backups.tf                                 disk snapshot schedule and the Keycloak backup bucket
@@ -426,6 +430,7 @@ terraform/                                   infrastructure
   terraform.tfvars.example                   per-environment values; **not committed** except the `.example`. A bare `terraform.tfvars` is the legacy single-deployment form and must not coexist with these
   variables.tf                               input variables
 url-fetcher/                                 URL-fetcher image build context: the address-class guard, the pinned-connection fetch core, the one POST route chat-backend calls, and the build-time assertions that keep the test entrypoint out of the image
+vendored/                                    sources that exist only to be copied into sibling repos by vendor.py: the test modules results-api and db-api both run
 ```
 
 <!-- END GENERATED: structure -->
@@ -2027,6 +2032,20 @@ site in `check-duplication.py`: untracking a hand-maintained duplicate takes it 
 ratchet with no reason recorded at all, and whole-file byte-identity is what bounds the
 exposure rather than eliminating it.
 
+A third kind of copy is netted out: a **vendored** one. `configs/vendored.yaml` names files
+this repo holds the single source of — the hook tooling every repo runs, the marked-block
+renderer both `gen-doc-blocks.py` generators import, and under `vendored/` the test modules
+results-api and db-api both run — and `scripts/vendor.py` writes each into the repos listed
+for it, byte for byte. Those copies are **tracked** where they land, because a clone of a
+sibling has to carry its own hooks and tests, so git cannot vouch for them the way it does
+for an ignored generated file; the detector strikes a copy only while the manifest names it
+**and** its bytes equal the source's. A copy edited in place, and two files that merely
+happen to be equal, are both counted. The vendored row is reported and not ratcheted, like
+the generated one; its accountability is the manifest's mandatory `reason` and
+`vendor.py --check`, which `build-all.sh` runs against the cloned branches — warn-only,
+since nothing vendored reaches an image. A manifest the detector cannot read is exit 2.
+The workflow is: edit the source here, run `scripts/vendor.py`, commit both sides.
+
 `docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
 date plus the commit and dirty state of **every** repo it scanned, not only this one — the
 counts are cross-repo, so they move on a sibling's commit with nothing here to explain it,
@@ -2389,7 +2408,10 @@ truth that the next repair silently overwrites with the old text.
 ### The lint gate
 
 `scripts/lint-staged.sh` runs ruff over the **staged** Python files and **fails the
-commit** when anything is reported. `git commit --no-verify` is the bypass.
+commit** when anything is reported. `git commit --no-verify` is the bypass. The same
+script is vendored to the Python siblings; a repo that tracks a `.ruff-format-gate` file
+at its root gets `ruff format --check` as well, which is the one per-repo difference and
+why it is a marker rather than a second script.
 
 - **Staged, not repo-wide.** A finding in a file this commit does not touch never
   blocks it. The cost is the other side of that coin: a pre-existing finding is only
@@ -2455,8 +2477,9 @@ matches — a stale view list, row count or endpoint table — which is what mos
 drift found in this repo has actually been. All five sibling repos
 (`genetics-results-api`, `-db`, `-browser`, `-munge`, `genetics-mcp-server`) carry
 their own `scripts/check-doc-drift.sh` wired into `.beads/hooks/pre-commit` the same
-way, and share the same `core.hooksPath`-not-tracked gap; each but `-munge` closes it
-with its own `scripts/install-git-hooks.sh`, which genetics-results-munge does not have.
+way — their own rules, over the `scripts/doc-drift-lib.sh` this repo vendors to them —
+and share the same `core.hooksPath`-not-tracked gap; each but `-munge` closes it
+with the vendored `scripts/install-git-hooks.sh`, which genetics-results-munge does not have.
 
 ### Worktree path resolution: `scripts/check-worktree-paths.sh`
 

@@ -1404,7 +1404,7 @@ tables:
       peak_start/peak_end. Always filter by resource, not dataset.
 
     columns:
-      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25)"
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=26)"
       peak_start: "Peak interval start (GRCh38)"
       peak_end: "Peak interval end (GRCh38)"
       peak_id: >-
@@ -1573,7 +1573,7 @@ tables:
       eQTL/caQTL. Always filter by resource, not dataset.
 
     columns:
-      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=26). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
       pos: "Genomic position (GRCh38)"
       variant: "Variant identifier as chr:pos:ref:alt (chromosome X=23)"
       ref: "Reference allele"

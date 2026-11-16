@@ -472,6 +472,14 @@ Two checks then run on every commit, and they differ in what they do to it:
 | `scripts/check-doc-drift.sh` | warns, commit proceeds |
 | `scripts/lint-staged.sh` (ruff, staged Python only) | **blocks the commit** |
 
+Both scripts, and `install-git-hooks.sh` itself, are the same files in every repo of the
+suite: this repo holds the source and `scripts/vendor.py` writes the copies named in
+`configs/vendored.yaml` into the siblings, so a fix is made here, vendored, and committed on
+both sides. What stays per repo is each `check-doc-drift.sh`'s own rules — the mechanism
+they source, `scripts/doc-drift-lib.sh`, is the vendored part — and whether the lint gate
+also runs `ruff format --check`, which a repo opts into by tracking a `.ruff-format-gate`
+file at its root, as genetics-mcp-server does.
+
 The lint gate reports only on files the commit touches, so pre-existing findings
 elsewhere never stand in your way; `scripts/lint-staged.sh --all` runs the repo-wide
 check. It looks for ruff in this checkout's `.venv`, then the main checkout's, then
@@ -876,7 +884,10 @@ byte-identical to a file committed in another is generated and netted out mechan
 ignore from `.git/info/exclude` or a global excludes file does not count — neither travels
 with the clone), and a group covered by an entry in `configs/twins.yaml` — the sites, the
 property that must hold between them, a mandatory reason, and whether merging them is ruled
-out — is declared and netted out too. Both are reported on their own lines rather than
+out — is declared and netted out too. A copy `configs/vendored.yaml` names and
+`scripts/vendor.py` writes — the hook tooling and the shared contract tests — is netted
+out while it is byte-identical to its source here; edit the source, run `scripts/vendor.py`,
+and commit both repos. All three are reported on their own lines rather than
 folded into a smaller number, and the declared count is ratcheted like the rest, so
 declaring a twin takes a `--write-baseline --reason`; that the reason names the entry is
 convention, non-empty is what the code enforces. See "Sibling repos" and "Duplication
