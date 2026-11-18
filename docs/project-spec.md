@@ -17,8 +17,10 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 any other clients-registrations path → 404 at the gateway
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 Authorization: Bearer requests bypass both and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld instead proxies out
-                     │                 to the external LD API (see "Frontend CSP and the LD proxy")
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld,
+                     │                 /api/v1/gene_annotation and /api/v1/gene_constraint instead
+                     │                 proxy out to the external LD API, mygene.info and gnomAD
+                     │                 (see "Frontend CSP and the LD proxy")
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session;
                      │                 see "brainzzz without a GeneGenie login")
@@ -161,6 +163,20 @@ reaches results-api. `window` is bounded to the LD server's own 100,000–5,000,
 `panel` to `[A-Za-z0-9_-]+`; the query string is assembled with `URLSearchParams`, so a variant id
 is encoded rather than spliced in; upstream 400/404 pass through, everything else becomes 502 (60s
 timeout → 504). The bff has no egress NetworkPolicy, so this outbound call is permitted.
+
+The gene annotation tab's mygene.info record takes the same route for the same reason: the
+browser requests `GET /api/v1/gene_annotation?hgnc_id=HGNC:<n>` (bff `geneAnnotationRoute.ts`),
+which accepts only that id form, queries `MYGENE_API_URL` (default `https://mygene.info/v3`, not
+set in `k8s/deployments/bff.yaml`), and returns the record trimmed to the fields the tab shows.
+Records are cached in the bff process; a gene mygene.info does not know is a 404 and is not
+cached. Only the HGNC id leaves the deployment.
+
+The same tab's gnomAD block comes from `GET /api/v1/gene_constraint?ensembl_id=ENSG<11 digits>`
+(bff `geneConstraintRoute.ts`), which posts a fixed GraphQL query to `GNOMAD_API_URL` (default
+`https://gnomad.broadinstitute.org/api`) with the id as a variable and returns pLI, LOEUF, the
+observed LoF and missense counts, the constraint flags and the gene's ClinVar variants counted
+by pathogenic classification, cached the same way. A gene gnomAD does not know is a 404; one it
+has no constraint for is served with null constraint values.
 
 That window is the **total** width, centred on the query variant (`window=1000000` returns
 ±500 kb), so a pairwise lookup must ask for twice the distance between the two variants, and no

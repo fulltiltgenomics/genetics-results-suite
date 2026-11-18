@@ -17,9 +17,12 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 (any other path containing clients-registrations → 404)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
-                     │                 the BFF proxies it out to the external LD API (LD_API_URL),
-                     │                 because the frontend CSP forbids off-origin fetches
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld,
+                     │                 /api/v1/gene_annotation and /api/v1/gene_constraint are the
+                     │                 exceptions: the BFF proxies them out to the external LD API
+                     │                 (LD_API_URL), mygene.info (MYGENE_API_URL) and gnomAD
+                     │                 (GNOMAD_API_URL), because the frontend CSP forbids off-origin
+                     │                 fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session)
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
@@ -898,7 +901,7 @@ baseline" in `docs/project-spec.md`.
 | Service | Source Repo | Image | Port | Notes |
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
+| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`) mygene.info as `GET /api/v1/gene_annotation` (`MYGENE_API_URL`) and the gnomAD GraphQL API as `GET /api/v1/gene_constraint` (`GNOMAD_API_URL`), passes other `/api/*` calls through |
 | auth-gateway | — | nginx@sha256:65645c7b… (a 1.27-alpine build, pinned) | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; on by default, skipped when `ENABLE_KEYCLOAK=false` |
