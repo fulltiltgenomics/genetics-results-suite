@@ -2228,7 +2228,7 @@ clustering itself should be asserted from
 ### Running the local dev stack (`scripts/dev-stack.sh`)
 
 The servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
-chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the standalone mcp-server `:8082` —
+chat-backend `:4000`, BFF `:5001`, db-api `:8080` and the standalone mcp-server `:8082` —
 out of four repos, chat-backend and mcp-server being two entrypoints of `genetics-mcp-server`
 with different tool surfaces. mcp-server takes 8082 because the cluster's 8080 is db-api's
 here; it is launched the way `k8s/deployments/mcp-server.yaml` launches it, with the values that

@@ -802,7 +802,7 @@ gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` 
 ## Running the suite locally
 
 Everything above deploys. To run the services from source on one machine — results-api
-`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the
+`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5001`, db-api `:8080` and the
 standalone mcp-server `:8082`, out of four repos —
 see [docs/local-dev-vm.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/local-dev-vm.md) for the from-scratch setup and
 `scripts/dev-stack.sh` to drive them:
