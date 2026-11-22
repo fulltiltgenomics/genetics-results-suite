@@ -189,6 +189,17 @@ Note that `/api/v1/ld` is browser-only: auth-gateway sends `Authorization: Beare
 `/api/` straight to results-api (`@api_bearer`), which has no such route, so a programmatic client
 gets a 404 there and should call the LD API itself.
 
+One bff route is neither a proxy out nor a passthrough: `GET /api/v1/gene_association/<gene>?window=<bp>`
+(bff `geneAssociationRoute.ts`) serves the gene page's variant association tab. It reads
+results-api's `/v1/credible_sets_by_gene/<gene>` for GWAS, groups the rows per credible set into
+a columnar, dictionary-encoded summary, and joins in what that endpoint does not carry: trait
+names and types from `/v1/resource_metadata/<resource>`, and the pseudo flag and a dataset-wide
+trait type from `/v1/datasets`. `window` is the padding either side of the gene, bounded by
+`GENE_ASSOCIATION_MAX_WINDOW`. `GET .../<gene>/set_ids` returns the sets' `cs_id`s, kept out of
+the summary for its size; a set's members are fetched from `/v1/credible_sets_by_id` when its
+row is opened. Responses are cached in the bff process (`GENE_ASSOCIATION_CACHE_MAX`). Like
+`/api/v1/ld` the route is browser-only, for the same reason.
+
 Two consequences worth keeping in mind when editing either side:
 
 - Any **new external host the browser must reach directly** needs an explicit CSP source added in

@@ -96,7 +96,9 @@ In `genetics-results-suite/configs/datasets.yaml`:
    Required fields: `resource`, `version`, `description`, `author`, `publication_date`,
    `data_type`, `trait_type`. Optional: `n_samples`/`n_cases`/`n_controls`/`n_phenotypes`,
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
-   `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped),
+   `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped;
+   the browser's gene page reads this flag and `trait_type` through the bff's
+   `/api/v1/gene_association` route to label and filter a GWAS dataset's credible sets),
    `cohorts: [token, ...]` (the sample collections that contributed, for the MR sample-overlap
    statement; leave it out when the entry does not state its provenance, and do not read a
    missing token as evidence that a cohort is absent — see `docs/datasets-yaml-schema.md`,
