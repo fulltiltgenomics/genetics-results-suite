@@ -145,7 +145,8 @@ the API-side resource grouping.
   may also set `"all_cs_qtl_file"`; FinnGen-style sets add a `"stats_file"`.
 - **Exome variant results** → `exome_results.py`, `exome_data_files`. An `"exome"` block
   with either an `"all_exome_file"` (combined) and/or a `"prefix"` + `"suffix"` for
-  per-phenotype files.
+  per-phenotype files. The by-gene, by-region and by-variant routes read only the combined
+  file, so a resource without one is reachable by phenotype alone.
 - **Gene-based / burden results** → `gene_based_results.py`, `gene_based_data_files`. A
   `"gene_based"` block with a `"file"` (combined, gene-locus indexed, backs
   `/gene_based/{gene}` across all traits) plus a `"prefix"` + `"suffix"` for the
@@ -162,6 +163,10 @@ the API-side resource grouping.
   serving 404s (`genetics-results-munge/scripts/relabel_traits.py` rewrites an existing
   file's trait columns when the raw inputs are gone).
 - **Expression / coloc / chromatin** → the correspondingly named module.
+  A coloc entry whose pairs have a gene QTL side (eQTL, pQTL, sQTL) can also set
+  `"coloc_gene_file"` and `"gene_gencode_version"`: the copy of its pair file indexed on the
+  QTL gene, which is what `/colocalization_by_gene/{gene}` reads to return a gene's cis and
+  trans colocalizations (`genetics-results-munge/scripts/coloc/create_gene_indexed_coloc_file.sh`).
 - **Gene-disease** → `gene_disease.py`. Not a list of products but one block per source,
   each with a `"file"` and a `"columns"` map from the endpoint's `output_columns` to that
   source's own column names; a source that omits an output column serves `NA` for it.
