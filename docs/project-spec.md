@@ -18,8 +18,9 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 Authorization: Bearer requests bypass both and hit results-api
                      │                 (FastAPI, port 4000) directly. /api/v1/ld,
-                     │                 /api/v1/gene_annotation and /api/v1/gene_constraint instead
-                     │                 proxy out to the external LD API, mygene.info and gnomAD
+                     │                 /api/v1/gene_annotation, /api/v1/gene_constraint and
+                     │                 /api/v1/gtex_expression instead proxy out to the external
+                     │                 LD API, mygene.info, gnomAD and the GTEx portal
                      │                 (see "Frontend CSP and the LD proxy")
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session;
@@ -177,6 +178,18 @@ The same tab's gnomAD block comes from `GET /api/v1/gene_constraint?ensembl_id=E
 observed LoF and missense counts, the constraint flags and the gene's ClinVar variants counted
 by pathogenic classification, cached the same way. A gene gnomAD does not know is a 404; one it
 has no constraint for is served with null constraint values.
+
+The gene page's expression tab shows GTEx as the GTEx portal does, a violin of every sample per
+tissue, which results-api's per-tissue medians cannot draw. The samples come from
+`GET /api/v1/gtex_expression?ensembl_id=ENSG<11 digits>` (bff `gtexExpressionRoute.ts`), which
+makes three calls to `GTEX_API_URL` (default `https://gtexportal.org/api/v2`): `metadata/dataset`
+for the newest `gtex_v<N>` release, `reference/gene` for the gene id as versioned in that
+release's GENCODE, and `expression/geneExpression` for the values by `tissueSiteDetailId`. The
+response names the release, and the tab's heading, plot, table and download are all of it, so the
+tab follows a new GTEx release without a deploy and can be a release ahead of results-api's own
+GTEx rows. Genes are cached in the bff process (`GTEX_EXPRESSION_CACHE_MAX`), the release for the
+same time; a gene that release does not have is a 404 and is not cached. Only the gene id leaves
+the deployment. With the GTEx portal unreachable the GTEx tab says so and shows nothing.
 
 That window is the **total** width, centred on the query variant (`window=1000000` returns
 ±500 kb), so a pairwise lookup must ask for twice the distance between the two variants, and no
