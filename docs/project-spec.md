@@ -886,8 +886,9 @@ and serve nothing.
 **What switches with it.** In chat: the protein structure tools and the `protein` source of
 `get_variant_annotations` (`docs/chat-tool-reference.md`); `/mcp` withholds the tools whatever
 the flag says. In the sandbox: "What the sandbox offers a script beyond the data", below. In
-the browser there is no build-time flag: the structure viewer that opens a chat artifact, and
-the gene page's protein section, ask the routes and hide or fail soft where they are absent.
+the browser there is no build-time flag: the structure viewer that opens a chat artifact fails
+soft where the routes are absent, and the gene page offers its `protein` tab only where the
+models route is served.
 The BigQuery side is `missense_residue_v`, next section, which is gated by profile rather
 than by this switch.
 
