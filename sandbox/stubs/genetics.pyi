@@ -417,14 +417,20 @@ def expression(gene: str) -> pl.DataFrame:
     """
     ...
 
-def cell_type_expression(gene: str, level: str = 'summary') -> pl.DataFrame:
+def cell_type_expression(
+    gene: str,
+    level: str = 'summary',
+    include_low_support: bool = False,
+) -> pl.DataFrame:
     """Single-cell expression by cell type, from CZ CELLxGENE Discover; `expression` is bulk.
 
     `gene` is a symbol or Ensembl id (a `.N` version is dropped), or a comma-separated
     list. Units are log1p CP10K, not TPM. `mean_log1p_cp10k` and `frac_expressing` are
     the primary metrics; `donor_pseudobulk_mean_cp10k` (linear CP10K) is secondary.
     level="summary" pools normal tissue across datasets per (cell type, tissue), leaving
-    out datasets whose donors are all prenatal; level="dataset" is sparse: a row per
+    out datasets whose donors are all prenatal, and leaves out rows the server marks
+    `low_support` (few donors or cells, or a small single-dataset row) unless
+    include_low_support=True; level="dataset" is sparse: a row per
     dataset group with at least one expressing cell, so in a dataset with any `present`
     row, a missing group that passes the size thresholds (50 cells and 3 donors) had zero
     expressing cells; a below-threshold group never has a row, so its absence is unknown,

@@ -770,6 +770,13 @@ backs the browser's gene-page section and the MCP tool `get_cell_type_expression
 `genetics.cell_type_expression()`). The BigQuery side is the `cellxgene_*_v` views, read through
 db-api by the sandbox and the agent.
 
+**Thinly supported rows are flagged, not dropped.** results-api appends `low_support` to every
+summary row (the rule and its thresholds are `low_support()` in its
+`app/config/cell_type_expression.py`, with the measurement behind them): too few donors or cells,
+or a small row whose only source is one dataset. The gene page and the chat tool hide flagged
+rows until asked (the page's toggle, the tool's and SDK's `include_low_support`); the TSV
+download and the `cellxgene_*_v` views carry every row, and the views have no such column.
+
 **Where it runs.** The driver is itself a Cloud Batch job, started weekly by the Cloud Scheduler
 job `expression-refresh`, and it submits the worker jobs. Batch VMs run in a dedicated VPC with no
 ingress rules because they parse third-party files and every existing network would expose
