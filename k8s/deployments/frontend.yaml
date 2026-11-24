@@ -46,6 +46,12 @@ spec:
           mountPath: /tmp/nginx
         - name: cache
           mountPath: /var/cache/nginx
+        # the "is being updated" notice the app polls as /notice/notice.json, switched by
+        # scripts/ui-notice.sh. Mounted as a directory, not with subPath: a subPath mount is
+        # never refreshed, and the point is to change the file under a running pod.
+        - name: ui-notice
+          mountPath: /usr/share/nginx/html/notice
+          readOnly: true
         readinessProbe:
           httpGet:
             path: /
@@ -98,6 +104,12 @@ spec:
       # location with 405 before buffering — but the directories must exist for startup.
       - name: cache
         emptyDir: {}
+      # optional: the ConfigMap exists only once ui-notice.sh has been run, and without it the
+      # directory is empty and the app reads that as no notice
+      - name: ui-notice
+        configMap:
+          name: ui-notice
+          optional: true
 ---
 apiVersion: v1
 kind: Service

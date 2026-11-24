@@ -411,6 +411,7 @@ LAYOUT = {
     "scripts/supervisor_tests": "the check groups scripts/test-supervisor.py runs",
     "scripts/deploy.sh": "full deploy: terraform apply, then every manifest",
     "scripts/rollout.sh": "single-service image update",
+    "scripts/ui-notice.sh": "turn the browser's \"is being updated\" notice on or off for one deployment",
     "scripts/build.sh": "build and push one service's image",
     "scripts/build-all.sh": "build and push every image",
     "scripts/create-secrets.sh": "create the k8s Secrets from environment variables",

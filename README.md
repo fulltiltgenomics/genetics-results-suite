@@ -599,6 +599,16 @@ host too: MCP clients POST it with a bearer token and cannot follow a 301. See [
 ./scripts/rollout.sh results-api 20260305.abc1234
 ```
 
+To tell people with the app open that an update is under way, turn the notice on a couple of
+minutes before and off when done:
+
+```bash
+./scripts/ui-notice.sh on      # "<app name> is being updated. ..."
+./scripts/ui-notice.sh off
+```
+
+It has the same cluster guard as `rollout.sh`, and no deploy script runs it for you.
+
 `rollout.sh` knows ten services — `frontend`, `bff`, `results-api`, `chat-backend`,
 `mcp-server`, `db-api`, `rag-service`, `sandbox`, `keycloak`, `url-fetcher` — and only swaps
 container images, so ConfigMap-driven pods (auth-gateway) and the CronJobs still need
