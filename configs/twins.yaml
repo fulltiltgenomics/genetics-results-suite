@@ -305,9 +305,10 @@ twins:
     property: >-
       Every public name in the results-api module and in the SDK module has the value the
       munge module gives it: the contract version, the release's file names and column
-      lists, the PAE encoding, the window rules, the per-response byte limit and the
-      view-spec vocabulary and caps. The munge module is the definition and the other two
-      are slices of it; neither adds a name of its own.
+      lists, the residue-letter table, the feature evidence tiers, the PAE encoding, the
+      window rules, the per-response byte limit and the view-spec vocabulary and caps. The
+      munge module is the definition and the other two are slices of it; neither adds a
+      name of its own.
     reason: >-
       The release is written by one repo and read by two others, and the SDK's reader runs
       in the sandbox image. sandbox/prune_venv.py's prune_sdk() keeps only the
@@ -961,6 +962,28 @@ twins:
       A one-line `send` closure inside three unrelated ASGI test drivers. The vendored
       contract module's copy is local to its driver function and cannot be imported; the
       other two are in tests that drive a different app.
+    merge: open
+
+  - id: structure-neighbourhood-forwarders
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/tools/definitions.py
+      - genetics-mcp-server:src/genetics_mcp_server/tools/executor.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/tools/definitions.py:
+        - get_3d_neighbourhood
+      genetics-mcp-server:src/genetics_mcp_server/tools/executor.py:
+        - get_3d_neighbourhood
+    property: >-
+      The `/mcp` wrapper and the executor method of the same name take the same seven
+      arguments and each passes them on, in the same order, in one statement.
+    reason: >-
+      Two forwarding statements over one argument list. The wrapper in definitions.py hands
+      the arguments to the executor, as the wrapper of every tool does; the executor method
+      hands them to `_neighbourhood` inside `_structure_tool`, the error handling the
+      structure tools share. With seven arguments the two statements are long enough and
+      alike enough to be counted, which the same pair for the other structure tools is not.
+      The executor's forwarder would go away if `_structure_tool` became a decorator on the
+      implementations; nothing breaks either way.
     merge: open
 
   - id: shell-problem-accumulator
