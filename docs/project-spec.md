@@ -777,6 +777,14 @@ or a small row whose only source is one dataset. The gene page and the chat tool
 rows until asked (the page's toggle, the tool's and SDK's `include_low_support`); the TSV
 download and the `cellxgene_*_v` views carry every row, and the views have no such column.
 
+**One registry entry stands for the whole product.** `cellxgene_expression` in the daly profile
+of `configs/datasets.yaml` (`data_type: expression`, as GTEx and HPA are) is what lists
+CELLxGENE in `/api/v1/datasets` and so in the browser's Datasets dialog. It has no `dataset`
+label and no fixed version, because the views carry no dataset column and a refresh replaces
+the release; the datasets behind it are CELLxGENE's own, in `cellxgene_datasets_v`. The
+`cellxgene` resource it names is kept out of db-api's resource metadata
+(`_API_ONLY_RESOURCES`), which is profile-independent and would otherwise name it on finngen.
+
 **Where it runs.** The driver is itself a Cloud Batch job, started weekly by the Cloud Scheduler
 job `expression-refresh`, and it submits the worker jobs. Batch VMs run in a dedicated VPC with no
 ingress rules because they parse third-party files and every existing network would expose
