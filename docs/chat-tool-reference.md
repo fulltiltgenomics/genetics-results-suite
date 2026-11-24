@@ -2057,7 +2057,7 @@ Get QTL associations where a gene is the molecular trait (target). Returns varia
 Description as sent to the model:
 
 ```text
-Get SINGLE-CELL expression of a gene by cell type, from human CZ CELLxGENE Discover datasets with raw integer counts on supported assays, primary cells only. This is cell-type-resolved and distinct from get_gene_expression, which is bulk tissue (GTEx): use this tool for "which cell types express X", "is X expressed in hepatocytes / T cells / microglia", or cell-type specificity; use get_gene_expression for tissue-level questions.
+Get SINGLE-CELL expression of a gene by cell type, from human CZ CELLxGENE Discover datasets with raw integer counts on supported assays, primary cells with at least 500 genes detected. This is cell-type-resolved and distinct from get_gene_expression, which is bulk tissue (GTEx): use this tool for "which cell types express X", "is X expressed in hepatocytes / T cells / microglia", or cell-type specificity; use get_gene_expression for tissue-level questions.
 
 UNITS ARE log1p CP10K, NOT TPM. Never compare these numbers with bulk TPM values or describe them as TPM.
 - PRIMARY metrics, per cell type: `mean_log1p_cp10k` (mean of log1p counts-per-10k over every cell of that type, expressing or not) and `frac_expressing` (fraction of those cells with any count of the gene). Report both: a low mean can be a few cells expressing highly or many expressing weakly, and `frac_expressing` tells which.

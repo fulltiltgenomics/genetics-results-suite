@@ -771,7 +771,8 @@ and is admitted by the `allow-ingress-db-api` NetworkPolicy).
 ### Single-cell expression by cell type (CELLxGENE)
 
 Which cell types and tissues express a gene, from the human datasets on CZ CELLxGENE Discover
-that carry raw integer counts on a supported assay (primary cells only). It is the one product
+that carry raw integer counts on a supported assay (primary cells with at least
+`aggregate.py`'s `MIN_GENES` genes detected). It is the one product
 here that is **sourced externally and refreshed on a schedule** rather than staged once by hand,
 and it is served on the **daly brand only**, and there only on a deployment that sets its release
 pointer (below); both daly deployments do. The metrics, thresholds and roll-up rules are
