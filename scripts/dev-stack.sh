@@ -98,6 +98,8 @@ RUN_DIR="${DEV_STACK_RUN_DIR:-$HOME/.cache/genetics-dev-stack}"
 # mcp-server is the exception to "ports the rest of the setup already names": k8s gives it
 # 8080, which db-api holds here, so locally it gets 8082 (8081 is the sandbox) and nothing
 # else refers to it.
+# bff differs from the cluster's 5000 too: macOS AirPlay Receiver listens there, and answers a
+# browser on the far end of an ssh tunnel whenever the tunnel is not holding the port.
 ALL_SERVICES=(db-api results-api chat-api mcp-server bff frontend)
 
 svc_port() {
@@ -106,7 +108,7 @@ svc_port() {
         results-api) echo 2000 ;;
         chat-api) echo 4000 ;;
         mcp-server) echo 8082 ;;
-        bff) echo 5000 ;;
+        bff) echo 5001 ;;
         frontend) echo 3000 ;;
     esac
 }
@@ -598,7 +600,7 @@ start_bff() {
     local dir; dir="$(repo_dir genetics-results-browser)"
     (
         cd "$dir"
-        export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}" BFF_PORT=5000
+        export GENETICS_API_URL="${GENETICS_API_URL:-http://localhost:2000/api}" BFF_PORT="$(svc_port bff)"
         exec setsid npm run bff:dev
     ) >"$RUN_DIR/bff.log" 2>&1 &
     LAST_CHILD=$!
@@ -613,7 +615,7 @@ start_frontend() {
         # exports are the same three values and take precedence over any file (vite merges
         # prefixed process.env over the loaded files), so the worktree needs no env file.
         export VITE_TARGET="${VITE_TARGET:-public}"
-        export VITE_API_URL="${VITE_API_URL:-http://localhost:5000/api}"
+        export VITE_API_URL="${VITE_API_URL:-http://localhost:$(svc_port bff)/api}"
         export VITE_CHAT_URL="${VITE_CHAT_URL:-http://localhost:4000/chat}"
         exec setsid npm run dev
     ) >"$RUN_DIR/frontend.log" 2>&1 &

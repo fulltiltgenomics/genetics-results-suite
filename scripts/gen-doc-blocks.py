@@ -26,7 +26,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import doc_blocks
 from paths import ROOT, SANDBOX_DIR
 
 sys.path.insert(0, SANDBOX_DIR)
@@ -371,6 +373,8 @@ LAYOUT = {
     "configs/datasets-schema-example.yaml": "schema reference with example datasets",
     "configs/twins.yaml": "the duplicates the suite keeps on purpose, netted out of "
                           "check-duplication.py's counts",
+    "configs/vendored.yaml": "the files this repo keeps one copy of and vendor.py writes "
+                             "into the sibling repos",
     "configs/rag": "RAG experiment configs (not k8s manifests)",
     "configs/*_pheno.json": "per-phenotype metadata for external GWAS",
     "configs/rcnv_pheno.json": "per-phenotype metadata for the rare-CNV association study",
@@ -410,8 +414,16 @@ LAYOUT = {
     "scripts/build.sh": "build and push one service's image",
     "scripts/build-all.sh": "build and push every image",
     "scripts/create-secrets.sh": "create the k8s Secrets from environment variables",
-    "scripts/install-git-hooks.sh": "wire core.hooksPath; run once per clone",
-    "scripts/lint-staged.sh": "block a commit whose staged Python ruff rejects",
+    "scripts/install-git-hooks.sh": "wire core.hooksPath; run once per clone; vendored to "
+                                    "the siblings that have hooks",
+    "scripts/lint-staged.sh": "block a commit whose staged Python ruff rejects; vendored "
+                              "to the Python siblings",
+    "scripts/doc-drift-lib.sh": "the mechanism check-doc-drift.sh sources; vendored to "
+                                "every sibling",
+    "scripts/doc_blocks.py": "the marked-block renderer gen-doc-blocks.py imports; "
+                             "vendored to genetics-mcp-server",
+    "scripts/vendor.py": "write the files in configs/vendored.yaml into the sibling "
+                         "repos; `--check` reports a copy that has drifted",
     "scripts/sync-datasets.sh": "copy datasets.yaml to the sibling repos for local dev",
     "scripts/dev-stack.sh": "start/stop the local dev servers from one tree "
                             "(docs/local-dev-vm.md)",
@@ -526,6 +538,8 @@ LAYOUT = {
     "README.md": "deployment and operations guide",
     "LICENSE": "",
     "ruff.toml": "the lint rule set the pre-commit gate enforces",
+    "vendored": "sources that exist only to be copied into sibling repos by vendor.py: "
+                "the test modules results-api and db-api both run",
 }
 
 # expanded one level in the block below; everything else is listed as a single entry
@@ -1197,29 +1211,12 @@ BLOCKS = {
 SIBLING_BLOCKS = {"tool-lists", "tool-surfaces", "tool-surfaces-spec", "mcp-exclusions",
                   "project-routes", "memory-pieces"}
 
-MARKER = re.compile(
-    r"(<!-- BEGIN GENERATED: (?P<name>[a-z-]+) -->\n)(?P<body>.*?)(<!-- END GENERATED: (?P=name) -->)",
-    re.S,
-)
+def _refuse(msg):
+    raise SystemExit(msg)
 
 
 def render(doc, text, skip=frozenset()):
-    seen = set()
-
-    def repl(m):
-        name = m.group("name")
-        seen.add(name)
-        if name not in BLOCKS or BLOCKS[name][0] != doc:
-            raise SystemExit(f"{doc}: unknown generated block {name!r}")
-        if name in skip:
-            return m.group(0)
-        return m.group(1) + "\n" + BLOCKS[name][1]().rstrip() + "\n\n" + m.group(4)
-
-    out = MARKER.sub(repl, text)
-    missing = {n for n, (d, _) in BLOCKS.items() if d == doc} - seen
-    if missing:
-        raise SystemExit(f"{doc}: no marker for generated block(s) {sorted(missing)}")
-    return out
+    return doc_blocks.render(doc, text, BLOCKS, _refuse, skip)
 
 
 def main():

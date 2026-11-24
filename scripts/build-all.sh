@@ -92,6 +92,19 @@ git clone --depth 1 --branch "${RAG_SERVICE_BRANCH}" "${RAG_SERVICE_ORG}/genetic
 
 MCP_DIR="${WORK_DIR}/genetics-mcp-server"
 
+# The vendored copies (configs/vendored.yaml), compared in the branches being built. Warn-only,
+# and for a different reason from the duplication check above: what is vendored is hook
+# tooling and tests, none of which reaches an image, so a copy that has drifted is a reason
+# to say so loudly and not a reason to refuse to ship. Exit 2 here is the ordinary case of
+# a receiving repo this build does not clone.
+echo "--- Checking the vendored copies in the cloned branches"
+VENDOR_RC=0
+python3 "${SCRIPT_DIR}/vendor.py" --check --root "${WORK_DIR}" || VENDOR_RC=$?
+if [ "${VENDOR_RC}" -eq 1 ]; then
+  echo "!!! a vendored copy differs from its source in this checkout (listed above)."
+  echo "!!! Run scripts/vendor.py and commit the copies. Not blocking the build."
+fi
+
 # the rest of the generated blocks, read out of the mcp-server and browser branches being
 # built rather than whatever checkouts happen to sit next to this repo. Fatal when they are
 # stale, like the check above; a branch with no tools/definitions.py is still buildable, so

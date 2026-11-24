@@ -96,7 +96,9 @@ In `genetics-results-suite/configs/datasets.yaml`:
    Required fields: `resource`, `version`, `description`, `author`, `publication_date`,
    `data_type`, `trait_type`. Optional: `n_samples`/`n_cases`/`n_controls`/`n_phenotypes`,
    `phenotypes:` (for small fixed-phenotype sets), `metadata_file`, `metadata_harmonizer`,
-   `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped),
+   `pseudo_credible_sets: true` (if credible sets are pseudo, not formally fine-mapped;
+   the browser's gene page reads this flag and `trait_type` through the bff's
+   `/api/v1/gene_association` route to label and filter a GWAS dataset's credible sets),
    `cohorts: [token, ...]` (the sample collections that contributed, for the MR sample-overlap
    statement; leave it out when the entry does not state its provenance, and do not read a
    missing token as evidence that a cohort is absent — see `docs/datasets-yaml-schema.md`,
@@ -143,7 +145,8 @@ the API-side resource grouping.
   may also set `"all_cs_qtl_file"`; FinnGen-style sets add a `"stats_file"`.
 - **Exome variant results** → `exome_results.py`, `exome_data_files`. An `"exome"` block
   with either an `"all_exome_file"` (combined) and/or a `"prefix"` + `"suffix"` for
-  per-phenotype files.
+  per-phenotype files. The by-gene, by-region and by-variant routes read only the combined
+  file, so a resource without one is reachable by phenotype alone.
 - **Gene-based / burden results** → `gene_based_results.py`, `gene_based_data_files`. A
   `"gene_based"` block with a `"file"` (combined, gene-locus indexed, backs
   `/gene_based/{gene}` across all traits) plus a `"prefix"` + `"suffix"` for the
@@ -160,6 +163,10 @@ the API-side resource grouping.
   serving 404s (`genetics-results-munge/scripts/relabel_traits.py` rewrites an existing
   file's trait columns when the raw inputs are gone).
 - **Expression / coloc / chromatin** → the correspondingly named module.
+  A coloc entry whose pairs have a gene QTL side (eQTL, pQTL, sQTL) can also set
+  `"coloc_gene_file"` and `"gene_gencode_version"`: the copy of its pair file indexed on the
+  QTL gene, which is what `/colocalization_by_gene/{gene}` reads to return a gene's cis and
+  trans colocalizations (`genetics-results-munge/scripts/coloc/create_gene_indexed_coloc_file.sh`).
 - **Gene-disease** → `gene_disease.py`. Not a list of products but one block per source,
   each with a `"file"` and a `"columns"` map from the endpoint's `output_columns` to that
   source's own column names; a source that omits an output column serves `NA` for it.
@@ -924,9 +931,8 @@ proband/sibling, transmitted/untransmitted, case/control), and one row per varia
 allele counts. **There is no p-value, effect size or allele frequency anywhere in it**, and
 the standing rule for this suite is that a served statistic comes from the source, never
 derived on the way in. That rules out both exome tables: `gene_burden_results` and
-`exome_variant_results` make `mlog10p` and `beta` NOT NULL, and the one precedent for
-count-only input (the SCHEMA2 variant munge) fills them with a Haldane-corrected odds ratio —
-exactly the derivation the rule forbids. Relabelling the FDR as a p-value would mislead the
+`exome_variant_results` make `mlog10p` and `beta` NOT NULL, and filling them from counts
+is exactly the derivation the rule forbids. Relabelling the FDR as a p-value would mislead the
 browser's `mlog10p > 4` cut, and relaxing NOT NULL is a one-way rebuild of a 343M-row table.
 So this is a **BigQuery-only product in the rCNV shape**, with three tables of its own.
 
@@ -938,7 +944,7 @@ Changes made (new resource `asc2`, datasets `asc_gene_based` + `asc_exome` shari
    `inheritance_mode` with `n_affected` / `n_unaffected` as the pair the mode contrasts —
    and the Bayes factor, FDR and flag go to a second one-row-per-gene table, so both
    `variant_class` and `inheritance_mode` are enumerable columns and a later de novo release
-   (DDD, Epi25, SCHEMA's unserved de novo counts) fits without a schema. The variant file
+   (DDD, Epi25) fits without a schema. The variant file
    stays wide: six count columns, source names kept. The statistics are read **as strings**
    so `1.2272e+73` reaches BigQuery as spelled. Genes join GENCODE **v29**, which the
    release's VEP 95 ids match completely (v39 loses 57). The shared writer grew
@@ -981,10 +987,23 @@ exist only at gene level.
 
 **The gene file is autosomal; the variant file is not.** TADA ran on the autosomes, so
 `exome_gene_bayes_results` has 20,893 genes and no chr 23; `exome_variant_counts` carries
-chrX (23) and chrY (24) rows. `gnomad_af` there is an annotation, not the source's rarity
-filter — it reaches 0.89 — and nothing was filtered on it: all 7,045,130 rows are loaded,
-because with no test statistic there is no analogue of the `mlog10p > 4` cut the other
-variant loads apply.
+chrX (23) and chrY (24) rows. All 7,045,150 rows are loaded, because with no test
+statistic there is no analogue of the `mlog10p > 4` cut the other variant loads apply.
+They cover 7,045,130 variants: the release gives 20 "other splice" SNVs a PTV row for their
+de novo counts and a second row for their inherited and case-control counts, and both are
+kept, so the table's key is the variant plus `variant_class`.
+
+**A second source shares the variant table, and its columns only partly overlap.** SCHEMA2's
+variant file also carries counts and no per-variant statistic, so its counts load into
+`exome_variant_counts` (`munge_schema2_variant_counts.py`,
+`load_schema2_variant_counts.sh`, registry entry `schema_exome`) rather than being turned
+into an odds ratio for `exome_variant_results`. It has case and control allele counts with
+allele numbers and one de novo count, but no sibling or transmission counts and no variant
+class; ASC2 has those and no allele numbers. The table therefore keeps NOT NULL only on what
+both carry, and a column a source lacks is NULL for it — never zero, which would read as a
+count. `gnomad_af`, which only ASC2 had, is not in the table. Only the rows SCHEMA2 marks
+`in_analysis` are loaded, so unlike ASC2 a variant's absence there is not evidence of zero
+carriers; the view's `tables:` block says so.
 
 ## 18. Gene-set collections for the sandbox
 

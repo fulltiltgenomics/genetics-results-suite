@@ -41,21 +41,27 @@ twins:
       - genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py
       - genetics-results-suite:sandbox/supervisor.py
       - genetics-results-suite:scripts/test-e2e-local.py
+      - genetics-results-suite:scripts/external-inputs-proving-ground.py
     symbols:
       genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py:
         - body
         - _error_fields
         - _retry_after
+        - INPUT_CONTENT_TYPE_PATTERN
       genetics-results-suite:sandbox/supervisor.py:
         - parse_execute_request
         - _response
         - _default_error_type
+        - INPUT_CONTENT_TYPE_RE
       genetics-results-suite:scripts/test-e2e-local.py:
+        - body
+      genetics-results-suite:scripts/external-inputs-proving-ground.py:
         - body
     property: >-
       Both ends of the /execute call implement the same wire shape - the request body's
-      key set, the {"error": {"type", "message"}} envelope, retry_after, and the status
-      vocabulary - as written down in prose in docs/code-execution-security.md. A change
+      key set, the pattern a delivered input's content type must match, the
+      {"error": {"type", "message"}} envelope, retry_after, and the status vocabulary - as
+      written down in prose in docs/code-execution-security.md. A change
       to one side is a change to that prose and to the other side.
     reason: >-
       A shared runtime module is MECHANICALLY PROHIBITED, not merely inconvenient.
@@ -155,6 +161,7 @@ twins:
       - genetics-results-db:api/sandbox_auth.py
       - genetics-results-api:app/core/sandbox_budget.py
       - genetics-results-db:api/sandbox_budget.py
+      - genetics-results-api:app/middleware.py
     symbols:
       genetics-results-api:app/core/sandbox_token.py:
         - REQUIRED_CLAIMS
@@ -174,10 +181,13 @@ twins:
         - admit
         - release
         - snapshot
+        - _sandbox_principal
+      genetics-results-api:app/middleware.py:
+        - _sandbox_principal
     property: >-
       results-api and db-api validate the sandbox token and account for a sandbox
       execution's budget the same way: the same required claims, the same shape test for a
-      sandbox-issued principal, the same per-execution request and byte ceilings read from
+      sandbox-issued principal, the same reading of which execution a request belongs to, the same per-execution request and byte ceilings read from
       the same environment variables, and the same eviction rules - the contract
       docs/code-execution-security.md section 4 describes.
     reason: >-
@@ -192,10 +202,10 @@ twins:
       drifting - of the entries here, this is the one to re-read first.
       PARITY IS DECLARED ON NAMED SYMBOLS ONLY: the required claims and the shape test on
       the token side, and on the budget side the ceilings read from the environment, the
-      admit/release accounting and the eviction sweep. The two tests/test_sandbox_budget.py
-      files also duplicate each other wholesale - pytest fixtures, helpers and whole test
-      bodies that nothing above says anything about - so they are not sites here and that
-      duplication is counted like any other.
+      admit/release accounting and the eviction sweep. The tests are not sites here: what
+      the two suites assert in common is one file, vendored/tests/sandbox_contract.py,
+      copied into both repos by scripts/vendor.py, and what is left in each repo's own test
+      files is counted like any other duplication.
     merge: open
 
   - id: schema-example-table-shape
@@ -369,4 +379,629 @@ twins:
       nothing and is recorded for the reason, as browser-normalized-types is; what holds
       the two together is viewSpec.test.ts, which compares these constants with the munge
       module when PROTEIN_STRUCTURE_MUNGE_CONTRACT names it and skips otherwise.
+    merge: never
+
+  - id: kubernetes-manifest-shape
+    sites:
+      - genetics-results-suite:k8s/deployments/keycloak.yaml
+      - genetics-results-suite:k8s/deployments/oauth2-proxy.yaml
+      - genetics-results-browser:deploy/cert.yaml
+      - genetics-results-browser:deploy/cert_public.yaml
+      - genetics-results-browser:deploy/ingress.yaml
+      - genetics-results-browser:deploy/ingress_public.yaml
+      - genetics-results-browser:deploy/statefulset.yaml
+      - genetics-results-browser:deploy/volume.yaml
+      - genetics-results-suite:k8s/cronjobs/keycloak-postgres-backup.yaml
+      - genetics-results-suite:k8s/deployments/analyze-conversations-cronjob.yaml
+      - genetics-results-suite:k8s/deployments/auth-gateway.yaml
+      - genetics-results-suite:k8s/deployments/bff.yaml
+      - genetics-results-suite:k8s/deployments/chat-backend.yaml
+      - genetics-results-suite:k8s/deployments/db-api.yaml
+      - genetics-results-suite:k8s/deployments/frontend.yaml
+      - genetics-results-suite:k8s/deployments/mcp-server.yaml
+      - genetics-results-suite:k8s/deployments/monitor-cronjob.yaml
+      - genetics-results-suite:k8s/deployments/postgres.yaml
+      - genetics-results-suite:k8s/deployments/rag-service.yaml
+      - genetics-results-suite:k8s/deployments/results-api.yaml
+      - genetics-results-suite:k8s/deployments/sandbox.yaml
+      - genetics-results-suite:k8s/deployments/url-fetcher.yaml
+      - genetics-results-suite:k8s/disruption-budgets/budgets.yaml
+      - genetics-results-suite:k8s/ingress/backend-configs.yaml
+      - genetics-results-suite:k8s/ingress/frontend-config.yaml
+      - genetics-results-suite:k8s/network-policies/keycloak-policies.yaml
+      - genetics-results-suite:k8s/network-policies/monitor-policy.yaml
+      - genetics-results-suite:k8s/network-policies/policies.yaml
+      - genetics-results-suite:k8s/network-policies/sandbox-policy.yaml
+      - genetics-results-suite:k8s/network-policies/url-fetcher-policy.yaml
+      - genetics-results-suite:k8s/volumes/pvc-chat-data.yaml
+      - genetics-results-suite:k8s/volumes/pvc-keycloak-postgres.yaml
+      - genetics-results-suite:k8s/volumes/pvc-monitor-data.yaml
+      - genetics-results-suite:k8s/volumes/pvc-rag-stores.yaml
+      - genetics-results-suite:k8s/configs/access-grant-email.yaml
+      - genetics-results-suite:k8s/configs/bearer-auth-allowed.yaml
+      - genetics-results-suite:k8s/namespace.yaml
+    property: >-
+      Each file is a Kubernetes object, so they share the key sets the Kubernetes API gives
+      every object and every pod spec: apiVersion/kind/metadata/spec, containers,
+      securityContext, volumeMounts, and the hardening fields this suite sets on every
+      workload.
+    reason: >-
+      THE REPEATED NAMES ARE THE KUBERNETES SCHEMA, NOT A FACT THIS SUITE COPIED. Two
+      Deployments carry the same keys because both are Deployments. What would remove the
+      repetition is a template layer - kustomize or helm - and deploy.sh deliberately
+      renders these files with envsubst and nothing else: scripts/test-manifest-render.py
+      and scripts/test-network-policies.py parse each manifest as it is written, and a
+      base-plus-patch layout would move the hardening fields those harnesses check out of
+      the file a reviewer reads. DECLARED BY FILE, WITH NO SYMBOLS, because the largest of
+      these groups is the top-level key set and has no name to pin. The cost is stated
+      rather than hidden: a value copied between two manifests by hand - an image tag, an
+      env block - is netted out here too, and this entry will not notice it. A manifest
+      added later is not in the list and comes back undeclared, which is the prompt to add
+      it. genetics-results-browser's deploy/ manifests are here for the same reason and are
+      that repo's own standalone deployment, not a copy of this one.
+    merge: open
+
+  - id: schema-example-registry-names
+    sites:
+      - genetics-results-suite:configs/datasets-schema-example.yaml
+      - genetics-results-suite:configs/datasets.yaml
+    symbols:
+      genetics-results-suite:configs/datasets-schema-example.yaml:
+        - eqtl_catalogue
+        - dataset_to_resource_rules
+        - finngen_pqtl
+        - gtex_expression
+        - finngen_gwas
+        - categorical_columns
+        - phenotypes
+      genetics-results-suite:configs/datasets.yaml:
+        - eqtl_catalogue
+        - dataset_to_resource_rules
+        - finngen_chromatin_peaks
+        - gencc
+        - monarch
+        - categorical_columns
+        - phenotypes
+    property: >-
+      The example registry uses real dataset, resource and rule names taken from the
+      canonical configs/datasets.yaml, so each list it shows is a subset of names the
+      canonical file also lists.
+    reason: >-
+      AN EXAMPLE THAT INVENTED ITS NAMES WOULD TEACH NOTHING: the point of the file is that
+      a reader can find the same entry in the real registry and see what was cut. These are
+      the groups schema-example-table-shape left counted as ordinary duplication, and that
+      description was fair - nothing keeps the example's lists in step, and an example
+      naming a dataset the registry has since dropped is stale. Declared rather than removed
+      on an explicit ruling that the example stays a hand-written file. The untaken option
+      is the one written under schema-example-table-shape: generate the example from the
+      canonical file. PINNED TO THE KEYS that hold the copied lists today; a new list in the
+      example lands outside them and is counted.
+    merge: open
+
+  - id: results-api-deployment-profiles
+    sites:
+      - genetics-results-api:app/config/profiles/daly/coloc.py
+      - genetics-results-api:app/config/profiles/finngen/coloc.py
+      - genetics-results-api:app/config/profiles/daly/gene_based_results.py
+      - genetics-results-api:app/config/profiles/finngen/gene_based_results.py
+      - genetics-results-api:app/config/profiles/daly/common.py
+      - genetics-results-api:app/config/profiles/finngen/common.py
+      - genetics-results-api:app/config/profiles/daly/exome_results.py
+      - genetics-results-api:app/config/profiles/finngen/exome_results.py
+      - genetics-results-api:app/config/profiles/daly/gene_disease.py
+      - genetics-results-api:app/config/profiles/finngen/gene_disease.py
+      - genetics-results-api:app/config/profiles/daly/open_chromatin.py
+      - genetics-results-api:app/config/profiles/finngen/open_chromatin.py
+      - genetics-results-api:app/config/profiles/daly/genes.py
+      - genetics-results-api:app/config/profiles/finngen/genes.py
+    symbols:
+      genetics-results-api:app/config/profiles/daly/coloc.py:
+        - coloc
+      genetics-results-api:app/config/profiles/finngen/coloc.py:
+        - coloc
+      genetics-results-api:app/config/profiles/daly/gene_based_results.py:
+        - gene_based_data_files
+      genetics-results-api:app/config/profiles/finngen/gene_based_results.py:
+        - gene_based_data_files
+      genetics-results-api:app/config/profiles/daly/common.py:
+        - gnomad
+        - cors_origins
+      genetics-results-api:app/config/profiles/finngen/common.py:
+        - gnomad
+        - cors_origins
+      genetics-results-api:app/config/profiles/daly/exome_results.py:
+        - exome_data_files
+      genetics-results-api:app/config/profiles/finngen/exome_results.py:
+        - exome_data_files
+      genetics-results-api:app/config/profiles/daly/gene_disease.py:
+        - gene_disease
+      genetics-results-api:app/config/profiles/finngen/gene_disease.py:
+        - gene_disease
+      genetics-results-api:app/config/profiles/daly/open_chromatin.py:
+        - open_chromatin_data
+      genetics-results-api:app/config/profiles/finngen/open_chromatin.py:
+        - open_chromatin_data
+      genetics-results-api:app/config/profiles/daly/genes.py:
+        - genes
+      genetics-results-api:app/config/profiles/finngen/genes.py:
+        - genes
+    property: >-
+      For each product, the daly and finngen profiles list that deployment's own GCS objects
+      under the same keys; app/config loads exactly one of the two, chosen by
+      CONFIG_PROFILE.
+    reason: >-
+      THEY ARE TWO DEPLOYMENTS' DATA, NOT ONE FACT WRITTEN TWICE. Where the two sides look
+      alike today they differ by bucket root, and not uniformly - one gnomAD entry on the
+      finngen side sits outside results_api_data - while other profile modules (summary
+      stats, credible sets, LD) diverge outright because the deployments hold different
+      releases. A shared base with the bucket substituted would be correct until the first
+      file one deployment has and the other does not, and would then need the per-profile
+      override it replaced. `cors_origins` is the weakest member: it is identical in both
+      profiles and is deployment configuration only by intent. PINNED TO THE NAMED LISTS so
+      that logic copied between the two profile packages is still counted.
+    merge: open
+
+  - id: skill-tools-pin
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/skills/definitions.py
+      - genetics-mcp-server:tests/test_subagent.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/skills/definitions.py:
+        - SKILL_REGISTRY
+      genetics-mcp-server:tests/test_subagent.py:
+        - _PINNED_SKILL_TOOLS
+    property: >-
+      The test writes out, per skill, the tool names that skill resolves to in
+      SKILL_REGISTRY.
+    reason: >-
+      A PIN THAT DERIVES BOTH SIDES ASSERTS NOTHING. The test exists so that a skill gaining
+      or losing a tool fails until someone decides it was meant; reading the expected value
+      from the registry would make it pass for any registry at all.
+    merge: never
+
+  - id: mcp-app-wire-record-pin
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/turns.py
+      - genetics-mcp-server:tests/test_chat_api.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/turns.py:
+        - record
+      genetics-mcp-server:tests/test_chat_api.py:
+        - record
+    property: >-
+      The test hand-writes the record turns.py encodes into an [MCPAPP:...] marker and feeds
+      it to the marker-stripping path.
+    reason: >-
+      The record is a wire shape the browser decodes, and production builds it inline rather
+      than exporting a value a test could import. The test's copy is the only place a change
+      to that shape fails before the browser sees it.
+    merge: never
+
+  - id: sdk-empty-result-schema-pin
+    sites:
+      - genetics-mcp-server:tests/test_sdk_empty_result_schema.py
+      - genetics-results-api:app/routers/gene_groups.py
+      - genetics-results-api:app/routers/hla.py
+      - genetics-results-api:app/services/gene_name_and_position_mapping.py
+      - genetics-results-api:tests/test_gene_disease.py
+    symbols:
+      genetics-mcp-server:tests/test_sdk_empty_result_schema.py:
+        - members
+        - HLA_COLUMNS
+        - GENE_COLUMNS
+        - DISEASE_COLUMNS
+      genetics-results-api:app/routers/gene_groups.py:
+        - MEMBER_COLUMNS
+      genetics-results-api:app/routers/hla.py:
+        - _HLA_HEADER_SCHEMA
+      genetics-results-api:app/services/gene_name_and_position_mapping.py:
+        - _GENE_CORE_COLUMNS
+      genetics-results-api:tests/test_gene_disease.py:
+        - expected_cols
+        - expected_keys
+        - required_fields
+    property: >-
+      The column lists in genetics-mcp-server's empty-result schema test equal the columns
+      results-api serves for gene groups, HLA, gene lookups and gene-disease associations.
+    reason: >-
+      The SDK has to return a correctly shaped empty frame without a server to ask, so the
+      columns are written out on the mcp-server side by design, and this test is what pins
+      them. Nothing fails across the repo boundary when results-api changes a column; the
+      test is where a human is expected to notice. No mechanism prevents generating the
+      lists from results-api - nobody has built it.
+    merge: open
+
+  - id: hla-legacy-columns-pin
+    sites:
+      - genetics-mcp-server:tests/test_hla_tools.py
+      - genetics-results-db:tests/test_hla_view_columns.py
+    symbols:
+      genetics-mcp-server:tests/test_hla_tools.py:
+        - HLA_LEGACY_STAT_COLUMNS
+      genetics-results-db:tests/test_hla_view_columns.py:
+        - RENAMES
+    property: >-
+      Both tests name the legacy HLA statistic columns the view renames.
+    reason: >-
+      Each pins one side of a rename - the view in genetics-results-db, the tool output in
+      genetics-mcp-server - and each is written out so that a column reverting to its legacy
+      name fails in the repo where it happened.
+    merge: never
+
+  - id: rcnv-columns-pin
+    sites:
+      - genetics-mcp-server:tests/test_rcnv_tools.py
+      - genetics-results-munge:scripts/munge_rcnv.py
+    symbols:
+      genetics-mcp-server:tests/test_rcnv_tools.py:
+        - DOSAGE_COLUMNS
+      genetics-results-munge:scripts/munge_rcnv.py:
+        - COLUMNS
+    property: >-
+      The dosage-sensitivity columns the munge writes are the columns the mcp-server tool
+      test expects back.
+    reason: >-
+      Producer and consumer of one file layout, in repos with no shared import. The test is
+      a pin: deriving it from the munge script would need the munge repo present to run
+      mcp-server's tests.
+    merge: never
+
+  - id: ld-entry-fields-pin
+    sites:
+      - genetics-mcp-server:tests/test_ld_via_results_api.py
+      - genetics-results-api:app/services/ld_service.py
+      - genetics-results-api:tests/test_ld_panel.py
+      - genetics-results-api:tests/test_ld_proxy.py
+    symbols:
+      genetics-mcp-server:tests/test_ld_via_results_api.py:
+        - pair
+      genetics-results-api:app/services/ld_service.py:
+        - LD_ENTRY_FIELDS
+      genetics-results-api:tests/test_ld_panel.py:
+        - far
+        - hit
+      genetics-results-api:tests/test_ld_proxy.py:
+        - ENTRY
+    property: >-
+      The fields of one LD entry as ld_service.py defines them, as results-api's LD tests
+      build them, and as genetics-mcp-server's test of the SDK's LD call expects them.
+    reason: >-
+      LD_ENTRY_FIELDS is the definition; every other site is a test fixture written out so
+      that the test states the shape it expects rather than echoing the service. The
+      mcp-server site cannot import results-api at all.
+    merge: never
+
+  - id: fetcher-egress-pin
+    sites:
+      - genetics-results-suite:k8s/network-policies/url-fetcher-policy.yaml
+      - genetics-results-suite:scripts/test-network-policies.py
+    symbols:
+      genetics-results-suite:k8s/network-policies/url-fetcher-policy.yaml:
+        - except
+      genetics-results-suite:scripts/test-network-policies.py:
+        - FETCHER_EGRESS_EXCEPT
+    property: >-
+      The address ranges the url-fetcher's egress policy refuses, as the manifest states
+      them and as the network-policy harness expects them.
+    reason: >-
+      Same anti-vacuity reason as exposed-views-pin: this is the security pin on which
+      private ranges the one internet-facing pod may not reach, and an expected value read
+      from the manifest would pass for a manifest with the `except` block deleted.
+    merge: never
+
+  - id: sdk-surface-modules-pin
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/sdk/__init__.py
+      - genetics-results-suite:scripts/gen-sandbox-docs.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/sdk/__init__.py:
+        - _LAZY_MODULES
+      genetics-results-suite:scripts/gen-sandbox-docs.py:
+        - SURFACE_MODULES
+    property: >-
+      The SDK submodules a sandbox script reaches as `genetics.<name>`, as the SDK resolves
+      them lazily and as the stub generator documents them.
+    reason: >-
+      The generator runs in this repo against a staged copy of the SDK and gives each named
+      module its own stub; scripts/test-sandbox-docs.py asserts the stubs cover exactly the
+      SDK's exported surface, so a module added on one side only fails the build rather than
+      drifting. Reading the tuple out of sdk/__init__.py by AST is possible and not done.
+    merge: open
+
+  - id: sandbox-token-claims-pin
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/sandbox_token.py
+      - genetics-results-suite:vendored/tests/sandbox_contract.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/sandbox_token.py:
+        - claims
+      genetics-results-suite:vendored/tests/sandbox_contract.py:
+        - claims
+    property: >-
+      The claim set of a sandbox token, as chat-backend's minter writes it and as the
+      vendored contract tests mint it for results-api and db-api.
+    reason: >-
+      The tests mint their own tokens so that the two validators are held to the documented
+      claim set rather than to whatever the minter currently emits; a test that imported the
+      minter would follow it into a mistake. The minter lives in genetics-mcp-server, which
+      the two services under test do not depend on.
+    merge: never
+
+  - id: r14-meta-cohorts
+    sites:
+      - genetics-results-api:app/config/profiles/r14_meta_columns.py
+      - genetics-results-api:tests/test_metadata_finngen_meta_harmonizer.py
+      - genetics-results-db:tests/test_build_phenotypes.py
+      - genetics-results-munge:scripts/r14_meta_phenotypes.py
+    symbols:
+      genetics-results-api:app/config/profiles/r14_meta_columns.py:
+        - _COHORTS
+        - _LEAVE
+      genetics-results-api:tests/test_metadata_finngen_meta_harmonizer.py:
+        - _ALL_COHORTS
+      genetics-results-db:tests/test_build_phenotypes.py:
+        - ALL_ELEVEN_COHORTS
+      genetics-results-munge:scripts/r14_meta_phenotypes.py:
+        - COHORTS
+        - FAMILIES
+    property: >-
+      The cohorts of the FinnGen R14 meta-analysis and the column families that come per
+      cohort, as the munge writes them, as results-api reads them, and as results-db's
+      phenotype build and both test suites expect them.
+    reason: >-
+      One release's column layout, produced in genetics-results-munge and consumed in two
+      services, with no package any of the three could import from. The list changes only
+      with a new meta-analysis release, which changes all of them by definition. The honest
+      gap: nothing fails at build time if a consumer is missed - the tests on each side pin
+      their own copy, not each other.
+    merge: open
+
+  - id: served-column-layouts
+    sites:
+      - genetics-results-api:app/config/cell_type_expression.py
+      - genetics-results-munge:scripts/cellxgene/publish.py
+      - genetics-results-api:app/services/custom_gwas_finemap_data_access.py
+      - genetics-results-munge:scripts/create_open_targets_files.py
+      - genetics-results-munge:scripts/munge_nmr_meta.py
+      - genetics-results-munge:scripts/munge_pgc_scz_finemap.py
+    symbols:
+      genetics-results-api:app/config/cell_type_expression.py:
+        - _GENE_COLUMNS
+      genetics-results-munge:scripts/cellxgene/publish.py:
+        - GENE_COLUMNS
+      genetics-results-api:app/services/custom_gwas_finemap_data_access.py:
+        - SERVED_HEADER
+      genetics-results-munge:scripts/create_open_targets_files.py:
+        - OUTPUT_COLUMNS
+      genetics-results-munge:scripts/munge_nmr_meta.py:
+        - OUTPUT_COLUMNS
+      genetics-results-munge:scripts/munge_pgc_scz_finemap.py:
+        - OUTPUT_COLUMNS
+    property: >-
+      The column order of files genetics-results-munge writes and results-api serves by
+      position: the fine-mapping credible-set layout and the cell-type expression gene
+      columns.
+    reason: >-
+      Writer and reader of one file layout in repos with no shared import. results-api
+      addresses some of these columns by index, so the order is load-bearing on both sides.
+      For the credible-set files results-api's startup check reads the header back and
+      compares it column by column, which is what catches a writer that moved one.
+    merge: open
+
+  - id: phenotype-record-columns
+    sites:
+      - genetics-results-db:scripts/build_phenotypes.py
+      - genetics-results-suite:configs/datasets.yaml
+    symbols:
+      genetics-results-db:scripts/build_phenotypes.py:
+        - record
+      genetics-results-suite:configs/datasets.yaml:
+        - column_types
+        - columns
+    property: >-
+      The keys of one phenotype record build_phenotypes.py emits are the columns
+      configs/datasets.yaml declares for the phenotypes view.
+    reason: >-
+      The registry describes the view and the build script fills the table behind it.
+      Building the record from the registry's column list would hide a column the script
+      forgot to compute behind a null, so the script names what it computes.
+    merge: open
+
+  - id: gene-set-bundle-checksum
+    sites:
+      - genetics-results-munge:scripts/build_gene_sets.py
+      - genetics-results-suite:scripts/stage-gene-sets.py
+    symbols:
+      genetics-results-munge:scripts/build_gene_sets.py:
+        - sha256_of
+      genetics-results-suite:scripts/stage-gene-sets.py:
+        - sha256_of
+    property: >-
+      Both ends compute a file's SHA-256 the same way: genetics-results-munge when it writes
+      a gene-set bundle's manifest, this repo when it verifies the bundle before staging it
+      into the sandbox image.
+    reason: >-
+      A verifier that imported the writer's hashing would verify nothing, and the two
+      scripts live in repos with no shared import. Six lines each.
+    merge: never
+
+  - id: hgnc-id-canonical-form
+    sites:
+      - genetics-results-api:app/services/gene_group_service.py
+      - genetics-results-db:scripts/build_gene_annotations.py
+    symbols:
+      genetics-results-api:app/services/gene_group_service.py:
+        - _canonical_hgnc_id
+      genetics-results-db:scripts/build_gene_annotations.py:
+        - canonical_hgnc_id
+    property: >-
+      results-api's gene-group service and results-db's gene-annotation build normalise an
+      HGNC id to the same `HGNC:NNNN` form.
+    reason: >-
+      The two normalise ids from the same HGNC source files, which disagree on format, so
+      that group members served by results-api join to annotations loaded by results-db. One
+      small pure function on each side, in repos with no shared import; vendoring runtime
+      code into two services for it would add a build step to both.
+    merge: open
+
+  - id: google-id-token-request
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/mcp_server.py
+      - genetics-results-api:app/core/auth.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/mcp_server.py:
+        - _get_google_request
+      genetics-results-api:app/core/auth.py:
+        - _get_google_request
+    property: >-
+      Both services build the google-auth transport request lazily, once, behind a lock.
+    reason: >-
+      The same ten-line lazy singleton in the two services that verify Google identity
+      tokens. It is here for the reason auth-allow-list-matcher is: there is no repo either
+      could import the other from, and authentication is the last place to add a dependency
+      for the sake of ten lines.
+    merge: open
+
+  - id: structured-log-entry
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/logging_config.py
+      - genetics-results-api:app/core/logging_config.py
+      - genetics-results-db:api/main.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/logging_config.py:
+        - log_entry
+      genetics-results-api:app/core/logging_config.py:
+        - log_entry
+      genetics-results-db:api/main.py:
+        - log_entry
+    property: >-
+      The three services emit one JSON object per log line with the same keys.
+    reason: >-
+      The key set is the one Google Cloud Logging's structured format reads - severity,
+      message, timestamp - plus the logger name, so the services agree because the platform
+      requires it. Each formatter is a dozen lines inside its own service's logging setup,
+      with its own redaction rules around it.
+    merge: open
+
+  - id: service-error-carriers
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py
+      - genetics-mcp-server:src/genetics_mcp_server/url_fetch_client.py
+      - genetics-results-suite:sandbox/supervisor.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/sandbox_client.py:
+        - __init__
+      genetics-mcp-server:src/genetics_mcp_server/url_fetch_client.py:
+        - __init__
+      genetics-results-suite:sandbox/supervisor.py:
+        - __init__
+    property: >-
+      The exception types that carry a service error across the sandbox boundary - status,
+      type, message, retry_after - have the same constructor.
+    reason: >-
+      sandbox-wire-contract already says why this is not that: a constructor is not the wire
+      shape, and that entry is pinned so as not to cover it. The three classes hold the same
+      four fields because they carry the same envelope. supervisor.py cannot import from
+      genetics-mcp-server - it runs inside the sandbox image, outside the SDK's import
+      closure. The two clients inside genetics-mcp-server could share a base class, and that
+      is the part of this entry that is a judgement rather than a constraint.
+    merge: open
+
+  - id: script-directory-idiom
+    sites:
+      - genetics-mcp-server:src/genetics_mcp_server/schema_docs/__init__.py
+      - genetics-mcp-server:tests/fixtures/mr/convert_fixtures.py
+      - genetics-mcp-server:tests/fixtures/mr/r_reference/build_inputs.py
+      - genetics-results-db:scripts/bench_credible_sets_layout.py
+      - genetics-results-db:scripts/generate_resource_sql.py
+      - genetics-results-db:scripts/load_data.py
+      - genetics-mcp-server:scripts/gen-doc-blocks.py
+      - genetics-results-suite:scripts/lib/paths.py
+    symbols:
+      genetics-mcp-server:src/genetics_mcp_server/schema_docs/__init__.py:
+        - _DIR
+      genetics-mcp-server:tests/fixtures/mr/convert_fixtures.py:
+        - HERE
+      genetics-mcp-server:tests/fixtures/mr/r_reference/build_inputs.py:
+        - HERE
+      genetics-results-db:scripts/bench_credible_sets_layout.py:
+        - HERE
+      genetics-results-db:scripts/generate_resource_sql.py:
+        - SCRIPT_DIR
+      genetics-results-db:scripts/load_data.py:
+        - SCRIPT_DIR
+      genetics-mcp-server:scripts/gen-doc-blocks.py:
+        - ROOT
+      genetics-results-suite:scripts/lib/paths.py:
+        - ROOT
+    property: >-
+      Each script computes the directory it lives in, or its repo root, from __file__.
+    reason: >-
+      One expression, `dirname(abspath(__file__))` or its pathlib spelling, in scripts that
+      have to find their own files before they can import anything. Not a fact that can
+      drift: each site is right by construction. Pinned to the constant so that nothing else
+      in these files is declared.
+    merge: never
+
+  - id: asgi-send-collector
+    sites:
+      - genetics-mcp-server:tests/test_mcp_server.py
+      - genetics-results-api:tests/test_auth_endpoint_identity.py
+      - genetics-results-suite:vendored/tests/sandbox_contract.py
+    symbols:
+      genetics-mcp-server:tests/test_mcp_server.py:
+        - send
+      genetics-results-api:tests/test_auth_endpoint_identity.py:
+        - send
+      genetics-results-suite:vendored/tests/sandbox_contract.py:
+        - send
+    property: >-
+      Test drivers that call an ASGI app directly collect the messages it sends into a list.
+    reason: >-
+      A one-line `send` closure inside three unrelated ASGI test drivers. The vendored
+      contract module's copy is local to its driver function and cannot be imported; the
+      other two are in tests that drive a different app.
+    merge: open
+
+  - id: shell-problem-accumulator
+    sites:
+      - genetics-results-suite:scripts/check-worktree-paths.sh
+      - genetics-results-suite:scripts/install-git-hooks.sh
+    symbols:
+      genetics-results-suite:scripts/check-worktree-paths.sh:
+        - note
+      genetics-results-suite:scripts/install-git-hooks.sh:
+        - note
+    property: >-
+      Both scripts count problems and collect their messages through a three-line `note`
+      function.
+    reason: >-
+      install-git-hooks.sh is vendored by itself into repos that carry none of this repo's
+      scripts/lib, so it cannot source a helper from there, and check-worktree-paths.sh
+      exists only here.
+    merge: never
+
+  - id: chromosome-codes
+    sites:
+      - genetics-results-munge:scripts/sumstat_utils.py
+      - genetics-results-munge:scripts/genebass/convert_genebass_variant_results_dataproc.py
+      - genetics-results-api:app/services/gcloud_tabix_base.py
+    symbols:
+      genetics-results-munge:scripts/sumstat_utils.py:
+        - CHROM_CODES
+      genetics-results-munge:scripts/genebass/convert_genebass_variant_results_dataproc.py:
+        - CHROM_CODES
+      genetics-results-api:app/services/gcloud_tabix_base.py:
+        - CHROM_CODES
+    property: >-
+      The numeric code of each non-autosomal chromosome is the same wherever a file is
+      written or read: X is 23, Y is 24, M and MT are 26.
+    reason: >-
+      Writer and reader of every munged file, in repos with no shared import, and the one
+      fact here whose copies did disagree: the peak family and results-api's tabix reader
+      coded the mitochondrion as 25 while the exome products were served as 26. Each repo
+      now holds the map once. The Dataproc script keeps a copy inside genetics-results-munge
+      because it is submitted to the cluster as a single file. results-db states the same
+      codes as a SQL CASE and a lookup in its gene-annotation build, which this detector
+      does not read.
     merge: never

@@ -17,9 +17,13 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 (any other path containing clients-registrations → 404)
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 bearer-token requests bypass the BFF and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld is the exception:
-                     │                 the BFF proxies it out to the external LD API (LD_API_URL),
-                     │                 because the frontend CSP forbids off-origin fetches
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld,
+                     │                 /api/v1/gene_annotation, /api/v1/gene_constraint and
+                     │                 /api/v1/gtex_expression are the exceptions: the BFF proxies
+                     │                 them out to the external LD API (LD_API_URL), mygene.info
+                     │                 (MYGENE_API_URL), gnomAD (GNOMAD_API_URL) and the GTEx
+                     │                 portal (GTEX_API_URL), because the frontend CSP forbids
+                     │                 off-origin fetches
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session)
                      ├── /mcp       → mcp-server    (MCP streamable HTTP, port 8080) — bearer token auth
@@ -472,6 +476,14 @@ Two checks then run on every commit, and they differ in what they do to it:
 | `scripts/check-doc-drift.sh` | warns, commit proceeds |
 | `scripts/lint-staged.sh` (ruff, staged Python only) | **blocks the commit** |
 
+Both scripts, and `install-git-hooks.sh` itself, are the same files in every repo of the
+suite: this repo holds the source and `scripts/vendor.py` writes the copies named in
+`configs/vendored.yaml` into the siblings, so a fix is made here, vendored, and committed on
+both sides. What stays per repo is each `check-doc-drift.sh`'s own rules — the mechanism
+they source, `scripts/doc-drift-lib.sh`, is the vendored part — and whether the lint gate
+also runs `ruff format --check`, which a repo opts into by tracking a `.ruff-format-gate`
+file at its root, as genetics-mcp-server does.
+
 The lint gate reports only on files the commit touches, so pre-existing findings
 elsewhere never stand in your way; `scripts/lint-staged.sh --all` runs the repo-wide
 check. It looks for ruff in this checkout's `.venv`, then the main checkout's, then
@@ -791,7 +803,7 @@ gate has never been on). See "The sandbox Deployment" in `docs/project-spec.md` 
 ## Running the suite locally
 
 Everything above deploys. To run the services from source on one machine — results-api
-`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the
+`:2000`, frontend `:3000`, chat-backend `:4000`, BFF `:5001`, db-api `:8080` and the
 standalone mcp-server `:8082`, out of four repos —
 see [docs/local-dev-vm.md](https://github.com/fulltiltgenomics/genetics-results-suite-internal/blob/master/docs/local-dev-vm.md) for the from-scratch setup and
 `scripts/dev-stack.sh` to drive them:
@@ -876,7 +888,10 @@ byte-identical to a file committed in another is generated and netted out mechan
 ignore from `.git/info/exclude` or a global excludes file does not count — neither travels
 with the clone), and a group covered by an entry in `configs/twins.yaml` — the sites, the
 property that must hold between them, a mandatory reason, and whether merging them is ruled
-out — is declared and netted out too. Both are reported on their own lines rather than
+out — is declared and netted out too. A copy `configs/vendored.yaml` names and
+`scripts/vendor.py` writes — the hook tooling and the shared contract tests — is netted
+out while it is byte-identical to its source here; edit the source, run `scripts/vendor.py`,
+and commit both repos. All three are reported on their own lines rather than
 folded into a smaller number, and the declared count is ratcheted like the rest, so
 declaring a twin takes a `--write-baseline --reason`; that the reason names the entry is
 convention, non-empty is what the code enforces. See "Sibling repos" and "Duplication
@@ -887,7 +902,7 @@ baseline" in `docs/project-spec.md`.
 | Service | Source Repo | Image | Port | Notes |
 |---------|-----------|-------|------|-------|
 | frontend | genetics-results-browser | genetics-results-browser | 3000 | React SPA via nginx |
-| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`), passes other `/api/*` calls through |
+| bff | genetics-results-browser (`bff/Dockerfile`) | genetics-results-browser-bff | 5000 | Backend-for-frontend: assembles the browser's `POST /v1/results` from the results-api fan-out, proxies the external LD API as `GET /api/v1/ld` (`LD_API_URL`) mygene.info as `GET /api/v1/gene_annotation` (`MYGENE_API_URL`) the gnomAD GraphQL API as `GET /api/v1/gene_constraint` (`GNOMAD_API_URL`) and the GTEx portal API as `GET /api/v1/gtex_expression` (`GTEX_API_URL`), summarizes results-api's GWAS credible sets around a gene as `GET /api/v1/gene_association/<gene>` for the gene page's variant association tab, passes other `/api/*` calls through |
 | auth-gateway | — | nginx@sha256:65645c7b… (a 1.27-alpine build, pinned) | 8080 | Auth gateway (oauth2-proxy + routing) |
 | oauth2-proxy | — | oauth2-proxy:v7.14.3 | 4180 | Browser login — OIDC against Keycloak, or Google directly where the broker is disabled |
 | keycloak | keycloak/ (local build) | keycloak | 8080 | Identity broker (Google, Apple, Microsoft), served at `<domain>/auth`; on by default, skipped when `ENABLE_KEYCLOAK=false` |

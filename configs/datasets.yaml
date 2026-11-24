@@ -84,7 +84,7 @@ resources:
 
   schema2:
     label: "SCHEMA2"
-    description: "Schizophrenia Exome Meta-analysis v2 — gene burden results for schizophrenia"
+    description: "Schizophrenia Exome Meta-analysis v2 — gene burden results and per-variant allele counts for schizophrenia"
     aliases: ["schema", "SCHEMA", "schizophrenia exome"]
 
   genebass:
@@ -168,6 +168,11 @@ resources:
     label: "Human Protein Atlas"
     description: "Human Protein Atlas protein levels (immunohistochemistry staining) across tissues and cell types"
     aliases: ["HPA"]
+
+  cellxgene:
+    label: "CZ CELLxGENE Discover"
+    description: "CZ CELLxGENE Discover single-cell RNA expression by cell type and tissue, pooled from its human datasets"
+    aliases: ["CELLxGENE", "cellxgene", "CZI single-cell"]
 
   gencc:
     label: "GenCC"
@@ -352,8 +357,8 @@ tables:
       cs_size: "Number of variants in this credible set"
       cs_min_r2: "Minimum pairwise LD r² within the credible set"
       aaf: "Alternative allele frequency. Prefer maf column for minor allele frequency"
-      most_severe: "Most severe VEP-predicted variant consequence. FinnGen-cohort and FinnGen meta-analysis rows and the pseudo credible sets carry the FinnGen variant annotation; eQTL Catalogue, Open Targets, NMR (UKBB+EstBB), PGC SCZ fine-mapping and UKB-PPP rows are stamped from gnomAD 4.1.1 (VEP 115, GENCODE 49), the same annotation gnomad_variant_annotation_v holds, and are NULL for a variant gnomAD does not hold"
-      gene_most_severe: "Gene symbol associated with the most severe consequence; NULL when no named gene carries it, which gnomAD's GENCODE 49 annotation leaves more often than FinnGen's"
+      most_severe: "Most severe VEP-predicted variant consequence. FinnGen-cohort and FinnGen meta-analysis rows and the pseudo credible sets carry the FinnGen variant annotation; eQTL Catalogue, Open Targets, NMR (UKBB+EstBB), PGC SCZ fine-mapping and UKB-PPP rows are stamped from gnomAD 4.1.1 (VEP 115, GENCODE 49), the same most_severe gnomad_variant_annotation_v holds: the most severe consequence on a canonical transcript, protein-coding genes first, not the worst over every transcript. NULL for a variant gnomAD does not hold"
+      gene_most_severe: "Gene the most_severe consequence is on, as a gene symbol. On the gnomAD-stamped rows (see most_severe) a gene without a symbol is given by its Ensembl gene id (ENSG...), and the value is NULL when the variant has no transcript annotation or gnomAD does not hold it; on the FinnGen-annotated rows it is NULL when no named gene carries the consequence"
       variant: "Variant identifier as chr:pos:ref:alt, chromosome X is 23"
       maf: "Minor allele frequency = LEAST(aaf, 1-aaf). Use directly instead of computing from aaf"
       resource: "Data source identifier (lowercase). Always filter by this column, not dataset"
@@ -854,8 +859,8 @@ tables:
     summary: "Single-variant exome association results"
     description: >-
       Single-variant exome association results from multiple resources with different
-      significance thresholds. Genebass contains variants filtered to p < 1e-4.
-      IBD exome (ibd_exome_2026) contains variants filtered to mlog10p > 4.
+      significance thresholds. Genebass contains variants filtered to mlog10p >= 3
+      (p <= 1e-3). IBD exome (ibd_exome_2026) contains variants filtered to mlog10p > 4.
 
     columns:
       dataset: "Study name (e.g. genebass, IBD_exome)"
@@ -1206,14 +1211,31 @@ tables:
     summary: "Per-variant allele counts by inheritance mode (count-based exome studies)"
     description: >-
       Per-variant allele COUNTS from exome studies whose release carries counts but no
-      per-variant test statistic. First source: the Autism Sequencing Consortium 2026
-      release (dataset ASC2, trait ASD): every SNV/indel in the release — 7,045,130 rows,
-      GRCh38, chrX (23) and chrY (24) included — with its VEP consequence, variant class,
-      MPC and AlphaMissense scores, gnomAD AF and six counts: de novo alleles in probands
-      and in unaffected siblings, alleles transmitted and untransmitted to probands, and
-      alleles in cases and controls. Not filtered on significance (there is none) and not
-      filtered on gnomad_af, which is an annotation here rather than the source's rarity
-      filter (it reaches 0.89).
+      per-variant test statistic. GRCh38; not filtered on significance (there is none).
+      Two sources, and they do NOT carry the same columns — a column a source lacks is
+      NULL for it, never zero, so always filter on `dataset` and read only the counts
+      that dataset has:
+
+      ASC2 (Autism Sequencing Consortium 2026, trait ASD): every SNV/indel in the
+      release — 7,045,150 rows for 7,045,130 variants, chrX (23) and chrY (24) included
+      — with its VEP consequence, variant class, MPC and AlphaMissense scores and six
+      counts: de novo alleles in probands and in unaffected siblings, alleles transmitted
+      and untransmitted to probands, and alleles in cases and controls. No allele numbers
+      (an_case, an_ctrl are NULL). A variant is NOT always one row: 20 "other splice"
+      SNVs have a PTV row carrying their de novo counts and a second row, classed by the
+      underlying consequence, carrying their inherited and case-control counts. Sum over
+      a variant's rows for its total counts.
+
+      SCHEMA2 (Schizophrenia Exome Meta-analysis v2, trait SCZ): only the 737,813
+      variants the source marks as used in its gene-level analysis, so a variant absent
+      here is not a variant with zero carriers. Case and control allele counts WITH
+      allele numbers (an_case, an_ctrl), and a de novo count in de_novo_ac_proband that
+      is NOT included in ac_case (a variant seen only de novo has ac_case 0). No
+      sibling or transmission counts, no variant_class and no is_other_splice (all NULL).
+      Its `consequence` uses VEP's own terms (missense_variant, stop_gained, an `_LC`
+      suffix on low-confidence calls), not ASC2's spelling. SCHEMA2 reports no
+      per-variant p-value or effect size: do not compute an odds ratio or p-value from
+      these counts and present it as the study's result.
 
       No CNV rows: the DEL and DUP classes are gene-level only (exome_gene_counts_v).
       Summing these counts over a gene reproduces neither that table's "independent"
@@ -1222,27 +1244,29 @@ tables:
       `gene =` or `variant =` is required to stay under the sandbox scan cap.
 
     columns:
-      dataset: "Study name (ASC2)"
-      chr: "Chromosome number, chromosome X is 23, Y is 24. The partitioning column"
+      dataset: "Study name (ASC2, SCHEMA2). Decides which count columns are populated"
+      chr: "Chromosome number, chromosome X is 23, Y is 24, MT is 26. The partitioning column"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
       alt: "Alternative allele"
-      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling)"
+      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling, SCHEMA2: v39)"
       gene_id: "Ensembl gene ID (unversioned)"
       transcript_id: "Ensembl transcript the consequence was called on"
-      consequence: "VEP consequence as the source spells it (missense, synonymous, frameshift, stop gained, splice donor, ...)"
-      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class"
+      consequence: "VEP consequence as the source spells it, so the spelling differs by dataset (ASC2: missense, stop gained; SCHEMA2: missense_variant, stop_gained). Read the values from the enumerable values scoped by resource"
+      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class. NULL for SCHEMA2"
+      hgvsc: "Coding change (HGVS c.), NULL where none"
       hgvsp: "Protein change (HGVS p.), NULL where none"
       mpc: "MPC missense deleteriousness score; NULL outside missense"
       alpha_missense: "AlphaMissense pathogenicity score; NULL outside missense"
-      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules"
-      gnomad_af: "gnomAD allele frequency as annotated by the source; an annotation, not a filter"
-      de_novo_ac_proband: "De novo allele count in probands"
-      de_novo_ac_sibling: "De novo allele count in unaffected siblings"
-      transmitted_ac_proband: "Alleles transmitted to probands"
-      untransmitted_ac_proband: "Alleles not transmitted to probands"
+      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules. NULL for SCHEMA2"
+      de_novo_ac_proband: "De novo allele count in probands (SCHEMA2: the source's n_de_novo)"
+      de_novo_ac_sibling: "De novo allele count in unaffected siblings. NULL for SCHEMA2"
+      transmitted_ac_proband: "Alleles transmitted to probands. NULL for SCHEMA2"
+      untransmitted_ac_proband: "Alleles not transmitted to probands. NULL for SCHEMA2"
       ac_case: "Allele count in cases"
+      an_case: "Allele number in cases (alleles genotyped). NULL for ASC2 and for a few SCHEMA2 rows; 0 on SCHEMA2 variants seen only de novo"
       ac_ctrl: "Allele count in controls"
+      an_ctrl: "Allele number in controls. NULL for ASC2 and for a few SCHEMA2 rows"
       trait: "Trait/phenotype name"
       trait_original: "Original trait name in the respective dataset (the phenotypes_v join key)"
       variant: "Variant identifier as chr:pos:ref:alt"
@@ -1259,17 +1283,19 @@ tables:
       transcript_id: STRING
       consequence: STRING
       variant_class: STRING
+      hgvsc: STRING
       hgvsp: STRING
       mpc: FLOAT64
       alpha_missense: FLOAT64
       is_other_splice: BOOL
-      gnomad_af: FLOAT64
       de_novo_ac_proband: INT64
       de_novo_ac_sibling: INT64
       transmitted_ac_proband: INT64
       untransmitted_ac_proband: INT64
       ac_case: INT64
+      an_case: INT64
       ac_ctrl: INT64
+      an_ctrl: INT64
       trait: STRING
       trait_original: STRING
       variant: STRING
@@ -1286,11 +1312,18 @@ tables:
           ORDER BY pos
       - description: "Counts for one variant. chr beside variant as above."
         sql: |-
-          SELECT gene, consequence, variant_class, hgvsp, gnomad_af,
+          SELECT dataset, gene, consequence, variant_class, hgvsp,
                  de_novo_ac_proband, de_novo_ac_sibling, transmitted_ac_proband,
                  untransmitted_ac_proband, ac_case, ac_ctrl
           FROM exome_variant_counts_v
           WHERE chr = 1 AND variant = '1:939436:C:CT'
+      - description: "SCHEMA2 case and control allele counts with allele numbers for the variants of one gene. SCHEMA2 has no variant_class, so the consequence is the only annotation to filter on."
+        sql: |-
+          SELECT variant, consequence, hgvsp, mpc, alpha_missense,
+                 ac_case, an_case, ac_ctrl, an_ctrl, de_novo_ac_proband
+          FROM exome_variant_counts_v
+          WHERE chr = 16 AND gene = 'SETD1A' AND dataset = 'SCHEMA2'
+          ORDER BY pos
 
     categorical_columns:
       resource: null
@@ -1404,7 +1437,7 @@ tables:
       peak_start/peak_end. Always filter by resource, not dataset.
 
     columns:
-      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25)"
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=26)"
       peak_start: "Peak interval start (GRCh38)"
       peak_end: "Peak interval end (GRCh38)"
       peak_id: >-
@@ -1573,7 +1606,7 @@ tables:
       eQTL/caQTL. Always filter by resource, not dataset.
 
     columns:
-      chr: "Chromosome number (GRCh38; X=23, Y=24, M=25). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
+      chr: "Chromosome number (GRCh38; X=23, Y=24, M=26). The staged file column is 'chrom'; the BigQuery view exposes it as INT64 'chr'"
       pos: "Genomic position (GRCh38)"
       variant: "Variant identifier as chr:pos:ref:alt (chromosome X=23)"
       ref: "Reference allele"
@@ -2693,8 +2726,8 @@ tables:
       AF_nfe: "Alternative allele frequency, non-Finnish European"
       AF_remaining: "Alternative allele frequency, remaining individuals"
       AF_sas: "Alternative allele frequency, South Asian"
-      most_severe: "Most severe VEP-predicted variant consequence"
-      gene_most_severe: "Gene symbol associated with the most severe consequence"
+      most_severe: "Most severe VEP-predicted consequence on a canonical transcript, protein-coding genes first; a variant with no canonical transcript falls back to its other transcripts. Not VEP's most_severe_consequence, which is the worst over every transcript. The array in consequences holds every annotation"
+      gene_most_severe: "Gene of the transcript most_severe was taken from: its gene symbol, or its Ensembl gene id (ENSG...) when the gene has no symbol. NULL when the variant has no transcript annotation"
       consequences: "VEP annotations in the source's order, one element per distinct gene-level annotation (a gene repeats when its transcripts differ), as ARRAY<STRUCT>: gene_symbol (NULL when the gene has none), gene_id (Ensembl), consequences (ARRAY<STRING> of VEP terms for that gene), gene_symbol_source (e.g. HGNC), canonical (1 when on the gene's canonical transcript, else NULL), biotype. Empty array when the variant has no annotation. Read with UNNEST(consequences) AS c"
       genome_or_exome: "Source of the row's statistics: g (genomes) or e (exomes)"
       resource: "Data source identifier, constant 'gnomad'"
@@ -3645,6 +3678,11 @@ dataset_to_resource_rules:
     applies_to: ["exome_gene_counts_v", "exome_gene_bayes_results_v", "exome_variant_counts_v"]
     comment: "ASC 2026 autism exome counts, Bayes factors and FDR (exact match)"
 
+  - pattern: "SCHEMA2"
+    resource: "schema2"
+    applies_to: ["exome_variant_counts_v"]
+    comment: "SCHEMA2 per-variant allele counts (exact match)"
+
   - pattern: "COVID19_HGI%"
     resource: "covid_hgi"
     applies_to: ["credible_sets_v", "colocalization_v", "coloc_credsets_v"]
@@ -4380,7 +4418,7 @@ profiles:
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
           from exome sequencing of 394,841 UK Biobank participants. Results are filtered
-          to p < 1e-4. Results include per-variant burden test statistics across phenotypes
+          to mlog10p >= 3 (p <= 1e-3). Results include per-variant burden test statistics across phenotypes
           and functional annotations.
         author: "Genebass"
         publication_date: "2022-09-14"
@@ -4397,9 +4435,8 @@ profiles:
         description: >-
           2026 IBD exome analysis results. Single-variant exome association results for
           inflammatory bowel disease (IBD), ulcerative colitis (UC) and Crohn's disease (CD).
-          Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
-          and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
-          than genebass (p < 1e-4).
+          Results are filtered to mlog10p > 4 (p < 1e-4), a stricter cut than genebass
+          (mlog10p >= 3).
         author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: exome
@@ -4478,7 +4515,7 @@ profiles:
         version: "2026"
         description: >-
           ASC 2026 variant-level results (exome_variant_counts_v): every SNV/indel in the
-          release (7,045,130, GRCh38, chrX and chrY included) with its consequence, variant
+          release (7,045,130 variants, GRCh38, chrX and chrY included) with its consequence, variant
           class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
           probands and siblings, transmitted and untransmitted, cases and controls. Counts
           only; no per-variant test statistic exists in the release. No CNV rows.
@@ -4528,6 +4565,33 @@ profiles:
         author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
         data_type: gene_based
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
+
+      schema_exome:
+        resource: schema2
+        dataset: SCHEMA2
+        version: "v2"
+        description: >-
+          SCHEMA2 variant-level allele counts (exome_variant_counts_v): the 737,813 variants
+          the release marks as used in its gene-level analysis, with consequence, MPC and
+          AlphaMissense scores, case and control allele counts and allele numbers, and a de
+          novo count. Counts only; the release carries no per-variant p-value or effect
+          size and none is derived.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "NA"
+        data_type: exome
         trait_type: binary
         n_samples: 238546
         n_cases: 87959
@@ -5603,7 +5667,7 @@ profiles:
         description: >-
           GeneBass exome sequencing variant-level results. Rare variant association testing
           from exome sequencing of 394,841 UK Biobank participants. Results are filtered
-          to p < 1e-4. Results include per-variant burden test statistics across phenotypes
+          to mlog10p >= 3 (p <= 1e-3). Results include per-variant burden test statistics across phenotypes
           and functional annotations.
         author: "Genebass"
         publication_date: "2022-09-14"
@@ -5620,9 +5684,8 @@ profiles:
         description: >-
           2026 IBD exome analysis results. Single-variant exome association results for
           inflammatory bowel disease (IBD), ulcerative colitis (UC) and Crohn's disease (CD).
-          Contains ONLY exome-wide significant variants (p < 3e-7 after conditional analysis)
-          and LD-curated remaining variants (p < 5e-6). This is much more stringent filtering
-          than genebass (p < 1e-4).
+          Results are filtered to mlog10p > 4 (p < 1e-4), a stricter cut than genebass
+          (mlog10p >= 3).
         author: "International Inflammatory Bowel Disease Genetics Consortium"
         publication_date: "NA"
         data_type: exome
@@ -5701,7 +5764,7 @@ profiles:
         version: "2026"
         description: >-
           ASC 2026 variant-level results (exome_variant_counts_v): every SNV/indel in the
-          release (7,045,130, GRCh38, chrX and chrY included) with its consequence, variant
+          release (7,045,130 variants, GRCh38, chrX and chrY included) with its consequence, variant
           class, MPC and AlphaMissense scores, gnomAD AF and six allele counts — de novo in
           probands and siblings, transmitted and untransmitted, cases and controls. Counts
           only; no per-variant test statistic exists in the release. No CNV rows.
@@ -5751,6 +5814,33 @@ profiles:
         author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
         data_type: gene_based
+        trait_type: binary
+        n_samples: 238546
+        n_cases: 87959
+        n_controls: 150587
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 87959
+            n_controls: 150587
+            n_samples: 238546
+
+      schema_exome:
+        resource: schema2
+        dataset: SCHEMA2
+        version: "v2"
+        description: >-
+          SCHEMA2 variant-level allele counts (exome_variant_counts_v): the 737,813 variants
+          the release marks as used in its gene-level analysis, with consequence, MPC and
+          AlphaMissense scores, case and control allele counts and allele numbers, and a de
+          novo count. Counts only; the release carries no per-variant p-value or effect
+          size and none is derived.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "NA"
+        data_type: exome
         trait_type: binary
         n_samples: 238546
         n_cases: 87959
@@ -5852,6 +5942,26 @@ profiles:
           bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
         publication_date: "2026-11-11"
+        data_type: expression
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # daly only: finngen holds no single-cell expression release. No `dataset` key: the
+      # cellxgene_* views carry no dataset label, and their datasets are CELLxGENE's own
+      cellxgene_expression:
+        resource: cellxgene
+        version: "rolling release"
+        description: >-
+          CZ CELLxGENE Discover single-cell RNA expression by cell type and tissue: every
+          human dataset on Discover with raw integer counts on a supported assay, primary
+          cells only, aggregated per dataset and pooled across datasets for normal tissue
+          (mean log1p CP10K and fraction of cells expressing; not TPM). Rebuilt from
+          Discover at each refresh rather than pinned to one publication, so the release
+          in use is the one the gene page shows and cellxgene_datasets_v.release names;
+          that view also lists each contributing dataset with its citation.
+        author: "Chan Zuckerberg Initiative (CZ CELLxGENE Discover) and the contributing studies"
+        publication_date: "NA"
         data_type: expression
         trait_type: null
         metadata_file: null

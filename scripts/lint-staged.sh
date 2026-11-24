@@ -1,5 +1,12 @@
 #!/usr/bin/env sh
-# Lints the Python files in the index and FAILS the commit when ruff reports anything.
+# Lints the Python files in the index and FAILS the commit when ruff reports anything. In a
+# repo that tracks a `.ruff-format-gate` file at its root it format-checks them as well.
+# Formatting is gated, not applied: a hook that rewrites files behind the commit stages
+# something the author never saw.
+#
+# One file for every repo of the suite: genetics-results-suite's copy is the source and
+# scripts/vendor.py writes the others, so edit it there. The marker file is what lets one
+# script serve repos that have adopted `ruff format` and repos that have not.
 #
 # Deliberately blocking, unlike the doc-drift check next to it in the hook: a gate that
 # only warns is one nobody reads. `git commit --no-verify` is the escape hatch.
@@ -10,13 +17,13 @@
 #     that properly means materialising the index somewhere, or stashing, and a hook
 #     that stashes can lose work if it is interrupted. The gap only bites when a file is
 #     partially staged, so that case is detected and reported rather than hidden.
-#   * It does not lint the whole repo, so a finding in a file you did not touch never
+#   * It does not check the whole repo, so a finding in a file you did not touch never
 #     blocks you. The cost is that pre-existing findings are only cleared by touching
 #     the file; `scripts/lint-staged.sh --all` runs the repo-wide check.
 #
 # Usage:
-#   scripts/lint-staged.sh         lint the staged Python files (what the hook runs)
-#   scripts/lint-staged.sh --all   lint the whole repo
+#   scripts/lint-staged.sh         check the staged Python files (what the hook runs)
+#   scripts/lint-staged.sh --all   check the whole repo
 
 set -eu
 
@@ -24,6 +31,9 @@ RUFF_PIN=0.15.12
 
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root"
+
+format_gate=0
+[ -f "$root/.ruff-format-gate" ] && format_gate=1
 
 # resolution order matters for worktrees: one under .claude/worktrees has no .venv of
 # its own, so fall back to the main checkout's before reaching for the network
@@ -61,7 +71,10 @@ fi
 if [ "${1:-}" = "--all" ]; then
     # word splitting is wanted: $ruff may be `uvx ruff@<pin>`
     # shellcheck disable=SC2086
-    exec $ruff check .
+    $ruff check . || exit 1
+    [ "$format_gate" -eq 1 ] || exit 0
+    # shellcheck disable=SC2086
+    exec $ruff format --check .
 fi
 
 tmp=$(mktemp -d)
@@ -90,5 +103,13 @@ if ! xargs -0 $ruff check --force-exclude -- < "$tmp/staged"; then
     printf '  Auto-fixable?  %s check --fix <file>\n' "$ruff" >&2
     printf '  Deliberate?    add a targeted `# noqa: <CODE>` with a reason\n' >&2
     printf '  Bypass:        git commit --no-verify\n\n' >&2
+    exit 1
+fi
+[ "$format_gate" -eq 1 ] || exit 0
+# shellcheck disable=SC2086
+if ! xargs -0 $ruff format --check --force-exclude -- < "$tmp/staged"; then
+    printf '\nlint-staged: the staged Python files above are not ruff-formatted.\n\n' >&2
+    printf '  Fix:     %s format <file>   then re-stage it\n' "$ruff" >&2
+    printf '  Bypass:  git commit --no-verify\n\n' >&2
     exit 1
 fi

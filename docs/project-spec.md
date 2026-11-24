@@ -17,8 +17,11 @@ Internet → GKE Ingress (HTTPS, Google-managed certs)
                      │                 any other clients-registrations path → 404 at the gateway
                      ├── /api/*     → bff           (port 5000) → results-api — browser oauth2 traffic;
                      │                 Authorization: Bearer requests bypass both and hit results-api
-                     │                 (FastAPI, port 4000) directly. /api/v1/ld instead proxies out
-                     │                 to the external LD API (see "Frontend CSP and the LD proxy")
+                     │                 (FastAPI, port 4000) directly. /api/v1/ld,
+                     │                 /api/v1/gene_annotation, /api/v1/gene_constraint and
+                     │                 /api/v1/gtex_expression instead proxy out to the external
+                     │                 LD API, mygene.info, gnomAD and the GTEx portal
+                     │                 (see "Frontend CSP and the LD proxy")
                      ├── /chat/v1/* → chat-backend  (FastAPI, port 8000); also exact /status
                      ├── /provision/* → chat-backend (partner user provisioning, no oauth2 session;
                      │                 see "brainzzz without a GeneGenie login")
@@ -162,6 +165,45 @@ reaches results-api. `window` is bounded to the LD server's own 100,000–5,000,
 is encoded rather than spliced in; upstream 400/404 pass through, everything else becomes 502 (60s
 timeout → 504). The bff has no egress NetworkPolicy, so this outbound call is permitted.
 
+The gene annotation tab's mygene.info record takes the same route for the same reason: the
+browser requests `GET /api/v1/gene_annotation?hgnc_id=HGNC:<n>` (bff `geneAnnotationRoute.ts`),
+which accepts only that id form, queries `MYGENE_API_URL` (default `https://mygene.info/v3`, not
+set in `k8s/deployments/bff.yaml`), and returns the record trimmed to the fields the tab shows.
+Records are cached in the bff process; a gene mygene.info does not know is a 404 and is not
+cached. Only the HGNC id leaves the deployment.
+
+The same tab's gnomAD block comes from `GET /api/v1/gene_constraint?ensembl_id=ENSG<11 digits>`
+(bff `geneConstraintRoute.ts`), which posts a fixed GraphQL query to `GNOMAD_API_URL` (default
+`https://gnomad.broadinstitute.org/api`) with the id as a variable and returns pLI, LOEUF, the
+observed LoF and missense counts, the constraint flags and the gene's ClinVar variants counted
+by pathogenic classification, cached the same way. A gene gnomAD does not know is a 404; one it
+has no constraint for is served with null constraint values.
+
+The gene page's expression tab shows GTEx as the GTEx portal does, a violin of every sample per
+tissue, which results-api's per-tissue medians cannot draw. The samples come from
+`GET /api/v1/gtex_expression?ensembl_id=ENSG<11 digits>` (bff `gtexExpressionRoute.ts`), which
+makes three calls to `GTEX_API_URL` (default `https://gtexportal.org/api/v2`): `metadata/dataset`
+for the newest `gtex_v<N>` release, `reference/gene` for the gene id as versioned in that
+release's GENCODE, and `expression/geneExpression` for the values by `tissueSiteDetailId`. The
+response names the release, and the tab's heading, plot, table and download are all of it, so the
+tab follows a new GTEx release without a deploy and can be a release ahead of results-api's own
+GTEx rows. Genes are cached in the bff process (`GTEX_EXPRESSION_CACHE_MAX`), the release for the
+same time; a gene that release does not have is a 404 and is not cached. Only the gene id leaves
+the deployment. With the GTEx portal unreachable the GTEx tab says so and shows nothing.
+
+The gene page's AI summary tab shows a precomputed summary of the suite's own evidence for the
+gene, from results-api's `GET /api/v1/gene_summary/<gene>` through the BFF's passthrough.
+results-api reads `<SYMBOL>.json` from the release folder its profile names
+(`app/config/profiles/<profile>/gene_summary.py`, or `GENE_SUMMARY_PREFIX`), one object per
+gene, so a refresh uploads only the genes whose evidence changed and needs no restart. The
+route is registered only where a release is named: daly names the IBD pilot's 126 genes,
+finngen names none, and there, as for any gene without a summary, the tab says so. The files
+are written offline by genetics-results-munge's `scripts/gene_summary`: an evidence bundle per
+gene from the gene page's own routes, a summary whose findings cite bundle rows, a check that
+every cited row, number and variant is in the bundle, and a publish step that replaces each
+cited row id with a description of the row and writes the release's `manifest.json`, which
+results-api's startup check requires. No literature goes in.
+
 That window is the **total** width, centred on the query variant (`window=1000000` returns
 ±500 kb), so a pairwise lookup must ask for twice the distance between the two variants, and no
 setting reaches a partner more than 2.5 Mb away. The UI clamps its request at 5 Mb and refuses a
@@ -172,6 +214,17 @@ failed with a bare 400.
 Note that `/api/v1/ld` is browser-only: auth-gateway sends `Authorization: Bearer` requests under
 `/api/` straight to results-api (`@api_bearer`), which has no such route, so a programmatic client
 gets a 404 there and should call the LD API itself.
+
+One bff route is neither a proxy out nor a passthrough: `GET /api/v1/gene_association/<gene>?window=<bp>`
+(bff `geneAssociationRoute.ts`) serves the gene page's variant association tab. It reads
+results-api's `/v1/credible_sets_by_gene/<gene>` for GWAS, groups the rows per credible set into
+a columnar, dictionary-encoded summary, and joins in what that endpoint does not carry: trait
+names and types from `/v1/resource_metadata/<resource>`, and the pseudo flag and a dataset-wide
+trait type from `/v1/datasets`. `window` is the padding either side of the gene, bounded by
+`GENE_ASSOCIATION_MAX_WINDOW`. `GET .../<gene>/set_ids` returns the sets' `cs_id`s, kept out of
+the summary for its size; a set's members are fetched from `/v1/credible_sets_by_id` when its
+row is opened. Responses are cached in the bff process (`GENE_ASSOCIATION_CACHE_MAX`). Like
+`/api/v1/ld` the route is browser-only, for the same reason.
 
 Two consequences worth keeping in mind when editing either side:
 
@@ -340,6 +393,7 @@ configs/                                     canonical dataset and resource defi
   rag/                                       RAG experiment configs (not k8s manifests)
   rcnv_pheno.json                            per-phenotype metadata for the rare-CNV association study
   twins.yaml                                 the duplicates the suite keeps on purpose, netted out of check-duplication.py's counts
+  vendored.yaml                              the files this repo keeps one copy of and vendor.py writes into the sibling repos
 docs/                                        everything below, and nothing else
   adding-datasets.md                         how to add a dataset across the repos and profiles
   chat-tool-reference.md                     verbatim transcription of what the LLM receives: tool names, descriptions and schemas, the profiles, the system prompt, and the chat surface versus /mcp
@@ -376,10 +430,12 @@ scripts/                                     build, deploy and verification scri
   create-secrets.sh                          create the k8s Secrets from environment variables
   deploy.sh                                  full deploy: terraform apply, then every manifest
   dev-stack.sh                               start/stop the local dev servers from one tree (docs/local-dev-vm.md)
+  doc-drift-lib.sh                           the mechanism check-doc-drift.sh sources; vendored to every sibling
+  doc_blocks.py                              the marked-block renderer gen-doc-blocks.py imports; vendored to genetics-mcp-server
   external-inputs-proving-ground.py          offline: a loopback origin serving the linemodels fixture, the fetcher's refusals, and delivery into a sandbox execution; the feature's acceptance test
   gen-doc-blocks.py                          generate the marked blocks in docs/*.md; `--check` is the build gate. genetics-mcp-server carries its own scripts/gen-doc-blocks.py for the blocks in its spec (routes, chat_turn_metrics columns, database env table, module tree), gated by that repo's tests/test_doc_blocks.py rather than by this build
   gen-sandbox-docs.py                        generate sandbox/schema/*.md, sandbox/stubs/*.pyi, and the same schema markdown into genetics-mcp-server's prompt copy
-  install-git-hooks.sh                       wire core.hooksPath; run once per clone
+  install-git-hooks.sh                       wire core.hooksPath; run once per clone; vendored to the siblings that have hooks
   keycloak-bind-allowlist.sh                 bind the email allow-list authenticator and realm attributes
   keycloak-get-token.sh                      browser auth-code+PKCE flow; prints an access token
   keycloak-link-brainzzz-users.sh            link realm users to the brainzzz provider so its assertions resolve them; --unlink revokes
@@ -391,7 +447,7 @@ scripts/                                     build, deploy and verification scri
   keycloak-sync-dcr-policy.sh                set the live realm's anonymous client-registration policies, mcp-pkce and the basic scope's /mcp audience from keycloak/mcp-dcr.json.template
   keycloak-sync-login-policy.sh              set the live realm's SSO session lifespans from the template and the default IdP redirect
   lib/                                       shared library: DEPLOY_ENV resolution, the kubectl context guard, sibling-repo resolution, the repo's fixed paths, the harnesses' check recorder, the brainzzz STS and MCP client-registration template renderers deploy.sh and the live-realm scripts share
-  lint-staged.sh                             block a commit whose staged Python ruff rejects
+  lint-staged.sh                             block a commit whose staged Python ruff rejects; vendored to the Python siblings
   monitor/                                   the monitoring CronJob's Python package
   mr-proving-ground.py                       the genetics.mr stack preconditions, replication fixtures and kill-criterion measurements against the local stack (docs/local-dev-vm.md)
   protein-structure-proving-ground.py        the protein structure layer's rehearsal release root, rehearsal BigQuery dataset and worktrees, and its measurements
@@ -409,6 +465,7 @@ scripts/                                     build, deploy and verification scri
   test-stage-gene-sets.py                    offline: stage-gene-sets.py's refusals, licence drops and atomic output, against a fake bundle
   test-supervisor.py                         offline: the sandbox supervisor, in process or against a container
   test-url-fetcher.py                        offline: the url-fetcher's address-class guard and pinned fetch core, each control also driven as the failure
+  vendor.py                                  write the files in configs/vendored.yaml into the sibling repos; `--check` reports a copy that has drifted
 terraform/                                   infrastructure
   .terraform.lock.hcl                        provider versions, tracked so every checkout applies the same provider against the shared state
   backups.tf                                 disk snapshot schedule and the Keycloak backup bucket
@@ -427,6 +484,7 @@ terraform/                                   infrastructure
   terraform.tfvars.example                   per-environment values; **not committed** except the `.example`. A bare `terraform.tfvars` is the legacy single-deployment form and must not coexist with these
   variables.tf                               input variables
 url-fetcher/                                 URL-fetcher image build context: the address-class guard, the pinned-connection fetch core, the one POST route chat-backend calls, and the build-time assertions that keep the test entrypoint out of the image
+vendored/                                    sources that exist only to be copied into sibling repos by vendor.py: the test modules results-api and db-api both run
 ```
 
 <!-- END GENERATED: structure -->
@@ -439,7 +497,7 @@ For local development, `scripts/sync-datasets.sh` copies the canonical file to s
 
 Both services load all dataset/resource metadata exclusively from the YAML -- there are no hardcoded fallback dicts. In genetics-results-api, the profile `datasets.py` files are empty placeholders (datasets come from YAML via `app.config.yaml_loader`). The `dataset_to_resource` mapping (`app/config/datasets.py`) is derived from each registry entry's `dataset` field — the value the entry's rows carry in their `dataset` column — which `/v1/datasets` also returns beside `dataset_id` so a caller can tell the registry key from the SQL filter value.
 
-The exome and gene-based resources, and the filtering level each carries, are defined in `configs/datasets.yaml` — read them there rather than from a list here. `genebass_exome` is filtered to p < 1e-4; `ibd_exome` (resource: `ibd_exome_2026`) contains only exome-wide significant variants at p < 3e-7 plus LD-curated variants at p < 5e-6, with 3 phenotypes: IBD, UC, CD. `brava` (dataset `brava_gene_based`, both profiles) is the BRaVa consortium cross-ancestry exome meta-analysis and is **gene-burden only**: it loads into `gene_burden_results` beside Genebass with no variant-level product and no DDL change. Two conventions of that load reach every consumer, and both are described with the worked example in [adding-datasets.md](adding-datasets.md): the ancestry strata are phenotype codes rather than a column (`AFib` is the cross-ancestry meta, `AFib|EUR` the EUR stratum), and `annotation` spells the source's mask x max-MAF pair as one `<mask>|MAF<<cutoff>` string, whose values the `categorical_columns` mechanism enumerates. Only the Burden inverse-variance-weighted rows load, because `beta` is `NOT NULL`. The combined file behind `/gene_based/{gene}` (and so `get_gene_based_results`) is the mlog10p > 4 cut for BRaVa exactly as for Genebass, while the per-trait files behind `/gene_based_results_by_phenotype` are unfiltered. The `dataset_to_resource_rules` map `IBD_exome` to `ibd_exome_2026` for `exome_variant_results_v` and `gene_burden_results_v` views, and the exact value `BRaVa` to `brava` for `gene_burden_results_v`.
+The exome and gene-based resources, and the filtering level each carries, are defined in `configs/datasets.yaml` — read them there rather than from a list here. `genebass_exome` is filtered to mlog10p >= 3; `ibd_exome` (resource: `ibd_exome_2026`) is filtered to mlog10p > 4, with 3 phenotypes: IBD, UC, CD. `brava` (dataset `brava_gene_based`, both profiles) is the BRaVa consortium cross-ancestry exome meta-analysis and is **gene-burden only**: it loads into `gene_burden_results` beside Genebass with no variant-level product and no DDL change. Two conventions of that load reach every consumer, and both are described with the worked example in [adding-datasets.md](adding-datasets.md): the ancestry strata are phenotype codes rather than a column (`AFib` is the cross-ancestry meta, `AFib|EUR` the EUR stratum), and `annotation` spells the source's mask x max-MAF pair as one `<mask>|MAF<<cutoff>` string, whose values the `categorical_columns` mechanism enumerates. Only the Burden inverse-variance-weighted rows load, because `beta` is `NOT NULL`. The combined file behind `/gene_based/{gene}` (and so `get_gene_based_results`) is the mlog10p > 4 cut for BRaVa exactly as for Genebass, while the per-trait files behind `/gene_based_results_by_phenotype` are unfiltered. The `dataset_to_resource_rules` map `IBD_exome` to `ibd_exome_2026` for `exome_variant_results_v` and `gene_burden_results_v` views, and the exact value `BRaVa` to `brava` for `gene_burden_results_v`.
 
 `finngen_mvp_ukbb_aou` (dataset `FinnGen_R14_MVP_UKBB_AOU`, finngen and daly profiles) is the R14 FinnGen + MVP + UK Biobank + All of Us meta-analysis. Its contributing ancestry-split cohorts vary per phenotype, so the registry entry carries only the union in `cohorts`; the per-phenotype list comes from the metadata file, and the `FinnGen%MVP_UKBB_AOU%` rule in `dataset_to_resource_rules` must precede `FinnGen%`, which also matches the new name. See [adding-datasets.md](adding-datasets.md).
 
@@ -447,7 +505,7 @@ It replaces the R13 meta-analyses (`FinnGen_R13_UKBB`, `FinnGen_R13_MVP_UKBB` an
 
 Summary statistics are served by results-api from per-phenotype tabix files two ways: `/api/v1/summary_stats/{resource}/{data_type}` (GET/POST) for named variants, and `/api/v1/summary_stats_by_region/{resource}/{data_type}/{region}` for every record in a `chr:start-end` region. Both require `phenotypes=<comma-separated>` — there is no combined file spanning a region across traits, unlike `credible_sets_by_region`. The genetics-mcp-server exposes both as `get_summary_stats` and `get_summary_stats_by_region`.
 
-Every results-api endpoint except the variant-set ones is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. Every BigQuery-backed tool returns `total_count` and `truncated` on each result, and the by-gene ones take `limit` to lift their 500-row default; an open-chromatin locus larger than db-api's row cap is tiled with `get_open_chromatin_by_region`, which is not capped. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.) The **rCNV2 product has no results-api endpoint at all**, by the same design: `get_dosage_sensitivity` and `get_rcnv_associations` are BigQuery-only, and results-api's part in it is that the `/api/v1/datasets` catalogue iterates the dataset registry rather than the product configs, so `collins_rcnv_2022` is listed there with no products against it. Single-cell expression by cell type (`/api/v1/cell_type_expression/{gene}`, human CZ CELLxGENE Discover datasets with raw integer counts on supported assays, primary cells only; log1p CP10K) is reached through `get_cell_type_expression` and the SDK's `genetics.cell_type_expression()`; the tool strips an Ensembl version before calling and is offered only where `CONFIG_PROFILE` is `daly` and `CELL_TYPE_EXPRESSION_ENABLED` is true (`Settings.disabled_tools`; `deploy.sh` derives the flag from the release-pointer tfvar), since a results-api with no pointer answers 404 "not configured" — which the SDK, still listed, reports as not available on this deployment.
+Every results-api endpoint except the variant-set ones, `/colocalization_by_gene/{gene}` (a gene's cis and trans QTL colocalizations, read from a gene-indexed copy of each coloc pair file) and `/gene_summary/{gene}` (the gene page's precomputed AI summary) is now reachable from an MCP tool. The tools closing the last gaps are `get_credible_sets_by_region`, `get_credible_set_leads_by_phenotype`, `get_exome_results_by_variant`, `get_exome_results_by_region`, `get_colocalization_by_credible_set`, `get_peak_to_genes` / `get_gene_to_peaks` (Open4Gene peak-to-gene links, the caQTL peak → target gene bridge), `get_open_chromatin_by_peak`, `get_summary_stats_by_region`, `get_hla_by_phenotype`, `get_resource_metadata` and `get_dataset_display_names`. Region-shaped tools cap inline rows at 500 and set `truncated`, leaving the full result behind the download URL. Every BigQuery-backed tool returns `total_count` and `truncated` on each result, and the by-gene ones take `limit` to lift their 500-row default; an open-chromatin locus larger than db-api's row cap is tiled with `get_open_chromatin_by_region`, which is not capped. (`get_hla_by_allele` has no results-api counterpart by design — it is BigQuery-only, see "Classical HLA allele associations" below.) The **rCNV2 product has no results-api endpoint at all**, by the same design: `get_dosage_sensitivity` and `get_rcnv_associations` are BigQuery-only, and results-api's part in it is that the `/api/v1/datasets` catalogue iterates the dataset registry rather than the product configs, so `collins_rcnv_2022` is listed there with no products against it. Single-cell expression by cell type (`/api/v1/cell_type_expression/{gene}`, human CZ CELLxGENE Discover datasets with raw integer counts on supported assays, primary cells only; log1p CP10K) is reached through `get_cell_type_expression` and the SDK's `genetics.cell_type_expression()`; the tool strips an Ensembl version before calling and is offered only where `CONFIG_PROFILE` is `daly` and `CELL_TYPE_EXPRESSION_ENABLED` is true (`Settings.disabled_tools`; `deploy.sh` derives the flag from the release-pointer tfvar), since a results-api with no pointer answers 404 "not configured" — which the SDK, still listed, reports as not available on this deployment.
 
 ASM-QTL (allele-specific methylation QTL) data from deCODE is served via both BigQuery (`asm_qtl` table / `asm_qtl_v` view) and the standard sumstats endpoint (`/summary_stats/decode/asmqtl`). Two datasets: `decode_asmqtl_cpg` (CpG methylation, phenotype code `CpG`) and `decode_asmqtl_mds` (MDS methylation, phenotype code `MDS`), both under the `decode` resource. The `dataset_to_resource_rules` map `deCODE%` to `decode` for `asm_qtl_v`.
 
@@ -457,7 +515,7 @@ MPRA (Siraj et al. 2026) is a new functional-annotation product — measured int
 
 rCNV2 (Collins et al. 2022) is the suite's first **BigQuery-only** product: a cross-disorder rare-CNV dosage-sensitivity map over 54 HPO phenotype groups, served for both profiles as one dataset `collins_rcnv_2022` under a new resource `rcnv` (`dataset_to_resource_rules` map `Collins_rCNV%` -> `rcnv`), `data_type: rcnv`, `trait_type: binary`. There is **no results-api vertical and no product config entry** — nothing here is read by position per phenotype at request time — so all four faces are BigQuery views: `dosage_sensitivity_v` (per-gene pHaplo/pTriplo, a single published score set, so its `resource` is a constant rather than a derived `CASE`), `rcnv_gene_associations_v` (54 phenotypes x DEL/DUP x 17,263 genes), `rcnv_segments_v` (the 163 disease-associated segments, with their HPO groups, credible intervals and gene lists as arrays) and `rcnv_window_associations_v` (the genome-wide sliding-window meta-analysis, the largest table of the product). The phenotype axis is HPO rather than a suite trait code: the column is `phenotype` (an HPO id with the colon removed) and joins `phenotypes_v` on `dataset = 'Collins_rCNV_2022'`. Data is produced by `genetics-results-munge`'s `scripts/munge_rcnv.{py,sh}` (`--product scores|genes|segments|windows`) and loaded by `genetics-results-db`; the agent reaches it through `get_dosage_sensitivity` and `get_rcnv_associations`, through the sandbox SDK's `genetics.dosage_sensitivity()` / `genetics.rcnv()`, and through raw `query_database`.
 
-The ASC 2026 autism exome release (Satterstrom, Auwerx, Fu et al.) is the second BigQuery-only product and the first exome dataset served **without a p-value**: the release carries per-gene "independent" variant counts by variant class and inheritance mode, a TADA Bayes factor and Bayesian FDR per gene, and per-variant allele counts, and nothing else — no effect size, no allele frequency — and the suite derives none of those on the way in. That is why it is not in `gene_burden_results` / `exome_variant_results` (both require `mlog10p` and `beta`) but in three tables of its own, shared by shape with any later count-based release: `exome_gene_counts_v` (one row per gene x `variant_class` x `inheritance_mode`, with `n_affected` / `n_unaffected`), `exome_gene_bayes_results_v` (one row per gene: `bayes_factor`, `fdr`, `qc_flagged` — rank on `fdr`, which is not a function of the Bayes factor) and `exome_variant_counts_v` (every SNV/indel in the release, unfiltered). Both profiles register it as `asc_gene_based` + `asc_exome` under resource `asc2` with `dataset: ASC2` and one binary phenotype `ASD`; `data_type` reuses `gene_based` and `exome`. Produced by `genetics-results-munge`'s `scripts/munge_asc.py` (GENCODE v29 for the gene join) and loaded by `genetics-results-db`'s `scripts/load_asc.sh`; reached through `query_database` and the sandbox SQL surface, with no results-api vertical, no browser surface and no dedicated MCP tool. The worked example in [adding-datasets.md](adding-datasets.md) records the three facts a `SELECT *` does not show.
+The ASC 2026 autism exome release (Satterstrom, Auwerx, Fu et al.) is the second BigQuery-only product and the first exome dataset served **without a p-value**: the release carries per-gene "independent" variant counts by variant class and inheritance mode, a TADA Bayes factor and Bayesian FDR per gene, and per-variant allele counts, and nothing else — no effect size, no allele frequency — and the suite derives none of those on the way in. That is why it is not in `gene_burden_results` / `exome_variant_results` (both require `mlog10p` and `beta`) but in three tables of its own, shared by shape with any later count-based release: `exome_gene_counts_v` (one row per gene x `variant_class` x `inheritance_mode`, with `n_affected` / `n_unaffected`), `exome_gene_bayes_results_v` (one row per gene: `bayes_factor`, `fdr`, `qc_flagged` — rank on `fdr`, which is not a function of the Bayes factor) and `exome_variant_counts_v` (every SNV/indel in the release, unfiltered). `exome_variant_counts_v` also carries the SCHEMA2 per-variant allele counts (`schema_exome`, `dataset: SCHEMA2`; the rows the source marks `in_analysis`, munged by `scripts/munge_schema2_variant_counts.py` and loaded by `scripts/load_schema2_variant_counts.sh`), with a different set of populated columns — see the view's block in `configs/datasets.yaml`. Both profiles register the ASC release as `asc_gene_based` + `asc_exome` under resource `asc2` with `dataset: ASC2` and one binary phenotype `ASD`; `data_type` reuses `gene_based` and `exome`. Produced by `genetics-results-munge`'s `scripts/munge_asc.py` (GENCODE v29 for the gene join) and loaded by `genetics-results-db`'s `scripts/load_asc.sh`; reached through `query_database` and the sandbox SQL surface, with no results-api vertical, no browser surface and no dedicated MCP tool. The worked example in [adding-datasets.md](adding-datasets.md) records the three facts a `SELECT *` does not show.
 
 ### Classical HLA allele associations
 
@@ -712,6 +770,21 @@ a new release completely before swapping it in; it answers 503 until a first rel
 backs the browser's gene-page section and the MCP tool `get_cell_type_expression` (SDK
 `genetics.cell_type_expression()`). The BigQuery side is the `cellxgene_*_v` views, read through
 db-api by the sandbox and the agent.
+
+**Thinly supported rows are flagged, not dropped.** results-api appends `low_support` to every
+summary row (the rule and its thresholds are `low_support()` in its
+`app/config/cell_type_expression.py`, with the measurement behind them): too few donors or cells,
+or a small row whose only source is one dataset. The gene page and the chat tool hide flagged
+rows until asked (the page's toggle, the tool's and SDK's `include_low_support`); the TSV
+download and the `cellxgene_*_v` views carry every row, and the views have no such column.
+
+**One registry entry stands for the whole product.** `cellxgene_expression` in the daly profile
+of `configs/datasets.yaml` (`data_type: expression`, as GTEx and HPA are) is what lists
+CELLxGENE in `/api/v1/datasets` and so in the browser's Datasets dialog. It has no `dataset`
+label and no fixed version, because the views carry no dataset column and a refresh replaces
+the release; the datasets behind it are CELLxGENE's own, in `cellxgene_datasets_v`. The
+`cellxgene` resource it names is kept out of db-api's resource metadata
+(`_API_ONLY_RESOURCES`), which is profile-independent and would otherwise name it on finngen.
 
 **Where it runs.** The driver is itself a Cloud Batch job, started weekly by the Cloud Scheduler
 job `expression-refresh`, and it submits the worker jobs. Batch VMs run in a dedicated VPC with no
@@ -2170,6 +2243,20 @@ site in `check-duplication.py`: untracking a hand-maintained duplicate takes it 
 ratchet with no reason recorded at all, and whole-file byte-identity is what bounds the
 exposure rather than eliminating it.
 
+A third kind of copy is netted out: a **vendored** one. `configs/vendored.yaml` names files
+this repo holds the single source of — the hook tooling every repo runs, the marked-block
+renderer both `gen-doc-blocks.py` generators import, and under `vendored/` the test modules
+results-api and db-api both run — and `scripts/vendor.py` writes each into the repos listed
+for it, byte for byte. Those copies are **tracked** where they land, because a clone of a
+sibling has to carry its own hooks and tests, so git cannot vouch for them the way it does
+for an ignored generated file; the detector strikes a copy only while the manifest names it
+**and** its bytes equal the source's. A copy edited in place, and two files that merely
+happen to be equal, are both counted. The vendored row is reported and not ratcheted, like
+the generated one; its accountability is the manifest's mandatory `reason` and
+`vendor.py --check`, which `build-all.sh` runs against the cloned branches — warn-only,
+since nothing vendored reaches an image. A manifest the detector cannot read is exit 2.
+The workflow is: edit the source here, run `scripts/vendor.py`, commit both sides.
+
 `docs/duplication-baseline.json` is a **dated snapshot**, not a live claim, and carries the
 date plus the commit and dirty state of **every** repo it scanned, not only this one — the
 counts are cross-repo, so they move on a sibling's commit with nothing here to explain it,
@@ -2336,7 +2423,7 @@ clustering itself should be asserted from
 ### Running the local dev stack (`scripts/dev-stack.sh`)
 
 The servers run from source on a dev machine — results-api `:2000`, frontend `:3000`,
-chat-backend `:4000`, BFF `:5000`, db-api `:8080` and the standalone mcp-server `:8082` —
+chat-backend `:4000`, BFF `:5001`, db-api `:8080` and the standalone mcp-server `:8082` —
 out of four repos, chat-backend and mcp-server being two entrypoints of `genetics-mcp-server`
 with different tool surfaces. mcp-server takes 8082 because the cluster's 8080 is db-api's
 here; it is launched the way `k8s/deployments/mcp-server.yaml` launches it, with the values that
@@ -2532,7 +2619,10 @@ truth that the next repair silently overwrites with the old text.
 ### The lint gate
 
 `scripts/lint-staged.sh` runs ruff over the **staged** Python files and **fails the
-commit** when anything is reported. `git commit --no-verify` is the bypass.
+commit** when anything is reported. `git commit --no-verify` is the bypass. The same
+script is vendored to the Python siblings; a repo that tracks a `.ruff-format-gate` file
+at its root gets `ruff format --check` as well, which is the one per-repo difference and
+why it is a marker rather than a second script.
 
 - **Staged, not repo-wide.** A finding in a file this commit does not touch never
   blocks it. The cost is the other side of that coin: a pre-existing finding is only
@@ -2598,8 +2688,9 @@ matches — a stale view list, row count or endpoint table — which is what mos
 drift found in this repo has actually been. All five sibling repos
 (`genetics-results-api`, `-db`, `-browser`, `-munge`, `genetics-mcp-server`) carry
 their own `scripts/check-doc-drift.sh` wired into `.beads/hooks/pre-commit` the same
-way, and share the same `core.hooksPath`-not-tracked gap; each but `-munge` closes it
-with its own `scripts/install-git-hooks.sh`, which genetics-results-munge does not have.
+way — their own rules, over the `scripts/doc-drift-lib.sh` this repo vendors to them —
+and share the same `core.hooksPath`-not-tracked gap; each but `-munge` closes it
+with the vendored `scripts/install-git-hooks.sh`, which genetics-results-munge does not have.
 
 ### Worktree path resolution: `scripts/check-worktree-paths.sh`
 

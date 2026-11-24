@@ -66,6 +66,12 @@ and the report always shows the split rather than one smaller number:
               out here and leave it counted in the next clone. The direction it fails in is
               the one that matters: a consumer that commits its copy stops being ignored, and
               the copy comes back as undeclared.
+  vendored    a member configs/vendored.yaml names as a copy scripts/vendor.py writes, and
+              byte-identical to its source in genetics-results-suite. These copies are
+              TRACKED, so git cannot vouch for them the way it does for a generated one —
+              the manifest says a generator owns the file and the bytes say nobody has
+              edited it since. Either failing puts the copy back in the undeclared count:
+              a copy edited by hand, and a pair of files that merely happen to be equal.
   declared    a group whose remaining files are covered by an entry in configs/twins.yaml,
               which names the sites, the property that must hold between them and WHY they
               are two things. A registry is itself a hand-maintained list — the shape this
@@ -76,8 +82,8 @@ and the report always shows the split rather than one smaller number:
 Netting happens per MEMBER: a group can lose its generated edges and stay in the count for
 the hand-maintained pair underneath, which is what the sync-datasets.sh copies of
 configs/datasets.yaml do to the intra-suite copy in configs/datasets-schema-example.yaml.
-A member struck this way leaves the declared row as well as the undeclared ones, so the four
-rows do not count one file twice.
+A member struck this way, generated or vendored, leaves the declared row as well as the
+undeclared ones, so the five rows do not count one file twice.
 
 Usage:
     scripts/check-duplication.py                    report
@@ -108,6 +114,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import siblings  # noqa: E402
+import vendor  # noqa: E402
 
 ROOT = siblings.ROOT
 BASELINE = os.path.join(ROOT, "docs", "duplication-baseline.json")
@@ -457,6 +464,24 @@ def generated_members(groups, repos, tracked):
             if rel in ignored[repo] and committed[d] - {repo}}
 
 
+def vendored_members(groups, repos):
+    """Members configs/vendored.yaml says scripts/vendor.py writes, still equal to their source.
+
+    Raises vendor.ManifestError rather than returning an empty set for a manifest it cannot
+    read: an empty set would put every vendored copy back in the count, and the run would
+    report as growth what is really a registry nobody could parse.
+    """
+    if not os.path.exists(vendor.MANIFEST):
+        return set()
+    copies = vendor.copies(vendor.load_manifest())
+    out = set()
+    for f in {f for g in groups for f in g["files"]} & set(copies):
+        repo, _, rel = f.partition(":")
+        if vendor.same(os.path.join(ROOT, copies[f]), os.path.join(repos[repo], rel)):
+            out.add(f)
+    return out
+
+
 class TwinError(Exception):
     """configs/twins.yaml does not say what an entry has to say."""
 
@@ -547,22 +572,26 @@ def explaining_twin(twins, files, names_by_file):
     return None
 
 
-def net_out(groups, generated, twins):
-    """Label every group generated, declared or undeclared, stripping generated members.
+def net_out(groups, generated, vendored, twins):
+    """Label every group generated, vendored, declared or undeclared, stripping the
+    generated and vendored members.
 
-    The strip runs on every group that survives, declared ones included: a generated copy
-    left inside a declared group is counted in two of the four rows at once, and the
-    lockstep days of the repo it sits in are charged to work nobody has to do.
+    The strip runs on every group that survives, declared ones included: a struck copy
+    left inside a declared group is counted in two rows at once, and the lockstep days of
+    the repo it sits in are charged to work nobody has to do.
     """
     for g in groups:
         gen = [f for f in g["files"] if f in generated]
-        left = [f for f in g["files"] if f not in generated]
+        ven = [f for f in g["files"] if f in vendored and f not in generated]
+        left = [f for f in g["files"] if f not in generated and f not in vendored]
         if gen:
             g["generated_files"] = gen
+        if ven:
+            g["vendored_files"] = ven
         if len(left) < 2:
-            g["status"] = "generated"
+            g["status"] = "vendored" if ven else "generated"
             continue
-        if gen:
+        if gen or ven:
             g["files"] = left
             g["repos"] = sorted({f.partition(":")[0] for f in left})
             g["names_by_file"] = {f: n for f, n in g["names_by_file"].items() if f in left}
@@ -784,7 +813,8 @@ def measure(repos, window, twins):
             _slot(census, repo, ext)["on_disk"] = counts.get(ext, 0)
     exact = exact_groups(units)
     groups = exact + near_groups(units, exact) + enum_groups(enums)
-    net_out(groups, generated_members(groups, repos, tracked), twins)
+    net_out(groups, generated_members(groups, repos, tracked),
+            vendored_members(groups, repos), twins)
     history = {r: commit_index(p, window) for r, p in repos.items()}
     # after net_out, so an undeclared group is weighed on the files still in it and the
     # generated copies' lockstep days stop counting towards work nobody has to do
@@ -819,6 +849,7 @@ def measure(repos, window, twins):
         "cross": tally(undeclared("cross")),
         "declared": declared,
         "generated": tally(lambda g: g["status"] == "generated"),
+        "vendored": tally(lambda g: g["status"] == "vendored"),
         "groups": groups,
     }
 
@@ -830,7 +861,7 @@ def render(m, top=12):
         "",
         f"{'':10} {'groups':>7} {'files':>7} {'lockstep':>9}   by kind",
     ]
-    for scope in ("intra", "cross", "declared", "generated"):
+    for scope in ("intra", "cross", "declared", "generated", "vendored"):
         t = m[scope]
         kinds = " ".join(f"{k.split('-')[-1]}={v}" for k, v in t["by_kind"].items())
         label = scope + "-repo" if scope in ("intra", "cross") else scope
@@ -843,7 +874,9 @@ def render(m, top=12):
               + ("" if m["twins_registry"] else " (ABSENT — nothing is netted out)")
               + "; generated = gitignored where",
               "it lives and byte-identical to a file committed in another repo, so no entry "
-              "is needed."]
+              "is needed;",
+              "vendored = a copy configs/vendored.yaml says scripts/vendor.py writes, still "
+              "byte-identical to its source."]
     if m["declared"]["by_twin"]:
         for tid, n in sorted(m["declared"]["by_twin"].items(), key=lambda kv: (-kv[1], kv[0])):
             lines.append(f"  {tid:28} {n} group(s)"
@@ -870,9 +903,11 @@ def render(m, top=12):
         scope = "intra" if len(g["repos"]) == 1 else "CROSS"
         names = ", ".join(g["names"][:3]) or "-"
         stripped = len(g.get("generated_files", ()))
+        copied = len(g.get("vendored_files", ()))
         lines.append(f"  [{scope}] {g['kind']:16} lockstep={g['lockstep']:<3} "
                      f"{len(g['files'])} files  {names}"
-                     + (f"  (+{stripped} generated)" if stripped else ""))
+                     + (f"  (+{stripped} generated)" if stripped else "")
+                     + (f"  (+{copied} vendored)" if copied else ""))
         for f in g["files"][:6]:
             lines.append(f"        {f}")
         if len(g["files"]) > 6:
@@ -931,7 +966,11 @@ def main():
               "out silently, so this refuses rather than counting.", file=sys.stderr)
         return 2
 
-    m = measure(repos, args.window, twins)
+    try:
+        m = measure(repos, args.window, twins)
+    except vendor.ManifestError as exc:
+        print(f"cannot run: {exc}", file=sys.stderr)
+        return 2
 
     if args.write_baseline:
         head, dirty = git_state(ROOT)
@@ -963,6 +1002,7 @@ def main():
             "cross": m["cross"],
             "declared": m["declared"],
             "generated": m["generated"],
+            "vendored": m["vendored"],
         }
         with open(BASELINE, "w") as fh:
             json.dump(snap, fh, indent=2)
@@ -1029,7 +1069,10 @@ def main():
         # declared is ratcheted alongside the undeclared counts: netting a group out is the
         # one move that makes this number fall for a reason nobody can see, so it has to be
         # spent through --write-baseline --reason like any other. generated is not — it
-        # moves when a generator gains a consumer, which costs nobody anything.
+        # moves when a generator gains a consumer, which costs nobody anything. vendored is
+        # not either, for the same reason, and its accountability lives elsewhere: an entry
+        # in configs/vendored.yaml carries a mandatory reason, and a copy is struck only
+        # while it equals its source, which scripts/vendor.py --check holds at build time.
         #
         # WHAT WOULD MAKE THAT FALSE, since a one-directional rationale is the kind that
         # rots: `git rm --cached` plus a .gitignore line takes a hand-maintained duplicate
@@ -1071,7 +1114,8 @@ def main():
         print(f"duplication within the baseline ({m['intra']['groups']} intra-repo, "
               f"{m['cross']['groups']} cross-repo undeclared groups; "
               f"{m['declared']['groups']} declared in configs/twins.yaml and "
-              f"{m['generated']['groups']} generated, netted out)")
+              f"{m['generated']['groups']} generated and "
+              f"{m['vendored']['groups']} vendored, netted out)")
         return 0
 
     print(json.dumps(m, indent=2) if args.json else render(m, args.top))
