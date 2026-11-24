@@ -1138,6 +1138,18 @@ a second reason. What is specific to this shape:
    in the R12 working bucket only; they were left out rather than published from a
    non-release location (`genetics-results-munge/docs/sex-specific-recessive-gwas.md`).
 
+### A third on-request kind: the FinnGen phenotype-PC GWAS
+
+`finngen_phenotype_pca` follows the same recipe — a resource of its own, a data type of its
+own (`gwas_phenotype_pc`), a prompt section and hint list keyed on that type — with one
+difference that reached results-api. It has fine-mapping with a combined credible-set file,
+and the credible-set routes by variant, gene and region read every resource's combined file
+when the request names none. `on_request` therefore also removes a resource from that
+default (`config_util.get_default_resources`). A flagged dataset with a combined file needs
+nothing further. It is also the first on-request dataset in the daly profile, and its files are
+ordinary munged files in the deployment's own bucket, so its registry entry has a
+`metadata_file` like any release.
+
 ## 22. Worked example: a GWAS Catalog study served as summary statistics only
 
 Context: the Huerta-Chagoya et al. 2024 T2D meta-analysis (GCST90444202) is not in Open

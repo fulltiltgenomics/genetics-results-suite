@@ -622,7 +622,8 @@ recessive row the recessive `beta`/`pval` beside `additive_*`, `effect_allele` a
 `flipped` — and what tells the chat backend which kind of on-request dataset it is
 looking at: results-api's `GET /datasets/on_request` answers `(resource, data_type)`
 pairs and nothing else, and genetics-mcp-server's `prompt_blocks.r12_model_datasets()`
-takes the pairs with these two types as the model-specific releases and
+takes the pairs with these two types as the model-specific releases,
+`phenotype_pc_datasets()` the phenotype-PC GWAS by its type (below), and
 `custom_gwas_resources()` the rest. Both types are in the registry enum
 (`docs/datasets-yaml-schema.md`).
 
@@ -695,6 +696,34 @@ current release keeps a convention fallback, so a run is queryable by its exact 
 moment it lands, before the next listing refresh puts it in the search index. Design and
 rationale: `docs/adding-datasets.md` §16; mechanics: genetics-results-api's
 `docs/project-spec.md`, "Sandbox custom GWAS".
+
+### FinnGen phenotype principal components, served on request
+
+GWAS and SuSiE fine-mapping of 30 principal components of FinnGen R14 phenotype data
+(`PPC1` to `PPC30`), under a resource of their own, `finngen_phenotype_pca` (registry
+entry `finngen_phenotype_pca_r14`, `data_type: gwas_phenotype_pc`), in **both** profiles.
+The PCA was run on the binary individuals x core endpoints matrix with R `prcomp()`,
+centred but not scaled, and each PC score was inverse-rank normalised before the GWAS.
+**On request only**, for a reason of its own: a PC is an axis through every endpoint at
+once, so beside the release results it would answer a disease or variant question with a
+trait nobody asked about. The registry description and the agent's prompt section carry
+the two reading rules that follow from the method — beta is in standard deviations of the
+normalised score with an arbitrary sign, and no endpoint loadings are served, so what a PC
+stands for can only be inferred from its loci.
+
+**Served like a release, gated like a custom GWAS.** The files are ordinary munged
+credible sets (one per PC and a combined, tabix-indexed file) and ordinary per-PC summary
+statistics, read by the standard readers from `gs://daly-genetics-results/` on daly and
+from `gs://finngen-commons/results_api_data/` on finngen; phenotype names and the sample
+size come from a `quantitative_pheweb` metadata file. Having a combined file is what sets
+this apart from the two on-request kinds above: the credible-set routes by variant, gene
+and region read every resource's combined file when the request names none, so results-api
+leaves on-request resources out of that default (`config_util.get_default_resources`) and
+the PCs answer those routes only when `resources` names them. Nothing reaches BigQuery
+and there is no colocalization. The agent's section and tool hints render from
+`GET /datasets/on_request` like the other kinds', keyed on the data type, so this is the
+one on-request dataset a daly deployment's agent hears of. The per-PC sex-difference
+files that sit beside the summary statistics are not registered.
 
 ### Open chromatin and variant effect (Products A and B)
 

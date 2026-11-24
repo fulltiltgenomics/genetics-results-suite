@@ -67,6 +67,14 @@ resources:
       from the green library; no R13 or R14 run exists
     aliases: ["recessive gwas", "recessive model", "recessive", "non-additive gwas"]
 
+  finngen_phenotype_pca:
+    label: "FinnGen R14 phenotype PCs"
+    description: >-
+      GWAS of principal components of FinnGen R14 phenotype data: the axes of a PCA on
+      the individuals x core endpoints matrix, each a data-driven combination of
+      diagnoses rather than a disease. Served on request only
+    aliases: ["phenotype pca", "phenotype pcs", "phenotype principal components", "phenotype pc gwas", "PPC"]
+
   open_targets:
     label: "Open Targets Genetics"
     description: "Open Targets GWAS summary statistics and fine-mapping, and QTL fine-mapping (GTEx v10, IBDverse)"
@@ -4296,6 +4304,38 @@ profiles:
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_r12_pheno.json"
         metadata_harmonizer: finngen_r13
 
+      # GWAS of phenotype principal components, on request only: a PC is an axis through all
+      # core endpoints at once, so beside the release results it would answer a disease or
+      # variant question with a trait nobody asked about. Its own resource because
+      # on_request gates a whole resource, and its own data type because that is how the
+      # chat backend tells the on-request kinds apart
+      finngen_phenotype_pca_r14:
+        on_request: true
+        resource: finngen_phenotype_pca
+        dataset: FinnGen_phenotype_PCs
+        version: "R14"
+        description: >-
+          GWAS and SuSiE fine-mapping of 30 principal components of FinnGen R14 phenotype
+          data (PPC1 to PPC30). The PCA was run on the binary individuals x core endpoints
+          matrix with R prcomp(), centred but not scaled, so an endpoint weighs in
+          proportion to its variance and prevalent endpoints dominate. Each PC score was
+          inverse-rank normalised before the GWAS: beta is in standard deviations of the
+          normalised score, and its sign is arbitrary, as a PC's direction is. No endpoint
+          loadings are served, so which diagnoses a PC stands for cannot be read from
+          this data. Summary statistics by variant and region and 95% credible sets by
+          phenotype, variant, gene and region through results-api (data_type
+          gwas_phenotype_pc); nothing in BigQuery and no colocalization. On request only:
+          used when the user asks about the phenotype PCs.
+        author: "FinnGen"
+        publication_date: "NA"
+        data_type: gwas_phenotype_pc
+        cohorts: [finngen]
+        trait_type: quantitative
+        n_samples: 499755
+        n_phenotypes: 30
+        metadata_file: "gs://finngen-commons/results_api_data/mapping_files/finngen_phenotype_pca_r14_pheno.json"
+        metadata_harmonizer: quantitative_pheweb
+
       finngen_kanta_r12:
         resource: finngen
         dataset: FinnGen_kanta
@@ -5186,6 +5226,38 @@ profiles:
         trait_type: binary
         metadata_file: "gs://daly-genetics-results/mapping_files/finngen_r14_pheno.json"
         metadata_harmonizer: finngen_r13
+
+      # GWAS of phenotype principal components, on request only: a PC is an axis through all
+      # core endpoints at once, so beside the release results it would answer a disease or
+      # variant question with a trait nobody asked about. Its own resource because
+      # on_request gates a whole resource, and its own data type because that is how the
+      # chat backend tells the on-request kinds apart
+      finngen_phenotype_pca_r14:
+        on_request: true
+        resource: finngen_phenotype_pca
+        dataset: FinnGen_phenotype_PCs
+        version: "R14"
+        description: >-
+          GWAS and SuSiE fine-mapping of 30 principal components of FinnGen R14 phenotype
+          data (PPC1 to PPC30). The PCA was run on the binary individuals x core endpoints
+          matrix with R prcomp(), centred but not scaled, so an endpoint weighs in
+          proportion to its variance and prevalent endpoints dominate. Each PC score was
+          inverse-rank normalised before the GWAS: beta is in standard deviations of the
+          normalised score, and its sign is arbitrary, as a PC's direction is. No endpoint
+          loadings are served, so which diagnoses a PC stands for cannot be read from
+          this data. Summary statistics by variant and region and 95% credible sets by
+          phenotype, variant, gene and region through results-api (data_type
+          gwas_phenotype_pc); nothing in BigQuery and no colocalization. On request only:
+          used when the user asks about the phenotype PCs.
+        author: "FinnGen"
+        publication_date: "NA"
+        data_type: gwas_phenotype_pc
+        cohorts: [finngen]
+        trait_type: quantitative
+        n_samples: 499755
+        n_phenotypes: 30
+        metadata_file: "gs://daly-genetics-results/mapping_files/finngen_phenotype_pca_r14_pheno.json"
+        metadata_harmonizer: quantitative_pheweb
 
       finngen_hla:
         resource: finngen

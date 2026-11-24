@@ -24,15 +24,16 @@ outside the generated blocks are hand patches rather than re-derivations, so **r
 rather than trust it** — the recipe is in "How to re-derive" at the end.
 
 Two inputs to that rendering are read at runtime rather than from source, so the render pins
-them to what the daly deployments answer: the url-fetcher's host allow-list (the seeded
+them: the url-fetcher's host allow-list (the seeded
 `DEFAULT_ALLOWED_HOSTS` in this repo's `url-fetcher/guard.py`, since
 `k8s/deployments/url-fetcher.yaml` leaves `URL_FETCHER_ALLOWED_HOSTS` unset), which the
-code-surface prompt names; and results-api's on-request datasets, which a daly results-api
-answers with none — so the users'-own-custom-GWAS and the FinnGen-R12-sex-specific-and-
-recessive prompt sections and the per-tool hints (`_CUSTOM_GWAS_HINTS`, `_R12_MODEL_HINTS`,
-`tools/definitions.py`) are absent from everything quoted here. A FinnGen deployment, whose
-results-api names its sandbox custom GWAS releases and the two R12 model-specific releases,
-gets all of them.
+code-surface prompt names; and results-api's on-request datasets, pinned to none — so the
+users'-own-custom-GWAS, the FinnGen-R12-sex-specific-and-recessive and the
+FinnGen-phenotype-PC prompt sections and the per-tool hints (`_CUSTOM_GWAS_HINTS`,
+`_R12_MODEL_HINTS`, `_PHENOTYPE_PC_HINTS`, `tools/definitions.py`) are absent from
+everything quoted here. A deployed prompt is therefore longer than the one measured: a daly
+results-api names the phenotype-PC GWAS, and a FinnGen one that, its sandbox custom GWAS
+releases and the two R12 model-specific releases.
 
 The exception is the `<!-- BEGIN GENERATED -->` blocks in sections 1, 2b and 3: those are
 rewritten by `scripts/gen-doc-blocks.py`, which parses the sibling `tools/definitions.py`
@@ -119,9 +120,11 @@ on-request resources: the sandbox custom GWAS releases to the entries of
 the credible-set-by-phenotype/by-id, summary-stats, `list_datasets` and
 `get_hla_by_phenotype` tools — and the FinnGen R12 sex-specific and recessive GWAS to those
 of `_R12_MODEL_HINTS` (`search_phenotypes`, `list_datasets`, and both `resource` and
-`data_type` of the two summary-stats tools). The two kinds are told apart by the
-`data_type` results-api's answer carries. It changes nothing where results-api names no
-such release, which is every daly deployment.
+`data_type` of the two summary-stats tools), and the FinnGen phenotype-PC GWAS to those of
+`_PHENOTYPE_PC_HINTS` (the same tools, plus the `resource` parameter of every
+credible-set tool: by phenotype, by id, and by variant, gene and region, where it says the
+resource is never included unless named). The kinds are told apart by the `data_type`
+results-api's answer carries, and a kind results-api does not name changes nothing.
 
 `get_anthropic_tools(custom_descriptions=...)` can override any description, but
 **chat-backend never passes it**: `chat_api.stream_chat` calls
@@ -515,9 +518,10 @@ fragments name the passes); Tool Usage Guidelines; Choosing How to Get Data; The
 Data Sources and Resource Names (with Pseudo Credible Sets and Credible Set Membership — the
 latter emitted twice unfiltered, once in each per-surface wording); Data Domains and Outside
 Resources (Variant Annotation Sources; Functional / Regulatory Readouts; AlphaGenome variant
-predictions (opt-in); Users' own custom GWAS (sandbox userresults) and FinnGen R12
-sex-specific and recessive GWAS — each rendered only where results-api names on-request
-releases of its kind, so never on daly; HLA / the MHC region; Dosage
+predictions (opt-in); Users' own custom GWAS (sandbox userresults), FinnGen R12
+sex-specific and recessive GWAS and FinnGen phenotype principal components (PC GWAS) — each
+rendered only where results-api names on-request datasets of its kind, so on daly the last
+alone; HLA / the MHC region; Dosage
 sensitivity / rare CNVs; Protein Annotation (UniProt); Drug and Target Evidence (ChEMBL); Mouse
 Model Evidence (search_mgi)); Subagent
 Orchestration; Response Style; Handling Uncertainty; Out of Scope and Limitations;
@@ -2994,7 +2998,8 @@ the deployed pod (`kubectl -n genetics exec deploy/chat-backend -- env`). The tw
 probes are pinned first — the fetcher host list to this repo's
 `url-fetcher/guard.py` `DEFAULT_ALLOWED_HOSTS` (or the pod's `URL_FETCHER_ALLOWED_HOSTS`, if a
 deployment ever sets it) and the on-request datasets to what that deployment's results-api
-answers at `/v1/datasets/on_request` (none on daly) — because without them the render
+answers at `/v1/datasets/on_request` (the snippet pins none, which is what the tables above
+were measured with) — because without them the render
 silently omits the code surface's URL-host rule rather than failing:
 
 ```python
