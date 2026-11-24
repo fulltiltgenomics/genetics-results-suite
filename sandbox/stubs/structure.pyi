@@ -12,6 +12,7 @@
     genetics.structure.neighbourhood(p, 175)["neighbours"]  # residues within 15 Å, PAE < 15
     genetics.structure.adjacency(p)["adjacency"]            # the whole protein, n x n bool
     genetics.structure.view(p, [{"position": 175, "label": "p.R175H", "role": "case"}])
+    genetics.structure.view(p, [175], regions=features.filter(pl.col("feature_type") == "DOMAIN"))
 
 A port of the geometry in the Finucane lab's 3D rare-variant scan (`utils.py`:
 `get_pairwise_distances`, `get_distance_matrix_structure`, `get_pae_matrix_structure`,
@@ -47,7 +48,9 @@ selects from the stored codes exactly the pairs it selects from the model's own 
 fractional cutoff would not, which is why `pae_cutoff` must be a whole number.
 
 SHOWING IT. `view` writes a `.structure-view.json` artifact, which the chat draws as an
-interactive 3D model with the given residues marked; `pml` writes the same marking as a PyMOL
+interactive 3D model with the given residues marked, and with `regions=` named ranges such as
+domains. Labels and region names are not text on the model: the viewer lists them in a legend
+under it, and hovering an entry shows where it is. `pml` writes the residue marking as a PyMOL
 script. Both show ONE model file, so for a long protein they say which residues that file
 does not contain rather than placing them in another file's coordinates.
 
@@ -203,12 +206,14 @@ def view(
     highlights: Sequence[Any] = (),
     sphere: tuple[Any, float] | Mapping[str, Any] | None = None,
     *,
+    regions: Sequence[Mapping[str, Any]] | pl.DataFrame = (),
     colour_mode: str = 'plddt',
     gene: str | None = None,
     model_file_id: str | None = None,
     path: str | None = None,
 ) -> dict[str, Any]:
-    """Show a predicted model in the chat as an interactive 3D view with residues marked.
+    """Show a predicted model in the chat as an interactive 3D view with residues and
+    regions marked.
 
     Writes `<model_file_id>.structure-view.json` into the execution's artifacts directory;
     the chat draws a file with that ending as the structure, so do not also describe a
@@ -222,37 +227,64 @@ def view(
     "role": ...}` with `colour` ("#rrggbb") in place of `role`. Roles are "case", "control",
     "both" and "neutral", drawn in the viewer's own colours; a residue with neither is
     neutral grey. Only a residue with a `label` is labelled. A residue given twice is one
-    residue: its first role or colour and its first label stand.
+    residue: its first role or colour and its first label stand. A label is not text on the
+    model: the viewer lists the labels in a legend under it, and hovering one shows where
+    that residue is.
 
     `sphere` — (centre, radius in Å), drawn as a translucent ball around that residue's Cα.
     It is a picture of a radius in ONE file's coordinates, not a computed neighbourhood: to
     show `neighbourhood()`'s residues, list them in `highlights`.
+
+    `regions` — named ranges of residues, a domain or any other stretch: a list of dicts
+    `{"name": ..., "start": ..., "end": ...}`, both ends included, with an optional `colour`
+    ("#rrggbb"). Each is an entry in the viewer's legend, and hovering it shows the range on
+    the model. With a `colour` the cartoon over the range is painted in it for good; without
+    one the cartoon keeps its colouring and the range shows only while hovered, so colour the
+    few that the picture is about. A region colour near the confidence palette's blues,
+    yellow or orange is hard to tell from the model's own colouring. Regions may overlap and keep their order. For a `Protein`,
+    `start` and `end` are protein positions, as in `genetics.protein_features`, and that
+    frame or rows of it can be passed as they are: a row without `name` is named by its
+    `description`, or else its `feature_type`. A name over 80 characters is cut to 80,
+    ending in "…". Filter it first — a frame holds every feature:
+
+        domains = features.filter(pl.col("feature_type") == "DOMAIN")
+        genetics.structure.view(p, highlights, regions=domains)
 
     `colour_mode` — "plddt" (the default: the cartoon in the AlphaFold confidence bands) or
     "uniform".
 
     ONE VIEW SHOWS ONE MODEL FILE. For a protein in several files the file is, in order:
     `model_file_id` if given; the file a (model_file_id, file_position) address names, or
-    else the file that owns the residue, for the sphere's centre if there is a sphere and
-    otherwise for the first highlight. Highlights the file does not contain are NOT drawn
-    and come back in `outside_model_file`; write one more view per file in
-    `other_model_files`, passing `model_file_id=`.
+    else the file that owns the residue, for the sphere's centre if there is a sphere,
+    otherwise for the first highlight. With regions alone it is the file that contains the
+    whole first region, or else the one containing most of it, the earlier file of equals.
+    Highlights the file does not contain are NOT drawn and come back in
+    `outside_model_file`. A region is shown as the part of it the file contains
+    (`regions_clipped`), and one the file contains none of is left out
+    (`regions_outside_model_file`). Write one more view per file in `other_model_files`,
+    passing `model_file_id=`: those are the files holding what this one left out, the cut-off
+    part of a clipped region included.
 
     WHAT A RUN DELIVERS. The chat gets at most four non-image files of one run, taken in
     name order, and none over 512 KiB. One view per model file plus a `.pml` plus a model
     file can be more than four: spread them over several runs.
 
     Returns `path`, `model_file_id`, `n_residues` (distinct residues written), `n_labels`,
-    `labels_not_drawn` (labels past the 40 the viewer draws; those stay visible on hover),
+    `labels_not_drawn` (labels past the 40 the viewer lists in its legend; those are told
+    when the residue itself is hovered),
     `outside_model_file` (one `{position, label, model_file_id}` per highlight left out,
     `position` the protein position and `model_file_id` the file owning it),
     `other_model_files`, `sphere` (as written, in file positions, or None),
-    `sphere_left_out` (true when the chosen file does not contain the centre) and `notes`.
+    `sphere_left_out` (true when the chosen file does not contain the centre), `n_regions`,
+    `regions` (as written, in file positions), `regions_clipped` and
+    `regions_outside_model_file` (one `{name, start, end, model_file_ids}` each, in protein
+    positions as given; `model_file_ids` are the files containing the part of the region not
+    shown, for a region left out every file that contains any of it) and `notes`.
 
     Raises GeneticsUsageError, writing nothing, for what the viewer would refuse or cut:
-    more than 2,000 residues, a label or gene over 80 characters (an emoji counts as two), a
-    radius over 100 Å, a
-    colour that is not #rrggbb, role and colour together, or a file over 512 KiB.
+    more than 2,000 residues, more than 50 regions, a label or gene over 80 characters (an
+    emoji counts as two), a region without a name or with its start after its end, a radius over 100 Å, a colour that is not #rrggbb, role and colour together, or
+    a file over 512 KiB.
     """
     ...
 
@@ -269,7 +301,7 @@ def pml(
     """The same marking as `view`, as a PyMOL script for someone who opens the model in
     their own PyMOL.
 
-    Takes what `view` takes and chooses the model file the same way. Writes
+    Takes what `view` takes except `regions` and chooses the model file the same way. Writes
     `<model_file_id>.pml` into the artifacts directory (`path` renames it; it must end
     `.pml`): the cartoon coloured by pLDDT in the four AlphaFold bands (pLDDT is the
     B-factor column) or plain grey with `colour_mode="uniform"`, a sphere on the Cα of every
@@ -294,6 +326,6 @@ def pml(
     file for it is not downloadable from the chat.
 
     Returns `path`, `model_file` (the name the script loads) and what `view` returns except
-    the label counts: PyMOL draws every label.
+    the region keys and the label counts: PyMOL draws every label.
     """
     ...

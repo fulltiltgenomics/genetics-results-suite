@@ -591,11 +591,15 @@ def protein_track(
 
     - one row per feature type in `feature_types` that the protein has — by default TED
       domains and UniProt domains, repeats, zinc fingers and regions; pass any
-      `feature_type` values the features frame holds. Features of a type that overlap are
-      stacked in lanes: taken in start order, each goes in the first lane that is free. A
-      box says its description when that fits inside it, else beside it. The fill is the
-      evidence tier: solid for experimental, tinted for curated, hollow for predicted (every
-      TED domain is), dotted grey for unknown.
+      `feature_type` values the features frame holds. Features of a type that overlap in
+      residues are stacked in lanes: taken in start order, each goes in the first lane that
+      is free; the row's name is level with its first lane. The segments of one TED domain
+      share a lane, joined by a line and named once. A box says its description inside it
+      when that fits, else beside it when nothing else is there, else not at all
+      (`n_unlabelled` counts those). A description three or more boxes of a row share, not
+      all with room for it, is said once in the legend (`thin: Disordered`) and those boxes
+      are drawn thin. The fill is the evidence tier: solid for experimental, tinted for
+      curated, hollow for predicted (every TED domain is), dotted grey for unknown.
     - pLDDT in AlphaFold's four bands; grey where a position has no residue row.
     - one heatmap row per entry of `scores` — a column of `residues`, a list of them,
       `{label: column}`, or `{label: {"column": ..., "bin": "max" | "min" | "mean",
