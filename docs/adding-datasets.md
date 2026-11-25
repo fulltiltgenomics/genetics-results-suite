@@ -326,7 +326,8 @@ is computed by a `CASE` in the *view SQL itself* is exactly `resource_derivation
 the view — so `mode != none` overcounts this subset by one). The views outside the
 `view_case` subset that still carry a `resource` column as a hardcoded single-source
 constant — `gene_annotations_v`, `dosage_sensitivity_v`, `variant_annotation_v`,
-`gnomad_variant_annotation_v`, `phenotypes_v`, `datasets_v` — are `resource_derivation.mode == 'none'` with
+`gnomad_variant_annotation_v`, `gnomad_mpc_v`, `gnomad_missense_constraint_regions_v`,
+`phenotypes_v`, `datasets_v` — are `resource_derivation.mode == 'none'` with
 `resource` in `columns:`, except `decode_pqtl_signals_v`, which is `none` because it passes
 through the `resource` credible_sets stored at load time rather than holding a constant;
 re-derive the list from the yaml rather than trusting a hand-written one, since it has
@@ -993,17 +994,18 @@ They cover 7,045,130 variants: the release gives 20 "other splice" SNVs a PTV ro
 de novo counts and a second row for their inherited and case-control counts, and both are
 kept, so the table's key is the variant plus `variant_class`.
 
-**A second source shares the variant table, and its columns only partly overlap.** SCHEMA2's
-variant file also carries counts and no per-variant statistic, so its counts load into
-`exome_variant_counts` (`munge_schema2_variant_counts.py`,
-`load_schema2_variant_counts.sh`, registry entry `schema_exome`) rather than being turned
-into an odds ratio for `exome_variant_results`. It has case and control allele counts with
-allele numbers and one de novo count, but no sibling or transmission counts and no variant
-class; ASC2 has those and no allele numbers. The table therefore keeps NOT NULL only on what
+**Two more sources share the variant table, and their columns only partly overlap.** The
+SCHEMA2 and BipEx2 variant files also carry counts and no per-variant statistic, so their
+counts load into `exome_variant_counts` (`munge_exome_variant_counts.py --dataset`,
+`load_exome_variant_counts.sh <dataset>`, registry entries `schema_exome` and `bipex_exome`)
+rather than being turned into an odds ratio for `exome_variant_results`. They have case and
+control allele counts with allele numbers, and SCHEMA2 one de novo count, but no sibling or
+transmission counts and no variant class; ASC2 has those and no allele numbers. The table therefore keeps NOT NULL only on what
 both carry, and a column a source lacks is NULL for it — never zero, which would read as a
-count. `gnomad_af`, which only ASC2 had, is not in the table. Only the rows SCHEMA2 marks
-`in_analysis` are loaded, so unlike ASC2 a variant's absence there is not evidence of zero
-carriers; the view's `tables:` block says so.
+count. `gnomad_af`, which only ASC2 had, is not in the table. Every variant of the two
+files that has a gene is loaded, and the source's `in_analysis` flag is a column: the
+analysed set is a filter, not the table, because most rows are variants the study observed
+and did not test. The view's `tables:` block says so.
 
 ## 18. Gene-set collections for the sandbox
 

@@ -1220,7 +1220,7 @@ tables:
     description: >-
       Per-variant allele COUNTS from exome studies whose release carries counts but no
       per-variant test statistic. GRCh38; not filtered on significance (there is none).
-      Two sources, and they do NOT carry the same columns — a column a source lacks is
+      Three sources, and they do NOT carry the same columns — a column a source lacks is
       NULL for it, never zero, so always filter on `dataset` and read only the counts
       that dataset has:
 
@@ -1234,16 +1234,25 @@ tables:
       underlying consequence, carrying their inherited and case-control counts. Sum over
       a variant's rows for its total counts.
 
-      SCHEMA2 (Schizophrenia Exome Meta-analysis v2, trait SCZ): only the 737,813
-      variants the source marks as used in its gene-level analysis, so a variant absent
-      here is not a variant with zero carriers. Case and control allele counts WITH
-      allele numbers (an_case, an_ctrl), and a de novo count in de_novo_ac_proband that
-      is NOT included in ac_case (a variant seen only de novo has ac_case 0). No
+      SCHEMA2 (Schizophrenia Exome Meta-analysis v2, trait SCZ): every variant of the
+      release that has a gene, 32,083,169 rows, most of them intronic, UTR or otherwise
+      outside the analysis. `in_analysis` is the source's flag: TRUE on the 737,813
+      variants its gene-level analysis used, FALSE or NULL on the rest. Filter on
+      `in_analysis` for the analysed set; a row with it FALSE or NULL is a variant the
+      study observed and did not test. Case and control allele counts WITH allele
+      numbers (an_case, an_ctrl), and a de novo count in de_novo_ac_proband that is
+      NOT included in ac_case (a variant seen only de novo has ac_case 0). No
       sibling or transmission counts, no variant_class and no is_other_splice (all NULL).
       Its `consequence` uses VEP's own terms (missense_variant, stop_gained, an `_LC`
-      suffix on low-confidence calls), not ASC2's spelling. SCHEMA2 reports no
-      per-variant p-value or effect size: do not compute an odds ratio or p-value from
-      these counts and present it as the study's result.
+      suffix on low-confidence calls), not ASC2's spelling.
+
+      BipEx2 (Bipolar Exomes v2, trait BIP): as SCHEMA2 — every variant that has a gene,
+      31,840,420 rows, `in_analysis` TRUE on 3,734,032 of them (its analysed set includes
+      synonymous variants) — with case and control allele counts and allele numbers. No
+      de novo count (de_novo_ac_proband is NULL, not zero) and no transcript_id.
+
+      SCHEMA2 and BipEx2 report no per-variant p-value or effect size: do not compute an
+      odds ratio or p-value from these counts and present it as the study's result.
 
       No CNV rows: the DEL and DUP classes are gene-level only (exome_gene_counts_v).
       Summing these counts over a gene reproduces neither that table's "independent"
@@ -1252,27 +1261,28 @@ tables:
       `gene =` or `variant =` is required to stay under the sandbox scan cap.
 
     columns:
-      dataset: "Study name (ASC2, SCHEMA2). Decides which count columns are populated"
+      dataset: "Study name (ASC2, SCHEMA2, BipEx2). Decides which count columns are populated"
       chr: "Chromosome number, chromosome X is 23, Y is 24, MT is 26. The partitioning column"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
       alt: "Alternative allele"
-      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling, SCHEMA2: v39)"
+      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling, SCHEMA2 and BipEx2: v39)"
       gene_id: "Ensembl gene ID (unversioned)"
-      transcript_id: "Ensembl transcript the consequence was called on"
-      consequence: "VEP consequence as the source spells it, so the spelling differs by dataset (ASC2: missense, stop gained; SCHEMA2: missense_variant, stop_gained). Read the values from the enumerable values scoped by resource"
-      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class. NULL for SCHEMA2"
+      transcript_id: "Ensembl transcript the consequence was called on. NULL for BipEx2"
+      consequence: "VEP consequence as the source spells it, so the spelling differs by dataset (ASC2: missense, stop gained; SCHEMA2 and BipEx2: missense_variant, stop_gained). Read the values from the enumerable values scoped by resource"
+      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class. NULL for SCHEMA2 and BipEx2"
       hgvsc: "Coding change (HGVS c.), NULL where none"
       hgvsp: "Protein change (HGVS p.), NULL where none"
       mpc: "MPC missense deleteriousness score; NULL outside missense"
       alpha_missense: "AlphaMissense pathogenicity score; NULL outside missense"
-      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules. NULL for SCHEMA2"
-      de_novo_ac_proband: "De novo allele count in probands (SCHEMA2: the source's n_de_novo)"
-      de_novo_ac_sibling: "De novo allele count in unaffected siblings. NULL for SCHEMA2"
-      transmitted_ac_proband: "Alleles transmitted to probands. NULL for SCHEMA2"
-      untransmitted_ac_proband: "Alleles not transmitted to probands. NULL for SCHEMA2"
+      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules. NULL for SCHEMA2 and BipEx2"
+      in_analysis: "SCHEMA2 and BipEx2: TRUE on the variants the source's gene-level analysis used, FALSE or NULL (the source's NA) on the others. NULL for ASC2, which has no such flag"
+      de_novo_ac_proband: "De novo allele count in probands (SCHEMA2: the source's n_de_novo). NULL for BipEx2"
+      de_novo_ac_sibling: "De novo allele count in unaffected siblings. NULL for SCHEMA2 and BipEx2"
+      transmitted_ac_proband: "Alleles transmitted to probands. NULL for SCHEMA2 and BipEx2"
+      untransmitted_ac_proband: "Alleles not transmitted to probands. NULL for SCHEMA2 and BipEx2"
       ac_case: "Allele count in cases"
-      an_case: "Allele number in cases (alleles genotyped). NULL for ASC2 and for a few SCHEMA2 rows; 0 on SCHEMA2 variants seen only de novo"
+      an_case: "Allele number in cases (alleles genotyped). NULL for ASC2 and for a few SCHEMA2 rows; 0 where no case was genotyped"
       ac_ctrl: "Allele count in controls"
       an_ctrl: "Allele number in controls. NULL for ASC2 and for a few SCHEMA2 rows"
       trait: "Trait/phenotype name"
@@ -1296,6 +1306,7 @@ tables:
       mpc: FLOAT64
       alpha_missense: FLOAT64
       is_other_splice: BOOL
+      in_analysis: BOOL
       de_novo_ac_proband: INT64
       de_novo_ac_sibling: INT64
       transmitted_ac_proband: INT64
@@ -1325,12 +1336,20 @@ tables:
                  untransmitted_ac_proband, ac_case, ac_ctrl
           FROM exome_variant_counts_v
           WHERE chr = 1 AND variant = '1:939436:C:CT'
-      - description: "SCHEMA2 case and control allele counts with allele numbers for the variants of one gene. SCHEMA2 has no variant_class, so the consequence is the only annotation to filter on."
+      - description: "SCHEMA2 case and control allele counts with allele numbers for the variants of one gene that the study's gene-level analysis used. SCHEMA2 has no variant_class, so the consequence is the only annotation to filter on. Drop the in_analysis predicate for every observed variant of the gene."
         sql: |-
           SELECT variant, consequence, hgvsp, mpc, alpha_missense,
                  ac_case, an_case, ac_ctrl, an_ctrl, de_novo_ac_proband
           FROM exome_variant_counts_v
-          WHERE chr = 16 AND gene = 'SETD1A' AND dataset = 'SCHEMA2'
+          WHERE chr = 16 AND gene = 'SETD1A' AND dataset = 'SCHEMA2' AND in_analysis
+          ORDER BY pos
+      - description: "BipEx2 missense variants of one gene with their counts, analysed or not. BipEx2 has no de novo count."
+        sql: |-
+          SELECT variant, hgvsp, mpc, alpha_missense, in_analysis,
+                 ac_case, an_case, ac_ctrl, an_ctrl
+          FROM exome_variant_counts_v
+          WHERE chr = 13 AND gene = 'AKAP11' AND dataset = 'BipEx2'
+            AND consequence = 'missense_variant'
           ORDER BY pos
 
     categorical_columns:
@@ -2801,6 +2820,185 @@ tables:
     categorical_columns:
       resource: null
 
+  gnomad_mpc_v:
+    exposed: true
+    profiles: [daly]
+    partition_column: chr
+    clustering_columns: [pos]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table: the view appends the constant 'gnomad' AS resource,
+        and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        gnomAD missense score reference, has no `dataset` column
+    summary: "gnomAD MPC missense deleteriousness score for every possible missense SNV"
+    description: >-
+      MPC scores from the gnomAD v4.1.1 regional missense constraint release
+      (gs://gcp-public-data--gnomad/papers/2026-rmc), GRCh38. MPC (Missense badness,
+      PolyPhen-2 and Constraint) is one deleteriousness score per missense change,
+      from 0 to 6 here; higher is more deleterious. One row per POSSIBLE missense SNV and
+      transcript — 70,313,598 rows for 70,047,670 variants on 18,245 transcripts —
+      whether or not anyone carries the variant, so this is a lookup table for scoring
+      variants, not a list of observed ones. A variant that is missense on the
+      transcripts of two genes has a row and a score for each: match on `gene` or
+      `transcript_id` as well as the variant when a single score is wanted. Indels and
+      non-missense changes have no row.
+
+      This is NOT the MPC in exome_variant_counts_v.mpc: that column holds the older MPC
+      each exome study annotated its variants with, and the two differ for most
+      variants. Do not mix them in one comparison or threshold; say which one a value
+      comes from.
+
+      ALWAYS filter on chr, and on pos whenever a position or region is known: the table
+      is partitioned by chr and clustered by pos. `gene` is a plain column: filtering on
+      it without chr scans the whole table.
+
+    columns:
+      chr: "Chromosome number, X is 23 and Y is 24. The partitioning column"
+      pos: "Genomic position (GRCh38)"
+      ref: "Reference allele"
+      alt: "Alternative allele"
+      gene: "Gene symbol of the transcript (GENCODE v39)"
+      gene_id: "Ensembl gene ID of the transcript (unversioned)"
+      transcript_id: "Ensembl transcript the score was computed on (unversioned)"
+      mpc: "MPC score; higher is more deleterious"
+      variant: "Variant identifier as chr:pos:ref:alt. Same format as the variant column in the association views, so it joins directly"
+      resource: "Data source identifier, constant 'gnomad'"
+
+    column_types:
+      chr: INT64
+      pos: INT64
+      ref: STRING
+      alt: STRING
+      gene: STRING
+      gene_id: STRING
+      transcript_id: STRING
+      mpc: FLOAT64
+      variant: STRING
+      resource: STRING
+
+    examples:
+      - description: "MPC of one variant. Filter on chr and pos (partition and clustering key), then on the alleles."
+        sql: |-
+          SELECT variant, gene, transcript_id, mpc
+          FROM gnomad_mpc_v
+          WHERE chr = 2 AND pos = 165310400 AND ref = 'C' AND alt = 'A'
+      - description: "The highest-scoring possible missense changes of one gene. chr beside gene keeps the scan to one partition."
+        sql: |-
+          SELECT variant, transcript_id, mpc
+          FROM gnomad_mpc_v
+          WHERE chr = 2 AND gene = 'SCN2A'
+          ORDER BY mpc DESC
+          LIMIT 20
+      - description: "Attach the gnomAD v4.1.1 MPC to the SCHEMA2 missense variants of one gene. Both sides get a literal chr; the join is on the variant and the gene, because a variant can carry a score per gene."
+        sql: |-
+          SELECT c.variant, c.hgvsp, c.ac_case, c.an_case, c.ac_ctrl, c.an_ctrl, m.mpc
+          FROM exome_variant_counts_v c
+          JOIN gnomad_mpc_v m
+            ON m.chr = c.chr AND m.pos = c.pos AND m.variant = c.variant AND m.gene_id = c.gene_id
+          WHERE c.chr = 16 AND m.chr = 16 AND c.gene = 'SETD1A' AND c.dataset = 'SCHEMA2'
+            AND c.consequence = 'missense_variant'
+          ORDER BY m.mpc DESC
+
+    categorical_columns:
+      resource: null
+
+  gnomad_missense_constraint_regions_v:
+    exposed: true
+    profiles: [daly]
+    clustering_columns: [gene]
+    resource_derivation:
+      mode: none
+      reason: >-
+        single-source reference table: the view appends the constant 'gnomad' AS resource,
+        and the base table carries no `dataset` column for a CASE to switch on
+    dataset_cross_check:
+      excluded_reason: >-
+        gnomAD missense constraint reference, has no `dataset` column
+    summary: "gnomAD regional missense constraint: per-transcript regions with observed and expected missense counts"
+    description: >-
+      Missense constraint regions from the gnomAD v4.1.1 regional missense constraint
+      release (gs://gcp-public-data--gnomad/papers/2026-rmc), GRCh38. Each transcript's
+      coding span is cut into one or more regions that differ in how depleted they are
+      of missense variation in gnomAD, and each region has its observed and expected
+      missense counts: `region_oe` is observed / expected, and LOWER means more
+      constrained. 40,435 regions on 19,367 transcripts: one transcript per gene, except
+      six gene symbols that have two, so group by `transcript_id`, not `gene`.
+      12,628 of the transcripts have a single region (`n_transcript_regions` = 1): no
+      regional variation was found, and the row is the whole transcript's missense
+      constraint. This is the view that answers "which part of this gene is intolerant
+      of missense variation", which the gene-level views cannot.
+
+      A region is a genomic interval and spans the introns between its coding bases, so
+      a variant inside region_start..region_end is not necessarily coding. Regions of
+      one transcript do not overlap.
+
+      `is_outlier_transcript` marks the 1,526 transcripts (3,050 rows) the release
+      leaves out of its non-outlier set; treat their values with caution and exclude
+      them from genome-wide comparisons. `is_high_coverage` is the source's flag for
+      regions with adequate sequencing coverage.
+
+      Small table (no partitioning): filter on `gene`, or on chr and a position range.
+
+    columns:
+      chr: "Chromosome number, X is 23 and Y is 24"
+      region_start: "First position of the region (GRCh38, inclusive)"
+      region_end: "Last position of the region (GRCh38, inclusive)"
+      gene: "Gene symbol of the transcript (GENCODE v39)"
+      gene_id: "Ensembl gene ID of the transcript (unversioned)"
+      transcript_id: "Ensembl transcript the regions belong to (unversioned)"
+      n_transcript_regions: "Number of regions the transcript has; 1 means no regional variation was found"
+      region_obs: "Observed missense variants in the region"
+      region_exp: "Expected missense variants in the region"
+      region_oe: "Observed / expected missense ratio; lower is more constrained"
+      region_oe_chisq: "Chi-square statistic of the region's observed against expected count"
+      region_oe_chisq_p: "P-value of region_oe_chisq"
+      is_high_coverage: "The source's high-coverage flag for the region"
+      is_outlier_transcript: "TRUE where the release leaves the transcript out of its non-outlier set"
+      resource: "Data source identifier, constant 'gnomad'"
+
+    column_types:
+      chr: INT64
+      region_start: INT64
+      region_end: INT64
+      gene: STRING
+      gene_id: STRING
+      transcript_id: STRING
+      n_transcript_regions: INT64
+      region_obs: INT64
+      region_exp: FLOAT64
+      region_oe: FLOAT64
+      region_oe_chisq: FLOAT64
+      region_oe_chisq_p: FLOAT64
+      is_high_coverage: BOOL
+      is_outlier_transcript: BOOL
+      resource: STRING
+
+    examples:
+      - description: "The missense constraint regions of one gene, most constrained first."
+        sql: |-
+          SELECT transcript_id, chr, region_start, region_end, region_obs, region_exp,
+                 region_oe, region_oe_chisq_p, is_high_coverage, is_outlier_transcript
+          FROM gnomad_missense_constraint_regions_v
+          WHERE gene = 'SCN2A'
+          ORDER BY region_oe
+      - description: "Which constraint region each SCHEMA2 missense variant of one gene falls in. The region join is a position range on the same gene."
+        sql: |-
+          SELECT c.variant, c.hgvsp, c.ac_case, c.ac_ctrl,
+                 r.region_start, r.region_end, r.region_oe
+          FROM exome_variant_counts_v c
+          JOIN gnomad_missense_constraint_regions_v r
+            ON r.gene_id = c.gene_id AND r.chr = c.chr
+           AND c.pos BETWEEN r.region_start AND r.region_end
+          WHERE c.chr = 16 AND c.gene = 'SETD1A' AND c.dataset = 'SCHEMA2'
+            AND c.consequence = 'missense_variant'
+          ORDER BY c.pos
+
+    categorical_columns:
+      resource: null
+
   peak_to_gene_v:
     exposed: true
     clustering_columns: [symbol, cell_type, peak_id]
@@ -3693,6 +3891,11 @@ dataset_to_resource_rules:
     resource: "schema2"
     applies_to: ["exome_variant_counts_v"]
     comment: "SCHEMA2 per-variant allele counts (exact match)"
+
+  - pattern: "BipEx2"
+    resource: "bipex2"
+    applies_to: ["exome_variant_counts_v"]
+    comment: "BipEx2 per-variant allele counts (exact match)"
 
   - pattern: "COVID19_HGI%"
     resource: "covid_hgi"
@@ -4627,10 +4830,10 @@ profiles:
         dataset: SCHEMA2
         version: "v2"
         description: >-
-          SCHEMA2 variant-level allele counts (exome_variant_counts_v): the 737,813 variants
-          the release marks as used in its gene-level analysis, with consequence, MPC and
-          AlphaMissense scores, case and control allele counts and allele numbers, and a de
-          novo count. Counts only; the release carries no per-variant p-value or effect
+          SCHEMA2 variant-level allele counts (exome_variant_counts_v): every variant of the
+          release that has a gene, flagged in_analysis where its gene-level analysis used
+          it, with consequence, MPC and AlphaMissense scores, case and control allele counts
+          and allele numbers, and a de novo count. Counts only; the release carries no per-variant p-value or effect
           size and none is derived.
         author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
@@ -4659,6 +4862,33 @@ profiles:
         author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536
+
+      bipex_exome:
+        resource: bipex2
+        dataset: BipEx2
+        version: "v2"
+        description: >-
+          BipEx2 variant-level allele counts (exome_variant_counts_v): every variant of the
+          release that has a gene, flagged in_analysis where its gene-level analysis used
+          it, with consequence, MPC and AlphaMissense scores and case and control allele
+          counts and allele numbers. Counts only; the release carries no per-variant
+          p-value or effect size and none is derived.
+        author: "Bipolar Exome Sequencing Consortium"
+        publication_date: "NA"
+        data_type: exome
         trait_type: binary
         n_samples: 232536
         n_cases: 64435
@@ -5928,10 +6158,10 @@ profiles:
         dataset: SCHEMA2
         version: "v2"
         description: >-
-          SCHEMA2 variant-level allele counts (exome_variant_counts_v): the 737,813 variants
-          the release marks as used in its gene-level analysis, with consequence, MPC and
-          AlphaMissense scores, case and control allele counts and allele numbers, and a de
-          novo count. Counts only; the release carries no per-variant p-value or effect
+          SCHEMA2 variant-level allele counts (exome_variant_counts_v): every variant of the
+          release that has a gene, flagged in_analysis where its gene-level analysis used
+          it, with consequence, MPC and AlphaMissense scores, case and control allele counts
+          and allele numbers, and a de novo count. Counts only; the release carries no per-variant p-value or effect
           size and none is derived.
         author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
         publication_date: "NA"
@@ -5960,6 +6190,33 @@ profiles:
         author: "Bipolar Exome Sequencing Consortium"
         publication_date: "NA"
         data_type: gene_based
+        trait_type: binary
+        n_samples: 232536
+        n_cases: 64435
+        n_controls: 168101
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "BIP"
+            phenotype_string: "Bipolar disorder"
+            n_cases: 64435
+            n_controls: 168101
+            n_samples: 232536
+
+      bipex_exome:
+        resource: bipex2
+        dataset: BipEx2
+        version: "v2"
+        description: >-
+          BipEx2 variant-level allele counts (exome_variant_counts_v): every variant of the
+          release that has a gene, flagged in_analysis where its gene-level analysis used
+          it, with consequence, MPC and AlphaMissense scores and case and control allele
+          counts and allele numbers. Counts only; the release carries no per-variant
+          p-value or effect size and none is derived.
+        author: "Bipolar Exome Sequencing Consortium"
+        publication_date: "NA"
+        data_type: exome
         trait_type: binary
         n_samples: 232536
         n_cases: 64435
