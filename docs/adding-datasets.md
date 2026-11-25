@@ -1077,9 +1077,9 @@ in `docs/project-spec.md`). What this shape needs that the others do not:
    its own tfvars set the pointer, so publishing a release never turns it on. BigQuery has no
    such split: the driver loads `genetics_results` whatever its root (`expression_bq_dataset` in
    `terraform/variables.tf`), so a rehearsal load replaces the tables production reads.
-5. **A profile gate.** The data exists on one brand, so each view's `tables.<view>.profiles`
-   names that profile, the MCP tool is withdrawn by `Settings.disabled_tools` everywhere but that
-   profile with the deployment's `CELL_TYPE_EXPRESSION_ENABLED` flag set, and the
+5. **A profile gate.** Not every brand holds the data, so each view's `tables.<view>.profiles`
+   names the profiles that do, the MCP tool is withdrawn by `Settings.disabled_tools` everywhere
+   but those profiles with the deployment's `CELL_TYPE_EXPRESSION_ENABLED` flag set, and the
    registry entries merge only once production holds a release — `deploy.sh`'s example-scan
    preflight refuses views with no tables.
 6. **A freshness check.** Nothing alerts on a refresh that silently stops, so the monitor checks
@@ -1211,7 +1211,7 @@ profile gate — and differs where that shape assumed a schedule:
    order in the project spec ends with a results-api restart for that reason.
 2. **No dataset entry.** The release is not a `datasets:` resource: nothing in it is keyed by
    phenotype or dataset, so `configs/datasets.yaml` carries only the view block,
-   `tables.missense_residue_v` with `profiles: [daly]`, and results-api's own
+   `tables.missense_residue_v` with its `profiles` gate, and results-api's own
    `protein_structure` profile module names the feature.
 3. **The view is loaded outside the pipeline, after the pointer.** `load_missense_residue.sh`
    reads the object results-api serves, by pointer or by release URI, into the dataset it is
@@ -1285,8 +1285,8 @@ profile gate — and differs where that shape assumed a schedule:
 - [ ] genetics-mcp-server: usually nothing — unless the data answers a question no existing
       tool shape covers (see the HLA example above). A new tool for data that only some
       profiles serve is withdrawn elsewhere by `Settings.disabled_tools` keyed on
-      `CONFIG_PROFILE`, as `get_cell_type_expression` is (daly only, and only where
-      `CELL_TYPE_EXPRESSION_ENABLED` says the deployment configured the data); mirror the
+      `CONFIG_PROFILE`, as `get_cell_type_expression` is (only on the profiles in
+      `CELL_TYPE_EXPRESSION_PROFILES`, and only where `CELL_TYPE_EXPRESSION_ENABLED` says the deployment configured the data); mirror the
       deployed flags in `tests/golden/tool_surface.json` by regenerating it.
 - [ ] genetics-results-browser: usually nothing (API-driven); add a
       `DATASET_LABEL_OVERRIDES` entry only if the raw dataset id needs a clearer label.

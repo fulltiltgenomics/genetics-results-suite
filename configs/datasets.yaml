@@ -3153,7 +3153,7 @@ tables:
 
   cellxgene_summary_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     partition_column: chr
     clustering_columns: [gene_name, gene_id]
     resource_derivation:
@@ -3235,7 +3235,7 @@ tables:
 
   cellxgene_expression_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     partition_column: chr
     clustering_columns: [gene_name, gene_id]
     resource_derivation:
@@ -3337,7 +3337,7 @@ tables:
 
   cellxgene_groups_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     resource_derivation:
       mode: none
       reason: >-
@@ -3419,7 +3419,7 @@ tables:
 
   cellxgene_datasets_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     resource_derivation:
       mode: none
       reason: >-
@@ -3479,7 +3479,7 @@ tables:
 
   cellxgene_measured_genes_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     partition_column: chr
     clustering_columns: [gene_name, gene_id]
     resource_derivation:
@@ -3522,7 +3522,7 @@ tables:
 
   missense_residue_v:
     exposed: true
-    profiles: [daly]
+    profiles: [daly, finngen]
     partition_column: chr
     clustering_columns: [pos]
     resource_derivation:
@@ -4736,6 +4736,26 @@ profiles:
           bone_marrow, spleen, lymph_node, tonsil and thymus).
         author: "Human Protein Atlas"
         publication_date: "2026-11-11"
+        data_type: expression
+        trait_type: null
+        metadata_file: null
+        metadata_harmonizer: null
+
+      # no `dataset` key: the cellxgene_* views carry no dataset label, and their datasets
+      # are CELLxGENE's own
+      cellxgene_expression:
+        resource: cellxgene
+        version: "rolling release"
+        description: >-
+          CZ CELLxGENE Discover single-cell RNA expression by cell type and tissue: every
+          human dataset on Discover with raw integer counts on a supported assay, primary
+          cells only, aggregated per dataset and pooled across datasets for normal tissue
+          (mean log1p CP10K and fraction of cells expressing; not TPM). Rebuilt from
+          Discover at each refresh rather than pinned to one publication, so the release
+          in use is the one the gene page shows and cellxgene_datasets_v.release names;
+          that view also lists each contributing dataset with its citation.
+        author: "Chan Zuckerberg Initiative (CZ CELLxGENE Discover) and the contributing studies"
+        publication_date: "NA"
         data_type: expression
         trait_type: null
         metadata_file: null
@@ -6022,8 +6042,8 @@ profiles:
         metadata_file: null
         metadata_harmonizer: null
 
-      # daly only: finngen holds no single-cell expression release. No `dataset` key: the
-      # cellxgene_* views carry no dataset label, and their datasets are CELLxGENE's own
+      # no `dataset` key: the cellxgene_* views carry no dataset label, and their datasets
+      # are CELLxGENE's own
       cellxgene_expression:
         resource: cellxgene
         version: "rolling release"

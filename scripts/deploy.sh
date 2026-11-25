@@ -458,18 +458,6 @@ export PROTEIN_STRUCTURE_ENABLED
 echo "Protein structure release pointer: ${PROTEIN_STRUCTURE_RELEASE_POINTER:-<unset, feature off>}"
 TF_CONFIG_PROFILE=$(terraform output -raw config_profile)
 export CONFIG_PROFILE="${CONFIG_PROFILE:-${TF_CONFIG_PROFILE}}"
-# The services already ignore the pointer off daly (results-api has no protein_structure
-# module in any other profile, mcp-server's PROTEIN_STRUCTURE_PROFILES names daly alone), so
-# a pointer set elsewhere would deploy cleanly and serve nothing. Refused instead: the release
-# holds AF3 models only daly has cleared the terms for, and a setting that silently does
-# nothing reads as one that worked. Goes false if another profile gains the layer.
-if [ -n "${PROTEIN_STRUCTURE_RELEASE_POINTER}" ] && [ "${CONFIG_PROFILE}" != "daly" ]; then
-  echo "ERROR: protein_structure_release_pointer is set (${PROTEIN_STRUCTURE_RELEASE_POINTER}) but this"
-  echo "       deployment's config_profile is '${CONFIG_PROFILE}'. The protein structure layer is"
-  echo "       served on the daly profile only; remove the line from ${TFVARS##*/} (or unset"
-  echo "       PROTEIN_STRUCTURE_RELEASE_POINTER)."
-  exit 1
-fi
 TF_OAUTH_EMAIL_DOMAIN=$(terraform output -raw oauth_email_domain)
 export OAUTH_EMAIL_DOMAIN="${OAUTH_EMAIL_DOMAIN:-${TF_OAUTH_EMAIL_DOMAIN}}"
 # the login page's helper line names the primary domain only, because the allow-list may hold several

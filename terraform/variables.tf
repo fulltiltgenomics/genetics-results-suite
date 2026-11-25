@@ -81,7 +81,7 @@ variable "protein_structure_release_pointer" {
     and the feature's per-deployment switch: no config profile names a pointer, so empty means
     the feature is off. Read by scripts/deploy.sh, which renders it into results-api's
     PROTEIN_STRUCTURE_RELEASE_POINTER and derives PROTEIN_STRUCTURE_ENABLED for chat-backend
-    and mcp-server from it, and refuses a non-empty value on any config_profile but daly.
+    and mcp-server from it.
     NO resource reads it; declared here only so terraform does not warn "Value for undeclared
     variable".
   EOT

@@ -5,31 +5,40 @@
   ],
   "functions": {
     "cell_type_expression": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_models": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_residues": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_features": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_scores": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_variants": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_structure_file": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_pae": [
-      "daly"
+      "daly",
+      "finngen"
     ],
     "protein_structure": [
-      "daly"
+      "daly",
+      "finngen"
     ]
   }
 }

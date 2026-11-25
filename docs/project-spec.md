@@ -809,13 +809,14 @@ or a small row whose only source is one dataset. The gene page and the chat tool
 rows until asked (the page's toggle, the tool's and SDK's `include_low_support`); the TSV
 download and the `cellxgene_*_v` views carry every row, and the views have no such column.
 
-**One registry entry stands for the whole product.** `cellxgene_expression` in the daly profile
-of `configs/datasets.yaml` (`data_type: expression`, as GTEx and HPA are) is what lists
+**One registry entry stands for the whole product.** `cellxgene_expression` in each serving
+profile of `configs/datasets.yaml` (`data_type: expression`, as GTEx and HPA are) is what lists
 CELLxGENE in `/api/v1/datasets` and so in the browser's Datasets dialog. It has no `dataset`
 label and no fixed version, because the views carry no dataset column and a refresh replaces
 the release; the datasets behind it are CELLxGENE's own, in `cellxgene_datasets_v`. The
 `cellxgene` resource it names is kept out of db-api's resource metadata
-(`_API_ONLY_RESOURCES`), which is profile-independent and would otherwise name it on finngen.
+(`_API_ONLY_RESOURCES`), which is profile-independent and would otherwise name it on a
+deployment that does not serve it.
 
 **Where it runs.** The driver is itself a Cloud Batch job, started weekly by the Cloud Scheduler
 job `expression-refresh`, and it submits the worker jobs. Batch VMs run in a dedicated VPC with no
@@ -844,7 +845,7 @@ reads the bucket through a grant in daly's tfvars (`docs/environments.md`).
 pointer; the `cell_type_expression_release_pointer` tfvar does, and `deploy.sh` renders it into
 results-api's `CELL_TYPE_EXPRESSION_RELEASE_POINTER` and derives `CELL_TYPE_EXPRESSION_ENABLED`
 (chat-backend, mcp-server) from whether it is set, so the endpoint, the browser section and the
-chat tool switch together. Unset means off: the route is not registered (as on finngen), the
+chat tool switch together. Unset means off: the route is not registered, the
 browser hides the section and the tool is not offered. Both daly deployments point it at
 `gs://daly-expression-data/cellxgene/releases/CURRENT`, so each new release the driver flips is
 served everywhere within results-api's refresh interval; a rehearsal run
@@ -852,10 +853,17 @@ served everywhere within results-api's refresh interval; a rehearsal run
 BigQuery has no root split: the driver loads `genetics_results` whatever its root, and both daly
 clusters serve it, so a rehearsal load replaces the tables production reads.
 
-**The views are gated to daly.** Each `cellxgene_*_v` block in `configs/datasets.yaml` carries
-`tables.<view>.profiles: [daly]` (`docs/datasets-yaml-schema.md`), so on finngen the db-api
-allow-list, the sandbox schema docs, the example-scan preflight and the chat prompt leave them
-out. The registry entries need production BigQuery to hold a release: `deploy.sh`'s example-scan
+**finngen serves a copy, not the refreshed release.** Nothing in the finngen project runs the
+driver, and its results-api cannot read the daly bucket. A release is copied by hand into
+`gs://finngen-commons/results_api_data/cellxgene/releases/<release>/`, loaded into finngen's
+BigQuery with `scripts/load_cellxgene.sh`, and only then named by a `releases/CURRENT` written
+beside it, which finngen's tfvars point at. finngen therefore stays on the release it was last
+given until someone repeats those three steps.
+
+**The views are gated by profile.** Each `cellxgene_*_v` block in `configs/datasets.yaml` carries
+`tables.<view>.profiles` (`docs/datasets-yaml-schema.md`), so under a profile it does not name
+the db-api allow-list, the sandbox schema docs, the example-scan preflight and the chat prompt
+leave them out. The registry entries need production BigQuery to hold a release: `deploy.sh`'s example-scan
 preflight aborts a deploy whose gated-in views have no tables.
 
 **Monitoring.** The monitor's CELLxGENE release check (Monitor CronJob, below) alerts on a missing
@@ -908,11 +916,15 @@ and the chat tools cannot disagree. Empty renders an empty value and `"false"`: 
 reads an empty pointer as unset and registers no route, and the tools are withdrawn.
 `deploy.sh` refuses a non-empty pointer that is not a `gs://<bucket>/<path>/releases/CURRENT`
 URI — any non-empty value would otherwise switch the tools on, a blank string or a stray
-comment included — and refuses a well-formed one on any profile but daly. The profile refusal is the third
-of three gates and the only one that speaks: results-api can switch the layer on only for a
-profile with a `protein_structure` config module, and genetics-mcp-server only for a profile
-in `PROTEIN_STRUCTURE_PROFILES`, so a pointer set on finngen would otherwise deploy cleanly
-and serve nothing.
+comment included. The profile gates are in the services, and silent: results-api can switch
+the layer on only for a profile with a `protein_structure` config module, and
+genetics-mcp-server only for a profile in `PROTEIN_STRUCTURE_PROFILES`. Both profiles have
+them, so a profile added later without them would deploy a pointer cleanly and serve nothing.
+
+**finngen serves a copy of a release daly built**, under
+`gs://finngen-commons/results_api_data/protein_structure/releases/` with its own
+`releases/CURRENT`: the pointer's `uri` and `manifest_sha256` are what results-api checks, so
+the copy is byte-identical and only the pointer's `uri` is rewritten.
 
 **What switches with it.** In chat: the protein structure tools and the `protein` source of
 `get_variant_annotations` (`docs/chat-tool-reference.md`); `/mcp` withholds the tools whatever
@@ -985,9 +997,9 @@ genetics-results-db `schemas/missense_residue.sql`.
   UniProt isoform under the map's annotation (VEP 115 / Ensembl 115), and nothing stronger.
   The view's description says so because a script that reads "no row" as "not coding" would
   be wrong silently.
-- **Gated to daly** with `tables.missense_residue_v.profiles`, as the `cellxgene_*_v` views
+- **Gated by profile** with `tables.missense_residue_v.profiles`, as the `cellxgene_*_v` views
   are. `deploy.sh`'s example-scan preflight needs the served dataset's `missense_residue` to
-  exist with the declared partitioning and clustering, and aborts a daly deploy otherwise. An
+  exist with the declared partitioning and clustering, and aborts the deploy otherwise. An
   empty table satisfies it — `setup_bigquery.sh` creates one, and so does a first load whose
   file is then refused — so the preflight says nothing about whether the data is there. The
   rollout check for that is `SELECT DISTINCT release` and `COUNT(*)` on `missense_residue`
@@ -1793,7 +1805,7 @@ A report Slack did not accept is the monitor failing, so it exits 1: `send_slack
 **What it checks:**
 
 - **Service health** (`health.py`): HTTP liveness checks against results-api `/healthz`, chat-backend `/healthz`, frontend `/`, mcp-server `/healthz`, and db-api `/health`. Then loads `datasets.yaml` and verifies each API-served dataset of the active profile is listed by results-api: `/api/v1/datasets`, or `/api/v1/datasets/on_request` for an `on_request` dataset (a sandbox custom GWAS release), which the general catalogue omits by design.
-- **CELLxGENE release** (`health.py`, `check_cellxgene_release`; service `cellxgene`): runs only when `CONFIG_PROFILE` is in `CELLXGENE_PROFILES` (`daly`, which both daly and daly-staging run; finngen has no expression data). The profile is the runtime gate because `expression_data_enabled` is set only on daly (it creates the shared bucket, so staging must leave it off), while both serve the data. Reads `gs://<CELLXGENE_BUCKET>/<CELLXGENE_ROOT>/releases/CURRENT` and fails when (a) the pointer is missing or unreadable, (b) `written_at` is older than `CELLXGENE_MAX_AGE_DAYS` (the alert says to check the Cloud Scheduler job first: a recreated job comes back PAUSED), (c) the distinct `release` values in `<BQ_DATASET>.cellxgene_datasets` are not exactly CURRENT's release, ahead or behind. A missing table is treated like (a). `CELLXGENE_LIVE=false` turns (a) and the missing table into a silent pass for a deployment that has not published yet; the manifest (`k8s/deployments/monitor-cronjob.yaml`) sets it to `"true"`. (b) and (c) apply whenever a pointer exists. Flip `CELLXGENE_LIVE` when the first release is published: the age check can page from `CELLXGENE_MAX_AGE_DAYS` after CURRENT first appears even while the switch is off, and the switch also lifts the pre-launch log ignores. Staging and prod monitors read the same pointer and dataset, so these alerts arrive twice; that is accepted. Offline test: `scripts/test-monitor-cellxgene.py`.
+- **CELLxGENE release** (`health.py`, `check_cellxgene_release`; service `cellxgene`): runs only when `CONFIG_PROFILE` is in `CELLXGENE_PROFILES` (`daly`, which both daly and daly-staging run; finngen serves a hand-copied release that no weekly job refreshes, so the age check could only page there). The profile is the runtime gate because `expression_data_enabled` is set only on daly (it creates the shared bucket, so staging must leave it off), while both serve the data. Reads `gs://<CELLXGENE_BUCKET>/<CELLXGENE_ROOT>/releases/CURRENT` and fails when (a) the pointer is missing or unreadable, (b) `written_at` is older than `CELLXGENE_MAX_AGE_DAYS` (the alert says to check the Cloud Scheduler job first: a recreated job comes back PAUSED), (c) the distinct `release` values in `<BQ_DATASET>.cellxgene_datasets` are not exactly CURRENT's release, ahead or behind. A missing table is treated like (a). `CELLXGENE_LIVE=false` turns (a) and the missing table into a silent pass for a deployment that has not published yet; the manifest (`k8s/deployments/monitor-cronjob.yaml`) sets it to `"true"`. (b) and (c) apply whenever a pointer exists. Flip `CELLXGENE_LIVE` when the first release is published: the age check can page from `CELLXGENE_MAX_AGE_DAYS` after CURRENT first appears even while the switch is off, and the switch also lifts the pre-launch log ignores. Staging and prod monitors read the same pointer and dataset, so these alerts arrive twice; that is accepted. Offline test: `scripts/test-monitor-cellxgene.py`.
 - **Nightly conversation analysis** (`health.py`, `check_conversation_analysis`; service `analyze-conversations`): fails unless the analyzer's closing log line (`ANALYSIS_DONE_LINE`) appears from the `analyze-conversations` container of its own cluster within `ALERT_LOOKBACK_HOURS`. It asks for the outcome rather than for an error because the failures are silent: a run killed for memory writes no log line, and a job that is suspended, unschedulable or cannot attach `chat-data` never starts a container, so the log alerter sees nothing. The line is a string owned by genetics-mcp-server; changing it there fails this check daily. A manual run made from the CronJob counts. Offline test: `scripts/test-monitor.py`.
 - **BigQuery data coverage** (`bq_summary.py`): queries each view in the table below for row counts and distinct resources, and compares the resources it finds against the expected set for that view. Collection sub-resources (eQTL Catalogue `qtd*`) are collapsed to their parent. API resource names are mapped to BQ resource names via `dataset_to_resource_rules` patterns. `_EXPECTED_ABSENT` in `bq_summary.py` lists `(profile, view)` pairs whose missing resources are not alerted.
 - **Log alerts** (`alerter.py`): Queries Cloud Logging for `severity >= WARNING` entries from `k8s_container` resources in the `genetics` namespace **of its own cluster** over the last check interval (default 24h). Groups by container, deduplicates via SQLite, and only reports new alerts. The cluster clause matters because Cloud Logging is project-wide and two deployments in one project (daly + daly-staging) both use the `genetics` namespace — without `K8S_CLUSTER` each would alert on the other's errors.
