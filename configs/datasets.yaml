@@ -90,6 +90,14 @@ resources:
     description: "Bipolar Exome Sequencing study v2 — gene burden results for bipolar disorder"
     aliases: ["bipex", "BipEx", "bipolar exome"]
 
+  schema1:
+    label: "SCHEMA1"
+    description: >-
+      Schizophrenia Exome Meta-analysis, the 2021 release (Singh et al., Nature 2022; 24,248
+      cases and 97,322 controls) — gene burden results and per-variant allele counts for
+      schizophrenia. Superseded by SCHEMA2, which is the larger and later analysis
+    aliases: ["SCHEMA1", "schema v1", "SCHEMA 2022", "Singh 2022"]
+
   schema2:
     label: "SCHEMA2"
     description: "Schizophrenia Exome Meta-analysis v2 — gene burden results and per-variant allele counts for schizophrenia"
@@ -953,7 +961,7 @@ tables:
     summary: "Gene-level exome burden tests"
     description: >-
       Gene-level burden test results from exome sequencing studies
-      (e.g. BipEx2, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
+      (e.g. BipEx2, SCHEMA1, SCHEMA2, Genebass, IBD exome). UNFILTERED: every gene x
       annotation x trait combination is present, so a null result for a specific
       gene in a specific trait is a real null result and not a missing row.
       Genebass contributes the bulk of the rows, and a query that names only a gene
@@ -974,9 +982,17 @@ tables:
       quantitative traits `n_cases` carries the analysed sample size and
       `n_controls` is NULL. `total_variants` and `total_variants_pheno` are NULL for
       every BRaVa row; the published files carry no variant counts.
+      SCHEMA1 and SCHEMA2 are two releases of the same schizophrenia study and do NOT
+      share mask names: SCHEMA2 has `PTV` and `PTV_missense`; SCHEMA1 has `Class_I`
+      (PTV plus missense with MPC >= 3), `Class_II` (missense with MPC 2-3) and `meta`,
+      the release's headline p-value combining the case-control and de novo tests, which
+      has a p-value only (`beta` and `se` are NULL, as they are on a SCHEMA1 mask row whose
+      odds ratio the release does not give). SCHEMA1 has no PTV-only test. Always
+      filter on `dataset` when asking for one of them, and prefer SCHEMA2, the larger and
+      later analysis, unless the question is about the 2022 paper.
 
     columns:
-      dataset: "Study name (e.g. BipEx2, SCHEMA2, genebass, IBD_exome)"
+      dataset: "Study name (e.g. BipEx2, SCHEMA1, SCHEMA2, genebass, IBD_exome)"
       trait: "Trait/phenotype name"
       gene: "Gene symbol (e.g. PCSK9)"
       gene_id: "Ensembl gene ID (e.g. ENSG00000169174)"
@@ -985,7 +1001,7 @@ tables:
       gene_end_pos: "Gene end position (GRCh38)"
       annotation: "Variant annotation filter used in burden test (e.g. pLoF, nonsynonymous); BRaVa spells it `<mask>|MAF<<cutoff>`"
       mlog10p_burden: "-log10(p-value) from the gene-level burden test. Higher = more significant"
-      beta: "Effect size estimate from burden test"
+      beta: "Effect size estimate from burden test. NULL where the source reports none: every SCHEMA1 `meta` row and the SCHEMA1 mask rows without a usable odds ratio"
       se: "Standard error of beta"
       total_variants: "Total qualifying variants in the gene"
       total_variants_pheno: "Qualifying variants with phenotype data"
@@ -1220,7 +1236,7 @@ tables:
     description: >-
       Per-variant allele COUNTS from exome studies whose release carries counts but no
       per-variant test statistic. GRCh38; not filtered on significance (there is none).
-      Three sources, and they do NOT carry the same columns — a column a source lacks is
+      Four sources, and they do NOT carry the same columns — a column a source lacks is
       NULL for it, never zero, so always filter on `dataset` and read only the counts
       that dataset has:
 
@@ -1251,8 +1267,20 @@ tables:
       synonymous variants) — with case and control allele counts and allele numbers. No
       de novo count (de_novo_ac_proband is NULL, not zero) and no transcript_id.
 
-      SCHEMA2 and BipEx2 report no per-variant p-value or effect size: do not compute an
-      odds ratio or p-value from these counts and present it as the study's result.
+      SCHEMA1 (the 2021 SCHEMA release, Singh et al. 2022, trait SCZ; 24,248 cases and
+      97,322 controls): the 8,640,041 variants of the release's analysis set that have a
+      consequence, lifted from GRCh37 to GRCh38 (the few that do not lift cleanly are
+      left out). Columns as SCHEMA2 — `in_analysis` (TRUE on 398,033), case and control
+      allele counts with allele numbers, a de novo count — but no transcript_id and no
+      alpha_missense. Its `consequence` uses VEP's terms with missense split by MPC bin:
+      `missense_variant_mpc_<2`, `missense_variant_mpc_2-3`, `missense_variant_mpc_>=3`,
+      so match missense with `consequence LIKE 'missense_variant%'`. SCHEMA1 and SCHEMA2
+      are two releases of one study with overlapping samples: never add their counts
+      together, and prefer SCHEMA2 unless the question is about the 2022 paper.
+
+      SCHEMA2 and BipEx2 report no per-variant p-value or effect size, and the SCHEMA1
+      release's per-variant statistics are not loaded: do not compute an odds ratio or
+      p-value from these counts and present it as the study's result.
 
       No CNV rows: the DEL and DUP classes are gene-level only (exome_gene_counts_v).
       Summing these counts over a gene reproduces neither that table's "independent"
@@ -1261,26 +1289,26 @@ tables:
       `gene =` or `variant =` is required to stay under the sandbox scan cap.
 
     columns:
-      dataset: "Study name (ASC2, SCHEMA2, BipEx2). Decides which count columns are populated"
+      dataset: "Study name (ASC2, SCHEMA1, SCHEMA2, BipEx2). Decides which count columns are populated"
       chr: "Chromosome number, chromosome X is 23, Y is 24, MT is 26. The partitioning column"
       pos: "Genomic position (GRCh38)"
       ref: "Reference allele"
       alt: "Alternative allele"
-      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling, SCHEMA2 and BipEx2: v39)"
+      gene: "Gene symbol the variant was assigned to (ASC2: GENCODE v29 spelling, SCHEMA2 and BipEx2: v39, SCHEMA1: v39, or v19 for a gene v39 no longer has)"
       gene_id: "Ensembl gene ID (unversioned)"
-      transcript_id: "Ensembl transcript the consequence was called on. NULL for BipEx2"
-      consequence: "VEP consequence as the source spells it, so the spelling differs by dataset (ASC2: missense, stop gained; SCHEMA2 and BipEx2: missense_variant, stop_gained). Read the values from the enumerable values scoped by resource"
-      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class. NULL for SCHEMA2 and BipEx2"
+      transcript_id: "Ensembl transcript the consequence was called on. NULL for BipEx2 and SCHEMA1"
+      consequence: "VEP consequence as the source spells it, so the spelling differs by dataset (ASC2: missense, stop gained; SCHEMA2 and BipEx2: missense_variant, stop_gained; SCHEMA1: the same terms with missense split into missense_variant_mpc_<2, _2-3 and _>=3). Read the values from the enumerable values scoped by resource"
+      variant_class: "PTV, Mis2, Mis1, Mis0 or synonymous; the same spelling as exome_gene_counts_v.variant_class. NULL for SCHEMA1, SCHEMA2 and BipEx2"
       hgvsc: "Coding change (HGVS c.), NULL where none"
       hgvsp: "Protein change (HGVS p.), NULL where none"
       mpc: "MPC missense deleteriousness score; NULL outside missense"
-      alpha_missense: "AlphaMissense pathogenicity score; NULL outside missense"
-      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules. NULL for SCHEMA2 and BipEx2"
-      in_analysis: "SCHEMA2 and BipEx2: TRUE on the variants the source's gene-level analysis used, FALSE or NULL (the source's NA) on the others. NULL for ASC2, which has no such flag"
-      de_novo_ac_proband: "De novo allele count in probands (SCHEMA2: the source's n_de_novo). NULL for BipEx2"
-      de_novo_ac_sibling: "De novo allele count in unaffected siblings. NULL for SCHEMA2 and BipEx2"
-      transmitted_ac_proband: "Alleles transmitted to probands. NULL for SCHEMA2 and BipEx2"
-      untransmitted_ac_proband: "Alleles not transmitted to probands. NULL for SCHEMA2 and BipEx2"
+      alpha_missense: "AlphaMissense pathogenicity score; NULL outside missense, and for SCHEMA1"
+      is_other_splice: "LOFTEE 'other splice': an SNV that may disrupt splicing, counted as PTV by the source under its rules. NULL for SCHEMA1, SCHEMA2 and BipEx2"
+      in_analysis: "SCHEMA1, SCHEMA2 and BipEx2: TRUE on the variants the source's gene-level analysis used, FALSE or NULL (the source's NA) on the others. NULL for ASC2, which has no such flag"
+      de_novo_ac_proband: "De novo allele count in probands (SCHEMA2: the source's n_de_novo, SCHEMA1: its n_denovos). NULL for BipEx2"
+      de_novo_ac_sibling: "De novo allele count in unaffected siblings. NULL for SCHEMA1, SCHEMA2 and BipEx2"
+      transmitted_ac_proband: "Alleles transmitted to probands. NULL for SCHEMA1, SCHEMA2 and BipEx2"
+      untransmitted_ac_proband: "Alleles not transmitted to probands. NULL for SCHEMA1, SCHEMA2 and BipEx2"
       ac_case: "Allele count in cases"
       an_case: "Allele number in cases (alleles genotyped). NULL for ASC2 and for a few SCHEMA2 rows; 0 where no case was genotyped"
       ac_ctrl: "Allele count in controls"
@@ -3885,6 +3913,11 @@ dataset_to_resource_rules:
     applies_to: ["exome_gene_counts_v", "exome_gene_bayes_results_v", "exome_variant_counts_v"]
     comment: "ASC 2026 autism exome counts, Bayes factors and FDR (exact match)"
 
+  - pattern: "SCHEMA1"
+    resource: "schema1"
+    applies_to: ["exome_variant_counts_v"]
+    comment: "SCHEMA1 per-variant allele counts (exact match)"
+
   - pattern: "SCHEMA2"
     resource: "schema2"
     applies_to: ["exome_variant_counts_v"]
@@ -4798,6 +4831,61 @@ profiles:
         n_samples: 1200000
         metadata_file: "gs://finngen-commons/results_api_data/mapping_files/brava_pheno.json"
         metadata_harmonizer: pheweb
+
+      schema1_gene_based:
+        resource: schema1
+        dataset: SCHEMA1
+        version: "v1"
+        description: >-
+          SCHEMA 2021 release (Singh et al., Nature 2022) gene-level burden test results for
+          schizophrenia from exome sequencing of 24,248 cases and 97,322 controls, lifted
+          to GRCh38. Masks: Class_I (PTV plus missense with MPC >= 3), Class_II (missense
+          with MPC 2-3) and meta, the paper's headline p-value combining case-control and
+          de novo evidence (p-value only). Superseded by SCHEMA2.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "2022-04-08"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 121570
+        n_cases: 24248
+        n_controls: 97322
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 24248
+            n_controls: 97322
+            n_samples: 121570
+
+      schema1_exome:
+        resource: schema1
+        dataset: SCHEMA1
+        version: "v1"
+        description: >-
+          SCHEMA 2021 release (Singh et al., Nature 2022) variant-level allele counts
+          (exome_variant_counts_v): the variants of the release's analysis set that have a
+          consequence, lifted to GRCh38 and flagged in_analysis where its gene-level
+          analysis used them, with consequence, MPC, case and control allele counts and
+          allele numbers, and a de novo count. Counts only; the release's per-variant
+          statistics are not loaded and none is derived. Superseded by SCHEMA2.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "2022-04-08"
+        data_type: exome
+        trait_type: binary
+        n_samples: 121570
+        n_cases: 24248
+        n_controls: 97322
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 24248
+            n_controls: 97322
+            n_samples: 121570
 
       schema_gene_based:
         resource: schema2
@@ -6126,6 +6214,61 @@ profiles:
         n_samples: 1200000
         metadata_file: "gs://daly-genetics-results/mapping_files/brava_pheno.json"
         metadata_harmonizer: pheweb
+
+      schema1_gene_based:
+        resource: schema1
+        dataset: SCHEMA1
+        version: "v1"
+        description: >-
+          SCHEMA 2021 release (Singh et al., Nature 2022) gene-level burden test results for
+          schizophrenia from exome sequencing of 24,248 cases and 97,322 controls, lifted
+          to GRCh38. Masks: Class_I (PTV plus missense with MPC >= 3), Class_II (missense
+          with MPC 2-3) and meta, the paper's headline p-value combining case-control and
+          de novo evidence (p-value only). Superseded by SCHEMA2.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "2022-04-08"
+        data_type: gene_based
+        trait_type: binary
+        n_samples: 121570
+        n_cases: 24248
+        n_controls: 97322
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 24248
+            n_controls: 97322
+            n_samples: 121570
+
+      schema1_exome:
+        resource: schema1
+        dataset: SCHEMA1
+        version: "v1"
+        description: >-
+          SCHEMA 2021 release (Singh et al., Nature 2022) variant-level allele counts
+          (exome_variant_counts_v): the variants of the release's analysis set that have a
+          consequence, lifted to GRCh38 and flagged in_analysis where its gene-level
+          analysis used them, with consequence, MPC, case and control allele counts and
+          allele numbers, and a de novo count. Counts only; the release's per-variant
+          statistics are not loaded and none is derived. Superseded by SCHEMA2.
+        author: "Schizophrenia Exome Sequencing Meta-analysis Consortium"
+        publication_date: "2022-04-08"
+        data_type: exome
+        trait_type: binary
+        n_samples: 121570
+        n_cases: 24248
+        n_controls: 97322
+        n_phenotypes: 1
+        metadata_file: null
+        metadata_harmonizer: null
+        phenotypes:
+          - phenotype_code: "SCZ"
+            phenotype_string: "Schizophrenia"
+            n_cases: 24248
+            n_controls: 97322
+            n_samples: 121570
 
       schema_gene_based:
         resource: schema2

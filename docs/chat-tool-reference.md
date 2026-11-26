@@ -2471,7 +2471,7 @@ Get gene burden test results for one phenotype from the unfiltered per-trait tab
 
 | parameter | type | req | default | enum / items / bounds | description |
 |---|---|---|---|---|---|
-| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'brava', 'schema2', 'bipex2', 'ibd_exome_2026') |
+| `resource` | `string` | yes | — | — | Gene-based data resource ('genebass', 'brava', 'schema1', 'schema2', 'bipex2', 'ibd_exome_2026') |
 | `phenotype` | `string` | yes | — | — | Phenotype or study code as search_phenotypes returns it (e.g. 'categorical_41210_both_sexes_S068_', 'SCZ', 'BIP', 'IBD', 'UC', 'CD', 'AFib', 'AFib\|EUR'). These are trait_original values from the burden results; BRaVa addresses an ancestry stratum as its own code ('AFib' is the cross-ancestry meta, 'AFib\|EUR' the EUR stratum) |
 | `genes` | `string` | no | — | — | Gene symbol or comma-separated list of gene symbols or Ensembl gene IDs (e.g. 'SETD1A', 'SETD1A,CUL1'), matched case-insensitively. Returns only these genes' rows, significant or not; summarize is ignored |
 | `annotation` | `string` | no | — | — | Restrict to one annotation class (mask) exactly as the data spells it, e.g. 'PTV' or 'pLoF'. The summary's `by_annotation` lists the values a trait carries |

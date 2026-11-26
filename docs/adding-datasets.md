@@ -1007,6 +1007,17 @@ files that has a gene is loaded, and the source's `in_analysis` flag is a column
 analysed set is a filter, not the table, because most rows are variants the study observed
 and did not test. The view's `tables:` block says so.
 
+**SCHEMA1, the 2021 SCHEMA release, is a fourth source and its own dataset** (`schema1_exome`
+and `schema1_gene_based`, resource `schema1`), served beside SCHEMA2 rather than replaced by
+it. It differs from the other three in how it gets there: the release is GRCh37 on GENCODE
+v19, so the munge lifts every variant to GRCh38 and checks it against the GRCh38 reference
+(`genetics-results-munge/scripts/liftover_variants.py`), keeps only the release's `meta`
+rows (its analysis set), and gives a gene v39 no longer has its v19 symbol. Rows the source
+left without a consequence are dropped, and the release's per-variant statistics are not
+loaded, as a user ruling: SCHEMA1 goes in as counts, like SCHEMA2. Its gene burden rows
+carry the release's own masks (`Class_I`, `Class_II`) and its `meta` p-value, not SCHEMA2's
+mask names, so the two cannot be compared by filtering on one `annotation` value.
+
 ## 18. Gene-set collections for the sandbox
 
 Gene sets are not served by results-api or BigQuery: they are a bundle baked into the sandbox
