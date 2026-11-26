@@ -2822,7 +2822,6 @@ tables:
 
   gnomad_mpc_v:
     exposed: true
-    profiles: [daly]
     partition_column: chr
     clustering_columns: [pos]
     resource_derivation:
@@ -2907,7 +2906,6 @@ tables:
 
   gnomad_missense_constraint_regions_v:
     exposed: true
-    profiles: [daly]
     clustering_columns: [gene]
     resource_derivation:
       mode: none
