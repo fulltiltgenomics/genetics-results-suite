@@ -198,7 +198,8 @@ results-api reads `<SYMBOL>.json` from the release folder its profile names
 gene, so a refresh uploads only the genes whose evidence changed and needs no restart. The
 route is registered only where a release is named: daly names the IBD pilot's 126 genes,
 finngen names none, and there, as for any gene without a summary, the tab says so. The files
-are written offline by genetics-results-munge's `scripts/gene_summary`: an evidence bundle per
+are written offline by genetics-results-workflows' `gene_summary` scripts, run by hand and
+not part of any deployment: an evidence bundle per
 gene from the gene page's own routes, a summary whose findings cite bundle rows, a check that
 every cited row, number and variant is in the bundle, and a publish step that replaces each
 cited row id with a description of the row and writes the release's `manifest.json`, which

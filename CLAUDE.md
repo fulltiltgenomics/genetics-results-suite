@@ -149,7 +149,7 @@ was that the prose rotted while the code stayed correct. So:
 # Cross-repo documentation
 
 This repo is the spec of record for the suite as a whole. The sibling repos
-(`genetics-results-api`, `-db`, `-browser`, `-munge`, `genetics-mcp-server`) each
+(`genetics-results-api`, `-db`, `-browser`, `-munge`, `-workflows`, `genetics-mcp-server`) each
 document only themselves, so a feature that spans repos leaves no single repo's
 docs wrong in a way that repo can detect.
 
